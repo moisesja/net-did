@@ -52,7 +52,7 @@ Conformance is validated against the W3C DID Test Suite (https://w3c.github.io/d
 | ------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | **Spec Compliance**             | 100% compliant with W3C DID Core 1.0 and each method's published specification. No shortcuts, no partial implementations.                                                                                    |
 | **W3C Test Suite Pass**         | Every DID method implementation MUST pass the W3C DID Test Suite across all five conformance categories: `did-identifier`, `did-core-properties`, `did-production`, `did-consumption`, and `did-resolution`. |
-| **Key Generation, Not Storage** | Generate and restore keys across Ed25519, secp256k1, P-256, and X25519. Storage is the caller's responsibility via `IKeyStore`.                                                                              |
+| **Key Generation, Not Storage** | Generate and restore keys across Ed25519, secp256k1, P-256, P-384, X25519, and BLS12-381 (G1/G2). Storage is the caller's responsibility via `IKeyStore`.                                                    |
 | **Pluggable Everything**        | Key stores, HTTP clients, Ethereum RPC providers, Pkarr gateways — all injectable.                                                                                                                           |
 | **Zero Opinions on Frameworks** | No dependency on ASP.NET, no DI container requirement. Pure library with optional DI extensions.                                                                                                             |
 | **Test-Driven**                 | Every public API surface covered by unit tests. Integration tests against real networks (testnets, public gateways). W3C conformance tests run in CI.                                                        |
@@ -73,10 +73,10 @@ Conformance is validated against the W3C DID Test Suite (https://w3c.github.io/d
 
 | Method        | Spec Status            | Create | Resolve | Update         | Deactivate     | Service Endpoints | Key Types                                     |
 | ------------- | ---------------------- | ------ | ------- | -------------- | -------------- | ----------------- | --------------------------------------------- |
-| **did:key**   | W3C CCG Final          | ✅     | ✅      | ❌ (immutable) | ❌ (immutable) | ❌                | Ed25519, P-256, secp256k1, X25519             |
+| **did:key**   | W3C CCG Final          | ✅     | ✅      | ❌ (immutable) | ❌ (immutable) | ❌                | Ed25519, P-256, P-384, secp256k1, X25519, BLS12-381 G2 |
 | **did:peer**  | DIF v2 (numalgo 0,2,4) | ✅     | ✅      | ❌ (static)    | ❌             | ✅ (numalgo 2,4)  | Ed25519, X25519                               |
 | **did:webvh** | DIF v1.0               | ✅     | ✅      | ✅             | ✅             | ✅                | Ed25519 (required), P-256 (optional)          |
-| **did:dht**   | TBD/DIF Spec           | ✅     | ✅      | ✅             | ✅             | ✅                | Ed25519 (identity key required), + additional |
+| **did:dht**   | TBD/DIF Spec           | ✅     | ✅      | ✅             | ✅             | ✅                | Ed25519 (identity key required), + additional (secp256k1, P-256, BLS12-381) |
 | **did:ethr**  | ERC-1056 / DIF         | ✅     | ✅      | ✅             | ✅             | ✅                | secp256k1 (primary), Ed25519 (delegate)       |
 
 ### 2.2 CRUD Operations Per Method
@@ -124,8 +124,8 @@ Each method implements the standard DID CRUD lifecycle, but the mechanics differ
 │                                                              │
 │  ┌─────────────────────────────────────────────────────────┐  │
 │  │              Cryptographic Primitives                    │  │
-│  │  Ed25519, X25519, P-256, secp256k1                      │  │
-│  │  Multicodec, Multibase, CID                             │  │
+│  │  Ed25519, X25519, P-256, P-384, secp256k1, BLS12-381   │  │
+│  │  BBS+ Signatures, Multicodec, Multibase                 │  │
 │  └─────────────────────────────────────────────────────────┘  │
 │                                                              │
 │  ┌─────────────────────────────────────────────────────────┐  │
@@ -264,18 +264,142 @@ public sealed record DidDeactivateResult
 | **Composite**       | `CompositeDidResolver` aggregates multiple method-specific resolvers into a single `IDidResolver`.                           |
 | **Template Method** | Base class `DidMethodBase` provides shared validation logic; each method overrides the method-specific steps.                |
 
+### 3.5 Error Handling Strategy
+
+NetDid defines a hierarchy of exception types for programmatic error handling. All NetDid exceptions derive from a common base:
+
+```csharp
+/// Base exception for all NetDid errors.
+public class NetDidException : Exception
+{
+    public NetDidException(string message, Exception? inner = null) : base(message, inner) { }
+}
+
+/// The DID string is syntactically invalid (malformed, wrong prefix, bad encoding).
+public class InvalidDidException : NetDidException
+{
+    public string Did { get; }
+    public InvalidDidException(string did, string message) : base(message) => Did = did;
+}
+
+/// The DID method is not registered or supported by this resolver/method registry.
+public class MethodNotSupportedException : NetDidException
+{
+    public string MethodName { get; }
+    public MethodNotSupportedException(string method)
+        : base($"DID method '{method}' is not supported.") => MethodName = method;
+}
+
+/// The requested CRUD operation is not supported by this DID method
+/// (e.g., Update on did:key).
+public class OperationNotSupportedException : NetDidException
+{
+    public string MethodName { get; }
+    public string Operation { get; }
+    public OperationNotSupportedException(string method, string operation)
+        : base($"Method '{method}' does not support '{operation}'.") =>
+        (MethodName, Operation) = (method, operation);
+}
+
+/// A resolution attempt failed (network error, malformed response, DID not found).
+public class DidResolutionException : NetDidException
+{
+    public string Did { get; }
+    public string ErrorCode { get; } // "notFound", "invalidDid", "deactivated", etc.
+    public DidResolutionException(string did, string errorCode, string message, Exception? inner = null)
+        : base(message, inner) => (Did, ErrorCode) = (did, errorCode);
+}
+
+/// Cryptographic verification failed (invalid signature, broken hash chain, etc.).
+public class CryptoVerificationException : NetDidException
+{
+    public CryptoVerificationException(string message, Exception? inner = null) : base(message, inner) { }
+}
+
+/// A DID log chain is invalid (did:webvh hash chain break, unauthorized update key, etc.).
+public class LogChainValidationException : CryptoVerificationException
+{
+    public int FailedAtVersion { get; }
+    public LogChainValidationException(int version, string message)
+        : base(message) => FailedAtVersion = version;
+}
+
+/// An Ethereum RPC or contract interaction failed (did:ethr).
+public class EthereumInteractionException : NetDidException
+{
+    public EthereumInteractionException(string message, Exception? inner = null) : base(message, inner) { }
+}
+```
+
+Method implementations return error codes via `DidResolutionMetadata.Error` for non-exceptional resolution failures (e.g., `"notFound"`, `"deactivated"`), following the W3C DID Core resolution contract. Exceptions are reserved for infrastructure failures, invalid inputs, and programming errors.
+
+### 3.6 DidMethodBase
+
+```csharp
+/// Base class providing shared validation and routing for DID method implementations.
+/// Each method overrides the abstract methods for method-specific logic.
+public abstract class DidMethodBase : IDidMethod, IDidResolver
+{
+    public abstract string MethodName { get; }
+    public abstract DidMethodCapabilities Capabilities { get; }
+
+    public async Task<DidCreateResult> CreateAsync(DidCreateOptions options, CancellationToken ct = default)
+    {
+        if (!Capabilities.HasFlag(DidMethodCapabilities.Create))
+            throw new OperationNotSupportedException(MethodName, "Create");
+        return await CreateCoreAsync(options, ct);
+    }
+
+    public async Task<DidResolutionResult> ResolveAsync(string did, DidResolutionOptions? options = null, CancellationToken ct = default)
+    {
+        if (!DidParser.IsValid(did))
+            return DidResolutionResult.InvalidDid(did);
+        var method = DidParser.ExtractMethod(did);
+        if (method != MethodName)
+            return DidResolutionResult.MethodNotSupported(did);
+        return await ResolveCoreAsync(did, options, ct);
+    }
+
+    public async Task<DidUpdateResult> UpdateAsync(string did, DidUpdateOptions options, CancellationToken ct = default)
+    {
+        if (!Capabilities.HasFlag(DidMethodCapabilities.Update))
+            throw new OperationNotSupportedException(MethodName, "Update");
+        return await UpdateCoreAsync(did, options, ct);
+    }
+
+    public async Task<DidDeactivateResult> DeactivateAsync(string did, DidDeactivateOptions options, CancellationToken ct = default)
+    {
+        if (!Capabilities.HasFlag(DidMethodCapabilities.Deactivate))
+            throw new OperationNotSupportedException(MethodName, "Deactivate");
+        return await DeactivateCoreAsync(did, options, ct);
+    }
+
+    public bool CanResolve(string did) => DidParser.ExtractMethod(did) == MethodName;
+
+    protected abstract Task<DidCreateResult> CreateCoreAsync(DidCreateOptions options, CancellationToken ct);
+    protected abstract Task<DidResolutionResult> ResolveCoreAsync(string did, DidResolutionOptions? options, CancellationToken ct);
+    protected virtual Task<DidUpdateResult> UpdateCoreAsync(string did, DidUpdateOptions options, CancellationToken ct)
+        => throw new OperationNotSupportedException(MethodName, "Update");
+    protected virtual Task<DidDeactivateResult> DeactivateCoreAsync(string did, DidDeactivateOptions options, CancellationToken ct)
+        => throw new OperationNotSupportedException(MethodName, "Deactivate");
+}
+```
+
 ---
 
 ## 4. Cryptographic Key Management
 
 ### 4.1 Supported Key Types
 
-| Key Type      | Algorithm      | Multicodec Prefix                   | Usage                                                               |
-| ------------- | -------------- | ----------------------------------- | ------------------------------------------------------------------- |
-| **Ed25519**   | EdDSA          | `0xed` (public), `0x8026` (private) | Signing, verification. Required by did:dht, did:webvh.              |
-| **X25519**    | ECDH           | `0xec` (public)                     | Key agreement only. Used in did:peer and did:key.                   |
-| **P-256**     | ECDSA (ES256)  | `0x8024` (public)                   | Signing, verification. Optional in did:webvh, supported in did:key. |
-| **secp256k1** | ECDSA (ES256K) | `0xe7` (public)                     | Signing, verification. Required by did:ethr.                        |
+| Key Type          | Algorithm       | Multicodec Prefix                   | Usage                                                               |
+| ----------------- | --------------- | ----------------------------------- | ------------------------------------------------------------------- |
+| **Ed25519**       | EdDSA           | `0xed` (public), `0x8026` (private) | Signing, verification. Required by did:dht, did:webvh.              |
+| **X25519**        | ECDH            | `0xec` (public)                     | Key agreement only. Used in did:peer and did:key.                   |
+| **P-256**         | ECDSA (ES256)   | `0x8024` (public)                   | Signing, verification. Optional in did:webvh, supported in did:key. |
+| **P-384**         | ECDSA (ES384)   | `0x8124` (public)                   | Signing, verification. Supported in did:key. Common in government/enterprise contexts. |
+| **secp256k1**     | ECDSA (ES256K)  | `0xe7` (public)                     | Signing, verification. Required by did:ethr.                        |
+| **BLS12-381 G1**  | BBS (BLS)       | `0xea` (public)                     | BBS+ signature verification (short signatures). Used in did:key.    |
+| **BLS12-381 G2**  | BBS (BLS)       | `0xeb` (public)                     | BBS+ signing, selective disclosure, ZKPs. Primary curve for BBS+ credentials. Used in did:key and did:dht. |
 
 ### 4.2 Key Generator Interface
 
@@ -316,7 +440,10 @@ public enum KeyType
     Ed25519,
     X25519,
     P256,
-    Secp256k1
+    P384,
+    Secp256k1,
+    Bls12381G1,
+    Bls12381G2
 }
 ```
 
@@ -325,9 +452,46 @@ public enum KeyType
 ```csharp
 public interface ICryptoProvider
 {
+    // --- Standard single-message signing (EdDSA, ECDSA) ---
     byte[] Sign(KeyType keyType, ReadOnlySpan<byte> privateKey, ReadOnlySpan<byte> data);
     bool Verify(KeyType keyType, ReadOnlySpan<byte> publicKey, ReadOnlySpan<byte> data, ReadOnlySpan<byte> signature);
-    byte[] KeyAgreement(ReadOnlySpan<byte> privateKey, ReadOnlySpan<byte> publicKey); // X25519 ECDH
+
+    // --- Key Agreement (X25519 ECDH) ---
+    byte[] KeyAgreement(ReadOnlySpan<byte> privateKey, ReadOnlySpan<byte> publicKey);
+}
+
+/// BBS+ signature operations (multi-message, selective disclosure, ZKPs).
+/// Separated from ICryptoProvider because BBS+ has a fundamentally different
+/// signing model: it operates over an ordered set of messages rather than
+/// a single byte span, and supports proof derivation for selective disclosure.
+public interface IBbsCryptoProvider
+{
+    /// Sign an ordered set of messages using a BLS12-381 G2 private key.
+    /// Returns a BBS+ signature over all messages.
+    byte[] Sign(ReadOnlySpan<byte> privateKey, IReadOnlyList<byte[]> messages);
+
+    /// Verify a BBS+ signature against the full set of messages.
+    bool Verify(ReadOnlySpan<byte> publicKey, ReadOnlySpan<byte> signature, IReadOnlyList<byte[]> messages);
+
+    /// Derive a zero-knowledge proof that selectively discloses only the messages
+    /// at the specified indices, without revealing the original signature.
+    /// The nonce prevents proof replay.
+    byte[] DeriveProof(
+        ReadOnlySpan<byte> publicKey,
+        byte[] signature,
+        IReadOnlyList<byte[]> messages,
+        IReadOnlyList<int> revealedIndices,
+        ReadOnlySpan<byte> nonce);
+
+    /// Verify a derived proof against the revealed messages.
+    /// totalMessageCount is needed because the proof hides unrevealed messages.
+    bool VerifyProof(
+        ReadOnlySpan<byte> publicKey,
+        byte[] proof,
+        IReadOnlyList<byte[]> revealedMessages,
+        IReadOnlyList<int> revealedIndices,
+        int totalMessageCount,
+        ReadOnlySpan<byte> nonce);
 }
 ```
 
@@ -336,7 +500,10 @@ public interface ICryptoProvider
 - **Ed25519**: Use `System.Security.Cryptography` (.NET 10 has native Ed25519 support) or `NSec.Cryptography` as fallback for older targets.
 - **X25519**: Same as Ed25519 — native in .NET 10 via `ECDiffieHellman` with `Curve25519`, or `NSec`.
 - **P-256**: `System.Security.Cryptography.ECDsa` with `ECCurve.NamedCurves.nistP256`.
+- **P-384**: `System.Security.Cryptography.ECDsa` with `ECCurve.NamedCurves.nistP384`. Native .NET support, no third-party dependency needed.
 - **secp256k1**: `System.Security.Cryptography.ECDsa` with explicit curve parameters (secp256k1 is not a named curve in .NET), or `NBitcoin.Secp256k1` for a battle-tested implementation with Ethereum-compatible signing (recoverable signatures with v, r, s).
+- **BLS12-381 (G1/G2)**: No native .NET support. Use `Nethermind.Crypto.Bls` (C# wrapper around the Supranational `blst` library) or `BLS.NET`. The `blst` library is the most widely deployed and audited BLS12-381 implementation (used by Ethereum 2.0 consensus clients). BBS+ signature operations (multi-message sign, derive proof, verify proof) should be implemented on top of the BLS12-381 primitives following the IETF BBS Signature Scheme draft (draft-irtf-cfrg-bbs-signatures).
+- **JCS (JSON Canonicalization Scheme)**: Required for `eddsa-jcs-2022` Data Integrity Proofs used by did:webvh. Implements RFC 8785 deterministic JSON serialization. Use a custom implementation or port — no widely-adopted .NET library exists. The canonicalization must handle Unicode normalization, number serialization (IEEE 754 double), and property ordering as specified by RFC 8785.
 
 ### 4.5 Multicodec & Multibase
 
@@ -408,14 +575,25 @@ Resolution is entirely deterministic — no network, no state:
 
 ### 5.5 Key Type → Verification Method Type Mapping
 
-| KeyType   | VM Type (Multikey) | VM Type (JWK)    | Curve     |
-| --------- | ------------------ | ---------------- | --------- |
-| Ed25519   | `Multikey`         | `JsonWebKey2020` | Ed25519   |
-| X25519    | `Multikey`         | `JsonWebKey2020` | X25519    |
-| P-256     | `Multikey`         | `JsonWebKey2020` | P-256     |
-| secp256k1 | `Multikey`         | `JsonWebKey2020` | secp256k1 |
+| KeyType       | VM Type (Multikey) | VM Type (JWK)    | Curve        |
+| ------------- | ------------------ | ---------------- | ------------ |
+| Ed25519       | `Multikey`         | `JsonWebKey2020` | Ed25519      |
+| X25519        | `Multikey`         | `JsonWebKey2020` | X25519       |
+| P-256         | `Multikey`         | `JsonWebKey2020` | P-256        |
+| P-384         | `Multikey`         | `JsonWebKey2020` | P-384        |
+| secp256k1     | `Multikey`         | `JsonWebKey2020` | secp256k1    |
+| BLS12-381 G1  | `Multikey`         | `JsonWebKey2020` | BLS12-381 G1 |
+| BLS12-381 G2  | `Multikey`         | `JsonWebKey2020` | BLS12-381 G2 |
 
-### 5.6 Configuration
+### 5.6 BBS+ Key Usage in did:key
+
+When creating a `did:key` with a BLS12-381 G2 key, the resulting DID Document advertises the key for `assertionMethod` (credential issuance with selective disclosure) and `capabilityInvocation`. The key is NOT added to `authentication` because BBS+ signatures are not suitable for challenge-response authentication (they are designed for credential signing and proof derivation).
+
+Example DID: `did:key:zUC7DerdEmfZ8GgSqnmUZjJiKJGYmVzRR7YXVP5eq3jtyLMtnDq...`
+
+The multicodec prefix `0xeb` identifies the key as a BLS12-381 G2 public key (96 bytes).
+
+### 5.7 Configuration
 
 ```csharp
 public sealed record DidKeyCreateOptions : DidCreateOptions
@@ -444,10 +622,10 @@ DIF Peer DID Method Specification — https://identity.foundation/peer-did-metho
 
 **Numalgo 0** — Inception key only. Functionally identical to did:key. Format: `did:peer:0<multibase-multicodec-public-key>`.
 
-**Numalgo 2** — Inline keys and services. Each key is purpose-prefixed:
+**Numalgo 2** — Inline keys and services. Each key is purpose-prefixed per the DIF spec:
 
 - `A` = key agreement (X25519)
-- `E` = authentication/assertion (Ed25519) (Note: some implementations use `V` for verification)
+- `V` = verification / authentication (Ed25519) — used for authentication and assertion relationships
 - `S` = service block (JSON encoded, then base64url-encoded)
 
 Format: `did:peer:2.<purpose><multibase-key>.<purpose><multibase-key>.<purpose><encoded-service>`
@@ -680,11 +858,12 @@ The DID Document is encoded as DNS TXT resource records:
 
 Key type indices from the did:dht registry:
 
-| Index | Key Type  | JWK Algorithm |
-| ----- | --------- | ------------- |
-| 0     | Ed25519   | `EdDSA`       |
-| 1     | secp256k1 | `ES256K`      |
-| 2     | P-256     | `ES256`       |
+| Index | Key Type      | JWK Algorithm |
+| ----- | ------------- | ------------- |
+| 0     | Ed25519       | `EdDSA`       |
+| 1     | secp256k1     | `ES256K`      |
+| 2     | P-256         | `ES256`       |
+| 3     | BLS12-381 G2  | `BBS`         |
 
 ### 8.4 Create
 
@@ -724,7 +903,10 @@ public sealed record DidDhtCreateOptions : DidCreateOptions
     public IReadOnlyList<DidDhtAdditionalKey>? AdditionalKeys { get; init; }
     public IReadOnlyList<Service>? Services { get; init; }
     public IReadOnlyList<int>? TypeIndices { get; init; }  // did:dht type indexing
-    public string GatewayUrl { get; init; } = "https://dht.tbd.website";
+    /// Default Pkarr gateway. TBD's gateway (dht.tbd.website) may be unreliable
+    /// following TBD/Block's wind-down. Configure an alternative gateway as needed.
+    /// Community-maintained options include pkarr.org and self-hosted instances.
+    public required string GatewayUrl { get; init; }
 }
 
 public sealed record DidDhtAdditionalKey
@@ -891,12 +1073,14 @@ The consumer provides one or more `EthereumNetworkConfig` entries. The library s
 ### 10.1 Core Model (W3C DID Core 1.0 Compliant)
 
 ```csharp
-public sealed class DidDocument
+public sealed record DidDocument
 {
     public required string Id { get; init; }
     public IReadOnlyList<string>? AlsoKnownAs { get; init; }
-    public string? Controller { get; init; }
-    public IReadOnlyList<string>? Controllers { get; init; }  // when multiple controllers
+
+    /// W3C DID Core §5.1.2: controller is a single DID string or an ordered set of DID strings.
+    /// Serialized as a string when Count == 1, as an array when Count > 1, omitted when null.
+    public IReadOnlyList<string>? Controller { get; init; }
 
     public IReadOnlyList<VerificationMethod>? VerificationMethod { get; init; }
     public IReadOnlyList<VerificationRelationshipEntry>? Authentication { get; init; }
@@ -907,10 +1091,18 @@ public sealed class DidDocument
 
     public IReadOnlyList<Service>? Service { get; init; }
 
-    // JSON-LD context (always includes "https://www.w3.org/ns/did/v1")
-    public IReadOnlyList<string> Context { get; init; } = new[] { "https://www.w3.org/ns/did/v1" };
+    /// JSON-LD @context. Always includes "https://www.w3.org/ns/did/v1" as the first entry.
+    /// Additional context URIs are appended dynamically based on verification method types:
+    ///   - Multikey           → "https://w3id.org/security/multikey/v1"
+    ///   - JsonWebKey2020     → "https://w3id.org/security/suites/jws-2020/v1"
+    ///   - BBS+ (bbs-2023)    → "https://w3id.org/security/data-integrity/v2"
+    ///   - EcdsaSecp256k1...  → "https://w3id.org/security/suites/secp256k1-2019/v1"
+    /// The DidDocumentSerializer computes the correct @context automatically from the
+    /// verification methods present in the document. Callers may also supply additional
+    /// context URIs that are appended after the auto-detected ones.
+    public IReadOnlyList<object> Context { get; init; } = new object[] { "https://www.w3.org/ns/did/v1" };
 
-    // Extension properties not defined in core
+    /// Extension properties not defined in DID Core.
     public IReadOnlyDictionary<string, JsonElement>? AdditionalProperties { get; init; }
 }
 
@@ -937,8 +1129,28 @@ public sealed class Service
 {
     public required string Id { get; init; }
     public required string Type { get; init; }
-    public required string ServiceEndpoint { get; init; }
+
+    /// W3C DID Core §5.4: serviceEndpoint can be a URI string, a map (object),
+    /// or an ordered set of URIs and/or maps. This is modeled as a discriminated
+    /// union to preserve type safety while supporting all three forms.
+    public required ServiceEndpointValue ServiceEndpoint { get; init; }
+
     public IReadOnlyDictionary<string, JsonElement>? AdditionalProperties { get; init; }
+}
+
+/// Represents the polymorphic serviceEndpoint value per W3C DID Core §5.4.
+public sealed class ServiceEndpointValue
+{
+    // Exactly one of these is set:
+    public string? Uri { get; init; }
+    public IReadOnlyDictionary<string, JsonElement>? Map { get; init; }
+    public IReadOnlyList<ServiceEndpointValue>? Set { get; init; }
+
+    public bool IsUri => Uri is not null;
+    public bool IsMap => Map is not null;
+    public bool IsSet => Set is not null;
+
+    public static implicit operator ServiceEndpointValue(string uri) => new() { Uri = uri };
 }
 ```
 
@@ -965,10 +1177,12 @@ public static class DidDocumentSerializer
 The model enforces these at construction/deserialization:
 
 - `id` MUST be a valid DID (validated by the `Did` value object).
+- `controller`, when present, MUST be a valid DID (string form) or an ordered set of valid DIDs (array form). Serialized as a string when containing a single DID, as an array when containing multiple.
 - `verificationMethod[*].id` MUST be a valid DID URL.
 - `verificationMethod[*].controller` MUST be a valid DID.
 - `service[*].id` MUST be a valid DID URL.
-- `@context` MUST include `"https://www.w3.org/ns/did/v1"` as the first element.
+- `service[*].serviceEndpoint` MUST be a URI string, a map, or an ordered set of URIs/maps (§5.4).
+- `@context` MUST include `"https://www.w3.org/ns/did/v1"` as the first element. Additional context URIs are computed dynamically from the verification method types present in the document.
 - Verification relationship entries that are strings MUST be valid DID URLs.
 - All properties follow the registered names in the DID Specification Registries.
 
@@ -1023,14 +1237,26 @@ public sealed class CachingDidResolver : IDidResolver
 
     public async Task<DidResolutionResult> ResolveAsync(string did, DidResolutionOptions? options = null, CancellationToken ct = default)
     {
-        if (_cache.TryGetValue(did, out DidResolutionResult? cached))
+        // Cache key incorporates both the DID and resolution options to avoid
+        // returning stale results when the same DID is resolved with different
+        // parameters (e.g., versionId or versionTime for did:webvh).
+        var cacheKey = ComputeCacheKey(did, options);
+
+        if (_cache.TryGetValue(cacheKey, out DidResolutionResult? cached))
             return cached!;
 
         var result = await _inner.ResolveAsync(did, options, ct);
         if (result.DidDocument is not null)
-            _cache.Set(did, result, _ttl);
+            _cache.Set(cacheKey, result, _ttl);
 
         return result;
+    }
+
+    private static string ComputeCacheKey(string did, DidResolutionOptions? options)
+    {
+        if (options is null) return did;
+        // Deterministic key combining DID + option values that affect resolution output.
+        return $"{did}|{options.GetCacheDiscriminator()}";
     }
 }
 ```
@@ -1497,6 +1723,16 @@ netdid/
 │   │   ├── NetDid.Core.csproj
 │   │   ├── IDidMethod.cs
 │   │   ├── IDidResolver.cs
+│   │   ├── DidMethodBase.cs
+│   │   ├── Exceptions/
+│   │   │   ├── NetDidException.cs
+│   │   │   ├── InvalidDidException.cs
+│   │   │   ├── MethodNotSupportedException.cs
+│   │   │   ├── OperationNotSupportedException.cs
+│   │   │   ├── DidResolutionException.cs
+│   │   │   ├── CryptoVerificationException.cs
+│   │   │   ├── LogChainValidationException.cs
+│   │   │   └── EthereumInteractionException.cs
 │   │   ├── IKeyGenerator.cs
 │   │   ├── IKeyStore.cs
 │   │   ├── ICryptoProvider.cs
@@ -1516,7 +1752,11 @@ netdid/
 │   │   │   ├── DefaultCryptoProvider.cs
 │   │   │   ├── DefaultKeyGenerator.cs
 │   │   │   ├── KeyPair.cs
-│   │   │   └── KeyType.cs
+│   │   │   ├── KeyType.cs
+│   │   │   ├── IBbsCryptoProvider.cs
+│   │   │   ├── DefaultBbsCryptoProvider.cs
+│   │   │   └── Jcs/
+│   │   │       └── JsonCanonicalization.cs
 │   │   ├── Encoding/
 │   │   │   ├── MulticodecEncoder.cs
 │   │   │   ├── MultibaseEncoder.cs
@@ -1615,7 +1855,9 @@ netdid/
 │   │   │   └── ZBase32Tests.cs
 │   │   ├── Crypto/
 │   │   │   ├── DefaultKeyGeneratorTests.cs
-│   │   │   └── DefaultCryptoProviderTests.cs
+│   │   │   ├── DefaultCryptoProviderTests.cs
+│   │   │   ├── DefaultBbsCryptoProviderTests.cs
+│   │   │   └── JsonCanonicalizationTests.cs
 │   │   ├── Model/
 │   │   │   └── DidDocumentTests.cs
 │   │   ├── Serialization/
@@ -1628,8 +1870,10 @@ netdid/
 │   │   ├── DidKeyMethodTests.cs
 │   │   ├── Ed25519KeyTests.cs
 │   │   ├── P256KeyTests.cs
+│   │   ├── P384KeyTests.cs
 │   │   ├── Secp256k1KeyTests.cs
 │   │   ├── X25519KeyTests.cs
+│   │   ├── Bls12381G2KeyTests.cs
 │   │   └── CrossMethodVectorTests.cs    # Known test vectors from did:key spec
 │   │
 │   ├── NetDid.Method.Peer.Tests/
@@ -1738,16 +1982,18 @@ netdid/
 
 **Encoding/Decoding Tests:**
 
-- Multicodec round-trip for all 4 key types
+- Multicodec round-trip for all 7 key types (Ed25519, X25519, P-256, P-384, secp256k1, BLS12-381 G1, BLS12-381 G2)
 - Multibase round-trip for base58btc, base64url, base32lower
 - z-base-32 encoding matches known test vectors
 - Known test vectors from each DID method specification
 
 **did:key Tests:**
 
-- Create with each key type → DID string is correct
+- Create with each key type (Ed25519, X25519, P-256, P-384, secp256k1, BLS12-381 G2) → DID string is correct
 - Resolve → DID Document has correct structure
 - Ed25519 → derives X25519 key agreement correctly
+- BLS12-381 G2 → verification relationships are assertionMethod + capabilityInvocation (NOT authentication)
+- BBS+ round-trip: create did:key with BLS12-381 G2, sign messages, derive selective disclosure proof, verify proof
 - Known test vectors from W3C CCG spec
 - Invalid multibase string → resolution error
 
@@ -1809,7 +2055,9 @@ netdid/
 | ---- | ----------------------------------------------------------------------------------- |
 | 1.1  | Monorepo scaffolding: solution, projects, build props, CI pipeline                  |
 | 1.2  | `NetDid.Core`: DID Document model, serialization, DidParser                         |
-| 1.3  | Cryptographic primitives: `IKeyGenerator`, `ICryptoProvider` with Ed25519 and P-256 |
+| 1.3  | Cryptographic primitives: `IKeyGenerator`, `ICryptoProvider` with Ed25519, P-256, P-384, and secp256k1 |
+| 1.3b | BBS+ cryptographic primitives: `IBbsCryptoProvider` with BLS12-381 G1/G2, multi-message sign, derive proof, verify proof |
+| 1.3c | JCS (JSON Canonicalization Scheme, RFC 8785) implementation for Data Integrity Proofs |
 | 1.4  | Multicodec and Multibase encoding/decoding                                          |
 | 1.5  | `IKeyStore` interface + `InMemoryKeyStore`                                          |
 | 1.6  | JWK conversion utilities                                                            |
@@ -1822,7 +2070,7 @@ netdid/
 
 | Item | Description                                                              |
 | ---- | ------------------------------------------------------------------------ |
-| 2.1  | `DidKeyMethod`: create and resolve for Ed25519, X25519, P-256, secp256k1 |
+| 2.1  | `DidKeyMethod`: create and resolve for Ed25519, X25519, P-256, P-384, secp256k1, BLS12-381 G2 |
 | 2.2  | X25519 derivation from Ed25519                                           |
 | 2.3  | W3C CCG did:key test vectors passing                                     |
 | 2.4  | `DidPeerMethod`: numalgo 0, numalgo 2, numalgo 4                         |
@@ -2113,6 +2361,9 @@ public sealed record DualIdentityVerification
 | Multicodec                       | https://github.com/multiformats/multicodec                                                     | —       | Multiformats       |
 | Multibase                        | https://github.com/multiformats/multibase                                                      | —       | Multiformats       |
 | Data Integrity (eddsa-jcs-2022)  | https://www.w3.org/TR/vc-di-eddsa/                                                             | —       | W3C CR             |
+| BBS Signature Scheme             | https://www.ietf.org/archive/id/draft-irtf-cfrg-bbs-signatures-07.html                         | -07     | IETF CFRG Draft    |
+| Data Integrity BBS Cryptosuites  | https://www.w3.org/TR/vc-di-bbs/                                                               | —       | W3C CR             |
+| RFC 8785 (JCS)                   | https://tools.ietf.org/html/rfc8785                                                            | —       | IETF Proposed Std  |
 | RFC 1035 (DNS)                   | https://tools.ietf.org/html/rfc1035                                                            | —       | IETF Standard      |
 
 ---
@@ -2136,6 +2387,10 @@ public sealed record DualIdentityVerification
 | **Multibase**                 | A self-describing base encoding. The first character indicates the encoding (e.g., `z` = base58btc).                                                 |
 | **Numalgo**                   | "Numeric algorithm" — the variant selector in did:peer (0, 2, or 4), each defining a different generation and resolution algorithm.                  |
 | **ZCAP-LD**                   | Authorization Capabilities for Linked Data — an object-capability security model where capabilities are cryptographically delegatable tokens.        |
+| **BBS+ / BBS Signatures**     | A pairing-based signature scheme over BLS12-381 that supports multi-message signing, selective disclosure (revealing only chosen attributes), and zero-knowledge proof derivation. Standardized as IETF draft-irtf-cfrg-bbs-signatures. |
+| **BLS12-381**                 | A pairing-friendly elliptic curve with two groups (G1, G2) and a target group (GT). G2 public keys (96 bytes) are used for BBS+ signing. Named after Barreto-Lynn-Scott with a 381-bit field. |
+| **Selective Disclosure**      | The ability for a credential holder to present only specific attributes from a signed credential without revealing the full credential, enabled by BBS+ proof derivation. |
+| **JCS**                       | JSON Canonicalization Scheme (RFC 8785) — deterministic serialization of JSON for signing. Required by the `eddsa-jcs-2022` and `bbs-2023` Data Integrity cryptosuites. |
 | **Dual-Identity Pattern**     | Using a did:key (for signing) paired with a discoverable DID (for service endpoints), linked by shared key material and `alsoKnownAs`.               |
 | **HLC**                       | Hybrid Logical Clock — used in the TurtleShell PDS for causal ordering across replicated nodes.                                                      |
 | **CRDT**                      | Conflict-free Replicated Data Type — data structures that can be replicated across nodes and merged without coordination.                            |
