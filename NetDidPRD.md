@@ -115,7 +115,7 @@ Each method implements the standard DID CRUD lifecycle, but the mechanics differ
 │  ┌─────▼────────────────▼──────────────────────▼──────────┐  │
 │  │              DID Document Model                         │  │
 │  │  DidDocument, VerificationMethod, Service,              │  │
-│  │  VerificationRelationship, Did (value object)           │  │
+│  │  VerificationRelationshipEntry, Did, DidUrl             │  │
 │  └─────────────────────────────────────────────────────────┘  │
 │                                                              │
 │  ┌─────────────────────────────────────────────────────────┐  │
@@ -202,7 +202,7 @@ public interface IDidResolver
 public sealed record DidCreateResult
 {
     public required DidDocument DidDocument { get; init; }
-    public required string Did { get; init; }
+    public required Did Did { get; init; }
     public DidDocumentMetadata? Metadata { get; init; }
 
     /// Method-specific artifacts (e.g., did.jsonl content for webvh, tx hash for ethr)
@@ -1065,14 +1065,42 @@ The consumer provides one or more `EthereumNetworkConfig` entries. The library s
 ### 9.1 Core Model (W3C DID Core 1.0 Compliant)
 
 ```csharp
+/// Value object that represents a validated DID string.
+/// Construction validates that the string conforms to W3C DID syntax: did:<method>:<method-specific-id>.
+/// Illegal states are unrepresentable — if you have a Did, it is syntactically valid.
+public readonly record struct Did
+{
+    public string Value { get; }
+    public string Method { get; }
+    public string MethodSpecificId { get; }
+
+    public Did(string value)
+    {
+        if (!DidParser.IsValid(value))
+            throw new InvalidDidException(value, $"'{value}' does not conform to W3C DID syntax.");
+
+        Value = value;
+        Method = DidParser.ExtractMethod(value)!;
+        MethodSpecificId = DidParser.ExtractMethodSpecificId(value)!;
+    }
+
+    /// Implicit conversion from string — validates on construction.
+    public static implicit operator Did(string value) => new(value);
+
+    /// Implicit conversion to string for interop.
+    public static implicit operator string(Did did) => did.Value;
+
+    public override string ToString() => Value;
+}
+
 public sealed record DidDocument
 {
-    public required string Id { get; init; }
+    public required Did Id { get; init; }
     public IReadOnlyList<string>? AlsoKnownAs { get; init; }
 
-    /// W3C DID Core §5.1.2: controller is a single DID string or an ordered set of DID strings.
+    /// W3C DID Core §5.1.2: controller is a single DID or an ordered set of DIDs.
     /// Serialized as a string when Count == 1, as an array when Count > 1, omitted when null.
-    public IReadOnlyList<string>? Controller { get; init; }
+    public IReadOnlyList<Did>? Controller { get; init; }
 
     public IReadOnlyList<VerificationMethod>? VerificationMethod { get; init; }
     public IReadOnlyList<VerificationRelationshipEntry>? Authentication { get; init; }
@@ -1102,49 +1130,105 @@ public sealed record DidDocument
 
 public sealed class VerificationMethod
 {
-    public required string Id { get; init; }
+    public required string Id { get; init; }          // DID URL (validated at deserialization)
     public required string Type { get; init; }        // "Multikey", "JsonWebKey2020", "EcdsaSecp256k1VerificationKey2019"
-    public required string Controller { get; init; }
+    public required Did Controller { get; init; }
     public string? PublicKeyMultibase { get; init; }   // for Multikey representation
     public JsonWebKey? PublicKeyJwk { get; init; }     // for JWK representation
     public string? BlockchainAccountId { get; init; }  // for did:ethr (CAIP-10 format)
 }
 
-/// A verification relationship entry is either a reference (string DID URL) or an embedded verification method.
+/// A verification relationship entry is either a reference (DID URL string) or an embedded
+/// verification method — never both, never neither. Construction is restricted to the two
+/// factory methods to make illegal states unrepresentable.
 public sealed class VerificationRelationshipEntry
 {
-    public string? Reference { get; init; }
-    public VerificationMethod? EmbeddedMethod { get; init; }
+    /// The referenced DID URL (set when IsReference == true).
+    public string? Reference { get; }
+
+    /// The embedded verification method (set when IsReference == false).
+    public VerificationMethod? EmbeddedMethod { get; }
 
     public bool IsReference => Reference is not null;
+
+    private VerificationRelationshipEntry(string? reference, VerificationMethod? embedded)
+    {
+        Reference = reference;
+        EmbeddedMethod = embedded;
+    }
+
+    /// Create a reference entry (DID URL pointing to a verification method defined elsewhere).
+    public static VerificationRelationshipEntry FromReference(string didUrl)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(didUrl);
+        return new VerificationRelationshipEntry(didUrl, null);
+    }
+
+    /// Create an embedded entry (inline verification method definition).
+    public static VerificationRelationshipEntry FromEmbedded(VerificationMethod method)
+    {
+        ArgumentNullException.ThrowIfNull(method);
+        return new VerificationRelationshipEntry(null, method);
+    }
+
+    /// Implicit conversion from string for ergonomic reference creation.
+    public static implicit operator VerificationRelationshipEntry(string didUrl) => FromReference(didUrl);
 }
 
 public sealed class Service
 {
-    public required string Id { get; init; }
+    public required string Id { get; init; }          // DID URL (validated at deserialization)
     public required string Type { get; init; }
 
     /// W3C DID Core §5.4: serviceEndpoint can be a URI string, a map (object),
-    /// or an ordered set of URIs and/or maps. This is modeled as a discriminated
-    /// union to preserve type safety while supporting all three forms.
+    /// or an ordered set of URIs and/or maps.
     public required ServiceEndpointValue ServiceEndpoint { get; init; }
 
     public IReadOnlyDictionary<string, JsonElement>? AdditionalProperties { get; init; }
 }
 
 /// Represents the polymorphic serviceEndpoint value per W3C DID Core §5.4.
+/// Exactly one variant is set — enforced by private constructor and factory methods.
+/// Illegal states (zero variants, multiple variants) are unrepresentable.
 public sealed class ServiceEndpointValue
 {
-    // Exactly one of these is set:
-    public string? Uri { get; init; }
-    public IReadOnlyDictionary<string, JsonElement>? Map { get; init; }
-    public IReadOnlyList<ServiceEndpointValue>? Set { get; init; }
+    public string? Uri { get; }
+    public IReadOnlyDictionary<string, JsonElement>? Map { get; }
+    public IReadOnlyList<ServiceEndpointValue>? Set { get; }
 
     public bool IsUri => Uri is not null;
     public bool IsMap => Map is not null;
     public bool IsSet => Set is not null;
 
-    public static implicit operator ServiceEndpointValue(string uri) => new() { Uri = uri };
+    private ServiceEndpointValue(string? uri, IReadOnlyDictionary<string, JsonElement>? map,
+        IReadOnlyList<ServiceEndpointValue>? set)
+    {
+        Uri = uri;
+        Map = map;
+        Set = set;
+    }
+
+    public static ServiceEndpointValue FromUri(string uri)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(uri);
+        return new(uri, null, null);
+    }
+
+    public static ServiceEndpointValue FromMap(IReadOnlyDictionary<string, JsonElement> map)
+    {
+        ArgumentNullException.ThrowIfNull(map);
+        return new(null, map, null);
+    }
+
+    public static ServiceEndpointValue FromSet(IReadOnlyList<ServiceEndpointValue> set)
+    {
+        ArgumentNullException.ThrowIfNull(set);
+        if (set.Count == 0) throw new ArgumentException("Set must contain at least one entry.", nameof(set));
+        return new(null, null, set);
+    }
+
+    /// Implicit conversion from string for ergonomic URI creation.
+    public static implicit operator ServiceEndpointValue(string uri) => FromUri(uri);
 }
 ```
 
@@ -1195,13 +1279,13 @@ public static class DidDocumentSerializer
 
 **Data model requirements** (enforced at construction, independent of representation):
 
-- `id` MUST be a valid DID (validated by the `Did` value object).
-- `controller`, when present, MUST be a valid DID (string form) or an ordered set of valid DIDs (array form). Serialized as a string when containing a single DID, as an array when containing multiple.
+- `id` MUST be a valid DID. The `Did` value object (a `readonly record struct`) validates W3C DID syntax at construction — if a `Did` exists, it is syntactically valid. This makes invalid DIDs unrepresentable in the type system.
+- `controller`, when present, MUST be a list of valid `Did` values. Serialized as a string when Count == 1, as an array when Count > 1, omitted when null.
 - `verificationMethod[*].id` MUST be a valid DID URL.
-- `verificationMethod[*].controller` MUST be a valid DID.
+- `verificationMethod[*].controller` MUST be a valid `Did`.
 - `service[*].id` MUST be a valid DID URL.
-- `service[*].serviceEndpoint` MUST be a URI string, a map, or an ordered set of URIs/maps (§5.4).
-- Verification relationship entries that are strings MUST be valid DID URLs.
+- `service[*].serviceEndpoint` MUST be exactly one of: a URI string, a map, or an ordered set of URIs/maps (§5.4). The `ServiceEndpointValue` type enforces this via factory methods (`FromUri`, `FromMap`, `FromSet`) — the private constructor makes it impossible to construct an instance with zero or multiple variants set.
+- Verification relationship entries are either a reference string (DID URL) or an embedded `VerificationMethod`, never both and never neither. The `VerificationRelationshipEntry` type enforces this via `FromReference` and `FromEmbedded` factory methods.
 - All properties follow the registered names in the DID Specification Registries.
 
 **JSON-LD production requirements** (§6.3, `application/did+ld+json`):
@@ -1314,7 +1398,7 @@ public static class DidParser
 
 public sealed record DidUrl
 {
-    public required string Did { get; init; }
+    public required Did Did { get; init; }
     public string? Path { get; init; }
     public string? Query { get; init; }
     public string? Fragment { get; init; }
@@ -2070,6 +2154,7 @@ netdid/
 │   │   ├── ISigner.cs
 │   │   ├── ICryptoProvider.cs
 │   │   ├── Model/
+│   │   │   ├── Did.cs
 │   │   │   ├── DidDocument.cs
 │   │   │   ├── VerificationMethod.cs
 │   │   │   ├── Service.cs
