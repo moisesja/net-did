@@ -50,7 +50,7 @@ Conformance is validated against the W3C DID Test Suite (https://w3c.github.io/d
 | Goal                            | Description                                                                                                                                                                                                  |
 | ------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | **Spec Compliance**             | 100% compliant with W3C DID Core 1.0 and each method's published specification. No shortcuts, no partial implementations.                                                                                    |
-| **W3C Test Suite Pass**         | Every DID method implementation MUST pass the W3C DID Test Suite across all four conformance categories: `did-identifier`, `did-core-properties`, `did-production`, `did-consumption`, and `did-resolution`. |
+| **W3C Test Suite Pass**         | Every DID method implementation MUST pass the W3C DID Test Suite across all five conformance categories: `did-identifier`, `did-core-properties`, `did-production`, `did-resolution`, and `did-url-dereferencing`. |
 | **Key Generation, Not Storage** | Generate and restore keys across Ed25519, secp256k1, P-256, P-384, X25519, and BLS12-381 (G1/G2). Storage is the caller's responsibility via `IKeyStore`.                                                    |
 | **Pluggable Everything**        | Key stores, HTTP clients, Ethereum RPC providers — all injectable.                                                                                                                                           |
 | **Zero Opinions on Frameworks** | No dependency on ASP.NET, no DI container requirement. Pure library with optional DI extensions.                                                                                                             |
@@ -126,7 +126,7 @@ Each method implements the standard DID CRUD lifecycle, but the mechanics differ
 │                                                              │
 │  ┌─────────────────────────────────────────────────────────┐  │
 │  │              Key Management Abstraction                  │  │
-│  │  IKeyStore (pluggable), KeyPair, KeyType enum            │  │
+│  │  ISigner, IKeyStore (pluggable), KeyPair, KeyType enum   │  │
 │  └─────────────────────────────────────────────────────────┘  │
 └──────────────────────────────────────────────────────────────┘
 
@@ -443,18 +443,110 @@ public enum KeyType
 }
 ```
 
-### 4.3 Cryptographic Signing Interface
+### 4.3 Cryptographic Signing & Verification Interface
 
 ```csharp
 public interface ICryptoProvider
 {
-    // --- Standard single-message signing (EdDSA, ECDSA) ---
+    // --- Signing (used internally by KeyPairSigner; callers should use ISigner) ---
     byte[] Sign(KeyType keyType, ReadOnlySpan<byte> privateKey, ReadOnlySpan<byte> data);
+
+    // --- Verification (public-key-only operations) ---
     bool Verify(KeyType keyType, ReadOnlySpan<byte> publicKey, ReadOnlySpan<byte> data, ReadOnlySpan<byte> signature);
 
     // --- Key Agreement (X25519 ECDH) ---
     byte[] KeyAgreement(ReadOnlySpan<byte> privateKey, ReadOnlySpan<byte> publicKey);
 }
+```
+
+> **Note**: `ICryptoProvider.Sign` is a low-level primitive used internally by `KeyPairSigner`. Application code and DID method implementations should use `ISigner.SignAsync()` instead, which works with both in-memory keys and HSM-backed keys.
+
+### 4.3.1 ISigner — The Operational Signing Interface
+
+DID method implementations need exactly two things from a key: the **public key** (for building DID documents, deriving addresses, computing SCIDs) and the ability to **sign data**. They never need raw private key bytes. `ISigner` captures this contract:
+
+```csharp
+/// The signing interface used by all DID method implementations.
+/// Abstracts away whether the private key is in-memory or in a secure enclave.
+public interface ISigner
+{
+    KeyType KeyType { get; }
+
+    /// The public key bytes (always available, even for HSM-backed signers).
+    ReadOnlyMemory<byte> PublicKey { get; }
+
+    /// The multicodec-prefixed, multibase-encoded public key (e.g., "z6Mkf...")
+    string MultibasePublicKey { get; }
+
+    /// Sign data. For HSM-backed signers, this delegates to the secure enclave
+    /// without the private key ever leaving the device.
+    Task<byte[]> SignAsync(ReadOnlyMemory<byte> data, CancellationToken ct = default);
+}
+```
+
+Two factory implementations are provided:
+
+```csharp
+/// Wraps a raw KeyPair for in-memory signing (simple path).
+public sealed class KeyPairSigner : ISigner
+{
+    private readonly KeyPair _keyPair;
+    private readonly ICryptoProvider _crypto;
+
+    public KeyPairSigner(KeyPair keyPair, ICryptoProvider crypto)
+    {
+        _keyPair = keyPair;
+        _crypto = crypto;
+    }
+
+    public KeyType KeyType => _keyPair.KeyType;
+    public ReadOnlyMemory<byte> PublicKey => _keyPair.PublicKey;
+    public string MultibasePublicKey => _keyPair.MultibasePublicKey;
+
+    public Task<byte[]> SignAsync(ReadOnlyMemory<byte> data, CancellationToken ct = default)
+    {
+        var sig = _crypto.Sign(_keyPair.KeyType, _keyPair.PrivateKey, data.Span);
+        return Task.FromResult(sig);
+    }
+}
+
+/// Wraps a key store alias for HSM/vault-backed signing (secure path).
+/// The private key never leaves the store.
+public sealed class KeyStoreSigner : ISigner
+{
+    private readonly IKeyStore _store;
+    private readonly string _alias;
+
+    public KeyStoreSigner(IKeyStore store, string alias, KeyType keyType, byte[] publicKey)
+    {
+        _store = store;
+        _alias = alias;
+        KeyType = keyType;
+        PublicKey = publicKey;
+    }
+
+    public KeyType KeyType { get; }
+    public ReadOnlyMemory<byte> PublicKey { get; }
+    public string MultibasePublicKey => MultibaseEncoder.Encode(MulticodecEncoder.Prefix(KeyType, PublicKey.Span));
+
+    public Task<byte[]> SignAsync(ReadOnlyMemory<byte> data, CancellationToken ct = default)
+        => _store.SignAsync(_alias, data, ct);
+}
+```
+
+**Why ISigner exists**: Without it, every DID method option type would need a `KeyPair` property — which forces callers to extract private key bytes and passes them across API boundaries. This makes HSM, Azure Key Vault, AWS KMS, and hardware authenticator integrations impossible, since those systems never expose private key material. With `ISigner`, the method implementation calls `signer.SignAsync(data)` without knowing or caring whether the key is in-memory or in a hardware enclave.
+
+```csharp
+// Simple path — raw key pair:
+var signer = new KeyPairSigner(keyPair, cryptoProvider);
+
+// HSM path — key never leaves the vault:
+var info = await keyStore.GetInfoAsync("my-update-key");
+var signer = new KeyStoreSigner(keyStore, "my-update-key", info.KeyType, info.PublicKey);
+
+// Or use the convenience factory on IKeyStore:
+var signer = await keyStore.CreateSignerAsync("my-update-key");
+```
 
 /// BBS+ signature operations (multi-message, selective disclosure, ZKPs).
 /// Separated from ICryptoProvider because BBS+ has a fundamentally different
@@ -651,7 +743,10 @@ public sealed record DidPeerCreateOptions : DidCreateOptions
     public DidDocument? InputDocument { get; init; }
 }
 
-public sealed record PeerKeyPurpose(KeyPair KeyPair, PeerPurpose Purpose);
+/// did:peer only needs the public key (it's encoded into the DID string, no signing occurs).
+/// Accepts ISigner for consistency with other methods and HSM compatibility
+/// (the public key is extracted via signer.PublicKey; SignAsync is not called).
+public sealed record PeerKeyPurpose(ISigner Key, PeerPurpose Purpose);
 
 public enum PeerPurpose { Authentication, KeyAgreement }
 public enum PeerNumalgo { Zero = 0, Two = 2, Four = 4 }
@@ -786,7 +881,7 @@ public sealed record DidWebVhCreateOptions : DidCreateOptions
 {
     public required string Domain { get; init; }           // e.g., "example.com"
     public string? Path { get; init; }                     // optional sub-path
-    public required KeyPair UpdateKeyPair { get; init; }
+    public required ISigner UpdateKey { get; init; }       // signs genesis log entry (HSM-safe)
     public IReadOnlyList<VerificationMethod>? AdditionalVerificationMethods { get; init; }
     public IReadOnlyList<Service>? Services { get; init; }
     public bool EnablePreRotation { get; init; } = false;
@@ -798,7 +893,7 @@ public sealed record DidWebVhCreateOptions : DidCreateOptions
 public sealed record DidWebVhUpdateOptions : DidUpdateOptions
 {
     public required byte[] CurrentLogContent { get; init; }  // existing did.jsonl bytes
-    public required KeyPair SigningKeyPair { get; init; }     // authorized update key
+    public required ISigner SigningKey { get; init; }        // authorized update key (HSM-safe)
     public DidDocument? NewDocument { get; init; }
     public DidWebVhParameterUpdates? ParameterUpdates { get; init; }
 }
@@ -900,8 +995,9 @@ public sealed record DidEthrUpdateOptions : DidUpdateOptions
     // Change owner
     public string? NewOwnerAddress { get; init; }
 
-    // The key pair that controls the identity (for signing transactions)
-    public required KeyPair ControllerKeyPair { get; init; }
+    // Signs transactions. ISigner provides the public key (for address derivation)
+    // and signing without exposing private key material (HSM-safe).
+    public required ISigner ControllerKey { get; init; }
 
     // Use meta-transaction (signed by controller, submitted by relayer)?
     public bool UseMetaTransaction { get; init; } = false;
@@ -1174,33 +1270,162 @@ public sealed record DidUrl
 }
 ```
 
+### 10.4 DID URL Dereferencer
+
+W3C DID Core §7.2 defines DID URL Dereferencing as a distinct function from DID Resolution. While resolution takes a DID and returns a full DID Document, dereferencing takes a DID URL (which may include path, query, and/or fragment components) and returns the specific resource identified by that URL.
+
+NetDid provides a standard `IDidUrlDereferencer` interface that implements the W3C §7.2 function signature:
+
+```csharp
+public interface IDidUrlDereferencer
+{
+    /// Dereference a DID URL to the resource it identifies.
+    ///
+    /// Per W3C DID Core §7.2, the inputs are:
+    ///   - didUrl: A conformant DID URL (DID + optional path, query, fragment)
+    ///   - options: DID URL dereferencing options (accept content type, etc.)
+    ///
+    /// The output is:
+    ///   - DereferencingMetadata: metadata about the dereferencing process (contentType, error)
+    ///   - ContentStream: the resource (VerificationMethod, Service, DID Document, or byte[])
+    ///   - ContentMetadata: metadata about the content (same structure as DidDocumentMetadata)
+    Task<DidUrlDereferencingResult> DereferenceAsync(
+        string didUrl,
+        DidUrlDereferencingOptions? options = null,
+        CancellationToken ct = default);
+}
+
+public sealed record DidUrlDereferencingResult
+{
+    /// Metadata about the dereferencing process itself.
+    /// Contains contentType (required on success) and error (if dereferencing failed).
+    public required DereferencingMetadata DereferencingMetadata { get; init; }
+
+    /// The dereferenced resource. Null when an error occurs.
+    /// May be a VerificationMethod, Service, DidDocument, or raw byte[] depending on the DID URL.
+    public object? ContentStream { get; init; }
+
+    /// Metadata about the content (equivalent to didDocumentMetadata when the
+    /// content is a full DID Document, empty otherwise).
+    public IReadOnlyDictionary<string, object>? ContentMetadata { get; init; }
+}
+
+public sealed record DereferencingMetadata
+{
+    /// The Media Type of the returned content (e.g., "application/did+ld+json").
+    /// MUST be expressed as an ASCII string per W3C DID Core §7.2.
+    public string? ContentType { get; init; }
+
+    /// Error code if dereferencing failed. Standard values:
+    /// "invalidDidUrl", "notFound", "contentTypeNotSupported".
+    public string? Error { get; init; }
+}
+
+public sealed record DidUrlDereferencingOptions
+{
+    /// The Media Type the caller prefers for the dereferenced content.
+    public string? Accept { get; init; }
+}
+```
+
+**Default implementation**: `DefaultDidUrlDereferencer` composes with `IDidResolver`:
+
+```csharp
+public sealed class DefaultDidUrlDereferencer : IDidUrlDereferencer
+{
+    private readonly IDidResolver _resolver;
+
+    public DefaultDidUrlDereferencer(IDidResolver resolver) => _resolver = resolver;
+
+    public async Task<DidUrlDereferencingResult> DereferenceAsync(
+        string didUrl, DidUrlDereferencingOptions? options = null, CancellationToken ct = default)
+    {
+        var parsed = DidParser.ParseDidUrl(didUrl);
+        if (parsed is null)
+            return DidUrlDereferencingResult.Error("invalidDidUrl");
+
+        // Step 1: Resolve the base DID to get the full DID Document
+        var resolution = await _resolver.ResolveAsync(parsed.Did, ct: ct);
+        if (resolution.DidDocument is null)
+            return DidUrlDereferencingResult.Error(resolution.ResolutionMetadata.Error ?? "notFound");
+
+        // Step 2: Apply DID URL components
+        if (parsed.Fragment is not null)
+        {
+            // Fragment dereferencing: find the resource within the DID Document
+            var resource = FindByFragment(resolution.DidDocument, parsed.Fragment);
+            if (resource is null)
+                return DidUrlDereferencingResult.Error("notFound");
+            return DidUrlDereferencingResult.Success(resource, "application/did+ld+json");
+        }
+
+        if (parsed.Query?.Contains("service=") == true)
+        {
+            // Service endpoint selection per DID Core §7.2
+            var service = FindByServiceQuery(resolution.DidDocument, parsed.Query);
+            if (service is null)
+                return DidUrlDereferencingResult.Error("notFound");
+            return DidUrlDereferencingResult.Success(service, "application/did+ld+json");
+        }
+
+        // No fragment or service query: return the full DID Document
+        return DidUrlDereferencingResult.Success(
+            resolution.DidDocument, "application/did+ld+json",
+            resolution.DocumentMetadata);
+    }
+}
+```
+
 ---
 
 ## 11. Pluggable Key Management
 
 ### 11.1 IKeyStore Interface
 
-NetDid generates keys but does NOT store them. The caller provides an `IKeyStore` implementation:
+NetDid generates keys via `IKeyGenerator` but does NOT store them. The caller provides an `IKeyStore` implementation for persistent key management. The interface is designed around a critical constraint: **private key material may never be extractable** (HSMs, Azure Key Vault, AWS KMS, hardware authenticators).
 
 ```csharp
 public interface IKeyStore
 {
-    /// Store a key pair, returning a stable key identifier.
-    Task<string> StoreAsync(string alias, KeyPair keyPair, CancellationToken ct = default);
+    /// Generate a new key pair inside the store. For HSM-backed stores, the private
+    /// key is created within the secure enclave and never leaves it.
+    /// Returns metadata including the public key (always safe to expose).
+    Task<StoredKeyInfo> GenerateAsync(string alias, KeyType keyType, CancellationToken ct = default);
 
-    /// Retrieve a key pair by alias.
-    Task<KeyPair?> GetAsync(string alias, CancellationToken ct = default);
+    /// Import an externally-generated key pair into the store.
+    /// For HSMs that prohibit import, this throws NotSupportedException.
+    Task<StoredKeyInfo> ImportAsync(string alias, KeyPair keyPair, CancellationToken ct = default);
+
+    /// Get public key and metadata for a stored key. The private key is never exposed.
+    Task<StoredKeyInfo?> GetInfoAsync(string alias, CancellationToken ct = default);
+
+    /// Sign data using a stored key. The private key never leaves the store.
+    Task<byte[]> SignAsync(string alias, ReadOnlyMemory<byte> data, CancellationToken ct = default);
+
+    /// Create an ISigner backed by this store for the given key alias.
+    /// This is the primary integration point with DID method APIs.
+    Task<ISigner> CreateSignerAsync(string alias, CancellationToken ct = default);
 
     /// List all stored key aliases.
     Task<IReadOnlyList<string>> ListAsync(CancellationToken ct = default);
 
-    /// Delete a key pair by alias.
+    /// Delete a key by alias.
     Task<bool> DeleteAsync(string alias, CancellationToken ct = default);
+}
 
-    /// Sign data using a stored key (allows HSM-backed stores where the private key never leaves the device).
-    Task<byte[]> SignAsync(string alias, ReadOnlyMemory<byte> data, CancellationToken ct = default);
+/// Metadata about a stored key. Never contains private key material.
+public sealed record StoredKeyInfo
+{
+    public required string Alias { get; init; }
+    public required KeyType KeyType { get; init; }
+    public required byte[] PublicKey { get; init; }
+
+    /// The multicodec-prefixed, multibase-encoded public key.
+    public string MultibasePublicKey => MultibaseEncoder.Encode(MulticodecEncoder.Prefix(KeyType, PublicKey));
 }
 ```
+
+> **Key design decision**: The old `GetAsync(alias) → KeyPair?` method has been removed. Returning a `KeyPair` (which contains `PrivateKey` bytes) would make HSM integration impossible — the entire point of an HSM is that private key material never leaves the device. Instead, `GetInfoAsync` returns only public metadata, and `SignAsync`/`CreateSignerAsync` provide signing without key extraction.
 
 ### 11.2 Provided Implementations
 
@@ -1222,12 +1447,40 @@ The interface is designed to be easily adapted to:
 
 ### 11.4 Key Store in DID Operations
 
-When a DID method needs to sign (e.g., creating a did:webvh log entry, sending a did:ethr transaction), the method accepts either:
+All DID method option types that require signing accept an `ISigner` — never a raw `KeyPair`. This is the single integration point between key management and DID operations:
 
-1. A `KeyPair` directly (caller manages keys externally), OR
-2. A `keyAlias` + `IKeyStore` reference (the method calls `keyStore.SignAsync(alias, data)`)
+**Simple path** — caller has a raw key pair (testing, development, software-managed keys):
 
-This dual approach allows both simple usage and HSM-backed scenarios where the private key never leaves the secure enclave.
+```csharp
+var keyPair = keyGenerator.Generate(KeyType.Ed25519);
+var signer = new KeyPairSigner(keyPair, cryptoProvider);
+
+var result = await didWebVhMethod.CreateAsync(new DidWebVhCreateOptions
+{
+    Domain = "alice.example.com",
+    UpdateKey = signer,  // ISigner, not KeyPair
+    // ...
+});
+```
+
+**HSM/Vault path** — private key never leaves the secure enclave:
+
+```csharp
+// Key generated inside the HSM (private key never exposed):
+var keyInfo = await keyStore.GenerateAsync("webvh-update-key", KeyType.Ed25519);
+
+// Create an ISigner that delegates signing to the HSM:
+var signer = await keyStore.CreateSignerAsync("webvh-update-key");
+
+var result = await didWebVhMethod.CreateAsync(new DidWebVhCreateOptions
+{
+    Domain = "alice.example.com",
+    UpdateKey = signer,  // signing happens inside the HSM
+    // ...
+});
+```
+
+The DID method implementation calls `signer.SignAsync(data)` and `signer.PublicKey` — it never knows or cares whether the key is in-memory or in a hardware enclave. This makes HSM, Azure Key Vault, AWS KMS, and FIDO2 integrations first-class citizens rather than afterthoughts.
 
 ---
 
@@ -1239,13 +1492,15 @@ The W3C DID Test Suite (https://github.com/w3c/did-test-suite) is maintained by 
 
 ### 12.2 Conformance Categories
 
-| Suite                   | What It Tests                                                                                                                                                                                                                                            | NetDid Applicability |
-| ----------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------- |
-| **did-identifier**      | DID syntax: method name is ASCII lowercase, method-specific-id conforms to ABNF, overall DID string matches the grammar.                                                                                                                                 | All 4 methods        |
-| **did-core-properties** | DID Document properties: `id` is valid DID, `verificationMethod` entries have required fields, `service` entries are well-formed, all verification relationships reference valid VMs, `@context` is correct.                                             | All 4 methods        |
-| **did-production**      | Serialization (production) of DID Documents: the JSON representation MUST include `@context`, property names MUST be strings, values MUST conform to the data model type system, JSON members MUST be serialized correctly.                              | All 4 methods        |
-| **did-consumption**     | Deserialization (consumption) of DID Documents: a conforming consumer MUST be able to parse a valid DID Document representation and extract the data model.                                                                                              | All 4 methods        |
-| **did-resolution**      | DID Resolution: given a DID, the resolver returns a conformant `DidResolutionResult` with correct `didDocument`, `didResolutionMetadata`, and `didDocumentMetadata`. Covers error cases (`notFound`, `invalidDid`, `methodNotSupported`, `deactivated`). | All 4 methods        |
+These match the five suites in the W3C DID Implementation Report (https://w3c.github.io/did-test-suite/):
+
+| Suite                        | What It Tests                                                                                                                                                                                                                                            | NetDid Applicability |
+| ---------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------- |
+| **did-identifier**           | DID syntax: method name is ASCII lowercase, method-specific-id conforms to ABNF, overall DID string matches the grammar.                                                                                                                                 | All 4 methods        |
+| **did-core-properties**      | DID Document properties: `id` is valid DID, `verificationMethod` entries have required fields, `service` entries are well-formed, all verification relationships reference valid VMs, `@context` is correct. Also covers consumption (deserialization) — a conforming consumer MUST parse a valid DID Document and extract the data model, including handling unknown properties without error.  | All 4 methods        |
+| **did-production**           | Serialization (production) of DID Documents: the JSON representation MUST include `@context`, property names MUST be strings, values MUST conform to the data model type system, JSON members MUST be serialized correctly.                              | All 4 methods        |
+| **did-resolution**           | DID Resolution (§7.1): given a DID, the resolver returns a conformant `DidResolutionResult` with correct `didDocument`, `didResolutionMetadata`, and `didDocumentMetadata`. Covers error cases (`notFound`, `invalidDid`, `methodNotSupported`, `deactivated`). | All 4 methods        |
+| **did-url-dereferencing**    | DID URL Dereferencing (§7.2): given a DID URL (DID + optional path, query, and/or fragment), the dereferencer returns the specific resource identified by the URL. Fragment dereferencing returns elements within the DID Document (verification methods, services). Query-based dereferencing supports service endpoint selection. Covers error handling and content type negotiation. | All 4 methods        |
 
 ### 12.3 Test Fixture Generation
 
@@ -1301,9 +1556,9 @@ A .NET CLI tool (`NetDid.TestSuite.W3C.Cli`) generates the fixture JSON files th
     npm test -- --implementations ../w3c-fixtures/
 ```
 
-**Approach 2: Resolution endpoint (supplementary)**
+**Approach 2: Resolution & dereferencing endpoints (supplementary)**
 
-For the `did-resolution` suite, NetDid can optionally run a lightweight HTTP server that the W3C test suite queries:
+For the `did-resolution` and `did-url-dereferencing` suites, NetDid can optionally run a lightweight HTTP server that the W3C test suite queries:
 
 ```csharp
 // NetDid.TestSuite.W3C.Server — minimal Kestrel app
@@ -1315,6 +1570,17 @@ app.MapGet("/resolve/{did}", async (string did, IDidResolver resolver) =>
         didDocument = result.DidDocument,
         didResolutionMetadata = result.ResolutionMetadata,
         didDocumentMetadata = result.DocumentMetadata
+    });
+});
+
+app.MapGet("/dereference/{*didUrl}", async (string didUrl, IDidUrlDereferencer dereferencer) =>
+{
+    var result = await dereferencer.DereferenceAsync(didUrl);
+    return Results.Json(new
+    {
+        dereferencingMetadata = result.DereferencingMetadata,
+        contentStream = result.ContentStream,
+        contentMetadata = result.ContentMetadata
     });
 });
 ```
@@ -1403,23 +1669,6 @@ public class DidProductionConformanceTests
 }
 
 [Trait("Category", "W3CConformance")]
-[Trait("Suite", "did-consumption")]
-public class DidConsumptionConformanceTests
-{
-    [Fact]
-    public void Consumer_must_parse_valid_did_document_json()
-    {
-        // Feed known-good DID Document JSON → deserialize → verify all fields extracted
-    }
-
-    [Fact]
-    public void Consumer_must_handle_unknown_properties_without_error()
-    {
-        // Add unknown properties to a DID Document JSON → deserialize → no exception
-    }
-}
-
-[Trait("Category", "W3CConformance")]
 [Trait("Suite", "did-resolution")]
 public class DidResolutionConformanceTests
 {
@@ -1448,6 +1697,50 @@ public class DidResolutionConformanceTests
     {
         // Create a DID, deactivate it, resolve it, verify metadata.Deactivated == true
     }
+}
+
+[Trait("Category", "W3CConformance")]
+[Trait("Suite", "did-url-dereferencing")]
+public class DidUrlDereferencingConformanceTests
+{
+    [Fact]
+    public async Task Fragment_must_dereference_to_verification_method()
+    {
+        // did:key:z6Mkf...#z6Mkf... → returns the VerificationMethod resource
+    }
+
+    [Fact]
+    public async Task Fragment_must_dereference_to_service()
+    {
+        // did:webvh:...#pds-1 → returns the Service resource
+    }
+
+    [Fact]
+    public async Task Dereferencing_must_use_complete_did_url_including_fragment()
+    {
+        // W3C §7.2: "To dereference a DID fragment, the complete DID URL
+        // including the DID fragment MUST be used."
+    }
+
+    [Fact]
+    public async Task Dereferencing_invalid_fragment_must_return_error()
+    {
+        // did:key:z6Mkf...#nonexistent → error in dereferencingMetadata
+    }
+
+    [Fact]
+    public async Task Dereferencing_must_return_content_type_as_ascii_string()
+    {
+        // The Media Type MUST be expressed as an ASCII string
+    }
+
+    [Fact]
+    public async Task Service_query_must_dereference_to_service_endpoint()
+    {
+        // did:webvh:...?service=TurtleShellPds → returns the service endpoint URL
+    }
+
+    // ... one test per normative statement from §7.2
 }
 ```
 
@@ -1517,8 +1810,8 @@ Once all tests pass, the project README displays conformance badges:
 ![W3C DID Identifier](https://img.shields.io/badge/W3C-did--identifier-green)
 ![W3C DID Core Properties](https://img.shields.io/badge/W3C-did--core--properties-green)
 ![W3C DID Production](https://img.shields.io/badge/W3C-did--production-green)
-![W3C DID Consumption](https://img.shields.io/badge/W3C-did--consumption-green)
 ![W3C DID Resolution](https://img.shields.io/badge/W3C-did--resolution-green)
+![W3C DID URL Dereferencing](https://img.shields.io/badge/W3C-did--url--dereferencing-green)
 ```
 
 ---
@@ -1527,17 +1820,35 @@ Once all tests pass, the project README displays conformance badges:
 
 ### 13.1 Bridge Interface
 
-The primary integration point between NetDid and zcap-dotnet is DID-based key resolution for ZCAP-LD signature verification:
+The primary integration point between NetDid and zcap-dotnet is DID URL Dereferencing — the W3C §7.2 standard mechanism for resolving a DID URL to the specific resource it identifies. ZCAP-LD invocation proofs reference a `verificationMethod` by DID URL (e.g., `did:key:z6Mkf...#z6Mkf...`), so zcap-dotnet needs to dereference that URL to obtain the actual public key material.
+
+**Primary interface**: `IDidUrlDereferencer` (defined in §10.4) is the standard W3C-compliant interface that zcap-dotnet consumes directly:
 
 ```csharp
-// In zcap-dotnet, a ZCAP invocation proof references a verificationMethod like:
-// "verificationMethod": "did:key:z6Mkf...#z6Mkf..."
-//
-// NetDid provides the ability to resolve this to actual key material:
+// zcap-dotnet verifying a ZCAP invocation — standard path via IDidUrlDereferencer:
+var didUrl = invocation.Proof.VerificationMethod; // "did:key:z6Mkf...#z6Mkf..."
 
+var result = await dereferencer.DereferenceAsync(didUrl);
+if (result.DereferencingMetadata.Error is not null)
+    throw new VerificationException($"Cannot dereference {didUrl}: {result.DereferencingMetadata.Error}");
+
+var vm = result.ContentStream as VerificationMethod
+    ?? throw new VerificationException($"Expected VerificationMethod, got {result.ContentStream?.GetType().Name}");
+
+bool signatureValid = cryptoProvider.Verify(
+    vm.KeyType,
+    vm.PublicKeyBytes,
+    invocation.SignedPayload,
+    invocation.Proof.SignatureBytes);
+```
+
+**Convenience wrapper**: For consumers that only need verification method resolution (a common case), NetDid also provides `IVerificationMethodResolver` — a thin wrapper around `IDidUrlDereferencer` that handles the type extraction:
+
+```csharp
 public interface IVerificationMethodResolver
 {
-    /// Resolve a DID URL to its verification method, extracting the public key.
+    /// Convenience method: dereference a DID URL and extract the verification method.
+    /// Returns null if the URL cannot be dereferenced or does not point to a verification method.
     Task<ResolvedVerificationMethod?> ResolveVerificationMethodAsync(
         string didUrl, CancellationToken ct = default);
 }
@@ -1549,14 +1860,43 @@ public sealed record ResolvedVerificationMethod
     public required byte[] PublicKey { get; init; }
     public required string Controller { get; init; }
 }
+
+/// Default implementation delegates to IDidUrlDereferencer:
+public sealed class DefaultVerificationMethodResolver : IVerificationMethodResolver
+{
+    private readonly IDidUrlDereferencer _dereferencer;
+
+    public DefaultVerificationMethodResolver(IDidUrlDereferencer dereferencer)
+        => _dereferencer = dereferencer;
+
+    public async Task<ResolvedVerificationMethod?> ResolveVerificationMethodAsync(
+        string didUrl, CancellationToken ct = default)
+    {
+        var result = await _dereferencer.DereferenceAsync(didUrl, ct: ct);
+        if (result.ContentStream is not VerificationMethod vm)
+            return null;
+
+        return new ResolvedVerificationMethod
+        {
+            Id = vm.Id,
+            KeyType = vm.KeyType,
+            PublicKey = vm.PublicKeyBytes,
+            Controller = vm.Controller
+        };
+    }
+}
 ```
 
 ### 13.2 Usage in zcap-dotnet
 
 ```csharp
-// zcap-dotnet verifying a ZCAP invocation:
-var verificationMethodUrl = invocation.Proof.VerificationMethod;
-var vm = await verificationMethodResolver.ResolveVerificationMethodAsync(verificationMethodUrl);
+// Option A — direct use of IDidUrlDereferencer (preferred, W3C-standard):
+var result = await dereferencer.DereferenceAsync(invocation.Proof.VerificationMethod);
+var vm = result.ContentStream as VerificationMethod;
+
+// Option B — convenience wrapper for simple verification:
+var vm = await verificationMethodResolver.ResolveVerificationMethodAsync(
+    invocation.Proof.VerificationMethod);
 
 bool signatureValid = cryptoProvider.Verify(
     vm.KeyType,
@@ -1567,12 +1907,13 @@ bool signatureValid = cryptoProvider.Verify(
 
 ### 13.3 Signing with DID Keys
 
-For creating ZCAP invocations, zcap-dotnet needs to sign with a DID's key:
+For creating ZCAP invocations, zcap-dotnet needs to sign with a DID's key via `ISigner`:
 
 ```csharp
-// The caller provides their DID and key alias:
+// The caller provides their DID and an ISigner (from KeyPair or key store):
 var did = "did:key:z6Mkf...";
-var signature = await keyStore.SignAsync("my-signing-key", payload);
+var signer = await keyStore.CreateSignerAsync("my-signing-key");
+var signature = await signer.SignAsync(payload);
 
 // The ZCAP invocation proof references:
 // "verificationMethod": "did:key:z6Mkf...#z6Mkf..."
@@ -1618,6 +1959,7 @@ netdid/
 │   │   │   └── EthereumInteractionException.cs
 │   │   ├── IKeyGenerator.cs
 │   │   ├── IKeyStore.cs
+│   │   ├── ISigner.cs
 │   │   ├── ICryptoProvider.cs
 │   │   ├── Model/
 │   │   │   ├── DidDocument.cs
@@ -1630,11 +1972,17 @@ netdid/
 │   │   │   ├── DidCreateResult.cs
 │   │   │   ├── DidUpdateResult.cs
 │   │   │   ├── DidDeactivateResult.cs
-│   │   │   └── DidUrl.cs
+│   │   │   ├── DidUrl.cs
+│   │   │   ├── DidUrlDereferencingResult.cs
+│   │   │   ├── DereferencingMetadata.cs
+│   │   │   └── DidUrlDereferencingOptions.cs
 │   │   ├── Crypto/
 │   │   │   ├── DefaultCryptoProvider.cs
 │   │   │   ├── DefaultKeyGenerator.cs
+│   │   │   ├── KeyPairSigner.cs
+│   │   │   ├── KeyStoreSigner.cs
 │   │   │   ├── KeyPair.cs
+│   │   │   ├── StoredKeyInfo.cs
 │   │   │   ├── KeyType.cs
 │   │   │   ├── IBbsCryptoProvider.cs
 │   │   │   ├── DefaultBbsCryptoProvider.cs
@@ -1652,7 +2000,10 @@ netdid/
 │   │   ├── Resolution/
 │   │   │   ├── CompositeDidResolver.cs
 │   │   │   ├── CachingDidResolver.cs
-│   │   │   └── IVerificationMethodResolver.cs
+│   │   │   ├── IDidUrlDereferencer.cs
+│   │   │   ├── DefaultDidUrlDereferencer.cs
+│   │   │   ├── IVerificationMethodResolver.cs
+│   │   │   └── DefaultVerificationMethodResolver.cs
 │   │   ├── KeyStore/
 │   │   │   ├── InMemoryKeyStore.cs
 │   │   │   └── FileSystemKeyStore.cs
@@ -1981,7 +2332,7 @@ netdid/
 | 5.3  | Full W3C DID Test Suite run in CI — all 5 suites, all 4 methods |
 | 5.4  | Fix any conformance failures                                    |
 | 5.5  | `NetDid.Extensions.DependencyInjection` package                 |
-| 5.6  | zcap-dotnet bridge: `IVerificationMethodResolver` integration   |
+| 5.6  | zcap-dotnet bridge: `IDidUrlDereferencer` + `IVerificationMethodResolver` integration |
 | 5.7  | README, getting-started docs, per-method guides                 |
 | 5.8  | NuGet packaging and publish pipeline                            |
 | 5.9  | Dual-identity pattern documentation and example                 |
@@ -2036,11 +2387,16 @@ Use **two DIDs that share the same underlying key material** but serve different
 
 ### A.3 How It Works
 
-**Step 1: Generate a key pair once.**
+**Step 1: Generate a key pair and create a signer.**
 
 ```csharp
 var keyGen = new DefaultKeyGenerator();
 var keyPair = keyGen.Generate(KeyType.Ed25519);
+var signer = new KeyPairSigner(keyPair, cryptoProvider);
+
+// Or with an HSM-backed key store:
+// var keyInfo = await keyStore.GenerateAsync("alice-main-key", KeyType.Ed25519);
+// var signer = await keyStore.CreateSignerAsync("alice-main-key");
 ```
 
 **Step 2: Create the signing identity (did:key).**
@@ -2064,7 +2420,7 @@ var didWebVhMethod = new DidWebVhMethod(httpClient, cryptoProvider);
 var discoverableIdentity = await didWebVhMethod.CreateAsync(new DidWebVhCreateOptions
 {
     Domain = "alice.example.com",
-    UpdateKeyPair = keyPair,  // Same Ed25519 key
+    UpdateKey = signer,  // Same Ed25519 key, via ISigner (HSM-safe)
     Services = new[]
     {
         new Service
