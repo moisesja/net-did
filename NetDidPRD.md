@@ -20,19 +20,18 @@
 5. [DID Method: did:key](#5-did-method-didkey)
 6. [DID Method: did:peer](#6-did-method-didpeer)
 7. [DID Method: did:webvh](#7-did-method-didwebvh)
-8. [DID Method: did:dht](#8-did-method-diddht)
-9. [DID Method: did:ethr](#9-did-method-didethr)
-10. [DID Document Model](#10-did-document-model)
-11. [Resolver Architecture](#11-resolver-architecture)
-12. [Pluggable Key Management](#12-pluggable-key-management)
-13. [W3C DID Test Suite Conformance](#13-w3c-did-test-suite-conformance)
-14. [Integration with zcap-dotnet](#14-integration-with-zcap-dotnet)
-15. [Monorepo Structure](#15-monorepo-structure)
-16. [Testing Strategy](#16-testing-strategy)
-17. [Implementation Phases](#17-implementation-phases)
-18. [Appendix A: Dual-Identity Design Pattern](#appendix-a-dual-identity-design-pattern)
-19. [Appendix B: Specification References](#appendix-b-specification-references)
-20. [Appendix C: Glossary](#appendix-c-glossary)
+8. [DID Method: did:ethr](#8-did-method-didethr)
+9. [DID Document Model](#9-did-document-model)
+10. [Resolver Architecture](#10-resolver-architecture)
+11. [Pluggable Key Management](#11-pluggable-key-management)
+12. [W3C DID Test Suite Conformance](#12-w3c-did-test-suite-conformance)
+13. [Integration with zcap-dotnet](#13-integration-with-zcap-dotnet)
+14. [Monorepo Structure](#14-monorepo-structure)
+15. [Testing Strategy](#15-testing-strategy)
+16. [Implementation Phases](#16-implementation-phases)
+17. [Appendix A: Dual-Identity Design Pattern](#appendix-a-dual-identity-design-pattern)
+18. [Appendix B: Specification References](#appendix-b-specification-references)
+19. [Appendix C: Glossary](#appendix-c-glossary)
 
 ---
 
@@ -40,7 +39,7 @@
 
 ### 1.1 Purpose
 
-NetDid is an open-source .NET 10 library that provides a unified, specification-compliant interface for creating, resolving, updating, and deactivating Decentralized Identifiers across five DID methods: `did:key`, `did:peer`, `did:webvh`, `did:dht`, and `did:ethr`.
+NetDid is an open-source .NET 10 library that provides a unified, specification-compliant interface for creating, resolving, updating, and deactivating Decentralized Identifiers across four DID methods: `did:key`, `did:peer`, `did:webvh`, and `did:ethr`.
 
 The library generates cryptographic keys using well-tested elliptic curve algorithms but delegates key storage and lifecycle management to the consuming application through a pluggable `IKeyStore` interface. This separation ensures that NetDid remains focused on DID operations while allowing developers to integrate their own HSM, vault, or file-based key management solution.
 
@@ -51,11 +50,11 @@ Conformance is validated against the W3C DID Test Suite (https://w3c.github.io/d
 | Goal                            | Description                                                                                                                                                                                                  |
 | ------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | **Spec Compliance**             | 100% compliant with W3C DID Core 1.0 and each method's published specification. No shortcuts, no partial implementations.                                                                                    |
-| **W3C Test Suite Pass**         | Every DID method implementation MUST pass the W3C DID Test Suite across all five conformance categories: `did-identifier`, `did-core-properties`, `did-production`, `did-consumption`, and `did-resolution`. |
+| **W3C Test Suite Pass**         | Every DID method implementation MUST pass the W3C DID Test Suite across all four conformance categories: `did-identifier`, `did-core-properties`, `did-production`, `did-consumption`, and `did-resolution`. |
 | **Key Generation, Not Storage** | Generate and restore keys across Ed25519, secp256k1, P-256, P-384, X25519, and BLS12-381 (G1/G2). Storage is the caller's responsibility via `IKeyStore`.                                                    |
-| **Pluggable Everything**        | Key stores, HTTP clients, Ethereum RPC providers, Pkarr gateways — all injectable.                                                                                                                           |
+| **Pluggable Everything**        | Key stores, HTTP clients, Ethereum RPC providers — all injectable.                                                                                                                                           |
 | **Zero Opinions on Frameworks** | No dependency on ASP.NET, no DI container requirement. Pure library with optional DI extensions.                                                                                                             |
-| **Test-Driven**                 | Every public API surface covered by unit tests. Integration tests against real networks (testnets, public gateways). W3C conformance tests run in CI.                                                        |
+| **Test-Driven**                 | Every public API surface covered by unit tests. Integration tests against real networks (testnets). W3C conformance tests run in CI.                                                                         |
 | **zcap-dotnet Compatible**      | Designed to be consumed directly by the zcap-dotnet library for ZCAP-LD signing and verification using DID-resolved keys.                                                                                    |
 
 ### 1.3 Non-Goals
@@ -76,7 +75,6 @@ Conformance is validated against the W3C DID Test Suite (https://w3c.github.io/d
 | **did:key**   | W3C CCG Final          | ✅     | ✅      | ❌ (immutable) | ❌ (immutable) | ❌                | Ed25519, P-256, P-384, secp256k1, X25519, BLS12-381 G2 |
 | **did:peer**  | DIF v2 (numalgo 0,2,4) | ✅     | ✅      | ❌ (static)    | ❌             | ✅ (numalgo 2,4)  | Ed25519, X25519                               |
 | **did:webvh** | DIF v1.0               | ✅     | ✅      | ✅             | ✅             | ✅                | Ed25519 (required), P-256 (optional)          |
-| **did:dht**   | TBD/DIF Spec           | ✅     | ✅      | ✅             | ✅             | ✅                | Ed25519 (identity key required), + additional (secp256k1, P-256, BLS12-381) |
 | **did:ethr**  | ERC-1056 / DIF         | ✅     | ✅      | ✅             | ✅             | ✅                | secp256k1 (primary), Ed25519 (delegate)       |
 
 ### 2.2 CRUD Operations Per Method
@@ -88,8 +86,6 @@ Each method implements the standard DID CRUD lifecycle, but the mechanics differ
 **did:peer** — Create and resolve locally. Numalgo 0 is equivalent to did:key. Numalgo 2 encodes verification methods and services directly in the DID string using purpose-prefixed multibase keys and JSON-encoded service blocks. Numalgo 4 hashes a full input document into a short-form DID with a long-form for initial exchange. No network interaction for any numalgo.
 
 **did:webvh** — Full CRUD. "did:web + Verifiable History." Each update appends to a JSON Lines log file (`did.jsonl`) hosted at a web URL. The log is a cryptographically chained sequence of DID Document versions, anchored by a Self-Certifying Identifier (SCID) derived from the initial state. Resolution fetches the log and validates the entire chain. The DID can also be consumed as a plain `did:web` by legacy resolvers (backwards compatible). Supports pre-rotation keys, witnesses (did:key DIDs that co-sign updates), and watchers. Every version links back to its predecessor via a hash chain. Update authorization keys MUST rotate on every version when pre-rotation is active.
-
-**did:dht** — Full CRUD. The DID suffix is a z-base-32 encoded Ed25519 public key called the "Identity Key." The DID Document is encoded as DNS TXT resource records following RFC 1035 packet format, signed with the Identity Key per BEP44 (BitTorrent mutable items), and published to the Mainline DHT via Pkarr HTTP relay gateways. Records are ephemeral (approximately 2 hour TTL on the DHT) and must be republished periodically. Deactivation is accomplished by publishing a DNS packet with an empty record set. The did:dht spec defines a type indexing system for discoverability.
 
 **did:ethr** — Full CRUD. Based on the ERC-1056 `EthereumDIDRegistry` smart contract deployed at a well-known address. Any Ethereum address is automatically a valid DID with no registration needed (identity creation is free). Updates are recorded as on-chain events: `changeOwner` for ownership transfer, `setAttribute` for adding service endpoints and additional keys, `addDelegate`/`revokeDelegate` for time-limited delegate keys. Resolution replays contract events (via `eth_getLogs`) to reconstruct the DID Document. Supports meta-transactions (signed by the identity key, submitted by a third-party relayer). The network identifier is part of the DID: `did:ethr:0x1:0xabc...` for mainnet, `did:ethr:sepolia:0xabc...` for testnet. Pluggable RPC endpoint means any EVM chain works.
 
@@ -137,11 +133,11 @@ Each method implements the standard DID CRUD lifecycle, but the mechanics differ
 ┌──────────────────────────────────────────────────────────────┐
 │                   Method Implementations                      │
 │                                                               │
-│  ┌───────────┐ ┌───────────┐ ┌───────────┐ ┌─────────────┐  │
-│  │ NetDid.   │ │ NetDid.   │ │ NetDid.   │ │ NetDid.     │  │
-│  │ Method.   │ │ Method.   │ │ Method.   │ │ Method.     │  │
-│  │ Key       │ │ Peer      │ │ WebVH     │ │ Dht         │  │
-│  └───────────┘ └───────────┘ └───────────┘ └─────────────┘  │
+│  ┌───────────┐ ┌───────────┐ ┌───────────┐                   │
+│  │ NetDid.   │ │ NetDid.   │ │ NetDid.   │                   │
+│  │ Method.   │ │ Method.   │ │ Method.   │                   │
+│  │ Key       │ │ Peer      │ │ WebVH     │                   │
+│  └───────────┘ └───────────┘ └───────────┘                   │
 │                                                               │
 │  ┌─────────────┐ ┌──────────────────────────────────────┐    │
 │  │ NetDid.     │ │ NetDid.Extensions.DependencyInjection│    │
@@ -162,7 +158,7 @@ Each method implements the standard DID CRUD lifecycle, but the mechanics differ
 /// The unified interface every DID method implements.
 public interface IDidMethod
 {
-    /// Method name (e.g., "key", "peer", "webvh", "dht", "ethr")
+    /// Method name (e.g., "key", "peer", "webvh", "ethr")
     string MethodName { get; }
 
     /// Which CRUD operations this method supports.
@@ -209,7 +205,7 @@ public sealed record DidCreateResult
     public required string Did { get; init; }
     public DidDocumentMetadata? Metadata { get; init; }
 
-    /// Method-specific artifacts (e.g., did.jsonl content for webvh, DNS packet for dht)
+    /// Method-specific artifacts (e.g., did.jsonl content for webvh, tx hash for ethr)
     public IReadOnlyDictionary<string, object>? Artifacts { get; init; }
 }
 
@@ -259,7 +255,7 @@ public sealed record DidDeactivateResult
 | ------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
 | **Strategy**        | Each DID method is an `IDidMethod` strategy. The `DidMethodRegistry` selects the correct one based on the DID string prefix. |
 | **Factory**         | `IKeyGenerator` implementations are factories for key pairs per curve type.                                                  |
-| **Adapter**         | External dependencies (HTTP for Pkarr gateways, Ethereum JSON-RPC) are wrapped behind interfaces for testability.            |
+| **Adapter**         | External dependencies (HTTP for did:webvh log fetch, Ethereum JSON-RPC) are wrapped behind interfaces for testability.       |
 | **Decorator**       | Caching DID resolver wraps any `IDidResolver` with LRU + TTL cache.                                                          |
 | **Composite**       | `CompositeDidResolver` aggregates multiple method-specific resolvers into a single `IDidResolver`.                           |
 | **Template Method** | Base class `DidMethodBase` provides shared validation logic; each method overrides the method-specific steps.                |
@@ -393,13 +389,13 @@ public abstract class DidMethodBase : IDidMethod, IDidResolver
 
 | Key Type          | Algorithm       | Multicodec Prefix                   | Usage                                                               |
 | ----------------- | --------------- | ----------------------------------- | ------------------------------------------------------------------- |
-| **Ed25519**       | EdDSA           | `0xed` (public), `0x8026` (private) | Signing, verification. Required by did:dht, did:webvh.              |
+| **Ed25519**       | EdDSA           | `0xed` (public), `0x8026` (private) | Signing, verification. Required by did:webvh.                       |
 | **X25519**        | ECDH            | `0xec` (public)                     | Key agreement only. Used in did:peer and did:key.                   |
 | **P-256**         | ECDSA (ES256)   | `0x8024` (public)                   | Signing, verification. Optional in did:webvh, supported in did:key. |
 | **P-384**         | ECDSA (ES384)   | `0x8124` (public)                   | Signing, verification. Supported in did:key. Common in government/enterprise contexts. |
 | **secp256k1**     | ECDSA (ES256K)  | `0xe7` (public)                     | Signing, verification. Required by did:ethr.                        |
 | **BLS12-381 G1**  | BBS (BLS)       | `0xea` (public)                     | BBS+ signature verification (short signatures). Used in did:key.    |
-| **BLS12-381 G2**  | BBS (BLS)       | `0xeb` (public)                     | BBS+ signing, selective disclosure, ZKPs. Primary curve for BBS+ credentials. Used in did:key and did:dht. |
+| **BLS12-381 G2**  | BBS (BLS)       | `0xeb` (public)                     | BBS+ signing, selective disclosure, ZKPs. Primary curve for BBS+ credentials. Used in did:key. |
 
 ### 4.2 Key Generator Interface
 
@@ -828,124 +824,13 @@ Default implementation uses `HttpClient`. Callers can inject their own for testi
 
 ---
 
-## 8. DID Method: did:dht
+## 8. DID Method: did:ethr
 
 ### 8.1 Specification
 
-DID DHT Method Specification — https://did-dht.com/
-
-### 8.2 DID Format
-
-```
-did:dht:<z-base-32-encoded-ed25519-public-key>
-```
-
-Example: `did:dht:i9xkp8ddcbcg8jwq54ox699wuzxyifsqx4jru45zodqu453ksz6y`
-
-The suffix is the z-base-32 encoding of the 32-byte Ed25519 public key (the "Identity Key"). This key is always present as verification method `#0` in the resolved DID Document.
-
-### 8.3 DNS Packet Encoding
-
-The DID Document is encoded as DNS TXT resource records:
-
-| Record Name | Value Format                                              | Meaning                                                |
-| ----------- | --------------------------------------------------------- | ------------------------------------------------------ |
-| `_k0._did`  | `id=0;t=0;k=<base64url-pubkey>`                           | Identity Key (always present)                          |
-| `_k1._did`  | `id=1;t=1;k=<base64url-pubkey>`                           | Additional key (t=type index from registry)            |
-| `_s0._did`  | `id=s0;t=SovereignVaultPds;se=https://...`                | Service endpoint                                       |
-| `_did`      | `v=0;vm=k0,k1;auth=k0;asm=k0;agm=k1;inv=k0;del=k0;srv=s0` | Root record mapping keys to verification relationships |
-| `_typ._did` | `id=7`                                                    | DID type indexing for gateway discoverability          |
-
-Key type indices from the did:dht registry:
-
-| Index | Key Type      | JWK Algorithm |
-| ----- | ------------- | ------------- |
-| 0     | Ed25519       | `EdDSA`       |
-| 1     | secp256k1     | `ES256K`      |
-| 2     | P-256         | `ES256`       |
-| 3     | BLS12-381 G2  | `BBS`         |
-
-### 8.4 Create
-
-1. Generate an Ed25519 key pair — this is the Identity Key. The public key defines the DID.
-2. Optionally generate additional key pairs for other purposes.
-3. Build service endpoints if desired.
-4. Encode the DID Document as DNS TXT records per the spec.
-5. Build a DNS response packet (RFC 1035 format).
-6. Sign the packet using BEP44 mutable item signing (Ed25519 Identity Key signs the bencoded `v` value with a `seq` sequence number).
-7. Publish to Pkarr HTTP gateway: `PUT https://dht.tbd.website/{z-base-32-identity-key}` with body containing the signed BEP44 payload.
-8. Return the DID, DID Document, and publication status.
-
-### 8.5 Resolve
-
-1. Parse the DID, extract the z-base-32 suffix, decode to get the 32-byte Identity Key.
-2. Query Pkarr gateway: `GET https://dht.tbd.website/{z-base-32-identity-key}`.
-3. Receive the BEP44 signed payload.
-4. Verify the Ed25519 signature against the Identity Key.
-5. Decode the DNS packet from the `v` field.
-6. Parse TXT records back into verification methods, services, and verification relationships.
-7. Build and return the DID Document.
-
-### 8.6 Update
-
-Same as Create but with an incremented `seq` number. The gateway and DHT will accept updates only with a higher `seq` than the current record.
-
-### 8.7 Deactivate
-
-Publish a DNS packet with an empty record set (no TXT records other than a minimal `_did` root record). This signals deactivation. Alternatively, simply stop republishing — the DHT will drop the record after approximately 2 hours.
-
-### 8.8 Configuration
-
-```csharp
-public sealed record DidDhtCreateOptions : DidCreateOptions
-{
-    public required KeyPair IdentityKeyPair { get; init; }
-    public IReadOnlyList<DidDhtAdditionalKey>? AdditionalKeys { get; init; }
-    public IReadOnlyList<Service>? Services { get; init; }
-    public IReadOnlyList<int>? TypeIndices { get; init; }  // did:dht type indexing
-    /// Default Pkarr gateway. TBD's gateway (dht.tbd.website) may be unreliable
-    /// following TBD/Block's wind-down. Configure an alternative gateway as needed.
-    /// Community-maintained options include pkarr.org and self-hosted instances.
-    public required string GatewayUrl { get; init; }
-}
-
-public sealed record DidDhtAdditionalKey
-{
-    public required KeyPair KeyPair { get; init; }
-    public required IReadOnlyList<VerificationRelationship> Relationships { get; init; }
-}
-
-public interface IPkarrGatewayClient
-{
-    Task PublishAsync(string zBase32Key, byte[] signedBep44Payload, CancellationToken ct);
-    Task<byte[]?> ResolveAsync(string zBase32Key, CancellationToken ct);
-}
-```
-
-### 8.9 Republishing
-
-The DHT drops records after approximately 2 hours. NetDid provides a utility for periodic republishing:
-
-```csharp
-public interface IDhtRepublisher
-{
-    /// Start periodic republishing for a DID. Interval defaults to 60 minutes.
-    Task StartAsync(string did, KeyPair identityKeyPair, TimeSpan? interval = null, CancellationToken ct = default);
-    Task StopAsync(string did, CancellationToken ct = default);
-}
-```
-
-This is provided as a convenience but the consuming application is responsible for orchestrating it (e.g., as a hosted service).
-
----
-
-## 9. DID Method: did:ethr
-
-### 9.1 Specification
-
 ERC-1056 / DIF ethr-did-resolver — https://github.com/decentralized-identity/ethr-did-resolver/blob/master/doc/did-method-spec.md
 
-### 9.2 DID Format
+### 8.2 DID Format
 
 ```
 did:ethr:<optional-network>:<ethereum-address-or-public-key>
@@ -959,7 +844,7 @@ Examples:
 
 When no network is specified, Ethereum mainnet (chain ID 1) is assumed.
 
-### 9.3 EthereumDIDRegistry Contract
+### 8.3 EthereumDIDRegistry Contract
 
 The `EthereumDIDRegistry` smart contract (ERC-1056) is deployed at a well-known address (`0xdCa7EF03e98e0DC2B855bE647C39ABe984fcF21B`) on mainnet and many testnets. It provides:
 
@@ -973,7 +858,7 @@ The `EthereumDIDRegistry` smart contract (ERC-1056) is deployed at a well-known 
 
 All mutations emit events. Resolution replays these events.
 
-### 9.4 Create
+### 8.4 Create
 
 did:ethr creation is implicit — any Ethereum key pair is already a valid DID. "Creating" a did:ethr means:
 
@@ -983,7 +868,7 @@ did:ethr creation is implicit — any Ethereum key pair is already a valid DID. 
 4. The default DID Document has a single secp256k1 verification method for the controller address.
 5. No on-chain transaction needed.
 
-### 9.5 Resolve
+### 8.5 Resolve
 
 1. Parse the DID, extract network identifier and address.
 2. Select the appropriate RPC endpoint for the network.
@@ -997,7 +882,7 @@ did:ethr creation is implicit — any Ethereum key pair is already a valid DID. 
      - `did/svc/<serviceType>` → service endpoint
 6. Return the assembled DID Document.
 
-### 9.6 Update
+### 8.6 Update
 
 Updates require on-chain transactions:
 
@@ -1037,11 +922,11 @@ public sealed record DidEthrServiceAttribute
 }
 ```
 
-### 9.7 Deactivate
+### 8.7 Deactivate
 
 Set the owner to `0x0000000000000000000000000000000000000000` (null address). This makes the identity uncontrollable and the DID Document resolves with `deactivated: true`.
 
-### 9.8 Ethereum RPC Abstraction
+### 8.8 Ethereum RPC Abstraction
 
 ```csharp
 public interface IEthereumRpcClient
@@ -1068,9 +953,9 @@ The consumer provides one or more `EthereumNetworkConfig` entries. The library s
 
 ---
 
-## 10. DID Document Model
+## 9. DID Document Model
 
-### 10.1 Core Model (W3C DID Core 1.0 Compliant)
+### 9.1 Core Model (W3C DID Core 1.0 Compliant)
 
 ```csharp
 public sealed record DidDocument
@@ -1154,7 +1039,7 @@ public sealed class ServiceEndpointValue
 }
 ```
 
-### 10.2 Serialization
+### 9.2 Serialization
 
 The DID Document model supports serialization to/from:
 
@@ -1172,7 +1057,7 @@ public static class DidDocumentSerializer
 }
 ```
 
-### 10.3 W3C DID Core Normative Requirements on the Document
+### 9.3 W3C DID Core Normative Requirements on the Document
 
 The model enforces these at construction/deserialization:
 
@@ -1188,9 +1073,9 @@ The model enforces these at construction/deserialization:
 
 ---
 
-## 11. Resolver Architecture
+## 10. Resolver Architecture
 
-### 11.1 Composite Resolver
+### 10.1 Composite Resolver
 
 ```csharp
 public sealed class CompositeDidResolver : IDidResolver
@@ -1219,7 +1104,7 @@ public sealed class CompositeDidResolver : IDidResolver
 }
 ```
 
-### 11.2 Caching Resolver
+### 10.2 Caching Resolver
 
 ```csharp
 public sealed class CachingDidResolver : IDidResolver
@@ -1261,7 +1146,7 @@ public sealed class CachingDidResolver : IDidResolver
 }
 ```
 
-### 11.3 DID Parser
+### 10.3 DID Parser
 
 ```csharp
 public static class DidParser
@@ -1291,9 +1176,9 @@ public sealed record DidUrl
 
 ---
 
-## 12. Pluggable Key Management
+## 11. Pluggable Key Management
 
-### 12.1 IKeyStore Interface
+### 11.1 IKeyStore Interface
 
 NetDid generates keys but does NOT store them. The caller provides an `IKeyStore` implementation:
 
@@ -1317,14 +1202,14 @@ public interface IKeyStore
 }
 ```
 
-### 12.2 Provided Implementations
+### 11.2 Provided Implementations
 
 | Implementation       | Purpose                                                                           | Production Use?     |
 | -------------------- | --------------------------------------------------------------------------------- | ------------------- |
 | `InMemoryKeyStore`   | Dictionary-backed, for unit tests and development                                 | ❌ Testing only     |
 | `FileSystemKeyStore` | Encrypted JSON files in a directory (DPAPI on Windows, file permissions on Linux) | ⚠️ Development only |
 
-### 12.3 Expected Third-Party Implementations
+### 11.3 Expected Third-Party Implementations
 
 The interface is designed to be easily adapted to:
 
@@ -1335,9 +1220,9 @@ The interface is designed to be easily adapted to:
 - OS-level keystores (Windows CNG, macOS Keychain, Linux Secret Service)
 - Custom HSMs
 
-### 12.4 Key Store in DID Operations
+### 11.4 Key Store in DID Operations
 
-When a DID method needs to sign (e.g., creating a did:webvh log entry, publishing to did:dht, sending a did:ethr transaction), the method accepts either:
+When a DID method needs to sign (e.g., creating a did:webvh log entry, sending a did:ethr transaction), the method accepts either:
 
 1. A `KeyPair` directly (caller manages keys externally), OR
 2. A `keyAlias` + `IKeyStore` reference (the method calls `keyStore.SignAsync(alias, data)`)
@@ -1346,23 +1231,23 @@ This dual approach allows both simple usage and HSM-backed scenarios where the p
 
 ---
 
-## 13. W3C DID Test Suite Conformance
+## 12. W3C DID Test Suite Conformance
 
-### 13.1 Overview
+### 12.1 Overview
 
-The W3C DID Test Suite (https://github.com/w3c/did-test-suite) is maintained by the W3C DID Working Group and performs interoperability tests across five conformance categories. NetDid MUST pass all applicable tests for every supported DID method.
+The W3C DID Test Suite (https://github.com/w3c/did-test-suite) is maintained by the W3C DID Working Group and performs interoperability tests across five conformance categories. NetDid MUST pass all applicable tests for every supported DID method (did:key, did:peer, did:webvh, did:ethr).
 
-### 13.2 Conformance Categories
+### 12.2 Conformance Categories
 
 | Suite                   | What It Tests                                                                                                                                                                                                                                            | NetDid Applicability |
 | ----------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------- |
-| **did-identifier**      | DID syntax: method name is ASCII lowercase, method-specific-id conforms to ABNF, overall DID string matches the grammar.                                                                                                                                 | All 5 methods        |
-| **did-core-properties** | DID Document properties: `id` is valid DID, `verificationMethod` entries have required fields, `service` entries are well-formed, all verification relationships reference valid VMs, `@context` is correct.                                             | All 5 methods        |
-| **did-production**      | Serialization (production) of DID Documents: the JSON representation MUST include `@context`, property names MUST be strings, values MUST conform to the data model type system, JSON members MUST be serialized correctly.                              | All 5 methods        |
-| **did-consumption**     | Deserialization (consumption) of DID Documents: a conforming consumer MUST be able to parse a valid DID Document representation and extract the data model.                                                                                              | All 5 methods        |
-| **did-resolution**      | DID Resolution: given a DID, the resolver returns a conformant `DidResolutionResult` with correct `didDocument`, `didResolutionMetadata`, and `didDocumentMetadata`. Covers error cases (`notFound`, `invalidDid`, `methodNotSupported`, `deactivated`). | All 5 methods        |
+| **did-identifier**      | DID syntax: method name is ASCII lowercase, method-specific-id conforms to ABNF, overall DID string matches the grammar.                                                                                                                                 | All 4 methods        |
+| **did-core-properties** | DID Document properties: `id` is valid DID, `verificationMethod` entries have required fields, `service` entries are well-formed, all verification relationships reference valid VMs, `@context` is correct.                                             | All 4 methods        |
+| **did-production**      | Serialization (production) of DID Documents: the JSON representation MUST include `@context`, property names MUST be strings, values MUST conform to the data model type system, JSON members MUST be serialized correctly.                              | All 4 methods        |
+| **did-consumption**     | Deserialization (consumption) of DID Documents: a conforming consumer MUST be able to parse a valid DID Document representation and extract the data model.                                                                                              | All 4 methods        |
+| **did-resolution**      | DID Resolution: given a DID, the resolver returns a conformant `DidResolutionResult` with correct `didDocument`, `didResolutionMetadata`, and `didDocumentMetadata`. Covers error cases (`notFound`, `invalidDid`, `methodNotSupported`, `deactivated`). | All 4 methods        |
 
-### 13.3 Test Fixture Generation
+### 12.3 Test Fixture Generation
 
 The W3C test suite expects implementations to provide JSON fixture files that describe the implementation and its test vectors. For each DID method, NetDid generates these fixtures automatically via a CLI tool:
 
@@ -1370,7 +1255,6 @@ The W3C test suite expects implementations to provide JSON fixture files that de
 netdid-test-fixtures generate --method key --output ./fixtures/did-key.json
 netdid-test-fixtures generate --method peer --output ./fixtures/did-peer.json
 netdid-test-fixtures generate --method webvh --output ./fixtures/did-webvh.json
-netdid-test-fixtures generate --method dht --output ./fixtures/did-dht.json
 netdid-test-fixtures generate --method ethr --output ./fixtures/did-ethr.json
 ```
 
@@ -1397,7 +1281,7 @@ Each fixture file contains:
 }
 ```
 
-### 13.4 Test Harness Integration
+### 12.4 Test Harness Integration
 
 The W3C test suite is a Node.js/Jest project. NetDid integrates with it in two ways:
 
@@ -1435,7 +1319,7 @@ app.MapGet("/resolve/{did}", async (string did, IDidResolver resolver) =>
 });
 ```
 
-### 13.5 Internal Conformance Test Mirror
+### 12.5 Internal Conformance Test Mirror
 
 In addition to running the external W3C suite, NetDid includes its own xUnit test project (`NetDid.Tests.W3CConformance`) that mirrors every normative statement from the DID Core spec as an explicit test case. This provides fast feedback during development without needing the Node.js toolchain:
 
@@ -1447,7 +1331,6 @@ public class DidIdentifierConformanceTests
     [Theory]
     [InlineData("did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK")]
     [InlineData("did:peer:0z6MkpTHR8VNsBxYAAWHut2Geadd9jSwuBV8xRoAnwWsdvktH")]
-    [InlineData("did:dht:i9xkp8ddcbcg8jwq54ox699wuzxyifsqx4jru45zodqu453ksz6y")]
     public void DID_method_name_must_be_ascii_lowercase(string did)
     {
         var method = DidParser.ExtractMethod(did);
@@ -1568,7 +1451,7 @@ public class DidResolutionConformanceTests
 }
 ```
 
-### 13.6 CI Pipeline for Conformance
+### 12.6 CI Pipeline for Conformance
 
 ```yaml
 name: W3C Conformance
@@ -1626,7 +1509,7 @@ jobs:
           path: did-test-suite/packages/did-core-test-server/reports/
 ```
 
-### 13.7 Conformance Badges
+### 12.7 Conformance Badges
 
 Once all tests pass, the project README displays conformance badges:
 
@@ -1640,9 +1523,9 @@ Once all tests pass, the project README displays conformance badges:
 
 ---
 
-## 14. Integration with zcap-dotnet
+## 13. Integration with zcap-dotnet
 
-### 14.1 Bridge Interface
+### 13.1 Bridge Interface
 
 The primary integration point between NetDid and zcap-dotnet is DID-based key resolution for ZCAP-LD signature verification:
 
@@ -1668,7 +1551,7 @@ public sealed record ResolvedVerificationMethod
 }
 ```
 
-### 14.2 Usage in zcap-dotnet
+### 13.2 Usage in zcap-dotnet
 
 ```csharp
 // zcap-dotnet verifying a ZCAP invocation:
@@ -1682,7 +1565,7 @@ bool signatureValid = cryptoProvider.Verify(
     invocation.Proof.SignatureBytes);
 ```
 
-### 14.3 Signing with DID Keys
+### 13.3 Signing with DID Keys
 
 For creating ZCAP invocations, zcap-dotnet needs to sign with a DID's key:
 
@@ -1696,13 +1579,13 @@ var signature = await keyStore.SignAsync("my-signing-key", payload);
 // "proofValue": "<base64url-signature>"
 ```
 
-### 14.4 Dual-Identity Pattern in ZCAP Context
+### 13.4 Dual-Identity Pattern in ZCAP Context
 
-When using the dual-identity pattern (see Appendix A), zcap-dotnet signs ZCAPs with the did:key identity but verifiers can discover the TurtleShell PDS endpoint by resolving the discoverable identity (did:webvh, did:dht, or did:ethr) which references the same key material. The ZCAP itself is valid because the key is the same — the DID is just a different pointer to it.
+When using the dual-identity pattern (see Appendix A), zcap-dotnet signs ZCAPs with the did:key identity but verifiers can discover the TurtleShell PDS endpoint by resolving the discoverable identity (did:webvh or did:ethr) which references the same key material. The ZCAP itself is valid because the key is the same — the DID is just a different pointer to it.
 
 ---
 
-## 15. Monorepo Structure
+## 14. Monorepo Structure
 
 ```
 netdid/
@@ -1761,7 +1644,6 @@ netdid/
 │   │   │   ├── MulticodecEncoder.cs
 │   │   │   ├── MultibaseEncoder.cs
 │   │   │   ├── Base58Btc.cs
-│   │   │   ├── ZBase32.cs
 │   │   │   └── Base64UrlNoPadding.cs
 │   │   ├── Parsing/
 │   │   │   └── DidParser.cs
@@ -1806,18 +1688,6 @@ netdid/
 │   │   ├── WitnessValidator.cs
 │   │   └── IWebVhHttpClient.cs
 │   │
-│   ├── NetDid.Method.Dht/            # did:dht implementation
-│   │   ├── NetDid.Method.Dht.csproj
-│   │   ├── DidDhtMethod.cs
-│   │   ├── DidDhtCreateOptions.cs
-│   │   ├── DnsPacketEncoder.cs
-│   │   ├── DnsPacketDecoder.cs
-│   │   ├── Bep44Signer.cs
-│   │   ├── ZBase32Encoder.cs
-│   │   ├── IPkarrGatewayClient.cs
-│   │   ├── DefaultPkarrGatewayClient.cs
-│   │   └── IDhtRepublisher.cs
-│   │
 │   ├── NetDid.Method.Ethr/           # did:ethr implementation
 │   │   ├── NetDid.Method.Ethr.csproj
 │   │   ├── DidEthrMethod.cs
@@ -1851,8 +1721,7 @@ netdid/
 │   │   ├── Encoding/
 │   │   │   ├── MulticodecEncoderTests.cs
 │   │   │   ├── MultibaseEncoderTests.cs
-│   │   │   ├── Base58BtcTests.cs
-│   │   │   └── ZBase32Tests.cs
+│   │   │   └── Base58BtcTests.cs
 │   │   ├── Crypto/
 │   │   │   ├── DefaultKeyGeneratorTests.cs
 │   │   │   ├── DefaultCryptoProviderTests.cs
@@ -1892,15 +1761,6 @@ netdid/
 │   │   └── IntegrationTests/
 │   │       └── DidWebVhRoundTripTests.cs
 │   │
-│   ├── NetDid.Method.Dht.Tests/
-│   │   ├── DidDhtMethodTests.cs
-│   │   ├── DnsPacketEncoderTests.cs
-│   │   ├── DnsPacketDecoderTests.cs
-│   │   ├── Bep44SignerTests.cs
-│   │   ├── ZBase32EncoderTests.cs
-│   │   └── IntegrationTests/
-│   │       └── PkarrGatewayIntegrationTests.cs  # Against real gateway
-│   │
 │   ├── NetDid.Method.Ethr.Tests/
 │   │   ├── DidEthrMethodTests.cs
 │   │   ├── Erc1056EventParserTests.cs
@@ -1927,7 +1787,6 @@ netdid/
     ├── did-key-guide.md
     ├── did-peer-guide.md
     ├── did-webvh-guide.md
-    ├── did-dht-guide.md
     ├── did-ethr-guide.md
     ├── dual-identity-pattern.md
     ├── key-management-guide.md
@@ -1936,16 +1795,16 @@ netdid/
 
 ---
 
-## 16. Testing Strategy
+## 15. Testing Strategy
 
-### 16.1 Test Pyramid
+### 15.1 Test Pyramid
 
 ```
               ┌──────────────────┐
               │  W3C Conformance │  ← External test suite (Node.js)
               │  (authoritative) │
              ┌┴──────────────────┴┐
-             │  Integration Tests  │  ← Real networks (Pkarr, Sepolia, HTTP)
+             │  Integration Tests  │  ← Real networks (Sepolia, HTTP)
              │                     │
             ┌┴─────────────────────┴┐
             │  W3C Conformance       │  ← Internal xUnit mirror
@@ -1956,35 +1815,34 @@ netdid/
            └──────────────────────────┘
 ```
 
-### 16.2 Test Infrastructure
+### 15.2 Test Infrastructure
 
 | Tool                 | Usage                                                                      |
 | -------------------- | -------------------------------------------------------------------------- |
 | **xUnit**            | Test framework                                                             |
 | **FluentAssertions** | Readable assertions                                                        |
-| **NSubstitute**      | Mocking `IEthereumRpcClient`, `IPkarrGatewayClient`, `IWebVhHttpClient`    |
+| **NSubstitute**      | Mocking `IEthereumRpcClient`, `IWebVhHttpClient`                           |
 | **Verify**           | Snapshot testing for DID Document serialization (catch unintended changes) |
 | **Bogus**            | Generate random test data                                                  |
-| **WireMock.Net**     | Mock HTTP servers for Pkarr gateways and webvh endpoints                   |
+| **WireMock.Net**     | Mock HTTP servers for webvh endpoints                                      |
 | **Testcontainers**   | Ganache/Hardhat container for did:ethr integration tests                   |
 
-### 16.3 Test Categories
+### 15.3 Test Categories
 
 ```csharp
 [Trait("Category", "Unit")]              // No I/O, no Docker, no network
 [Trait("Category", "Integration")]       // Requires Docker or network
 [Trait("Category", "W3CConformance")]    // Internal W3C conformance tests
 [Trait("Category", "W3CExternal")]       // Marks tests driven by external W3C suite
-[Trait("Category", "Network")]           // Requires real network (Sepolia, Pkarr gateway)
+[Trait("Category", "Network")]           // Requires real network (Sepolia testnet)
 ```
 
-### 16.4 Key Test Scenarios
+### 15.4 Key Test Scenarios
 
 **Encoding/Decoding Tests:**
 
 - Multicodec round-trip for all 7 key types (Ed25519, X25519, P-256, P-384, secp256k1, BLS12-381 G1, BLS12-381 G2)
 - Multibase round-trip for base58btc, base64url, base32lower
-- z-base-32 encoding matches known test vectors
 - Known test vectors from each DID method specification
 
 **did:key Tests:**
@@ -2017,15 +1875,6 @@ netdid/
 - Deactivation: resolved document shows deactivated
 - Version resolution: specific version and version-at-time
 
-**did:dht Tests:**
-
-- DNS packet encoding round-trip: encode → decode → identical DID Document
-- BEP44 signing and verification
-- z-base-32 encoding of Identity Key matches DID suffix
-- Pkarr gateway publish and resolve (integration, against real gateway)
-- Deactivation via empty record set
-- Type indexing
-
 **did:ethr Tests:**
 
 - Address derivation from secp256k1 public key matches known Ethereum addresses
@@ -2040,14 +1889,14 @@ netdid/
 
 **Cross-Method Tests:**
 
-- Same Ed25519 key produces consistent DID Documents across did:key, did:peer:0, did:dht, did:webvh
+- Same Ed25519 key produces consistent DID Documents across did:key, did:peer:0, did:webvh
 - CompositeDidResolver routes to correct method
 - CachingDidResolver caches and expires correctly
 - VerificationMethodResolver extracts correct key material from any method
 
 ---
 
-## 17. Implementation Phases
+## 16. Implementation Phases
 
 ### Phase 1: Core Foundation (Week 1-2)
 
@@ -2101,63 +1950,44 @@ netdid/
 
 **Deliverable**: did:webvh full CRUD operational. Log chain validation hardened.
 
-### Phase 4: did:dht (Week 8-10)
-
-| Item | Description                                                          |
-| ---- | -------------------------------------------------------------------- |
-| 4.1  | z-base-32 encoder/decoder                                            |
-| 4.2  | DNS packet encoder: DID Document → DNS TXT records → RFC 1035 packet |
-| 4.3  | DNS packet decoder: reverse                                          |
-| 4.4  | BEP44 mutable item signing (Ed25519 over bencoded value)             |
-| 4.5  | Pkarr gateway client: HTTP PUT/GET                                   |
-| 4.6  | Create: generate Identity Key, encode, sign, publish                 |
-| 4.7  | Resolve: fetch from gateway, verify, decode                          |
-| 4.8  | Update and deactivation                                              |
-| 4.9  | Type indexing support                                                |
-| 4.10 | Republisher utility                                                  |
-| 4.11 | Integration tests against public Pkarr gateway                       |
-| 4.12 | W3C conformance tests                                                |
-
-**Deliverable**: did:dht operational. Publishing and resolving via real gateway verified.
-
-### Phase 5: did:ethr (Week 11-14)
+### Phase 4: did:ethr (Week 8-11)
 
 | Item | Description                                                                      |
 | ---- | -------------------------------------------------------------------------------- |
-| 5.1  | secp256k1 key support (generate, sign, recover)                                  |
-| 5.2  | Keccak-256 hash implementation                                                   |
-| 5.3  | Ethereum address derivation from secp256k1 public key                            |
-| 5.4  | RLP encoding for transaction construction                                        |
-| 5.5  | ERC-1056 ABI encoding: function selectors, parameter encoding                    |
-| 5.6  | `IEthereumRpcClient` interface and default HTTP JSON-RPC implementation          |
-| 5.7  | Event log parser: `DIDOwnerChanged`, `DIDDelegateChanged`, `DIDAttributeChanged` |
-| 5.8  | Create: key generation + address derivation (no on-chain tx needed)              |
-| 5.9  | Resolve: query events, replay to build DID Document                              |
-| 5.10 | Update: `setAttribute` for services, `addDelegate` for keys, `changeOwner`       |
-| 5.11 | Meta-transaction support (EIP-712 style signed messages)                         |
-| 5.12 | Deactivation: change owner to null address                                       |
-| 5.13 | Multi-network configuration and routing                                          |
-| 5.14 | Integration tests against Sepolia testnet (or Hardhat in Docker)                 |
-| 5.15 | W3C conformance tests                                                            |
+| 4.1  | secp256k1 key support (generate, sign, recover)                                  |
+| 4.2  | Keccak-256 hash implementation                                                   |
+| 4.3  | Ethereum address derivation from secp256k1 public key                            |
+| 4.4  | RLP encoding for transaction construction                                        |
+| 4.5  | ERC-1056 ABI encoding: function selectors, parameter encoding                    |
+| 4.6  | `IEthereumRpcClient` interface and default HTTP JSON-RPC implementation          |
+| 4.7  | Event log parser: `DIDOwnerChanged`, `DIDDelegateChanged`, `DIDAttributeChanged` |
+| 4.8  | Create: key generation + address derivation (no on-chain tx needed)              |
+| 4.9  | Resolve: query events, replay to build DID Document                              |
+| 4.10 | Update: `setAttribute` for services, `addDelegate` for keys, `changeOwner`       |
+| 4.11 | Meta-transaction support (EIP-712 style signed messages)                         |
+| 4.12 | Deactivation: change owner to null address                                       |
+| 4.13 | Multi-network configuration and routing                                          |
+| 4.14 | Integration tests against Sepolia testnet (or Hardhat in Docker)                 |
+| 4.15 | W3C conformance tests                                                            |
 
 **Deliverable**: did:ethr full CRUD on any EVM network. Sepolia integration tests passing.
 
-### Phase 6: W3C Test Suite & Polish (Week 15-16)
+### Phase 5: W3C Test Suite & Polish (Week 12-14)
 
 | Item | Description                                                     |
 | ---- | --------------------------------------------------------------- |
-| 6.1  | W3C DID Test Suite CLI fixture generator for all 5 methods      |
-| 6.2  | Optional resolution HTTP endpoint for W3C did-resolution suite  |
-| 6.3  | Full W3C DID Test Suite run in CI — all 5 suites, all 5 methods |
-| 6.4  | Fix any conformance failures                                    |
-| 6.5  | `NetDid.Extensions.DependencyInjection` package                 |
-| 6.6  | zcap-dotnet bridge: `IVerificationMethodResolver` integration   |
-| 6.7  | README, getting-started docs, per-method guides                 |
-| 6.8  | NuGet packaging and publish pipeline                            |
-| 6.9  | Dual-identity pattern documentation and example                 |
-| 6.10 | Performance benchmarks for resolution (each method)             |
+| 5.1  | W3C DID Test Suite CLI fixture generator for all 4 methods      |
+| 5.2  | Optional resolution HTTP endpoint for W3C did-resolution suite  |
+| 5.3  | Full W3C DID Test Suite run in CI — all 5 suites, all 4 methods |
+| 5.4  | Fix any conformance failures                                    |
+| 5.5  | `NetDid.Extensions.DependencyInjection` package                 |
+| 5.6  | zcap-dotnet bridge: `IVerificationMethodResolver` integration   |
+| 5.7  | README, getting-started docs, per-method guides                 |
+| 5.8  | NuGet packaging and publish pipeline                            |
+| 5.9  | Dual-identity pattern documentation and example                 |
+| 5.10 | Performance benchmarks for resolution (each method)             |
 
-**Deliverable**: All W3C tests green. NuGet packages published. zcap-dotnet integration verified.
+**Deliverable**: All W3C tests green for all 4 methods. NuGet packages published. zcap-dotnet integration verified.
 
 ---
 
@@ -2167,7 +1997,7 @@ netdid/
 
 Some DID methods (notably `did:key`) are excellent for cryptographic operations — signing ZCAP invocations, issuing credentials, authenticating — because they are simple, offline-capable, and have no dependency on external infrastructure. However, `did:key` cannot carry service endpoints because the DID Document is algorithmically derived from the key alone. There is no place to advertise "here is my TurtleShell PDS at https://node1.example.com."
 
-Conversely, methods like `did:webvh`, `did:dht`, and `did:ethr` support rich DID Documents with service endpoints, making them ideal for discovery. But they carry operational overhead: web hosting, DHT republishing, or on-chain gas costs.
+Conversely, methods like `did:webvh` and `did:ethr` support rich DID Documents with service endpoints, making them ideal for discovery. But they carry operational overhead: web hosting or on-chain gas costs.
 
 ### A.2 Solution: Pair a Signing Identity with a Discoverable Identity
 
@@ -2194,14 +2024,12 @@ Use **two DIDs that share the same underlying key material** but serve different
 │  │  Discoverable Identity      │                              │
 │  │  did:webvh:Qm...:alice.com │  ← Used for:                 │
 │  │    OR                       │    - Service endpoint          │
-│  │  did:dht:i9xkp8...         │      discovery                │
-│  │    OR                       │    - TurtleShell PDS           │
-│  │  did:ethr:0x1:0xabc...     │      advertisement            │
-│  │                             │    - Replication peer          │
-│  │  • Has service endpoints    │      discovery                │
-│  │  • Updatable                │    - Public profile           │
-│  │  • alsoKnownAs links to     │                              │
-│  │    the did:key              │                              │
+│  │  did:ethr:0x1:0xabc...     │      discovery                │
+│  │                             │    - TurtleShell PDS           │
+│  │  • Has service endpoints    │      advertisement            │
+│  │  • Updatable                │    - Replication peer          │
+│  │  • alsoKnownAs links to     │      discovery                │
+│  │    the did:key              │    - Public profile           │
 │  └─────────────────────────────┘                              │
 └──────────────────────────────────────────────────────────────┘
 ```
@@ -2250,25 +2078,6 @@ var discoverableIdentity = await didWebVhMethod.CreateAsync(new DidWebVhCreateOp
 });
 ```
 
-For did:dht:
-
-```csharp
-var didDhtMethod = new DidDhtMethod(pkarrClient, cryptoProvider);
-var discoverableIdentity = await didDhtMethod.CreateAsync(new DidDhtCreateOptions
-{
-    IdentityKeyPair = keyPair,  // Same Ed25519 key — it becomes the DID suffix
-    Services = new[]
-    {
-        new Service
-        {
-            Id = "#pds-1",
-            Type = "TurtleShellPds",
-            ServiceEndpoint = "https://node1.turtleshell.id/instances/abc123"
-        }
-    }
-});
-```
-
 **Step 4: Link them via `alsoKnownAs`.**
 
 The discoverable identity's DID Document includes:
@@ -2302,7 +2111,7 @@ When a verifier receives a ZCAP invocation signed by `did:key:z6Mkf...#z6Mkf...`
 1. Resolve `did:key:z6Mkf...` → get the Ed25519 public key.
 2. Verify the ZCAP signature. ✅
 3. If the verifier needs to discover the owner's PDS (for replication, for example), they look up the `alsoKnownAs` relationship:
-   - Check if there's a known `did:webvh` or `did:dht` or `did:ethr` that claims `alsoKnownAs: ["did:key:z6Mkf..."]`.
+   - Check if there's a known `did:webvh` or `did:ethr` that claims `alsoKnownAs: ["did:key:z6Mkf..."]`.
    - Resolve that discoverable identity → find the `TurtleShellPds` service endpoint.
 4. Verify the discoverable identity's DID Document contains the same public key as the did:key. This proves the same entity controls both identities.
 
@@ -2351,13 +2160,9 @@ public sealed record DualIdentityVerification
 | did:peer Method                  | https://identity.foundation/peer-did-method-spec/                                              | 2.0     | DIF Spec           |
 | did:webvh Method                 | https://identity.foundation/didwebvh/                                                          | 1.0     | DIF Recommended    |
 | did:webvh Info Site              | https://didwebvh.info/                                                                         | —       | Info/Tutorials     |
-| did:dht Method                   | https://did-dht.com/                                                                           | —       | DIF Spec           |
-| did:dht Registry                 | https://did-dht.com/registry/                                                                  | —       | DIF Registry       |
 | ERC-1056 (did:ethr)              | https://eips.ethereum.org/EIPS/eip-1056                                                        | —       | ERC Draft          |
 | did:ethr Resolver Spec           | https://github.com/decentralized-identity/ethr-did-resolver/blob/master/doc/did-method-spec.md | —       | DIF                |
 | EthereumDIDRegistry Contract     | https://github.com/uport-project/ethr-did-registry                                             | —       | uPort              |
-| Pkarr                            | https://github.com/pubky/pkarr                                                                 | —       | Open Source        |
-| BEP44 (Mutable Items)            | https://www.bittorrent.org/beps/bep_0044.html                                                  | —       | BEP                |
 | Multicodec                       | https://github.com/multiformats/multicodec                                                     | —       | Multiformats       |
 | Multibase                        | https://github.com/multiformats/multibase                                                      | —       | Multiformats       |
 | Data Integrity (eddsa-jcs-2022)  | https://www.w3.org/TR/vc-di-eddsa/                                                             | —       | W3C CR             |
@@ -2379,9 +2184,6 @@ public sealed record DualIdentityVerification
 | **Verification Method**       | A public key or other mechanism in a DID Document used to verify digital signatures or perform key agreement.                                        |
 | **Verification Relationship** | The purpose a verification method serves: authentication, assertion, key agreement, capability invocation, or capability delegation.                 |
 | **SCID**                      | Self-Certifying Identifier — used in did:webvh to cryptographically bind the DID to its genesis state.                                               |
-| **Identity Key**              | In did:dht, the Ed25519 key pair whose public key is the DID suffix. Signs all DHT records.                                                          |
-| **Pkarr**                     | Public Key Addressable Resource Records — an HTTP relay layer over the BitTorrent Mainline DHT for storing DNS records keyed by Ed25519 public keys. |
-| **BEP44**                     | BitTorrent Enhancement Proposal 44 — defines mutable and immutable items in the Mainline DHT, used by did:dht for signed DID record storage.         |
 | **ERC-1056**                  | Ethereum Improvement Proposal defining the `EthereumDIDRegistry` smart contract for lightweight identity management.                                 |
 | **Multicodec**                | A self-describing codec prefix system. Prepended to raw key bytes to indicate the key type.                                                          |
 | **Multibase**                 | A self-describing base encoding. The first character indicates the encoding (e.g., `z` = base58btc).                                                 |
@@ -2391,7 +2193,7 @@ public sealed record DualIdentityVerification
 | **BLS12-381**                 | A pairing-friendly elliptic curve with two groups (G1, G2) and a target group (GT). G2 public keys (96 bytes) are used for BBS+ signing. Named after Barreto-Lynn-Scott with a 381-bit field. |
 | **Selective Disclosure**      | The ability for a credential holder to present only specific attributes from a signed credential without revealing the full credential, enabled by BBS+ proof derivation. |
 | **JCS**                       | JSON Canonicalization Scheme (RFC 8785) — deterministic serialization of JSON for signing. Required by the `eddsa-jcs-2022` and `bbs-2023` Data Integrity cryptosuites. |
-| **Dual-Identity Pattern**     | Using a did:key (for signing) paired with a discoverable DID (for service endpoints), linked by shared key material and `alsoKnownAs`.               |
+| **Dual-Identity Pattern**     | Using a did:key (for signing) paired with a discoverable DID (did:webvh or did:ethr, for service endpoints), linked by shared key material and `alsoKnownAs`. |
 | **HLC**                       | Hybrid Logical Clock — used in the TurtleShell PDS for causal ordering across replicated nodes.                                                      |
 | **CRDT**                      | Conflict-free Replicated Data Type — data structures that can be replicated across nodes and merged without coordination.                            |
 
