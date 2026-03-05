@@ -247,6 +247,17 @@ public sealed record DidDeactivateResult
     public required bool Success { get; init; }
     public IReadOnlyDictionary<string, object>? Artifacts { get; init; }
 }
+
+/// Base class for resolution options. Method-specific option types inherit from this.
+public record DidResolutionOptions
+{
+    /// The preferred Media Type for the DID Document representation.
+    /// Supported values:
+    ///   - "application/did+ld+json" (default) — JSON-LD representation, includes @context
+    ///   - "application/did+json"              — plain JSON representation, @context omitted
+    /// Affects both the serialized output and the contentType in DidResolutionMetadata.
+    public string Accept { get; init; } = "application/did+ld+json";
+}
 ```
 
 ### 3.4 Architectural Patterns
@@ -1072,16 +1083,18 @@ public sealed record DidDocument
 
     public IReadOnlyList<Service>? Service { get; init; }
 
-    /// JSON-LD @context. Always includes "https://www.w3.org/ns/did/v1" as the first entry.
+    /// JSON-LD @context. Present only when the document is produced as application/did+ld+json.
+    /// When set, MUST include "https://www.w3.org/ns/did/v1" as the first entry.
     /// Additional context URIs are appended dynamically based on verification method types:
     ///   - Multikey           → "https://w3id.org/security/multikey/v1"
     ///   - JsonWebKey2020     → "https://w3id.org/security/suites/jws-2020/v1"
     ///   - BBS+ (bbs-2023)    → "https://w3id.org/security/data-integrity/v2"
     ///   - EcdsaSecp256k1...  → "https://w3id.org/security/suites/secp256k1-2019/v1"
     /// The DidDocumentSerializer computes the correct @context automatically from the
-    /// verification methods present in the document. Callers may also supply additional
-    /// context URIs that are appended after the auto-detected ones.
-    public IReadOnlyList<object> Context { get; init; } = new object[] { "https://www.w3.org/ns/did/v1" };
+    /// verification methods present when producing JSON-LD. Callers may also supply
+    /// additional context URIs that are appended after the auto-detected ones.
+    /// Null when the document is consumed from or produced as application/did+json.
+    public IReadOnlyList<object>? Context { get; init; }
 
     /// Extension properties not defined in DID Core.
     public IReadOnlyDictionary<string, JsonElement>? AdditionalProperties { get; init; }
@@ -1135,27 +1148,52 @@ public sealed class ServiceEndpointValue
 }
 ```
 
-### 9.2 Serialization
+### 9.2 Serialization & Content Type Negotiation
 
-The DID Document model supports serialization to/from:
+W3C DID Core §6 defines two distinct JSON-based representations with different production and consumption rules:
 
-- **JSON** (primary, via `System.Text.Json`)
-- **JSON-LD** (with `@context`)
+| | `application/did+ld+json` (JSON-LD) | `application/did+json` (plain JSON) |
+|---|---|---|
+| **`@context`** | **Required**. MUST start with `"https://www.w3.org/ns/did/v1"`. Additional contexts auto-computed from VM types. | **Omitted**. `@context` has no normative meaning in plain JSON and MUST NOT be required by consumers. |
+| **Properties** | All DID Core properties + JSON-LD keywords | All DID Core properties, no JSON-LD keywords |
+| **When to use** | Interop with JSON-LD processors, Linked Data ecosystems, Verifiable Credentials | Lightweight consumers, REST APIs, internal storage |
 
-Serialization is handled by a `DidDocumentSerializer` that produces spec-compliant JSON:
+NetDid supports **both** representations. The `DidDocumentSerializer` selects the correct production rules based on a `DidRepresentationContentType` parameter:
 
 ```csharp
+/// The two W3C-defined DID Document content types.
+public static class DidContentTypes
+{
+    public const string JsonLd = "application/did+ld+json";
+    public const string Json   = "application/did+json";
+}
+
 public static class DidDocumentSerializer
 {
-    public static string ToJson(DidDocument doc, JsonSerializerOptions? options = null);
-    public static DidDocument FromJson(string json);
-    public static DidDocument FromJson(ReadOnlySpan<byte> utf8Json);
+    /// Produce the DID Document as a JSON string in the specified representation.
+    /// - JsonLd: includes @context (auto-computed from VM types), all JSON-LD keywords
+    /// - Json:   omits @context and any JSON-LD-only properties
+    public static string Serialize(DidDocument doc, string contentType = DidContentTypes.JsonLd,
+        JsonSerializerOptions? options = null);
+
+    /// Produce the DID Document as UTF-8 bytes.
+    public static byte[] SerializeToUtf8(DidDocument doc, string contentType = DidContentTypes.JsonLd,
+        JsonSerializerOptions? options = null);
+
+    /// Consume (deserialize) a DID Document from JSON.
+    /// Per W3C DID Core §6.2 (JSON consumption): MUST NOT require @context.
+    /// Per W3C DID Core §6.3 (JSON-LD consumption): MUST verify @context when
+    /// the input is known to be application/did+ld+json.
+    public static DidDocument Deserialize(string json, string? contentType = null);
+    public static DidDocument Deserialize(ReadOnlySpan<byte> utf8Json, string? contentType = null);
 }
 ```
 
+**Default content type**: `application/did+ld+json` (JSON-LD) is the default for production because it carries the richest semantic information and is required by most DID-consuming ecosystems (Verifiable Credentials, ZCAP-LD, Data Integrity Proofs). Callers who need plain JSON explicitly pass `DidContentTypes.Json`.
+
 ### 9.3 W3C DID Core Normative Requirements on the Document
 
-The model enforces these at construction/deserialization:
+**Data model requirements** (enforced at construction, independent of representation):
 
 - `id` MUST be a valid DID (validated by the `Did` value object).
 - `controller`, when present, MUST be a valid DID (string form) or an ordered set of valid DIDs (array form). Serialized as a string when containing a single DID, as an array when containing multiple.
@@ -1163,9 +1201,23 @@ The model enforces these at construction/deserialization:
 - `verificationMethod[*].controller` MUST be a valid DID.
 - `service[*].id` MUST be a valid DID URL.
 - `service[*].serviceEndpoint` MUST be a URI string, a map, or an ordered set of URIs/maps (§5.4).
-- `@context` MUST include `"https://www.w3.org/ns/did/v1"` as the first element. Additional context URIs are computed dynamically from the verification method types present in the document.
 - Verification relationship entries that are strings MUST be valid DID URLs.
 - All properties follow the registered names in the DID Specification Registries.
+
+**JSON-LD production requirements** (§6.3, `application/did+ld+json`):
+
+- `@context` MUST be present and MUST include `"https://www.w3.org/ns/did/v1"` as the first element. Additional context URIs are computed dynamically from the verification method types present in the document.
+- All JSON-LD keywords (`@context`, `@type`, etc.) MUST be serialized correctly.
+
+**Plain JSON production requirements** (§6.2, `application/did+json`):
+
+- `@context` MUST NOT be included in the serialized output. The property has no normative meaning in the plain JSON representation.
+- All DID Core properties MUST be serialized as defined in the DID Core data model.
+
+**Consumption requirements**:
+
+- A conforming consumer of `application/did+json` MUST NOT require `@context`. If `@context` is present, it MAY be ignored.
+- A conforming consumer of `application/did+ld+json` MUST verify the presence and correctness of `@context`.
 
 ---
 
@@ -1344,8 +1396,11 @@ public sealed class DefaultDidUrlDereferencer : IDidUrlDereferencer
         if (parsed is null)
             return DidUrlDereferencingResult.Error("invalidDidUrl");
 
+        var accept = options?.Accept ?? DidContentTypes.JsonLd;
+
         // Step 1: Resolve the base DID to get the full DID Document
-        var resolution = await _resolver.ResolveAsync(parsed.Did, ct: ct);
+        var resolutionOptions = new DidResolutionOptions { Accept = accept };
+        var resolution = await _resolver.ResolveAsync(parsed.Did, resolutionOptions, ct);
         if (resolution.DidDocument is null)
             return DidUrlDereferencingResult.Error(resolution.ResolutionMetadata.Error ?? "notFound");
 
@@ -1356,7 +1411,7 @@ public sealed class DefaultDidUrlDereferencer : IDidUrlDereferencer
             var resource = FindByFragment(resolution.DidDocument, parsed.Fragment);
             if (resource is null)
                 return DidUrlDereferencingResult.Error("notFound");
-            return DidUrlDereferencingResult.Success(resource, "application/did+ld+json");
+            return DidUrlDereferencingResult.Success(resource, accept);
         }
 
         if (parsed.Query?.Contains("service=") == true)
@@ -1365,12 +1420,12 @@ public sealed class DefaultDidUrlDereferencer : IDidUrlDereferencer
             var service = FindByServiceQuery(resolution.DidDocument, parsed.Query);
             if (service is null)
                 return DidUrlDereferencingResult.Error("notFound");
-            return DidUrlDereferencingResult.Success(service, "application/did+ld+json");
+            return DidUrlDereferencingResult.Success(service, accept);
         }
 
         // No fragment or service query: return the full DID Document
         return DidUrlDereferencingResult.Success(
-            resolution.DidDocument, "application/did+ld+json",
+            resolution.DidDocument, accept,
             resolution.DocumentMetadata);
     }
 }
@@ -1497,8 +1552,8 @@ These match the five suites in the W3C DID Implementation Report (https://w3c.gi
 | Suite                        | What It Tests                                                                                                                                                                                                                                            | NetDid Applicability |
 | ---------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------- |
 | **did-identifier**           | DID syntax: method name is ASCII lowercase, method-specific-id conforms to ABNF, overall DID string matches the grammar.                                                                                                                                 | All 4 methods        |
-| **did-core-properties**      | DID Document properties: `id` is valid DID, `verificationMethod` entries have required fields, `service` entries are well-formed, all verification relationships reference valid VMs, `@context` is correct. Also covers consumption (deserialization) — a conforming consumer MUST parse a valid DID Document and extract the data model, including handling unknown properties without error.  | All 4 methods        |
-| **did-production**           | Serialization (production) of DID Documents: the JSON representation MUST include `@context`, property names MUST be strings, values MUST conform to the data model type system, JSON members MUST be serialized correctly.                              | All 4 methods        |
+| **did-core-properties**      | DID Document properties: `id` is valid DID, `verificationMethod` entries have required fields, `service` entries are well-formed, all verification relationships reference valid VMs. For JSON-LD representations, `@context` must be correct. Also covers consumption (deserialization) — a conforming JSON consumer MUST NOT require `@context`; a JSON-LD consumer MUST verify it. Both MUST handle unknown properties without error. | All 4 methods        |
+| **did-production**           | Serialization (production) of DID Documents per content type. For `application/did+ld+json`: MUST include `@context` with correct entries. For `application/did+json`: MUST NOT include `@context`. Both: property names MUST be strings, values MUST conform to the data model type system. | All 4 methods        |
 | **did-resolution**           | DID Resolution (§7.1): given a DID, the resolver returns a conformant `DidResolutionResult` with correct `didDocument`, `didResolutionMetadata`, and `didDocumentMetadata`. Covers error cases (`notFound`, `invalidDid`, `methodNotSupported`, `deactivated`). | All 4 methods        |
 | **did-url-dereferencing**    | DID URL Dereferencing (§7.2): given a DID URL (DID + optional path, query, and/or fragment), the dereferencer returns the specific resource identified by the URL. Fragment dereferencing returns elements within the DID Document (verification methods, services). Query-based dereferencing supports service endpoint selection. Covers error handling and content type negotiation. | All 4 methods        |
 
@@ -1520,7 +1575,7 @@ Each fixture file contains:
   "name": "NetDid did:key",
   "implementation": "NetDid",
   "implementer": "Moises Jaramillo",
-  "supportedContentTypes": ["application/did+ld+json"],
+  "supportedContentTypes": ["application/did+ld+json", "application/did+json"],
   "dids": [
     {
       "did": "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK",
@@ -1561,10 +1616,15 @@ A .NET CLI tool (`NetDid.TestSuite.W3C.Cli`) generates the fixture JSON files th
 For the `did-resolution` and `did-url-dereferencing` suites, NetDid can optionally run a lightweight HTTP server that the W3C test suite queries:
 
 ```csharp
-// NetDid.TestSuite.W3C.Server — minimal Kestrel app
-app.MapGet("/resolve/{did}", async (string did, IDidResolver resolver) =>
+// NetDid.TestSuite.W3C.Server — minimal Kestrel app with content negotiation
+app.MapGet("/resolve/{did}", async (string did, HttpContext ctx, IDidResolver resolver) =>
 {
-    var result = await resolver.ResolveAsync(did);
+    // Content negotiation: Accept header determines representation
+    var accept = ctx.Request.Headers.Accept.FirstOrDefault() ?? DidContentTypes.JsonLd;
+    var options = new DidResolutionOptions { Accept = accept };
+    var result = await resolver.ResolveAsync(did, options);
+
+    ctx.Response.ContentType = result.ResolutionMetadata.ContentType ?? accept;
     return Results.Json(new
     {
         didDocument = result.DidDocument,
@@ -1573,9 +1633,13 @@ app.MapGet("/resolve/{did}", async (string did, IDidResolver resolver) =>
     });
 });
 
-app.MapGet("/dereference/{*didUrl}", async (string didUrl, IDidUrlDereferencer dereferencer) =>
+app.MapGet("/dereference/{*didUrl}", async (string didUrl, HttpContext ctx, IDidUrlDereferencer dereferencer) =>
 {
-    var result = await dereferencer.DereferenceAsync(didUrl);
+    var accept = ctx.Request.Headers.Accept.FirstOrDefault() ?? DidContentTypes.JsonLd;
+    var options = new DidUrlDereferencingOptions { Accept = accept };
+    var result = await dereferencer.DereferenceAsync(didUrl, options);
+
+    ctx.Response.ContentType = result.DereferencingMetadata.ContentType ?? accept;
     return Results.Json(new
     {
         dereferencingMetadata = result.DereferencingMetadata,
@@ -1631,9 +1695,20 @@ public class DidCorePropertiesConformanceTests
     }
 
     [Fact]
-    public void Context_must_include_did_v1_as_first_entry()
+    public void JsonLd_context_must_include_did_v1_as_first_entry()
     {
+        // When produced as application/did+ld+json:
         // Verify @context[0] == "https://www.w3.org/ns/did/v1"
+    }
+
+    [Fact]
+    public void Json_consumer_must_not_require_context()
+    {
+        // A valid application/did+json document without @context must deserialize successfully
+        var json = """{"id": "did:key:z6Mkf...", "verificationMethod": [...]}""";
+        var doc = DidDocumentSerializer.Deserialize(json, DidContentTypes.Json);
+        Assert.NotNull(doc);
+        Assert.Null(doc.Context);
     }
 
     [Fact]
@@ -1649,22 +1724,54 @@ public class DidCorePropertiesConformanceTests
 [Trait("Suite", "did-production")]
 public class DidProductionConformanceTests
 {
+    // --- application/did+ld+json (JSON-LD) production ---
+
     [Fact]
-    public void JSON_representation_must_include_context()
+    public void JsonLd_representation_must_include_context()
     {
-        // Serialize a DID Document, verify "@context" is present in JSON
+        // Serialize as did+ld+json, verify "@context" is present and starts with DID v1 URI
+        var json = DidDocumentSerializer.Serialize(doc, DidContentTypes.JsonLd);
+        var root = JsonDocument.Parse(json).RootElement;
+        Assert.True(root.TryGetProperty("@context", out var ctx));
+        Assert.Equal("https://www.w3.org/ns/did/v1", ctx[0].GetString());
     }
+
+    [Fact]
+    public void JsonLd_context_must_include_additional_contexts_for_vm_types()
+    {
+        // If document contains Multikey VMs, @context must include multikey context
+    }
+
+    // --- application/did+json (plain JSON) production ---
+
+    [Fact]
+    public void Json_representation_must_not_include_context()
+    {
+        // Serialize as did+json, verify "@context" is NOT present
+        var json = DidDocumentSerializer.Serialize(doc, DidContentTypes.Json);
+        var root = JsonDocument.Parse(json).RootElement;
+        Assert.False(root.TryGetProperty("@context", out _));
+    }
+
+    // --- Shared production requirements ---
 
     [Fact]
     public void All_property_names_must_be_strings()
     {
-        // Parse the JSON, verify all keys are string type
+        // Parse the JSON (both representations), verify all keys are string type
     }
 
     [Fact]
     public void Serialized_document_must_be_valid_json()
     {
-        // For each method, create → serialize → verify parseable as JSON
+        // For each method, create → serialize (both content types) → verify parseable as JSON
+    }
+
+    [Fact]
+    public void Both_representations_must_preserve_all_did_core_properties()
+    {
+        // Serialize as did+ld+json and did+json, verify both contain id, verificationMethod, etc.
+        // The only difference should be presence/absence of @context
     }
 }
 
@@ -1957,6 +2064,7 @@ netdid/
 │   │   │   ├── CryptoVerificationException.cs
 │   │   │   ├── LogChainValidationException.cs
 │   │   │   └── EthereumInteractionException.cs
+│   │   ├── DidContentTypes.cs
 │   │   ├── IKeyGenerator.cs
 │   │   ├── IKeyStore.cs
 │   │   ├── ISigner.cs
@@ -1968,6 +2076,7 @@ netdid/
 │   │   │   ├── VerificationRelationshipEntry.cs
 │   │   │   ├── DidResolutionResult.cs
 │   │   │   ├── DidResolutionMetadata.cs
+│   │   │   ├── DidResolutionOptions.cs
 │   │   │   ├── DidDocumentMetadata.cs
 │   │   │   ├── DidCreateResult.cs
 │   │   │   ├── DidUpdateResult.cs
@@ -2534,7 +2643,7 @@ public sealed record DualIdentityVerification
 | Term                          | Definition                                                                                                                                           |
 | ----------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
 | **DID**                       | Decentralized Identifier — a URI that resolves to a DID Document without a centralized registry.                                                     |
-| **DID Document**              | A JSON-LD document containing public keys, service endpoints, and metadata associated with a DID.                                                    |
+| **DID Document**              | A document containing public keys, service endpoints, and metadata associated with a DID. Can be represented as `application/did+ld+json` (JSON-LD, with `@context`) or `application/did+json` (plain JSON, without `@context`). |
 | **DID Method**                | A specification defining how to create, resolve, update, and deactivate a specific type of DID (e.g., did:key, did:ethr).                            |
 | **DID URL**                   | A DID plus optional path, query, and/or fragment components. Used to reference specific elements within a DID Document.                              |
 | **Verification Method**       | A public key or other mechanism in a DID Document used to verify digital signatures or perform key agreement.                                        |
