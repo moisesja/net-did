@@ -843,21 +843,28 @@ did:webvh:<SCID>:<domain>:<optional-path-segments>
 
 Example: `did:webvh:QmRwq46VkGuCEx4dyYxxexmig7Fwbqbm9AB73iKUAHjMZH:example.com`
 
-The SCID (Self-Certifying Identifier) is derived from the initial DID log entry, making the DID self-certifying — the SCID cryptographically binds to the genesis state.
+The SCID (Self-Certifying Identifier) is the multihash of the JCS-canonicalized genesis log entry (computed with `{SCID}` placeholders — see §7.5). This makes the DID self-certifying: the SCID cryptographically binds to the genesis state, and any tampering with the genesis entry invalidates the SCID.
 
-### 7.3 Backwards Compatibility with did:web
+### 7.3 Legacy Fallback to did:web
 
-Any `did:webvh` can be deterministically converted to an equivalent `did:web` by removing `vh` from the method name and dropping the SCID segment:
+A `did:webvh` can be mapped to a `did:web` URL by removing `vh` from the method name and dropping the SCID segment:
 
 ```
 did:webvh:QmRwq46V...:example.com  →  did:web:example.com
 ```
 
-Legacy resolvers that only understand did:web can consume the `did.json` file at the web endpoint. The `alsoKnownAs` property in the DID Document links back to the did:webvh identifier.
+This provides a **legacy fallback** for resolvers that only understand did:web — they can
+consume the `did.json` file at the web endpoint. However, this is NOT an equivalent
+representation: the did:web fallback loses the SCID binding (the document is no longer
+self-certifying), the cryptographic history chain (`did.jsonl` verification), and the
+pre-rotation and witness security guarantees that make did:webvh distinct. The
+`alsoKnownAs` property in the DID Document links back to the did:webvh identifier,
+allowing consumers to upgrade to full did:webvh verification when possible.
 
 ### 7.4 DID Log Structure
 
-The DID history is stored as a JSON Lines file (`did.jsonl`), where each line is a log entry:
+The DID history is stored as a JSON Lines file (`did.jsonl`), where each line is a log entry.
+The genesis entry shown below is the **final form** (after SCID placeholder replacement and signing — see §7.5):
 
 ```json
 {
@@ -872,7 +879,7 @@ The DID history is stored as a JSON Lines file (`did.jsonl`), where each line is
     "deactivated": false
   },
   "state": {
-    /* full DID Document */
+    /* full DID Document — id is "did:webvh:QmRwq46V...:example.com" */
   },
   "proof": [
     {
@@ -886,17 +893,30 @@ The DID history is stored as a JSON Lines file (`did.jsonl`), where each line is
 }
 ```
 
-Each entry's `versionId` has the format `<version-number>-<entry-hash>`, where the entry hash chains to the previous entry.
+Each entry's `versionId` has the format `<version-number>-<entry-hash>`, where the entry hash chains to the previous entry. For the genesis entry, the entry hash IS the SCID.
 
 ### 7.5 Create
 
+The genesis entry uses a two-pass algorithm to resolve the inherent circularity: the SCID
+is derived from the entry, but the entry contains the SCID. The did:webvh spec defines a
+well-known placeholder string (`{SCID}`) that stands in for the real SCID during the first pass.
+
 1. Generate an Ed25519 key pair (the "update key").
-2. Build the initial DID Document with desired verification methods and services.
-3. Set parameters: SCID (derived from genesis entry hash), updateKeys, optional pre-rotation commitment, optional witnesses.
-4. Sign the genesis log entry with the update key using Data Integrity Proof (eddsa-jcs-2022).
-5. Compute the SCID from the signed genesis entry.
-6. Return: the DID string, the DID Document, the `did.jsonl` content (single line), and a `did.json` file for did:web compatibility.
-7. The caller is responsible for publishing `did.jsonl` and `did.json` at the correct web URL.
+2. Build the initial DID Document with desired verification methods and services. Use the
+   literal placeholder `{SCID}` everywhere the SCID would appear (the DID `id` field,
+   verification method `id` and `controller` values, etc.).
+3. Construct the genesis log entry with parameters: `scid` set to `{SCID}`, `updateKeys`,
+   optional pre-rotation commitment, optional witnesses. The `versionId` is `1-{SCID}`.
+4. JCS-canonicalize the genesis entry (with placeholders in place) and hash it (multihash,
+   base58btc-encoded) to produce the SCID value.
+5. Replace every occurrence of the `{SCID}` placeholder in the log entry with the computed
+   SCID value — in `parameters.scid`, `versionId`, the DID Document `id`, verification
+   method IDs, controllers, and any other fields that reference the DID.
+6. Sign the finalized genesis log entry with the update key using Data Integrity Proof
+   (eddsa-jcs-2022). The proof is over the entry with the real SCID, not the placeholder.
+7. Return: the DID string, the DID Document, the `did.jsonl` content (single line), and a
+   `did.json` file for did:web compatibility.
+8. The caller is responsible for publishing `did.jsonl` and `did.json` at the correct web URL.
 
 ### 7.6 Resolve
 
@@ -1043,9 +1063,18 @@ public sealed record DidEthrCreateOptions : DidCreateOptions
    - Each `DIDOwnerChanged` updates the controller.
    - Each `DIDDelegateChanged` adds/removes delegate verification methods (checking `validity` expiration against current block).
    - Each `DIDAttributeChanged` adds/removes attributes:
-     - `did/pub/<keyType>/<purpose>/<encoding>` → verification method
+     - `did/pub/<keyType>/<purpose>/<encoding>` → verification method (with `publicKeyJwk`
+       or `publicKeyMultibase` when the encoding provides full key material)
      - `did/svc/<serviceType>` → service endpoint
 6. Return the assembled DID Document.
+
+**Note on key material representations**: The default (implicit) VM for a did:ethr uses
+`EcdsaSecp256k1RecoveryMethod2020` with only a `blockchainAccountId` — the Ethereum address,
+not the full public key. This is sufficient for ecrecover-based signature verification but
+is NOT compatible with `IVerificationMethodResolver`, which requires extractable public key
+bytes. VMs added via `setAttribute` with `did/pub/Secp256k1/veriKey/publicKeyJwk` produce
+VMs with full key material that work through the standard verification path. For ZCAP use
+cases, ensure the signing key has been registered on-chain with full public key encoding.
 
 ### 8.6 Update
 
@@ -1631,7 +1660,10 @@ public sealed class DefaultDidUrlDereferencer : IDidUrlDereferencer
     /// Parse "service=hub&relativeRef=%2Fprofile" → { "service": "hub", "relativeRef": "/profile" }
     private static Dictionary<string, string> ParseQueryString(string? query);
 
-    /// Find a service by its short id (fragment without '#') or full id.
+    /// Find a service by matching the service query value against the fragment portion
+    /// of each service's id. Per W3C DID Core §7.2, "?service=pds-1" matches a service
+    /// with id "#pds-1" or "did:example:123#pds-1". The match is against the id, NOT
+    /// the service type.
     private static Service? FindServiceById(DidDocument doc, string serviceId);
 
     /// Find a verification method or service within the DID Document by fragment.
@@ -2057,7 +2089,9 @@ public class DidUrlDereferencingConformanceTests
     [Fact]
     public async Task Service_query_must_dereference_to_service_endpoint()
     {
-        // did:webvh:...?service=TurtleShellPds → returns the service endpoint URL
+        // did:webvh:...?service=pds-1 → returns the service endpoint URL
+        // The service query matches by the fragment portion of the service id
+        // (e.g., "#pds-1"), NOT by service type (e.g., "TurtleShellPds").
     }
 
     // ... one test per normative statement from §7.2
@@ -2210,9 +2244,20 @@ public sealed class DefaultVerificationMethodResolver : IVerificationMethodResol
         {
             (keyType, publicKey) = JwkConverter.ExtractPublicKey(vm.PublicKeyJwk);
         }
+        else if (vm.BlockchainAccountId is not null)
+        {
+            // BlockchainAccountId (CAIP-10) contains only an Ethereum address — the
+            // keccak256 hash of the public key, not the key itself. Standard signature
+            // verification requires the full public key, so this path cannot produce a
+            // ResolvedVerificationMethod. Callers verifying against address-only VMs must
+            // use ecrecover-based verification (recover the public key from the signature,
+            // derive the address, compare). See §8.5 for how did:ethr resolution produces
+            // VMs with full public key material when available from on-chain events.
+            return null;
+        }
         else
         {
-            return null; // No extractable key material (e.g., BlockchainAccountId-only)
+            return null; // No recognized key material representation
         }
 
         return new ResolvedVerificationMethod
