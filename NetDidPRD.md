@@ -257,7 +257,21 @@ public record DidResolutionOptions
     ///   - "application/did+json"              — plain JSON representation, @context omitted
     /// Affects both the serialized output and the contentType in DidResolutionMetadata.
     public string Accept { get; init; } = "application/did+ld+json";
+
+    /// W3C DID Core §7.2 query parameters — passed through by the dereferencer.
+    /// Methods that do not support versioned resolution ignore these.
+    public string? VersionId { get; init; }
+    public string? VersionTime { get; init; }
 }
+
+/// Base class for create options. Each DID method defines its own derived type.
+public abstract record DidCreateOptions;
+
+/// Base class for update options. Each DID method defines its own derived type.
+public abstract record DidUpdateOptions;
+
+/// Base class for deactivate options. Each DID method defines its own derived type.
+public abstract record DidDeactivateOptions;
 ```
 
 ### 3.4 Architectural Patterns
@@ -935,10 +949,14 @@ public sealed record DidWebVhUpdateOptions : DidUpdateOptions
     public DidWebVhParameterUpdates? ParameterUpdates { get; init; }
 }
 
-public sealed record DidWebVhResolveOptions : DidResolutionOptions
+/// VersionId and VersionTime are inherited from the base DidResolutionOptions.
+/// Add webvh-specific resolution options here if needed in the future.
+public sealed record DidWebVhResolveOptions : DidResolutionOptions;
+
+public sealed record DidWebVhDeactivateOptions : DidDeactivateOptions
 {
-    public string? VersionId { get; init; }    // resolve a specific version
-    public string? VersionTime { get; init; }  // resolve at a point in time
+    public required byte[] CurrentLogContent { get; init; }  // existing did.jsonl bytes
+    public required ISigner SigningKey { get; init; }        // authorized update key (HSM-safe)
 }
 ```
 
@@ -994,11 +1012,26 @@ All mutations emit events. Resolution replays these events.
 
 did:ethr creation is implicit — any Ethereum key pair is already a valid DID. "Creating" a did:ethr means:
 
-1. Generate (or accept) a secp256k1 key pair.
+1. If `ExistingKey` is provided, validate that `ExistingKey.KeyType == Secp256k1` and use
+   `ExistingKey.PublicKey`. Otherwise, generate a new secp256k1 key pair.
 2. Derive the Ethereum address from the public key (keccak256 hash, take last 20 bytes, checksum-encode).
 3. The DID is `did:ethr:<network>:<address>`.
 4. The default DID Document has a single secp256k1 verification method for the controller address.
 5. No on-chain transaction needed.
+
+```csharp
+public sealed record DidEthrCreateOptions : DidCreateOptions
+{
+    /// The Ethereum network for the DID (e.g., "mainnet", "sepolia", "polygon").
+    /// Determines the network identifier in the DID string and the RPC endpoint used.
+    public required string Network { get; init; }
+
+    /// Optional: wrap an existing secp256k1 key instead of generating a new one.
+    /// When provided, the Ethereum address is derived from ExistingKey.PublicKey.
+    /// ExistingKey.KeyType must be Secp256k1 (validated at creation time).
+    public ISigner? ExistingKey { get; init; }
+}
+```
 
 ### 8.5 Resolve
 
@@ -1058,6 +1091,17 @@ public sealed record DidEthrServiceAttribute
 ### 8.7 Deactivate
 
 Set the owner to `0x0000000000000000000000000000000000000000` (null address). This makes the identity uncontrollable and the DID Document resolves with `deactivated: true`.
+
+```csharp
+public sealed record DidEthrDeactivateOptions : DidDeactivateOptions
+{
+    /// Signs the changeOwner transaction that transfers ownership to the null address.
+    public required ISigner ControllerKey { get; init; }
+
+    /// Use meta-transaction (signed by controller, submitted by relayer)?
+    public bool UseMetaTransaction { get; init; } = false;
+}
+```
 
 ### 8.8 Ethereum RPC Abstraction
 
@@ -1465,11 +1509,35 @@ public sealed record DidUrlDereferencingResult
 
     /// The dereferenced resource. Null when an error occurs.
     /// May be a VerificationMethod, Service, DidDocument, or raw byte[] depending on the DID URL.
+    /// For service endpoint redirects, this is the constructed URL string.
     public object? ContentStream { get; init; }
 
     /// Metadata about the content (equivalent to didDocumentMetadata when the
     /// content is a full DID Document, empty otherwise).
     public IReadOnlyDictionary<string, object>? ContentMetadata { get; init; }
+
+    // Factory methods used by DefaultDidUrlDereferencer:
+
+    public static DidUrlDereferencingResult Error(string errorCode) => new()
+    {
+        DereferencingMetadata = new DereferencingMetadata { Error = errorCode }
+    };
+
+    public static DidUrlDereferencingResult Success(
+        object content, string contentType, DidDocumentMetadata? metadata = null) => new()
+    {
+        DereferencingMetadata = new DereferencingMetadata { ContentType = contentType },
+        ContentStream = content,
+        ContentMetadata = metadata?.ToPropertyDictionary()
+    };
+
+    /// Service endpoint selection: returns the constructed URL for the caller to follow.
+    /// ContentType is "text/uri-list" per convention.
+    public static DidUrlDereferencingResult ServiceEndpointRedirect(string serviceUrl) => new()
+    {
+        DereferencingMetadata = new DereferencingMetadata { ContentType = "text/uri-list" },
+        ContentStream = serviceUrl
+    };
 }
 
 public sealed record DereferencingMetadata
@@ -1490,7 +1558,9 @@ public sealed record DidUrlDereferencingOptions
 }
 ```
 
-**Default implementation**: `DefaultDidUrlDereferencer` composes with `IDidResolver`:
+**Default implementation**: `DefaultDidUrlDereferencer` composes with `IDidResolver` and implements
+the W3C §7.2 dereferencing algorithm for fragment, service endpoint selection (with path and
+`relativeRef`), and `versionId`/`versionTime` query parameters:
 
 ```csharp
 public sealed class DefaultDidUrlDereferencer : IDidUrlDereferencer
@@ -1507,37 +1577,70 @@ public sealed class DefaultDidUrlDereferencer : IDidUrlDereferencer
             return DidUrlDereferencingResult.Error("invalidDidUrl");
 
         var accept = options?.Accept ?? DidContentTypes.JsonLd;
+        var queryParams = ParseQueryString(parsed.Query);
 
-        // Step 1: Resolve the base DID to get the full DID Document
-        var resolutionOptions = new DidResolutionOptions { Accept = accept };
+        // Step 1: Resolve the base DID, passing through versionId/versionTime if present
+        var resolutionOptions = new DidResolutionOptions
+        {
+            Accept = accept,
+            VersionId = queryParams.GetValueOrDefault("versionId"),
+            VersionTime = queryParams.GetValueOrDefault("versionTime")
+        };
         var resolution = await _resolver.ResolveAsync(parsed.Did, resolutionOptions, ct);
         if (resolution.DidDocument is null)
             return DidUrlDereferencingResult.Error(resolution.ResolutionMetadata.Error ?? "notFound");
 
-        // Step 2: Apply DID URL components
+        // Step 2: Service endpoint selection + URL construction (§7.2 service query)
+        if (queryParams.TryGetValue("service", out var serviceId))
+        {
+            var service = FindServiceById(resolution.DidDocument, serviceId);
+            if (service is null)
+                return DidUrlDereferencingResult.Error("notFound");
+
+            // Construct the dereferenced URL from the service endpoint, applying
+            // the DID URL path and/or relativeRef query parameter per §7.2.
+            var serviceUrl = ConstructServiceUrl(
+                service.ServiceEndpoint,
+                parsed.Path,
+                queryParams.GetValueOrDefault("relativeRef"),
+                parsed.Fragment);
+
+            return DidUrlDereferencingResult.ServiceEndpointRedirect(serviceUrl);
+        }
+
+        // Step 3: Fragment-only → select resource from DID Document
         if (parsed.Fragment is not null)
         {
-            // Fragment dereferencing: find the resource within the DID Document
             var resource = FindByFragment(resolution.DidDocument, parsed.Fragment);
             if (resource is null)
                 return DidUrlDereferencingResult.Error("notFound");
             return DidUrlDereferencingResult.Success(resource, accept);
         }
 
-        if (parsed.Query?.Contains("service=") == true)
-        {
-            // Service endpoint selection per DID Core §7.2
-            var service = FindByServiceQuery(resolution.DidDocument, parsed.Query);
-            if (service is null)
-                return DidUrlDereferencingResult.Error("notFound");
-            return DidUrlDereferencingResult.Success(service, accept);
-        }
+        // Step 4: Path without service query → DID Core does not define semantics
+        // for bare paths; return an error rather than silently ignoring the path.
+        if (parsed.Path is not null)
+            return DidUrlDereferencingResult.Error("notFound");
 
-        // No fragment or service query: return the full DID Document
+        // No path, fragment, or service query: return the full DID Document
         return DidUrlDereferencingResult.Success(
             resolution.DidDocument, accept,
             resolution.DocumentMetadata);
     }
+
+    /// Parse "service=hub&relativeRef=%2Fprofile" → { "service": "hub", "relativeRef": "/profile" }
+    private static Dictionary<string, string> ParseQueryString(string? query);
+
+    /// Find a service by its short id (fragment without '#') or full id.
+    private static Service? FindServiceById(DidDocument doc, string serviceId);
+
+    /// Find a verification method or service within the DID Document by fragment.
+    private static object? FindByFragment(DidDocument doc, string fragment);
+
+    /// Construct the final URL from service endpoint + path + relativeRef + fragment.
+    /// Per §7.2: serviceEndpoint + path + relativeRef, with fragment appended.
+    private static string ConstructServiceUrl(
+        string serviceEndpoint, string? path, string? relativeRef, string? fragment);
 }
 ```
 
