@@ -47,15 +47,15 @@ Conformance is validated against the W3C DID Test Suite (https://w3c.github.io/d
 
 ### 1.2 Design Goals
 
-| Goal                            | Description                                                                                                                                                                                                  |
-| ------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| **Spec Compliance**             | 100% compliant with W3C DID Core 1.0 and each method's published specification. No shortcuts, no partial implementations.                                                                                    |
+| Goal                            | Description                                                                                                                                                                                                        |
+| ------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| **Spec Compliance**             | 100% compliant with W3C DID Core 1.0 and each method's published specification. No shortcuts, no partial implementations.                                                                                          |
 | **W3C Test Suite Pass**         | Every DID method implementation MUST pass the W3C DID Test Suite across all five conformance categories: `did-identifier`, `did-core-properties`, `did-production`, `did-resolution`, and `did-url-dereferencing`. |
-| **Key Generation, Not Storage** | Generate and restore keys across Ed25519, secp256k1, P-256, P-384, X25519, and BLS12-381 (G1/G2). Storage is the caller's responsibility via `IKeyStore`.                                                    |
-| **Pluggable Everything**        | Key stores, HTTP clients, Ethereum RPC providers — all injectable.                                                                                                                                           |
-| **Zero Opinions on Frameworks** | No dependency on ASP.NET, no DI container requirement. Pure library with optional DI extensions.                                                                                                             |
-| **Test-Driven**                 | Every public API surface covered by unit tests. Integration tests against real networks (testnets). W3C conformance tests run in CI.                                                                         |
-| **zcap-dotnet Compatible**      | Designed to be consumed directly by the zcap-dotnet library for ZCAP-LD signing and verification using DID-resolved keys.                                                                                    |
+| **Key Generation, Not Storage** | Generate and restore keys across Ed25519, secp256k1, P-256, P-384, X25519, and BLS12-381 (G1/G2). Storage is the caller's responsibility via `IKeyStore`.                                                          |
+| **Pluggable Everything**        | Key stores, HTTP clients, Ethereum RPC providers — all injectable.                                                                                                                                                 |
+| **Zero Opinions on Frameworks** | No dependency on ASP.NET, no DI container requirement. Pure library with optional DI extensions.                                                                                                                   |
+| **Test-Driven**                 | Every public API surface covered by unit tests. Integration tests against real networks (testnets). W3C conformance tests run in CI.                                                                               |
+| **zcap-dotnet Compatible**      | Designed to be consumed directly by the zcap-dotnet library for ZCAP-LD signing and verification using DID-resolved keys.                                                                                          |
 
 ### 1.3 Non-Goals
 
@@ -70,12 +70,12 @@ Conformance is validated against the W3C DID Test Suite (https://w3c.github.io/d
 
 ### 2.1 Supported Methods Summary
 
-| Method        | Spec Status            | Create | Resolve | Update         | Deactivate     | Service Endpoints | Key Types                                     |
-| ------------- | ---------------------- | ------ | ------- | -------------- | -------------- | ----------------- | --------------------------------------------- |
+| Method        | Spec Status            | Create | Resolve | Update         | Deactivate     | Service Endpoints | Key Types                                              |
+| ------------- | ---------------------- | ------ | ------- | -------------- | -------------- | ----------------- | ------------------------------------------------------ |
 | **did:key**   | W3C CCG Final          | ✅     | ✅      | ❌ (immutable) | ❌ (immutable) | ❌                | Ed25519, P-256, P-384, secp256k1, X25519, BLS12-381 G2 |
-| **did:peer**  | DIF v2 (numalgo 0,2,4) | ✅     | ✅      | ❌ (static)    | ❌             | ✅ (numalgo 2,4)  | Ed25519, X25519                               |
-| **did:webvh** | DIF v1.0               | ✅     | ✅      | ✅             | ✅             | ✅                | Ed25519 (required), P-256 (optional)          |
-| **did:ethr**  | ERC-1056 / DIF         | ✅     | ✅      | ✅             | ✅             | ✅                | secp256k1 (primary), Ed25519 (delegate)       |
+| **did:peer**  | DIF v2 (numalgo 0,2,4) | ✅     | ✅      | ❌ (static)    | ❌             | ✅ (numalgo 2,4)  | Ed25519, X25519                                        |
+| **did:webvh** | DIF v1.0               | ✅     | ✅      | ✅             | ✅             | ✅                | Ed25519 (required), P-256 (optional)                   |
+| **did:ethr**  | ERC-1056 / DIF         | ✅     | ✅      | ✅             | ✅             | ✅                | secp256k1 (primary), Ed25519 (delegate)                |
 
 ### 2.2 CRUD Operations Per Method
 
@@ -87,7 +87,7 @@ Each method implements the standard DID CRUD lifecycle, but the mechanics differ
 
 **did:webvh** — Full CRUD. "did:web + Verifiable History." Each update appends to a JSON Lines log file (`did.jsonl`) hosted at a web URL. The log is a cryptographically chained sequence of DID Document versions, anchored by a Self-Certifying Identifier (SCID) derived from the initial state. Resolution fetches the log and validates the entire chain. The DID can also be consumed as a plain `did:web` by legacy resolvers (backwards compatible). Supports pre-rotation keys, witnesses (did:key DIDs that co-sign updates), and watchers. Every version links back to its predecessor via a hash chain. Update authorization keys MUST rotate on every version when pre-rotation is active.
 
-**did:ethr** — Full CRUD. Based on the ERC-1056 `EthereumDIDRegistry` smart contract deployed at a well-known address. Any Ethereum address is automatically a valid DID with no registration needed (identity creation is free). Updates are recorded as on-chain events: `changeOwner` for ownership transfer, `setAttribute` for adding service endpoints and additional keys, `addDelegate`/`revokeDelegate` for time-limited delegate keys. Resolution replays contract events (via `eth_getLogs`) to reconstruct the DID Document. Supports meta-transactions (signed by the identity key, submitted by a third-party relayer). The network identifier is part of the DID: `did:ethr:0x1:0xabc...` for mainnet, `did:ethr:sepolia:0xabc...` for testnet. Pluggable RPC endpoint means any EVM chain works.
+**did:ethr** — Full CRUD. Based on the ERC-1056 `EthereumDIDRegistry` smart contract deployed at a well-known address. Any Ethereum address is automatically a valid DID with no registration needed (identity creation is free). Updates are recorded as on-chain events: `changeOwner` for ownership transfer, `setAttribute` for adding service endpoints and additional keys, `addDelegate`/`revokeDelegate` for time-limited delegate keys. Resolution replays contract events (via `eth_getLogs`) to reconstruct the DID Document. Supports meta-transactions (signed by the identity key, submitted by a third-party relayer). The network identifier is part of the DID: `did:ethr:0x1:0xabc...` for mainnet, `did:ethr:sepolia:0xabc...` for testnet. Pluggable RPC endpoint means any EVM chain that an ERC-1056 registry deployed will work.
 
 ---
 
@@ -398,15 +398,15 @@ public abstract class DidMethodBase : IDidMethod, IDidResolver
 
 ### 4.1 Supported Key Types
 
-| Key Type          | Algorithm       | Multicodec Prefix                   | Usage                                                               |
-| ----------------- | --------------- | ----------------------------------- | ------------------------------------------------------------------- |
-| **Ed25519**       | EdDSA           | `0xed` (public), `0x8026` (private) | Signing, verification. Required by did:webvh.                       |
-| **X25519**        | ECDH            | `0xec` (public)                     | Key agreement only. Used in did:peer and did:key.                   |
-| **P-256**         | ECDSA (ES256)   | `0x8024` (public)                   | Signing, verification. Optional in did:webvh, supported in did:key. |
-| **P-384**         | ECDSA (ES384)   | `0x8124` (public)                   | Signing, verification. Supported in did:key. Common in government/enterprise contexts. |
-| **secp256k1**     | ECDSA (ES256K)  | `0xe7` (public)                     | Signing, verification. Required by did:ethr.                        |
-| **BLS12-381 G1**  | BBS (BLS)       | `0xea` (public)                     | BBS+ signature verification (short signatures). Used in did:key.    |
-| **BLS12-381 G2**  | BBS (BLS)       | `0xeb` (public)                     | BBS+ signing, selective disclosure, ZKPs. Primary curve for BBS+ credentials. Used in did:key. |
+| Key Type         | Algorithm      | Multicodec Prefix                   | Usage                                                                                          |
+| ---------------- | -------------- | ----------------------------------- | ---------------------------------------------------------------------------------------------- |
+| **Ed25519**      | EdDSA          | `0xed` (public), `0x8026` (private) | Signing, verification. Required by did:webvh.                                                  |
+| **X25519**       | ECDH           | `0xec` (public)                     | Key agreement only. Used in did:peer and did:key.                                              |
+| **P-256**        | ECDSA (ES256)  | `0x8024` (public)                   | Signing, verification. Optional in did:webvh, supported in did:key.                            |
+| **P-384**        | ECDSA (ES384)  | `0x8124` (public)                   | Signing, verification. Supported in did:key. Common in government/enterprise contexts.         |
+| **secp256k1**    | ECDSA (ES256K) | `0xe7` (public)                     | Signing, verification. Required by did:ethr.                                                   |
+| **BLS12-381 G1** | BBS (BLS)      | `0xea` (public)                     | BBS+ signature verification (short signatures). Used in did:key.                               |
+| **BLS12-381 G2** | BBS (BLS)      | `0xeb` (public)                     | BBS+ signing, selective disclosure, ZKPs. Primary curve for BBS+ credentials. Used in did:key. |
 
 ### 4.2 Key Generator Interface
 
@@ -565,9 +565,9 @@ var signer = await keyStore.CreateSignerAsync("my-update-key");
 /// a single byte span, and supports proof derivation for selective disclosure.
 public interface IBbsCryptoProvider
 {
-    /// Sign an ordered set of messages using a BLS12-381 G2 private key.
-    /// Returns a BBS+ signature over all messages.
-    byte[] Sign(ReadOnlySpan<byte> privateKey, IReadOnlyList<byte[]> messages);
+/// Sign an ordered set of messages using a BLS12-381 G2 private key.
+/// Returns a BBS+ signature over all messages.
+byte[] Sign(ReadOnlySpan<byte> privateKey, IReadOnlyList<byte[]> messages);
 
     /// Verify a BBS+ signature against the full set of messages.
     bool Verify(ReadOnlySpan<byte> publicKey, ReadOnlySpan<byte> signature, IReadOnlyList<byte[]> messages);
@@ -591,8 +591,10 @@ public interface IBbsCryptoProvider
         IReadOnlyList<int> revealedIndices,
         int totalMessageCount,
         ReadOnlySpan<byte> nonce);
+
 }
-```
+
+````
 
 ### 4.4 Implementation Notes
 
@@ -633,7 +635,21 @@ public enum MultibaseEncoding
     Base64Url,  // prefix 'u'
     Base32Lower // prefix 'b'
 }
-```
+
+public static class JwkConverter
+{
+    /// Convert a KeyPair to a public-only JWK.
+    public static JsonWebKey ToPublicJwk(KeyPair keyPair);
+
+    /// Convert a KeyPair to a JWK that includes private key material.
+    public static JsonWebKey ToPrivateJwk(KeyPair keyPair);
+
+    /// Extract the key type and raw public key bytes from a JWK.
+    /// Inverse of ToPublicJwk — determines KeyType from the JWK's "crv" parameter
+    /// and decodes the raw public key bytes from the coordinate parameters.
+    public static (KeyType KeyType, byte[] PublicKey) ExtractPublicKey(JsonWebKey jwk);
+}
+````
 
 ---
 
@@ -653,7 +669,9 @@ Example: `did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK`
 
 ### 5.3 Create
 
-1. Generate (or accept) a key pair of the requested `KeyType`.
+1. If `ExistingKey` is provided, validate that `ExistingKey.KeyType == KeyType` and use
+   `ExistingKey.PublicKey` as the raw public key bytes. Otherwise, generate a new key pair
+   of the requested `KeyType`.
 2. Multicodec-prefix the public key bytes.
 3. Multibase-encode with base58btc (`z` prefix).
 4. The DID is `did:key:` + the multibase string.
@@ -674,15 +692,15 @@ Resolution is entirely deterministic — no network, no state:
 
 ### 5.5 Key Type → Verification Method Type Mapping
 
-| KeyType       | VM Type (Multikey) | VM Type (JWK)    | Curve        |
-| ------------- | ------------------ | ---------------- | ------------ |
-| Ed25519       | `Multikey`         | `JsonWebKey2020` | Ed25519      |
-| X25519        | `Multikey`         | `JsonWebKey2020` | X25519       |
-| P-256         | `Multikey`         | `JsonWebKey2020` | P-256        |
-| P-384         | `Multikey`         | `JsonWebKey2020` | P-384        |
-| secp256k1     | `Multikey`         | `JsonWebKey2020` | secp256k1    |
-| BLS12-381 G1  | `Multikey`         | `JsonWebKey2020` | BLS12-381 G1 |
-| BLS12-381 G2  | `Multikey`         | `JsonWebKey2020` | BLS12-381 G2 |
+| KeyType      | VM Type (Multikey) | VM Type (JWK)    | Curve        |
+| ------------ | ------------------ | ---------------- | ------------ |
+| Ed25519      | `Multikey`         | `JsonWebKey2020` | Ed25519      |
+| X25519       | `Multikey`         | `JsonWebKey2020` | X25519       |
+| P-256        | `Multikey`         | `JsonWebKey2020` | P-256        |
+| P-384        | `Multikey`         | `JsonWebKey2020` | P-384        |
+| secp256k1    | `Multikey`         | `JsonWebKey2020` | secp256k1    |
+| BLS12-381 G1 | `Multikey`         | `JsonWebKey2020` | BLS12-381 G1 |
+| BLS12-381 G2 | `Multikey`         | `JsonWebKey2020` | BLS12-381 G2 |
 
 ### 5.6 BBS+ Key Usage in did:key
 
@@ -698,6 +716,14 @@ The multicodec prefix `0xeb` identifies the key as a BLS12-381 G2 public key (96
 public sealed record DidKeyCreateOptions : DidCreateOptions
 {
     public required KeyType KeyType { get; init; }
+
+    /// Optional: wrap an existing key instead of generating a new one.
+    /// When provided, the did:key is derived from ExistingKey.PublicKey.
+    /// ExistingKey.KeyType must match KeyType (validated at creation time).
+    /// Accepts any ISigner — works with both in-memory KeyPairSigner and
+    /// HSM-backed signers where the private key never leaves the enclave.
+    public ISigner? ExistingKey { get; init; }
+
     public bool EnableEncryptionKeyDerivation { get; init; } = true; // Derive X25519 from Ed25519
     public VerificationMethodRepresentation Representation { get; init; } = VerificationMethodRepresentation.Multikey;
 }
@@ -1236,11 +1262,11 @@ public sealed class ServiceEndpointValue
 
 W3C DID Core §6 defines two distinct JSON-based representations with different production and consumption rules:
 
-| | `application/did+ld+json` (JSON-LD) | `application/did+json` (plain JSON) |
-|---|---|---|
-| **`@context`** | **Required**. MUST start with `"https://www.w3.org/ns/did/v1"`. Additional contexts auto-computed from VM types. | **Omitted**. `@context` has no normative meaning in plain JSON and MUST NOT be required by consumers. |
-| **Properties** | All DID Core properties + JSON-LD keywords | All DID Core properties, no JSON-LD keywords |
-| **When to use** | Interop with JSON-LD processors, Linked Data ecosystems, Verifiable Credentials | Lightweight consumers, REST APIs, internal storage |
+|                 | `application/did+ld+json` (JSON-LD)                                                                              | `application/did+json` (plain JSON)                                                                   |
+| --------------- | ---------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------- |
+| **`@context`**  | **Required**. MUST start with `"https://www.w3.org/ns/did/v1"`. Additional contexts auto-computed from VM types. | **Omitted**. `@context` has no normative meaning in plain JSON and MUST NOT be required by consumers. |
+| **Properties**  | All DID Core properties + JSON-LD keywords                                                                       | All DID Core properties, no JSON-LD keywords                                                          |
+| **When to use** | Interop with JSON-LD processors, Linked Data ecosystems, Verifiable Credentials                                  | Lightweight consumers, REST APIs, internal storage                                                    |
 
 NetDid supports **both** representations. The `DidDocumentSerializer` selects the correct production rules based on a `DidRepresentationContentType` parameter:
 
@@ -1633,13 +1659,13 @@ The W3C DID Test Suite (https://github.com/w3c/did-test-suite) is maintained by 
 
 These match the five suites in the W3C DID Implementation Report (https://w3c.github.io/did-test-suite/):
 
-| Suite                        | What It Tests                                                                                                                                                                                                                                            | NetDid Applicability |
-| ---------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------- |
-| **did-identifier**           | DID syntax: method name is ASCII lowercase, method-specific-id conforms to ABNF, overall DID string matches the grammar.                                                                                                                                 | All 4 methods        |
-| **did-core-properties**      | DID Document properties: `id` is valid DID, `verificationMethod` entries have required fields, `service` entries are well-formed, all verification relationships reference valid VMs. For JSON-LD representations, `@context` must be correct. Also covers consumption (deserialization) — a conforming JSON consumer MUST NOT require `@context`; a JSON-LD consumer MUST verify it. Both MUST handle unknown properties without error. | All 4 methods        |
-| **did-production**           | Serialization (production) of DID Documents per content type. For `application/did+ld+json`: MUST include `@context` with correct entries. For `application/did+json`: MUST NOT include `@context`. Both: property names MUST be strings, values MUST conform to the data model type system. | All 4 methods        |
-| **did-resolution**           | DID Resolution (§7.1): given a DID, the resolver returns a conformant `DidResolutionResult` with correct `didDocument`, `didResolutionMetadata`, and `didDocumentMetadata`. Covers error cases (`notFound`, `invalidDid`, `methodNotSupported`, `deactivated`). | All 4 methods        |
-| **did-url-dereferencing**    | DID URL Dereferencing (§7.2): given a DID URL (DID + optional path, query, and/or fragment), the dereferencer returns the specific resource identified by the URL. Fragment dereferencing returns elements within the DID Document (verification methods, services). Query-based dereferencing supports service endpoint selection. Covers error handling and content type negotiation. | All 4 methods        |
+| Suite                     | What It Tests                                                                                                                                                                                                                                                                                                                                                                                                                            | NetDid Applicability |
+| ------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------- |
+| **did-identifier**        | DID syntax: method name is ASCII lowercase, method-specific-id conforms to ABNF, overall DID string matches the grammar.                                                                                                                                                                                                                                                                                                                 | All 4 methods        |
+| **did-core-properties**   | DID Document properties: `id` is valid DID, `verificationMethod` entries have required fields, `service` entries are well-formed, all verification relationships reference valid VMs. For JSON-LD representations, `@context` must be correct. Also covers consumption (deserialization) — a conforming JSON consumer MUST NOT require `@context`; a JSON-LD consumer MUST verify it. Both MUST handle unknown properties without error. | All 4 methods        |
+| **did-production**        | Serialization (production) of DID Documents per content type. For `application/did+ld+json`: MUST include `@context` with correct entries. For `application/did+json`: MUST NOT include `@context`. Both: property names MUST be strings, values MUST conform to the data model type system.                                                                                                                                             | All 4 methods        |
+| **did-resolution**        | DID Resolution (§7.1): given a DID, the resolver returns a conformant `DidResolutionResult` with correct `didDocument`, `didResolutionMetadata`, and `didDocumentMetadata`. Covers error cases (`notFound`, `invalidDid`, `methodNotSupported`, `deactivated`).                                                                                                                                                                          | All 4 methods        |
+| **did-url-dereferencing** | DID URL Dereferencing (§7.2): given a DID URL (DID + optional path, query, and/or fragment), the dereferencer returns the specific resource identified by the URL. Fragment dereferencing returns elements within the DID Document (verification methods, services). Query-based dereferencing supports service endpoint selection. Covers error handling and content type negotiation.                                                  | All 4 methods        |
 
 ### 12.3 Test Fixture Generation
 
@@ -2023,14 +2049,11 @@ var result = await dereferencer.DereferenceAsync(didUrl);
 if (result.DereferencingMetadata.Error is not null)
     throw new VerificationException($"Cannot dereference {didUrl}: {result.DereferencingMetadata.Error}");
 
+// DereferenceAsync returns a VerificationMethod — the W3C data model with
+// PublicKeyMultibase / PublicKeyJwk. To get verification-ready KeyType + raw bytes,
+// use the convenience wrapper (IVerificationMethodResolver) shown below.
 var vm = result.ContentStream as VerificationMethod
     ?? throw new VerificationException($"Expected VerificationMethod, got {result.ContentStream?.GetType().Name}");
-
-bool signatureValid = cryptoProvider.Verify(
-    vm.KeyType,
-    vm.PublicKeyBytes,
-    invocation.SignedPayload,
-    invocation.Proof.SignatureBytes);
 ```
 
 **Convenience wrapper**: For consumers that only need verification method resolution (a common case), NetDid also provides `IVerificationMethodResolver` — a thin wrapper around `IDidUrlDereferencer` that handles the type extraction:
@@ -2052,7 +2075,8 @@ public sealed record ResolvedVerificationMethod
     public required string Controller { get; init; }
 }
 
-/// Default implementation delegates to IDidUrlDereferencer:
+/// Default implementation delegates to IDidUrlDereferencer and extracts
+/// verification-ready key material from the W3C data-model properties.
 public sealed class DefaultVerificationMethodResolver : IVerificationMethodResolver
 {
     private readonly IDidUrlDereferencer _dereferencer;
@@ -2067,12 +2091,33 @@ public sealed class DefaultVerificationMethodResolver : IVerificationMethodResol
         if (result.ContentStream is not VerificationMethod vm)
             return null;
 
+        // Extract KeyType + raw public key bytes from the representation stored
+        // in the VerificationMethod. Multikey/Multibase is the preferred path;
+        // JWK is the fallback.
+        KeyType keyType;
+        byte[] publicKey;
+
+        if (vm.PublicKeyMultibase is not null)
+        {
+            // Multibase-decode → multicodec-decode → (KeyType, rawKeyBytes)
+            var prefixed = MultibaseEncoder.Decode(vm.PublicKeyMultibase);
+            (keyType, publicKey) = MulticodecEncoder.Decode(prefixed);
+        }
+        else if (vm.PublicKeyJwk is not null)
+        {
+            (keyType, publicKey) = JwkConverter.ExtractPublicKey(vm.PublicKeyJwk);
+        }
+        else
+        {
+            return null; // No extractable key material (e.g., BlockchainAccountId-only)
+        }
+
         return new ResolvedVerificationMethod
         {
             Id = vm.Id,
-            KeyType = vm.KeyType,
-            PublicKey = vm.PublicKeyBytes,
-            Controller = vm.Controller
+            KeyType = keyType,
+            PublicKey = publicKey,
+            Controller = vm.Controller.ToString()
         };
     }
 }
@@ -2081,17 +2126,21 @@ public sealed class DefaultVerificationMethodResolver : IVerificationMethodResol
 ### 13.2 Usage in zcap-dotnet
 
 ```csharp
-// Option A — direct use of IDidUrlDereferencer (preferred, W3C-standard):
+// Option A — direct use of IDidUrlDereferencer (W3C-standard):
+// Returns the VerificationMethod data model (PublicKeyMultibase, PublicKeyJwk, etc.).
+// The caller must extract key material manually — prefer Option B for verification.
 var result = await dereferencer.DereferenceAsync(invocation.Proof.VerificationMethod);
 var vm = result.ContentStream as VerificationMethod;
 
-// Option B — convenience wrapper for simple verification:
-var vm = await verificationMethodResolver.ResolveVerificationMethodAsync(
+// Option B — convenience wrapper (preferred for verification):
+// Returns a ResolvedVerificationMethod with KeyType + raw PublicKey bytes,
+// ready for cryptographic operations.
+var resolved = await verificationMethodResolver.ResolveVerificationMethodAsync(
     invocation.Proof.VerificationMethod);
 
 bool signatureValid = cryptoProvider.Verify(
-    vm.KeyType,
-    vm.PublicKey,
+    resolved.KeyType,
+    resolved.PublicKey,
     invocation.SignedPayload,
     invocation.Proof.SignatureBytes);
 ```
@@ -2445,33 +2494,33 @@ netdid/
 
 ### Phase 1: Core Foundation (Week 1-2)
 
-| Item | Description                                                                         |
-| ---- | ----------------------------------------------------------------------------------- |
-| 1.1  | Monorepo scaffolding: solution, projects, build props, CI pipeline                  |
-| 1.2  | `NetDid.Core`: DID Document model, serialization, DidParser                         |
-| 1.3  | Cryptographic primitives: `IKeyGenerator`, `ICryptoProvider` with Ed25519, P-256, P-384, and secp256k1 |
+| Item | Description                                                                                                              |
+| ---- | ------------------------------------------------------------------------------------------------------------------------ |
+| 1.1  | Monorepo scaffolding: solution, projects, build props, CI pipeline                                                       |
+| 1.2  | `NetDid.Core`: DID Document model, serialization, DidParser                                                              |
+| 1.3  | Cryptographic primitives: `IKeyGenerator`, `ICryptoProvider` with Ed25519, P-256, P-384, and secp256k1                   |
 | 1.3b | BBS+ cryptographic primitives: `IBbsCryptoProvider` with BLS12-381 G1/G2, multi-message sign, derive proof, verify proof |
-| 1.3c | JCS (JSON Canonicalization Scheme, RFC 8785) implementation for Data Integrity Proofs |
-| 1.4  | Multicodec and Multibase encoding/decoding                                          |
-| 1.5  | `IKeyStore` interface + `InMemoryKeyStore`                                          |
-| 1.6  | JWK conversion utilities                                                            |
-| 1.7  | `CompositeDidResolver`, `CachingDidResolver`                                        |
-| 1.8  | Unit tests for all Core code                                                        |
+| 1.3c | JCS (JSON Canonicalization Scheme, RFC 8785) implementation for Data Integrity Proofs                                    |
+| 1.4  | Multicodec and Multibase encoding/decoding                                                                               |
+| 1.5  | `IKeyStore` interface + `InMemoryKeyStore`                                                                               |
+| 1.6  | JWK conversion utilities                                                                                                 |
+| 1.7  | `CompositeDidResolver`, `CachingDidResolver`                                                                             |
+| 1.8  | Unit tests for all Core code                                                                                             |
 
 **Deliverable**: Core library compiles. Key generation, encoding, and DID Document model fully tested.
 
 ### Phase 2: did:key + did:peer (Week 3-4)
 
-| Item | Description                                                              |
-| ---- | ------------------------------------------------------------------------ |
+| Item | Description                                                                                   |
+| ---- | --------------------------------------------------------------------------------------------- |
 | 2.1  | `DidKeyMethod`: create and resolve for Ed25519, X25519, P-256, P-384, secp256k1, BLS12-381 G2 |
-| 2.2  | X25519 derivation from Ed25519                                           |
-| 2.3  | W3C CCG did:key test vectors passing                                     |
-| 2.4  | `DidPeerMethod`: numalgo 0, numalgo 2, numalgo 4                         |
-| 2.5  | Numalgo 2 service abbreviation encoder/decoder                           |
-| 2.6  | DIF did:peer test vectors passing                                        |
-| 2.7  | W3C conformance tests (internal) for both methods                        |
-| 2.8  | W3C DID Test Suite fixture generation for did:key and did:peer           |
+| 2.2  | X25519 derivation from Ed25519                                                                |
+| 2.3  | W3C CCG did:key test vectors passing                                                          |
+| 2.4  | `DidPeerMethod`: numalgo 0, numalgo 2, numalgo 4                                              |
+| 2.5  | Numalgo 2 service abbreviation encoder/decoder                                                |
+| 2.6  | DIF did:peer test vectors passing                                                             |
+| 2.7  | W3C conformance tests (internal) for both methods                                             |
+| 2.8  | W3C DID Test Suite fixture generation for did:key and did:peer                                |
 
 **Deliverable**: did:key and did:peer fully working. First W3C conformance run passes.
 
@@ -2519,18 +2568,18 @@ netdid/
 
 ### Phase 5: W3C Test Suite & Polish (Week 12-14)
 
-| Item | Description                                                     |
-| ---- | --------------------------------------------------------------- |
-| 5.1  | W3C DID Test Suite CLI fixture generator for all 4 methods      |
-| 5.2  | Optional resolution HTTP endpoint for W3C did-resolution suite  |
-| 5.3  | Full W3C DID Test Suite run in CI — all 5 suites, all 4 methods |
-| 5.4  | Fix any conformance failures                                    |
-| 5.5  | `NetDid.Extensions.DependencyInjection` package                 |
+| Item | Description                                                                           |
+| ---- | ------------------------------------------------------------------------------------- |
+| 5.1  | W3C DID Test Suite CLI fixture generator for all 4 methods                            |
+| 5.2  | Optional resolution HTTP endpoint for W3C did-resolution suite                        |
+| 5.3  | Full W3C DID Test Suite run in CI — all 5 suites, all 4 methods                       |
+| 5.4  | Fix any conformance failures                                                          |
+| 5.5  | `NetDid.Extensions.DependencyInjection` package                                       |
 | 5.6  | zcap-dotnet bridge: `IDidUrlDereferencer` + `IVerificationMethodResolver` integration |
-| 5.7  | README, getting-started docs, per-method guides                 |
-| 5.8  | NuGet packaging and publish pipeline                            |
-| 5.9  | Dual-identity pattern documentation and example                 |
-| 5.10 | Performance benchmarks for resolution (each method)             |
+| 5.7  | README, getting-started docs, per-method guides                                       |
+| 5.8  | NuGet packaging and publish pipeline                                                  |
+| 5.9  | Dual-identity pattern documentation and example                                       |
+| 5.10 | Performance benchmarks for resolution (each method)                                   |
 
 **Deliverable**: All W3C tests green for all 4 methods. NuGet packages published. zcap-dotnet integration verified.
 
@@ -2593,14 +2642,14 @@ var signer = new KeyPairSigner(keyPair, cryptoProvider);
 // var signer = await keyStore.CreateSignerAsync("alice-main-key");
 ```
 
-**Step 2: Create the signing identity (did:key).**
+**Step 2: Create the signing identity (did:key) from the SAME key.**
 
 ```csharp
 var didKeyMethod = new DidKeyMethod(keyGen);
 var signingIdentity = await didKeyMethod.CreateAsync(new DidKeyCreateOptions
 {
     KeyType = KeyType.Ed25519,
-    // The key pair is provided or generated internally
+    ExistingKey = signer,  // Same key from Step 1 — did:key is derived from its public key
 });
 // signingIdentity.Did = "did:key:z6Mkf..."
 ```
@@ -2744,26 +2793,26 @@ public sealed record DualIdentityVerification
 
 ## Appendix C: Glossary
 
-| Term                          | Definition                                                                                                                                           |
-| ----------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **DID**                       | Decentralized Identifier — a URI that resolves to a DID Document without a centralized registry.                                                     |
-| **DID Document**              | A document containing public keys, service endpoints, and metadata associated with a DID. Can be represented as `application/did+ld+json` (JSON-LD, with `@context`) or `application/did+json` (plain JSON, without `@context`). |
-| **DID Method**                | A specification defining how to create, resolve, update, and deactivate a specific type of DID (e.g., did:key, did:ethr).                            |
-| **DID URL**                   | A DID plus optional path, query, and/or fragment components. Used to reference specific elements within a DID Document.                              |
-| **Verification Method**       | A public key or other mechanism in a DID Document used to verify digital signatures or perform key agreement.                                        |
-| **Verification Relationship** | The purpose a verification method serves: authentication, assertion, key agreement, capability invocation, or capability delegation.                 |
-| **SCID**                      | Self-Certifying Identifier — used in did:webvh to cryptographically bind the DID to its genesis state.                                               |
-| **ERC-1056**                  | Ethereum Improvement Proposal defining the `EthereumDIDRegistry` smart contract for lightweight identity management.                                 |
-| **Multicodec**                | A self-describing codec prefix system. Prepended to raw key bytes to indicate the key type.                                                          |
-| **Multibase**                 | A self-describing base encoding. The first character indicates the encoding (e.g., `z` = base58btc).                                                 |
-| **Numalgo**                   | "Numeric algorithm" — the variant selector in did:peer (0, 2, or 4), each defining a different generation and resolution algorithm.                  |
-| **ZCAP-LD**                   | Authorization Capabilities for Linked Data — an object-capability security model where capabilities are cryptographically delegatable tokens.        |
+| Term                          | Definition                                                                                                                                                                                                                              |
+| ----------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **DID**                       | Decentralized Identifier — a URI that resolves to a DID Document without a centralized registry.                                                                                                                                        |
+| **DID Document**              | A document containing public keys, service endpoints, and metadata associated with a DID. Can be represented as `application/did+ld+json` (JSON-LD, with `@context`) or `application/did+json` (plain JSON, without `@context`).        |
+| **DID Method**                | A specification defining how to create, resolve, update, and deactivate a specific type of DID (e.g., did:key, did:ethr).                                                                                                               |
+| **DID URL**                   | A DID plus optional path, query, and/or fragment components. Used to reference specific elements within a DID Document.                                                                                                                 |
+| **Verification Method**       | A public key or other mechanism in a DID Document used to verify digital signatures or perform key agreement.                                                                                                                           |
+| **Verification Relationship** | The purpose a verification method serves: authentication, assertion, key agreement, capability invocation, or capability delegation.                                                                                                    |
+| **SCID**                      | Self-Certifying Identifier — used in did:webvh to cryptographically bind the DID to its genesis state.                                                                                                                                  |
+| **ERC-1056**                  | Ethereum Improvement Proposal defining the `EthereumDIDRegistry` smart contract for lightweight identity management.                                                                                                                    |
+| **Multicodec**                | A self-describing codec prefix system. Prepended to raw key bytes to indicate the key type.                                                                                                                                             |
+| **Multibase**                 | A self-describing base encoding. The first character indicates the encoding (e.g., `z` = base58btc).                                                                                                                                    |
+| **Numalgo**                   | "Numeric algorithm" — the variant selector in did:peer (0, 2, or 4), each defining a different generation and resolution algorithm.                                                                                                     |
+| **ZCAP-LD**                   | Authorization Capabilities for Linked Data — an object-capability security model where capabilities are cryptographically delegatable tokens.                                                                                           |
 | **BBS+ / BBS Signatures**     | A pairing-based signature scheme over BLS12-381 that supports multi-message signing, selective disclosure (revealing only chosen attributes), and zero-knowledge proof derivation. Standardized as IETF draft-irtf-cfrg-bbs-signatures. |
-| **BLS12-381**                 | A pairing-friendly elliptic curve with two groups (G1, G2) and a target group (GT). G2 public keys (96 bytes) are used for BBS+ signing. Named after Barreto-Lynn-Scott with a 381-bit field. |
-| **Selective Disclosure**      | The ability for a credential holder to present only specific attributes from a signed credential without revealing the full credential, enabled by BBS+ proof derivation. |
-| **JCS**                       | JSON Canonicalization Scheme (RFC 8785) — deterministic serialization of JSON for signing. Required by the `eddsa-jcs-2022` and `bbs-2023` Data Integrity cryptosuites. |
-| **Dual-Identity Pattern**     | Using a did:key (for signing) paired with a discoverable DID (did:webvh or did:ethr, for service endpoints), linked by shared key material and `alsoKnownAs`. The discoverable DID must be obtained out-of-band (see §A.4). |
-| **HLC**                       | Hybrid Logical Clock — used in the TurtleShell PDS for causal ordering across replicated nodes.                                                      |
-| **CRDT**                      | Conflict-free Replicated Data Type — data structures that can be replicated across nodes and merged without coordination.                            |
+| **BLS12-381**                 | A pairing-friendly elliptic curve with two groups (G1, G2) and a target group (GT). G2 public keys (96 bytes) are used for BBS+ signing. Named after Barreto-Lynn-Scott with a 381-bit field.                                           |
+| **Selective Disclosure**      | The ability for a credential holder to present only specific attributes from a signed credential without revealing the full credential, enabled by BBS+ proof derivation.                                                               |
+| **JCS**                       | JSON Canonicalization Scheme (RFC 8785) — deterministic serialization of JSON for signing. Required by the `eddsa-jcs-2022` and `bbs-2023` Data Integrity cryptosuites.                                                                 |
+| **Dual-Identity Pattern**     | Using a did:key (for signing) paired with a discoverable DID (did:webvh or did:ethr, for service endpoints), linked by shared key material and `alsoKnownAs`. The discoverable DID must be obtained out-of-band (see §A.4).             |
+| **HLC**                       | Hybrid Logical Clock — used in the TurtleShell PDS for causal ordering across replicated nodes.                                                                                                                                         |
+| **CRDT**                      | Conflict-free Replicated Data Type — data structures that can be replicated across nodes and merged without coordination.                                                                                                               |
 
 ---
