@@ -2113,7 +2113,7 @@ var signature = await signer.SignAsync(payload);
 
 ### 13.4 Dual-Identity Pattern in ZCAP Context
 
-When using the dual-identity pattern (see Appendix A), zcap-dotnet signs ZCAPs with the did:key identity but verifiers can discover the TurtleShell PDS endpoint by resolving the discoverable identity (did:webvh or did:ethr) which references the same key material. The ZCAP itself is valid because the key is the same — the DID is just a different pointer to it.
+When using the dual-identity pattern (see Appendix A), zcap-dotnet signs ZCAPs with the did:key identity. The discoverable identity (did:webvh or did:ethr) must be known to the verifier through an out-of-band channel — typically the ZCAP delegation chain or a prior relationship (see §A.4). Once both DIDs are known, `IDualIdentityManager.VerifyLinkAsync` confirms key equivalence and `alsoKnownAs`, and `GetVerifiedServicesAsync` extracts the TurtleShell PDS endpoint. The ZCAP itself is valid because the key is the same — the DID is just a different pointer to it.
 
 ---
 
@@ -2654,36 +2654,54 @@ The discoverable identity's DID Document includes:
 }
 ```
 
-### A.4 Verification Flow
+### A.4 Discovery Prerequisite
 
-When a verifier receives a ZCAP invocation signed by `did:key:z6Mkf...#z6Mkf...`:
+The dual-identity pattern does **not** include a built-in discovery mechanism. DID resolution is one-directional (DID → Document) — there is no reverse index from a `did:key` to the discoverable DIDs that reference it. The verifier must already know the discoverable DID through an **out-of-band channel** before the verification flow begins.
+
+Typical out-of-band channels:
+
+- **ZCAP delegation chain**: When a root ZCAP capability is delegated, the delegation context includes both the signing `did:key` and the discoverable DID. Downstream verifiers receive both through the chain.
+- **Prior relationship**: During onboarding or initial key exchange, the entity shares both their signing and discoverable DIDs (e.g., in a DIDComm introduction, a trust registry entry, or an application-level profile).
+- **Application registry**: The consuming application maintains a mapping of signing DIDs to discoverable DIDs, populated when identities are registered.
+
+NetDid itself is agnostic to how the mapping is established — it only provides the tools to **verify** the link once both DIDs are known.
+
+### A.5 Verification Flow
+
+Given a ZCAP invocation signed by `did:key:z6Mkf...#z6Mkf...` and a previously known discoverable DID `did:webvh:Qm...:alice.example.com`:
 
 1. Resolve `did:key:z6Mkf...` → get the Ed25519 public key.
 2. Verify the ZCAP signature. ✅
-3. If the verifier needs to discover the owner's PDS (for replication, for example), they look up the `alsoKnownAs` relationship:
-   - Check if there's a known `did:webvh` or `did:ethr` that claims `alsoKnownAs: ["did:key:z6Mkf..."]`.
-   - Resolve that discoverable identity → find the `TurtleShellPds` service endpoint.
-4. Verify the discoverable identity's DID Document contains the same public key as the did:key. This proves the same entity controls both identities.
+3. If the verifier needs to discover the owner's PDS (for replication, for example):
+   - Resolve the known discoverable identity `did:webvh:Qm...:alice.example.com`.
+   - Verify that its DID Document contains a verification method with the same public key as the signing `did:key`. This proves the same entity controls both identities.
+   - Verify that `alsoKnownAs` includes the signing `did:key`. This confirms the link is intentional, not coincidental.
+   - Extract the `TurtleShellPds` service endpoint from the resolved DID Document.
 
-### A.5 Security Considerations
+### A.6 Security Considerations
 
 - **Key equivalence verification is REQUIRED**: The verifier MUST confirm that the discoverable identity's DID Document contains a verification method with the same public key as the signing did:key. The `alsoKnownAs` claim alone is insufficient — anyone could claim it.
 - **Bidirectional linking is RECOMMENDED**: Ideally both documents reference each other, but since did:key documents are algorithmic, the link from discoverable → did:key (via `alsoKnownAs`) combined with key equivalence is sufficient.
 - **The signing identity (did:key) is the source of authority**: ZCAPs are bound to it, not to the discoverable identity. The discoverable identity is an index, not an authority.
+- **Out-of-band channel integrity**: The security of the dual-identity pattern depends on the integrity of the channel through which the verifier learns the discoverable DID. If an attacker can substitute a different discoverable DID (one that shares the same key but points to a malicious PDS), the verifier would be misled. Applications SHOULD establish the mapping over an authenticated channel.
 
-### A.6 NetDid Helper
+### A.7 NetDid Helper
 
-NetDid provides a utility for establishing and verifying dual-identity relationships:
+NetDid provides a utility for verifying dual-identity relationships. Both DIDs must be known to the caller — NetDid does not perform discovery:
 
 ```csharp
 public interface IDualIdentityManager
 {
-    /// Verify that two DIDs share the same key material.
-    Task<DualIdentityVerification> VerifyKeyEquivalenceAsync(
+    /// Verify that two DIDs share the same key material and that the discoverable
+    /// identity's alsoKnownAs includes the signing identity.
+    /// Both DIDs must be provided by the caller (obtained out-of-band).
+    Task<DualIdentityVerification> VerifyLinkAsync(
         string signingDid, string discoverableDid, CancellationToken ct = default);
 
     /// Extract service endpoints from a discoverable identity linked to a signing identity.
-    Task<IReadOnlyList<Service>> DiscoverServicesAsync(
+    /// Performs full verification (key equivalence + alsoKnownAs) before returning services.
+    /// Both DIDs must be provided by the caller (obtained out-of-band).
+    Task<IReadOnlyList<Service>> GetVerifiedServicesAsync(
         string signingDid, string discoverableDid, string? serviceType = null, CancellationToken ct = default);
 }
 
@@ -2692,6 +2710,7 @@ public sealed record DualIdentityVerification
     public required bool KeysMatch { get; init; }
     public required bool AlsoKnownAsLinkPresent { get; init; }
     public required string? MatchedKeyId { get; init; }
+    public bool IsValid => KeysMatch && AlsoKnownAsLinkPresent;
 }
 ```
 
@@ -2743,7 +2762,7 @@ public sealed record DualIdentityVerification
 | **BLS12-381**                 | A pairing-friendly elliptic curve with two groups (G1, G2) and a target group (GT). G2 public keys (96 bytes) are used for BBS+ signing. Named after Barreto-Lynn-Scott with a 381-bit field. |
 | **Selective Disclosure**      | The ability for a credential holder to present only specific attributes from a signed credential without revealing the full credential, enabled by BBS+ proof derivation. |
 | **JCS**                       | JSON Canonicalization Scheme (RFC 8785) — deterministic serialization of JSON for signing. Required by the `eddsa-jcs-2022` and `bbs-2023` Data Integrity cryptosuites. |
-| **Dual-Identity Pattern**     | Using a did:key (for signing) paired with a discoverable DID (did:webvh or did:ethr, for service endpoints), linked by shared key material and `alsoKnownAs`. |
+| **Dual-Identity Pattern**     | Using a did:key (for signing) paired with a discoverable DID (did:webvh or did:ethr, for service endpoints), linked by shared key material and `alsoKnownAs`. The discoverable DID must be obtained out-of-band (see §A.4). |
 | **HLC**                       | Hybrid Logical Clock — used in the TurtleShell PDS for causal ordering across replicated nodes.                                                      |
 | **CRDT**                      | Conflict-free Replicated Data Type — data structures that can be replicated across nodes and merged without coordination.                            |
 
