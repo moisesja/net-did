@@ -1,0 +1,30 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <PackageId>NetDid.Core</PackageId>
+    <Version>$(NetDidVersion)</Version>
+    <Authors>Moises E Jaramillo</Authors>
+    <Description>Core abstractions, DID document model, crypto primitives, and encoding for the NetDid multi-method DID library.</Description>
+    <PackageLicenseExpression>Apache-2.0</PackageLicenseExpression>
+    <PackageProjectUrl>https://github.com/moisesja/netdid</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/moisesja/netdid</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+    <IncludeSymbols>true</IncludeSymbols>
+    <SymbolPackageFormat>snupkg</SymbolPackageFormat>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="NetDid.Core.Tests" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="NSec.Cryptography" />
+    <PackageReference Include="NBitcoin.Secp256k1" />
+    <PackageReference Include="Nethermind.Crypto.Bls" />
+    <PackageReference Include="SimpleBase" />
+    <PackageReference Include="Microsoft.Extensions.Caching.Memory" />
+    <PackageReference Include="Microsoft.IdentityModel.Tokens" />
+    <PackageReference Include="Microsoft.SourceLink.GitHub" PrivateAssets="All" />
+  </ItemGroup>
+
+</Project>
