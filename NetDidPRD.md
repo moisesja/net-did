@@ -39,22 +39,22 @@
 
 ### 1.1 Purpose
 
-NetDid is an open-source .NET 10 library that provides a unified, specification-compliant interface for creating, resolving, updating, and deactivating Decentralized Identifiers across four DID methods: `did:key`, `did:peer`, `did:webvh`, and `did:ethr`.
+NetDid is an open-source .NET 10 library that provides a unified, specification-compliant interface for creating, resolving, updating, and deactivating Decentralized Identifiers. Currently implemented: `did:key` and `did:peer`. Planned: `did:webvh` and `did:ethr`.
 
 The library generates cryptographic keys using well-tested elliptic curve algorithms but delegates key storage and lifecycle management to the consuming application through a pluggable `IKeyStore` interface. This separation ensures that NetDid remains focused on DID operations while allowing developers to integrate their own HSM, vault, or file-based key management solution.
 
-Conformance is validated against the W3C DID Test Suite (https://w3c.github.io/did-test-suite/), ensuring that every DID Document produced by NetDid passes all applicable normative assertion tests defined by the W3C DID Working Group.
+> **Note**: W3C DID Test Suite conformance testing is planned but not yet implemented. The current test suite validates DID document structure, serialization, and method-specific behavior through unit tests.
 
 ### 1.2 Design Goals
 
 | Goal                            | Description                                                                                                                                                                                                        |
 | ------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | **Spec Compliance**             | 100% compliant with W3C DID Core 1.0 and each method's published specification. No shortcuts, no partial implementations.                                                                                          |
-| **W3C Test Suite Pass**         | Every DID method implementation MUST pass the W3C DID Test Suite across all five conformance categories: `did-identifier`, `did-core-properties`, `did-production`, `did-resolution`, and `did-url-dereferencing`. |
+| **W3C Test Suite Pass** _(planned)_ | Every DID method implementation should pass the W3C DID Test Suite conformance categories. Not yet integrated — tracked as a future milestone.                                                                   |
 | **Key Generation, Not Storage** | Generate and restore keys across Ed25519, secp256k1, P-256, P-384, X25519, and BLS12-381 (G1/G2). Storage is the caller's responsibility via `IKeyStore`.                                                          |
 | **Pluggable Everything**        | Key stores, HTTP clients, Ethereum RPC providers — all injectable.                                                                                                                                                 |
 | **Zero Opinions on Frameworks** | No dependency on ASP.NET, no DI container requirement. Pure library with optional DI extensions.                                                                                                                   |
-| **Test-Driven**                 | Every public API surface covered by unit tests. Integration tests against real networks (testnets). W3C conformance tests run in CI.                                                                               |
+| **Test-Driven**                 | Every public API surface covered by unit tests. Integration tests against real networks (testnets) planned for `did:webvh` and `did:ethr`.                                                                        |
 | **zcap-dotnet Compatible**      | Designed to be consumed directly by the zcap-dotnet library for ZCAP-LD signing and verification using DID-resolved keys.                                                                                          |
 
 ### 1.3 Non-Goals
@@ -70,12 +70,12 @@ Conformance is validated against the W3C DID Test Suite (https://w3c.github.io/d
 
 ### 2.1 Supported Methods Summary
 
-| Method        | Spec Status            | Create | Resolve | Update         | Deactivate     | Service Endpoints | Key Types                                              |
-| ------------- | ---------------------- | ------ | ------- | -------------- | -------------- | ----------------- | ------------------------------------------------------ |
-| **did:key**   | W3C CCG Final          | ✅     | ✅      | ❌ (immutable) | ❌ (immutable) | ❌                | Ed25519, P-256, P-384, secp256k1, X25519, BLS12-381 G2 |
-| **did:peer**  | DIF v2 (numalgo 0,2,4) | ✅     | ✅      | ❌ (static)    | ❌             | ✅ (numalgo 2,4)  | Ed25519, X25519                                        |
-| **did:webvh** | DIF v1.0               | ✅     | ✅      | ✅             | ✅             | ✅                | Ed25519 (required), P-256 (optional)                   |
-| **did:ethr**  | ERC-1056 / DIF         | ✅     | ✅      | ✅             | ✅             | ✅                | secp256k1 (primary), Ed25519 (delegate)                |
+| Method        | Status          | Spec Status            | Create | Resolve | Update         | Deactivate     | Service Endpoints | Key Types                                              |
+| ------------- | --------------- | ---------------------- | ------ | ------- | -------------- | -------------- | ----------------- | ------------------------------------------------------ |
+| **did:key**   | ✅ Implemented  | W3C CCG Final          | ✅     | ✅      | ❌ (immutable) | ❌ (immutable) | ❌                | Ed25519, P-256, P-384, secp256k1, X25519, BLS12-381 G2 |
+| **did:peer**  | ✅ Implemented  | DIF v2 (numalgo 0,2,4) | ✅     | ✅      | ❌ (static)    | ❌             | ✅ (numalgo 2,4)  | Ed25519, X25519                                        |
+| **did:webvh** | 🔲 Planned     | DIF v1.0               | ✅     | ✅      | ✅             | ✅             | ✅                | Ed25519 (required), P-256 (optional)                   |
+| **did:ethr**  | 🔲 Planned     | ERC-1056 / DIF         | ✅     | ✅      | ✅             | ✅             | ✅                | secp256k1 (primary), Ed25519 (delegate)                |
 
 ### 2.2 CRUD Operations Per Method
 
