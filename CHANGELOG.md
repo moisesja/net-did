@@ -16,6 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **DID parser validation**: `DidParser.IsValid` now enforces W3C DID Core ABNF — rejects DID URLs (fragments, queries, paths, parameters), spaces, and other illegal characters. The `Did` value object now truly guarantees syntactic validity.
 - **DID URL parameter parsing**: `DidParser.ParseDidUrl` now correctly parses DID parameters (`;param=value`), modeled via new `DidUrl.Parameters` property.
 - **Private JWK key leak**: `DidDocumentSerializer` no longer emits private key member `d` from `publicKeyJwk`. Only public JWK members (`kty`, `crv`, `x`, `y`) are serialized.
+- **JSON-LD context objects**: Object-valued `@context` entries now round-trip correctly through serialization and deserialization. Previously they were dropped or caused `JsonException`.
 
 ## [0.2.0] - 2026-03-08
 

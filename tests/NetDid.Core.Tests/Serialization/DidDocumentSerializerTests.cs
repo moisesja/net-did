@@ -423,4 +423,53 @@ public class DidDocumentSerializerTests
         restored.VerificationMethod[0].PublicKeyJwk!.Y.Should().Be("public-y");
         restored.VerificationMethod[0].PublicKeyJwk!.D.Should().BeNull();
     }
+
+    // --- JSON-LD context objects ---
+
+    [Fact]
+    public void Deserialize_ObjectValuedContext_DoesNotThrow()
+    {
+        var json = """
+        {
+          "@context": [
+            "https://www.w3.org/ns/did/v1",
+            { "example": "https://example.com/ns#" }
+          ],
+          "id": "did:example:123"
+        }
+        """;
+
+        var doc = DidDocumentSerializer.Deserialize(json, DidContentTypes.JsonLd);
+
+        doc.Id.Value.Should().Be("did:example:123");
+        doc.Context.Should().HaveCount(2);
+        doc.Context![0].Should().Be("https://www.w3.org/ns/did/v1");
+        doc.Context[1].Should().BeOfType<JsonElement>();
+    }
+
+    [Fact]
+    public void Serialize_ObjectValuedContext_RoundTrips()
+    {
+        var objContext = JsonDocument.Parse("""{"example":"https://example.com/ns#"}""").RootElement.Clone();
+
+        var doc = new DidDocument
+        {
+            Id = new Did("did:example:123"),
+            Context =
+            [
+                "https://www.w3.org/ns/did/v1",
+                objContext
+            ]
+        };
+
+        var json = DidDocumentSerializer.Serialize(doc, DidContentTypes.JsonLd);
+        json.Should().Contain("\"example\":\"https://example.com/ns#\"");
+
+        var restored = DidDocumentSerializer.Deserialize(json, DidContentTypes.JsonLd);
+        restored.Context.Should().HaveCount(2);
+        restored.Context![0].Should().Be("https://www.w3.org/ns/did/v1");
+
+        var restoredObj = (JsonElement)restored.Context[1];
+        restoredObj.GetProperty("example").GetString().Should().Be("https://example.com/ns#");
+    }
 }

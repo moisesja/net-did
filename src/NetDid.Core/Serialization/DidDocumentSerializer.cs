@@ -97,9 +97,9 @@ public static class DidDocumentSerializer
     {
         var contexts = new List<object> { "https://www.w3.org/ns/did/v1" };
 
-        if (doc.VerificationMethod is null) return contexts;
-
-        var vmTypes = doc.VerificationMethod.Select(vm => vm.Type).Distinct().ToHashSet();
+        var vmTypes = new HashSet<string>();
+        if (doc.VerificationMethod is not null)
+            vmTypes = doc.VerificationMethod.Select(vm => vm.Type).Distinct().ToHashSet();
 
         // Also check embedded VMs in relationships
         AddEmbeddedVmTypes(doc.Authentication, vmTypes);
@@ -115,14 +115,22 @@ public static class DidDocumentSerializer
         if (vmTypes.Any(t => t.StartsWith("EcdsaSecp256k1")))
             contexts.Add("https://w3id.org/security/suites/secp256k1-2019/v1");
 
-        // Append any additional context URIs from the document
+        // Append any additional context entries (strings or JSON objects) from the document
         if (doc.Context is not null)
         {
             foreach (var ctx in doc.Context)
             {
-                var ctxStr = ctx?.ToString();
-                if (ctxStr is not null && !contexts.Any(c => c.ToString() == ctxStr))
-                    contexts.Add(ctx!);
+                if (ctx is null) continue;
+                if (ctx is string ctxStr)
+                {
+                    if (!contexts.Any(c => c is string s && s == ctxStr))
+                        contexts.Add(ctxStr);
+                }
+                else
+                {
+                    // Object-valued contexts (JsonElement) — always add
+                    contexts.Add(ctx);
+                }
             }
         }
 
@@ -233,15 +241,22 @@ public static class DidDocumentSerializer
 
         private static void WriteContextArray(Utf8JsonWriter writer, List<object> contexts)
         {
-            if (contexts.Count == 1)
+            if (contexts.Count == 1 && contexts[0] is string singleStr)
             {
-                writer.WriteStringValue(contexts[0].ToString());
+                writer.WriteStringValue(singleStr);
                 return;
             }
 
             writer.WriteStartArray();
             foreach (var ctx in contexts)
-                writer.WriteStringValue(ctx.ToString());
+            {
+                if (ctx is string str)
+                    writer.WriteStringValue(str);
+                else if (ctx is JsonElement element)
+                    element.WriteTo(writer);
+                else
+                    writer.WriteStringValue(ctx.ToString());
+            }
             writer.WriteEndArray();
         }
 
@@ -467,7 +482,15 @@ public static class DidDocumentSerializer
                 if (ctxProp.ValueKind == JsonValueKind.String)
                     context.Add(ctxProp.GetString()!);
                 else if (ctxProp.ValueKind == JsonValueKind.Array)
-                    context.AddRange(ctxProp.EnumerateArray().Select(e => (object)e.GetString()!));
+                {
+                    foreach (var elem in ctxProp.EnumerateArray())
+                    {
+                        if (elem.ValueKind == JsonValueKind.String)
+                            context.Add(elem.GetString()!);
+                        else
+                            context.Add(elem.Clone());
+                    }
+                }
             }
 
             List<string>? alsoKnownAs = null;
