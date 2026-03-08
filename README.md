@@ -7,7 +7,7 @@ A specification-compliant .NET library for Decentralized Identifiers (DIDs). Net
 
 ## Features
 
-- **Four DID methods**: `did:key`, `did:peer`, `did:webvh`, `did:ethr`
+- **DID methods**: `did:key` and `did:peer` (implemented), `did:webvh` and `did:ethr` (planned)
 - **Seven key types**: Ed25519, X25519, P-256, P-384, secp256k1, BLS12-381 G1/G2
 - **BBS+ signatures**: Multi-message signing with selective disclosure proofs (IETF draft-10)
 - **W3C DID Core 1.0** compliant DID Document model and serialization
@@ -21,6 +21,8 @@ A specification-compliant .NET library for Decentralized Identifiers (DIDs). Net
 
 ```bash
 dotnet add package NetDid.Core
+dotnet add package NetDid.Method.Key    # did:key method
+dotnet add package NetDid.Method.Peer   # did:peer method
 ```
 
 > **Note**: NetDid targets .NET 10. Ensure you have the [.NET 10 SDK](https://dotnet.microsoft.com/download/dotnet/10.0) installed.
@@ -38,33 +40,213 @@ var keyPair = keyGen.Generate(KeyType.Ed25519);
 Console.WriteLine($"Public key (multibase): {keyPair.MultibasePublicKey}");
 ```
 
-### Build a DID Document
+### Sign and Verify Data
 
 ```csharp
-using NetDid.Core.Model;
+var crypto = new DefaultCryptoProvider();
+var signer = new KeyPairSigner(keyPair, crypto);
 
-var doc = new DidDocument
-{
-    Id = new Did("did:example:123"),
-    Controller = new List<Did> { new("did:example:123") },
-    VerificationMethod = new List<VerificationMethod>
-    {
-        new()
-        {
-            Id = "did:example:123#key-1",
-            Type = "Multikey",
-            Controller = new Did("did:example:123"),
-            PublicKeyMultibase = keyPair.MultibasePublicKey
-        }
-    },
-    Authentication = new List<VerificationRelationshipEntry>
-    {
-        VerificationRelationshipEntry.FromReference("did:example:123#key-1")
-    }
-};
+byte[] data = "Hello, DIDs!"u8.ToArray();
+byte[] signature = await signer.SignAsync(data);
+
+bool valid = crypto.Verify(KeyType.Ed25519, keyPair.PublicKey, data, signature);
 ```
 
-### Serialize a DID Document
+## did:key
+
+`did:key` is a deterministic, self-certifying DID method where the public key is encoded directly in the DID string. No network interaction is needed — resolution is purely algorithmic.
+
+### Create a did:key
+
+```csharp
+using NetDid.Core.Crypto;
+using NetDid.Method.Key;
+
+var keyGen = new DefaultKeyGenerator();
+var didKey = new DidKeyMethod(keyGen);
+
+// Create with Ed25519 (most common)
+var result = await didKey.CreateAsync(new DidKeyCreateOptions
+{
+    KeyType = KeyType.Ed25519
+});
+
+Console.WriteLine(result.Did);
+// Output: did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK
+```
+
+Ed25519 keys automatically derive an X25519 key agreement key, so the DID Document will contain two verification methods: one for signing (Ed25519) and one for encryption (X25519).
+
+### Resolve a did:key
+
+```csharp
+var resolved = await didKey.ResolveAsync("did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK");
+var doc = resolved.DidDocument!;
+
+Console.WriteLine($"VMs: {doc.VerificationMethod!.Count}");          // 2 (Ed25519 + X25519)
+Console.WriteLine($"Auth: {doc.Authentication!.Count}");              // 1
+Console.WriteLine($"Key Agreement: {doc.KeyAgreement!.Count}");       // 1
+```
+
+### Use an existing key (HSM / vault compatible)
+
+```csharp
+var crypto = new DefaultCryptoProvider();
+var existingKeyPair = keyGen.Generate(KeyType.P256);
+var signer = new KeyPairSigner(existingKeyPair, crypto);
+
+var result = await didKey.CreateAsync(new DidKeyCreateOptions
+{
+    KeyType = KeyType.P256,
+    ExistingKey = signer   // Works with any ISigner — HSM, vault, or in-memory
+});
+```
+
+### JsonWebKey2020 representation
+
+```csharp
+var result = await didKey.CreateAsync(new DidKeyCreateOptions
+{
+    KeyType = KeyType.Ed25519,
+    Representation = VerificationMethodRepresentation.JsonWebKey2020
+});
+// VM type: "JsonWebKey2020" with "publicKeyJwk" property
+```
+
+### BLS12-381 G2 for selective disclosure
+
+```csharp
+var result = await didKey.CreateAsync(new DidKeyCreateOptions
+{
+    KeyType = KeyType.Bls12381G2
+});
+// assertionMethod: yes (credential issuance with BBS+)
+// authentication: no (BBS+ not suitable for challenge-response auth)
+```
+
+### Supported key types
+
+| Key Type | Multicodec | VM Relationships |
+|----------|-----------|------------------|
+| Ed25519 | `0xed` | authentication, assertionMethod, capabilityInvocation, capabilityDelegation + X25519 keyAgreement |
+| X25519 | `0xec` | keyAgreement only |
+| P-256 | `0x8024` | authentication, assertionMethod, capabilityInvocation, capabilityDelegation |
+| P-384 | `0x8124` | authentication, assertionMethod, capabilityInvocation, capabilityDelegation |
+| secp256k1 | `0xe7` | authentication, assertionMethod, capabilityInvocation, capabilityDelegation |
+| BLS12-381 G1 | `0xea` | assertionMethod, capabilityInvocation |
+| BLS12-381 G2 | `0xeb` | assertionMethod, capabilityInvocation |
+
+## did:peer
+
+`did:peer` is designed for peer-to-peer interactions where DIDs don't need to be published to a ledger. Three numalgo variants are supported.
+
+### Numalgo 0 — Inception key
+
+Functionally identical to `did:key` but with a `did:peer:0` prefix. Useful when you want peer DID semantics with a single key.
+
+```csharp
+using NetDid.Core.Crypto;
+using NetDid.Method.Peer;
+
+var keyGen = new DefaultKeyGenerator();
+var didPeer = new DidPeerMethod(keyGen);
+
+var result = await didPeer.CreateAsync(new DidPeerCreateOptions
+{
+    Numalgo = PeerNumalgo.Zero,
+    InceptionKeyType = KeyType.Ed25519
+});
+
+Console.WriteLine(result.Did);
+// Output: did:peer:0z6MkpTHR8VNsBxYAAWHut2Geadd9jSwuBV8xRoAnwWsdvktH
+```
+
+### Numalgo 2 — Inline keys and services (DIDComm)
+
+The most practical variant for DIDComm messaging. Keys and service endpoints are encoded directly in the DID string.
+
+```csharp
+var crypto = new DefaultCryptoProvider();
+var authKey = keyGen.Generate(KeyType.Ed25519);
+var agreeKey = keyGen.Generate(KeyType.X25519);
+
+var result = await didPeer.CreateAsync(new DidPeerCreateOptions
+{
+    Numalgo = PeerNumalgo.Two,
+    Keys =
+    [
+        new PeerKeyPurpose(new KeyPairSigner(authKey, crypto), PeerPurpose.Authentication),
+        new PeerKeyPurpose(new KeyPairSigner(agreeKey, crypto), PeerPurpose.KeyAgreement)
+    ],
+    Services =
+    [
+        new Service
+        {
+            Id = "#didcomm",
+            Type = "DIDCommMessaging",
+            ServiceEndpoint = ServiceEndpointValue.FromUri("https://example.com/didcomm")
+        }
+    ]
+});
+
+Console.WriteLine(result.Did);
+// Output: did:peer:2.Vz6Mkf5r...Az6LSb...SeyJ0IjoiZG0i...
+```
+
+Resolution decodes everything from the DID string — no network call needed:
+
+```csharp
+var resolved = await didPeer.ResolveAsync(result.Did.Value);
+var doc = resolved.DidDocument!;
+
+Console.WriteLine(doc.Service![0].Type);                    // "DIDCommMessaging"
+Console.WriteLine(doc.Service[0].ServiceEndpoint.Uri);      // "https://example.com/didcomm"
+```
+
+Service types are abbreviated in the DID string per the DIF spec (`DIDCommMessaging` → `dm`, `type` → `t`, `serviceEndpoint` → `s`).
+
+### Numalgo 4 — Hash-based short/long form
+
+Uses a SHA-256 hash as the short form and encodes the full input document as the long form. The long form is exchanged initially; subsequent interactions use the short form.
+
+```csharp
+var peer4Key = keyGen.Generate(KeyType.Ed25519);
+var inputDoc = new DidDocument
+{
+    Id = new Did("did:peer:placeholder"),
+    VerificationMethod =
+    [
+        new VerificationMethod
+        {
+            Id = "#key-0",
+            Type = "Multikey",
+            Controller = new Did("did:peer:placeholder"),
+            PublicKeyMultibase = peer4Key.MultibasePublicKey
+        }
+    ],
+    Authentication =
+    [
+        VerificationRelationshipEntry.FromReference("#key-0")
+    ]
+};
+
+var result = await didPeer.CreateAsync(new DidPeerCreateOptions
+{
+    Numalgo = PeerNumalgo.Four,
+    InputDocument = inputDoc
+});
+
+// Long-form DID (exchanged initially)
+Console.WriteLine(result.Did);
+// did:peer:4zQm...:<base64url-encoded-document>
+
+// Resolution verifies the hash matches the encoded document
+var resolved = await didPeer.ResolveAsync(result.Did.Value);
+```
+
+Short-form-only resolution returns `notFound` (requires prior long-form exchange).
+
+## Serialization
 
 ```csharp
 using NetDid.Core.Serialization;
@@ -79,21 +261,7 @@ string json = DidDocumentSerializer.Serialize(doc, DidContentTypes.Json);
 DidDocument restored = DidDocumentSerializer.Deserialize(jsonLd, DidContentTypes.JsonLd);
 ```
 
-### Sign and Verify Data
-
-```csharp
-using NetDid.Core.Crypto;
-
-var crypto = new DefaultCryptoProvider();
-var signer = new KeyPairSigner(keyPair, crypto);
-
-byte[] data = "Hello, DIDs!"u8.ToArray();
-byte[] signature = await signer.SignAsync(data);
-
-bool valid = crypto.Verify(KeyType.Ed25519, keyPair.PublicKey, data, signature);
-```
-
-### Use the In-Memory Key Store
+## Key Store
 
 ```csharp
 using NetDid.Core.KeyStore;
@@ -138,22 +306,27 @@ DID string
 ```
 netdid/
 ├── src/
-│   └── NetDid.Core/
-│       ├── Crypto/              # Key types, providers, signers
-│       │   ├── Jcs/             # JSON Canonicalization (RFC 8785)
-│       │   └── Native/          # P/Invoke FFI declarations
-│       ├── Encoding/            # Multibase, multicodec, Base58, Base64Url
-│       ├── Exceptions/          # Domain-specific exception hierarchy
-│       ├── Jwk/                 # JWK <-> raw key conversion
-│       ├── KeyStore/            # InMemoryKeyStore implementation
-│       ├── Model/               # DID Document, result types, options
-│       ├── Parsing/             # DID syntax validation and URL parsing
-│       ├── Resolution/          # Composite, caching, and URL dereferencing
-│       └── Serialization/       # DID Document JSON/JSON-LD serializer
+│   ├── NetDid.Core/                # Core abstractions, crypto, encoding, serialization
+│   │   ├── Crypto/                 # Key types, providers, signers
+│   │   │   ├── Jcs/                # JSON Canonicalization (RFC 8785)
+│   │   │   └── Native/             # P/Invoke FFI declarations
+│   │   ├── Exceptions/             # Domain-specific exception hierarchy
+│   │   ├── Jwk/                    # JWK <-> raw key conversion
+│   │   ├── KeyStore/               # InMemoryKeyStore implementation
+│   │   ├── Model/                  # DID Document, result types, options
+│   │   ├── Parsing/                # DID syntax validation and URL parsing
+│   │   ├── Resolution/             # Composite, caching, and URL dereferencing
+│   │   └── Serialization/          # DID Document JSON/JSON-LD serializer
+│   ├── NetDid.Method.Key/          # did:key method implementation
+│   └── NetDid.Method.Peer/         # did:peer method (numalgo 0, 2, 4)
 ├── tests/
-│   └── NetDid.Core.Tests/       # 219 unit tests
-├── Directory.Build.props        # Shared build settings (net10.0)
-├── Directory.Packages.props     # Central NuGet version management
+│   ├── NetDid.Core.Tests/          # 208 unit tests
+│   ├── NetDid.Method.Key.Tests/    # 22 tests
+│   └── NetDid.Method.Peer.Tests/   # 17 tests
+├── samples/
+│   └── NetDid.Samples/             # Runnable usage examples
+├── Directory.Build.props            # Shared build settings (net10.0)
+├── Directory.Packages.props         # Central NuGet version management
 └── netdid.sln
 ```
 
@@ -169,6 +342,12 @@ dotnet build
 dotnet test
 ```
 
+## Samples
+
+```bash
+dotnet run --project samples/NetDid.Samples
+```
+
 ## Roadmap
 
 NetDid is developed in four phases (see [NetDidPRD.md](NetDidPRD.md) for full details):
@@ -176,7 +355,7 @@ NetDid is developed in four phases (see [NetDidPRD.md](NetDidPRD.md) for full de
 | Phase | Scope | Status |
 |-------|-------|--------|
 | **I** | Core Foundation — DID Document model, crypto primitives, encoding, serialization, resolver infrastructure | Complete |
-| **II** | `did:key` and `did:peer` method implementations | Planned |
+| **II** | `did:key` and `did:peer` method implementations | Complete |
 | **III** | `did:webvh` method implementation | Planned |
 | **IV** | `did:ethr` method implementation | Planned |
 

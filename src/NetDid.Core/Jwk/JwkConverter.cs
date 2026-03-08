@@ -9,6 +9,23 @@ namespace NetDid.Core.Jwk;
 /// </summary>
 public static class JwkConverter
 {
+    /// <summary>Convert a key type and raw public key bytes to a public-only JWK.</summary>
+    public static JsonWebKey ToPublicJwk(KeyType keyType, byte[] publicKey)
+    {
+        ArgumentNullException.ThrowIfNull(publicKey);
+        return keyType switch
+        {
+            KeyType.Ed25519 => CreateOkpJwk("Ed25519", publicKey),
+            KeyType.X25519 => CreateOkpJwk("X25519", publicKey),
+            KeyType.P256 => CreateEcJwk("P-256", publicKey),
+            KeyType.P384 => CreateEcJwk("P-384", publicKey),
+            KeyType.Secp256k1 => CreateEcJwk("secp256k1", publicKey),
+            KeyType.Bls12381G1 => CreateOkpJwk("BLS12381G1", publicKey),
+            KeyType.Bls12381G2 => CreateOkpJwk("BLS12381G2", publicKey),
+            _ => throw new ArgumentException($"Unsupported key type: {keyType}")
+        };
+    }
+
     /// <summary>Convert a KeyPair to a public-only JWK.</summary>
     public static JsonWebKey ToPublicJwk(KeyPair keyPair)
     {

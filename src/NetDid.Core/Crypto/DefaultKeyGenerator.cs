@@ -83,6 +83,43 @@ public sealed class DefaultKeyGenerator : IKeyGenerator
         };
     }
 
+    public PublicKeyReference DeriveX25519PublicKeyFromEd25519(ReadOnlySpan<byte> ed25519PublicKey)
+    {
+        if (ed25519PublicKey.Length != 32)
+            throw new ArgumentException("Ed25519 public key must be 32 bytes.", nameof(ed25519PublicKey));
+
+        // Convert Ed25519 public key (Edwards form) to X25519 public key (Montgomery form).
+        // The birational map is: u = (1 + y) / (1 - y) mod p
+        // where y is the y-coordinate encoded in the Ed25519 public key (little-endian),
+        // and p = 2^255 - 19.
+        var yBytes = ed25519PublicKey.ToArray();
+        yBytes[31] &= 0x7F; // Clear the sign bit to get y
+
+        var p = System.Numerics.BigInteger.Pow(2, 255) - 19;
+        var y = new System.Numerics.BigInteger(yBytes, isUnsigned: true, isBigEndian: false);
+
+        // u = (1 + y) * modInverse(1 - y, p) mod p
+        var numerator = (1 + y) % p;
+        var denominator = (p + 1 - y) % p; // (1 - y) mod p, ensuring positive
+        var u = numerator * ModInverse(denominator, p) % p;
+        if (u < 0) u += p;
+
+        // Encode u as 32 bytes little-endian
+        var uBytes = u.ToByteArray(isUnsigned: true, isBigEndian: false);
+        var result = new byte[32];
+        uBytes.AsSpan(0, Math.Min(uBytes.Length, 32)).CopyTo(result);
+
+        return new PublicKeyReference
+        {
+            KeyType = KeyType.X25519,
+            PublicKey = result
+        };
+    }
+
+    /// <summary>Modular inverse via Fermat's little theorem: a^(p-2) mod p.</summary>
+    private static System.Numerics.BigInteger ModInverse(System.Numerics.BigInteger a, System.Numerics.BigInteger m)
+        => System.Numerics.BigInteger.ModPow(a, m - 2, m);
+
     // --- Ed25519 ---
 
     private static KeyPair GenerateEd25519()

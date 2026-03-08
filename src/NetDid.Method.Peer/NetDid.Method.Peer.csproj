@@ -1,0 +1,24 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <PackageId>NetDid.Method.Peer</PackageId>
+    <Version>$(NetDidVersion)</Version>
+    <Authors>Moises E Jaramillo</Authors>
+    <Description>did:peer method implementation for the NetDid multi-method DID library.</Description>
+    <PackageLicenseExpression>Apache-2.0</PackageLicenseExpression>
+    <PackageProjectUrl>https://github.com/moisesja/netdid</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/moisesja/netdid</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+    <IncludeSymbols>true</IncludeSymbols>
+    <SymbolPackageFormat>snupkg</SymbolPackageFormat>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="NetDid.Method.Peer.Tests" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="../NetDid.Core/NetDid.Core.csproj" />
+  </ItemGroup>
+
+</Project>

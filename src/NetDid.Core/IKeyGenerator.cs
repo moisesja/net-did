@@ -15,4 +15,10 @@ public interface IKeyGenerator
 
     /// <summary>Derive an X25519 key agreement key from an Ed25519 key pair.</summary>
     KeyPair DeriveX25519FromEd25519(KeyPair ed25519KeyPair);
+
+    /// <summary>
+    /// Derive an X25519 public key from an Ed25519 public key using the birational map.
+    /// Used during did:key resolution when only the public key is available.
+    /// </summary>
+    PublicKeyReference DeriveX25519PublicKeyFromEd25519(ReadOnlySpan<byte> ed25519PublicKey);
 }
