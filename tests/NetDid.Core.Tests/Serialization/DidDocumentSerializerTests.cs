@@ -357,4 +357,70 @@ public class DidDocumentSerializerTests
         restored.VerificationMethod![0].PublicKeyMultibase
             .Should().Be("z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK");
     }
+
+    // --- Security: private key stripping ---
+
+    [Fact]
+    public void Serialize_JwkWithPrivateKey_DoesNotEmitD()
+    {
+        var doc = new DidDocument
+        {
+            Id = new Did("did:example:123"),
+            VerificationMethod =
+            [
+                new VerificationMethod
+                {
+                    Id = "did:example:123#key-1",
+                    Type = "JsonWebKey2020",
+                    Controller = new Did("did:example:123"),
+                    PublicKeyJwk = new JsonWebKey
+                    {
+                        Kty = "OKP",
+                        Crv = "Ed25519",
+                        X = "public-x-value",
+                        D = "private-d-value"
+                    }
+                }
+            ]
+        };
+
+        var json = DidDocumentSerializer.Serialize(doc, DidContentTypes.Json);
+
+        json.Should().Contain("\"x\":\"public-x-value\"");
+        json.Should().NotContain("\"d\":");
+        json.Should().NotContain("private-d-value");
+    }
+
+    [Fact]
+    public void Serialize_JwkWithPrivateKey_RoundTripsPublicOnly()
+    {
+        var doc = new DidDocument
+        {
+            Id = new Did("did:example:123"),
+            VerificationMethod =
+            [
+                new VerificationMethod
+                {
+                    Id = "did:example:123#key-1",
+                    Type = "JsonWebKey2020",
+                    Controller = new Did("did:example:123"),
+                    PublicKeyJwk = new JsonWebKey
+                    {
+                        Kty = "EC",
+                        Crv = "P-256",
+                        X = "public-x",
+                        Y = "public-y",
+                        D = "private-d"
+                    }
+                }
+            ]
+        };
+
+        var json = DidDocumentSerializer.Serialize(doc, DidContentTypes.Json);
+        var restored = DidDocumentSerializer.Deserialize(json, DidContentTypes.Json);
+
+        restored.VerificationMethod![0].PublicKeyJwk!.X.Should().Be("public-x");
+        restored.VerificationMethod[0].PublicKeyJwk!.Y.Should().Be("public-y");
+        restored.VerificationMethod[0].PublicKeyJwk!.D.Should().BeNull();
+    }
 }

@@ -311,12 +311,12 @@ public static class DidDocumentSerializer
 
         private static void WriteJwk(Utf8JsonWriter writer, JsonWebKey jwk)
         {
+            // Only write public JWK members — never emit private key material (d, p, q, dp, dq, qi, k, oth).
             writer.WriteStartObject();
             if (jwk.Kty is not null) writer.WriteString("kty", jwk.Kty);
             if (jwk.Crv is not null) writer.WriteString("crv", jwk.Crv);
             if (jwk.X is not null) writer.WriteString("x", jwk.X);
             if (jwk.Y is not null) writer.WriteString("y", jwk.Y);
-            if (jwk.D is not null) writer.WriteString("d", jwk.D);
             writer.WriteEndObject();
         }
     }
