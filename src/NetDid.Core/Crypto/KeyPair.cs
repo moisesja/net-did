@@ -1,5 +1,5 @@
 using Microsoft.IdentityModel.Tokens;
-using NetDid.Core.Encoding;
+using NetCid;
 using NetDid.Core.Jwk;
 
 namespace NetDid.Core.Crypto;
@@ -13,7 +13,8 @@ public sealed class KeyPair
     /// <summary>
     /// The multicodec-prefixed, multibase-encoded public key (e.g., "z6Mkf...")
     /// </summary>
-    public string MultibasePublicKey => MultibaseEncoder.Encode(MulticodecEncoder.Prefix(KeyType, PublicKey));
+    public string MultibasePublicKey =>
+        Multibase.Encode(Multicodec.Prefix(KeyType.GetMulticodec(), PublicKey), MultibaseEncoding.Base58Btc);
 
     /// <summary>JWK representation of the public key.</summary>
     public JsonWebKey ToPublicJwk() => JwkConverter.ToPublicJwk(this);

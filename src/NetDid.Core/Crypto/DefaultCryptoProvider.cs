@@ -167,8 +167,12 @@ public sealed class DefaultCryptoProvider : ICryptoProvider
 
     // --- BLS12-381 (Nethermind.Crypto.Bls) ---
 
-    /// <summary>BLS DST for the Ethereum BLS scheme (used as default).</summary>
-    private static readonly byte[] BlsDst = "BLS_SIG_BLS12381G2_XMD:SHA-256_SSWU_RO_NUL_"u8.ToArray();
+    // BLS DSTs per ciphersuite (draft-irtf-cfrg-bls-signatures).
+    // The G_ suffix in the DST name indicates which group the hash-to-curve targets:
+    //   G2 DST → hash-to-G2 → sig in G2 (96 bytes), pubkey in G1 (48 bytes) → KeyType.Bls12381G1
+    //   G1 DST → hash-to-G1 → sig in G1 (48 bytes), pubkey in G2 (96 bytes) → KeyType.Bls12381G2
+    private static readonly byte[] BlsDstG2 = "BLS_SIG_BLS12381G2_XMD:SHA-256_SSWU_RO_NUL_"u8.ToArray();
+    private static readonly byte[] BlsDstG1 = "BLS_SIG_BLS12381G1_XMD:SHA-256_SSWU_RO_NUL_"u8.ToArray();
 
     private static byte[] SignBls(KeyType keyType, ReadOnlySpan<byte> privateKey, ReadOnlySpan<byte> data)
     {
@@ -177,17 +181,17 @@ public sealed class DefaultCryptoProvider : ICryptoProvider
 
         if (keyType == KeyType.Bls12381G1)
         {
-            // G1 public key variant: signature lives in G2
+            // G1 public key variant: signature lives in G2 → use G2 DST
             var msgPoint = new Bls.P2();
-            msgPoint.HashTo(data, BlsDst, ReadOnlySpan<byte>.Empty);
+            msgPoint.HashTo(data, BlsDstG2, ReadOnlySpan<byte>.Empty);
             var sig = msgPoint.SignWith(sk);
             return sig.Compress();
         }
         else
         {
-            // G2 public key variant: signature lives in G1
+            // G2 public key variant: signature lives in G1 → use G1 DST
             var msgPoint = new Bls.P1();
-            msgPoint.HashTo(data, BlsDst, ReadOnlySpan<byte>.Empty);
+            msgPoint.HashTo(data, BlsDstG1, ReadOnlySpan<byte>.Empty);
             var sig = msgPoint.SignWith(sk);
             return sig.Compress();
         }
@@ -199,7 +203,7 @@ public sealed class DefaultCryptoProvider : ICryptoProvider
         {
             if (keyType == KeyType.Bls12381G1)
             {
-                // G1 public key, G2 signature
+                // G1 public key, G2 signature → G2 DST
                 var pk = new Bls.P1Affine();
                 pk.Decode(publicKey);
                 var sig = new Bls.P2Affine();
@@ -208,7 +212,7 @@ public sealed class DefaultCryptoProvider : ICryptoProvider
                 if (!pk.InGroup() || !sig.InGroup())
                     return false;
 
-                var pairing = new Bls.Pairing(true, BlsDst);
+                var pairing = new Bls.Pairing(true, BlsDstG2);
                 var err = pairing.Aggregate(pk, sig, data, ReadOnlySpan<byte>.Empty);
                 if (err != Bls.ERROR.SUCCESS)
                     return false;
@@ -218,7 +222,7 @@ public sealed class DefaultCryptoProvider : ICryptoProvider
             }
             else
             {
-                // G2 public key, G1 signature
+                // G2 public key, G1 signature → G1 DST
                 var pk = new Bls.P2Affine();
                 pk.Decode(publicKey);
                 var sig = new Bls.P1Affine();
@@ -227,7 +231,7 @@ public sealed class DefaultCryptoProvider : ICryptoProvider
                 if (!pk.InGroup() || !sig.InGroup())
                     return false;
 
-                var pairing = new Bls.Pairing(true, BlsDst);
+                var pairing = new Bls.Pairing(true, BlsDstG1);
                 var err = pairing.Aggregate(pk, sig, data, ReadOnlySpan<byte>.Empty);
                 if (err != Bls.ERROR.SUCCESS)
                     return false;

@@ -1,15 +1,15 @@
 using FluentAssertions;
-using NetDid.Core.Encoding;
+using NetCid;
 
 namespace NetDid.Core.Tests.Encoding;
 
-public class MultibaseEncoderTests
+public class MultibaseTests
 {
     [Fact]
     public void Encode_Base58Btc_StartsWithZ()
     {
         var data = new byte[] { 0x01, 0x02, 0x03 };
-        var encoded = MultibaseEncoder.Encode(data, MultibaseEncoding.Base58Btc);
+        var encoded = Multibase.Encode(data, MultibaseEncoding.Base58Btc);
         encoded.Should().StartWith("z");
     }
 
@@ -17,7 +17,7 @@ public class MultibaseEncoderTests
     public void Encode_Base64Url_StartsWithU()
     {
         var data = new byte[] { 0x01, 0x02, 0x03 };
-        var encoded = MultibaseEncoder.Encode(data, MultibaseEncoding.Base64Url);
+        var encoded = Multibase.Encode(data, MultibaseEncoding.Base64Url);
         encoded.Should().StartWith("u");
     }
 
@@ -25,7 +25,7 @@ public class MultibaseEncoderTests
     public void Encode_Base32Lower_StartsWithB()
     {
         var data = new byte[] { 0x01, 0x02, 0x03 };
-        var encoded = MultibaseEncoder.Encode(data, MultibaseEncoding.Base32Lower);
+        var encoded = Multibase.Encode(data, MultibaseEncoding.Base32Lower);
         encoded.Should().StartWith("b");
     }
 
@@ -38,30 +38,19 @@ public class MultibaseEncoderTests
         var data = new byte[32];
         Random.Shared.NextBytes(data);
 
-        var encoded = MultibaseEncoder.Encode(data, encoding);
-        var decoded = MultibaseEncoder.Decode(encoded);
+        var encoded = Multibase.Encode(data, encoding);
+        var decoded = Multibase.Decode(encoded);
         decoded.Should().Equal(data);
     }
 
     [Fact]
-    public void Decode_DefaultEncoding_IsBase58Btc()
+    public void Encode_Base64Url_NoPrefixMode_ProducesRawPayload()
     {
         var data = new byte[] { 0x01, 0x02, 0x03 };
-        var encoded = MultibaseEncoder.Encode(data);
-        encoded.Should().StartWith("z");
-    }
-
-    [Fact]
-    public void Decode_UnsupportedPrefix_ThrowsArgumentException()
-    {
-        var act = () => MultibaseEncoder.Decode("Xinvalid");
-        act.Should().Throw<ArgumentException>();
-    }
-
-    [Fact]
-    public void Decode_Empty_ThrowsArgumentException()
-    {
-        var act = () => MultibaseEncoder.Decode("");
-        act.Should().Throw<ArgumentException>();
+        var encoded = Multibase.Encode(data, MultibaseEncoding.Base64Url, includePrefix: false);
+        encoded.Should().NotStartWith("u");
+        // Verify round-trip: prepend prefix then decode
+        var decoded = Multibase.Decode("u" + encoded);
+        decoded.Should().Equal(data);
     }
 }

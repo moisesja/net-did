@@ -1,6 +1,6 @@
 using Microsoft.IdentityModel.Tokens;
+using NetCid;
 using NetDid.Core.Crypto;
-using NetDid.Core.Encoding;
 
 namespace NetDid.Core.Jwk;
 
@@ -31,7 +31,7 @@ public static class JwkConverter
     {
         ArgumentNullException.ThrowIfNull(keyPair);
         var jwk = ToPublicJwk(keyPair);
-        jwk.D = Base64UrlNoPadding.Encode(keyPair.PrivateKey);
+        jwk.D = Multibase.Encode(keyPair.PrivateKey, MultibaseEncoding.Base64Url, includePrefix: false);
         return jwk;
     }
 
@@ -53,7 +53,7 @@ public static class JwkConverter
                 "BLS12381G2" => KeyType.Bls12381G2,
                 _ => throw new ArgumentException($"Unsupported OKP curve: {jwk.Crv}")
             };
-            var publicKey = Base64UrlNoPadding.Decode(jwk.X);
+            var publicKey = Multibase.Decode("u" + jwk.X);
             return (keyType, publicKey);
         }
 
@@ -66,8 +66,8 @@ public static class JwkConverter
                 "secp256k1" => KeyType.Secp256k1,
                 _ => throw new ArgumentException($"Unsupported EC curve: {jwk.Crv}")
             };
-            var x = Base64UrlNoPadding.Decode(jwk.X);
-            var y = Base64UrlNoPadding.Decode(jwk.Y);
+            var x = Multibase.Decode("u" + jwk.X);
+            var y = Multibase.Decode("u" + jwk.Y);
             // Reconstruct uncompressed public key: 0x04 || x || y
             var publicKey = new byte[1 + x.Length + y.Length];
             publicKey[0] = 0x04;
@@ -85,7 +85,7 @@ public static class JwkConverter
         {
             Kty = "OKP",
             Crv = crv,
-            X = Base64UrlNoPadding.Encode(publicKey)
+            X = Multibase.Encode(publicKey, MultibaseEncoding.Base64Url, includePrefix: false)
         };
     }
 
@@ -113,8 +113,8 @@ public static class JwkConverter
         {
             Kty = "EC",
             Crv = crv,
-            X = Base64UrlNoPadding.Encode(x),
-            Y = Base64UrlNoPadding.Encode(y)
+            X = Multibase.Encode(x, MultibaseEncoding.Base64Url, includePrefix: false),
+            Y = Multibase.Encode(y, MultibaseEncoding.Base64Url, includePrefix: false)
         };
     }
 }

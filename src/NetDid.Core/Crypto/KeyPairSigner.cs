@@ -1,5 +1,3 @@
-using NetDid.Core.Encoding;
-
 namespace NetDid.Core.Crypto;
 
 /// <summary>

@@ -1,4 +1,4 @@
-using NetDid.Core.Encoding;
+using NetCid;
 
 namespace NetDid.Core.Crypto;
 
@@ -21,7 +21,8 @@ public sealed class KeyStoreSigner : ISigner
 
     public KeyType KeyType { get; }
     public ReadOnlyMemory<byte> PublicKey { get; }
-    public string MultibasePublicKey => MultibaseEncoder.Encode(MulticodecEncoder.Prefix(KeyType, PublicKey.Span));
+    public string MultibasePublicKey =>
+        Multibase.Encode(Multicodec.Prefix(KeyType.GetMulticodec(), PublicKey.Span), MultibaseEncoding.Base58Btc);
 
     public Task<byte[]> SignAsync(ReadOnlyMemory<byte> data, CancellationToken ct = default)
         => _store.SignAsync(_alias, data, ct);

@@ -99,6 +99,9 @@ pub unsafe extern "C" fn bbs_keygen(
     pk_out: *mut u8,
 ) -> i32 {
     let result = (|| -> Option<()> {
+        if sk_out.is_null() || pk_out.is_null() {
+            return None;
+        }
         let ikm = unsafe { as_slice(ikm_ptr, ikm_len)? };
         let kp = KeyPair::<BbsBls12381Sha256>::generate(ikm, None, None).ok()?;
         let sk_bytes = kp.private_key().to_bytes();
@@ -124,6 +127,9 @@ pub unsafe extern "C" fn bbs_sk_to_pk(
     pk_out: *mut u8,
 ) -> i32 {
     let result = (|| -> Option<()> {
+        if pk_out.is_null() {
+            return None;
+        }
         let sk_bytes = unsafe { as_slice(sk_ptr, 32)? };
         let sk = BBSplusSecretKey::from_bytes(sk_bytes).ok()?;
         let pk = sk.public_key();
@@ -160,6 +166,9 @@ pub unsafe extern "C" fn bbs_sign(
     sig_out: *mut u8,
 ) -> i32 {
     let result = (|| -> Option<()> {
+        if sig_out.is_null() {
+            return None;
+        }
         let sk_bytes = unsafe { as_slice(sk_ptr, 32)? };
         let pk_bytes = unsafe { as_slice(pk_ptr, 96)? };
         let header = unsafe { as_slice(header_ptr, header_len)? };
@@ -246,6 +255,9 @@ pub unsafe extern "C" fn bbs_proof_gen(
     proof_out_len: *mut usize,
 ) -> i32 {
     let result = (|| -> Option<()> {
+        if proof_out.is_null() || proof_out_len.is_null() {
+            return None;
+        }
         let pk_bytes = unsafe { as_slice(pk_ptr, 96)? };
         let sig_bytes = unsafe { as_slice(sig_ptr, 80)? };
         let header = unsafe { as_slice(header_ptr, header_len)? };

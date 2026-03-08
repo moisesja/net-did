@@ -42,6 +42,5 @@ public interface IBbsCryptoProvider
         byte[] proof,
         IReadOnlyList<byte[]> revealedMessages,
         IReadOnlyList<int> revealedIndices,
-        int totalMessageCount,
         ReadOnlySpan<byte> nonce);
 }

@@ -9,7 +9,7 @@
     <PackageVersion Include="Nethermind.Crypto.Bls" Version="1.0.5" />
 
     <!-- Encoding -->
-    <PackageVersion Include="SimpleBase" Version="4.0.2" />
+    <PackageVersion Include="NetCid" Version="1.2.0" />
 
     <!-- Caching -->
     <PackageVersion Include="Microsoft.Extensions.Caching.Memory" Version="10.0.0-preview.1.25080.5" />

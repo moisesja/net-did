@@ -1,4 +1,4 @@
-using NetDid.Core.Encoding;
+using NetCid;
 
 namespace NetDid.Core.Crypto;
 
@@ -14,5 +14,6 @@ public sealed class PublicKeyReference
     /// <summary>
     /// The multicodec-prefixed, multibase-encoded public key.
     /// </summary>
-    public string MultibasePublicKey => MultibaseEncoder.Encode(MulticodecEncoder.Prefix(KeyType, PublicKey));
+    public string MultibasePublicKey =>
+        Multibase.Encode(Multicodec.Prefix(KeyType.GetMulticodec(), PublicKey), MultibaseEncoding.Base58Btc);
 }

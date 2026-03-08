@@ -12,10 +12,52 @@ public sealed class DefaultBbsCryptoProvider : IBbsCryptoProvider
     private const int SecretKeySize = 32;
     private const int PublicKeySize = 96;
     private const int SignatureSize = 80;
-    private const int MaxProofSize = 4096;
+
+    // BLS12-381-SHA-256 proof size formula (IETF draft-10):
+    //   proof_len = 3 * point_len + scalar_len * (undisclosed + 1)
+    //   where point_len = 48, scalar_len = 32
+    private const int ProofPointOverhead = 3 * 48;   // 144
+    private const int ProofScalarSize = 32;
+
+    private static readonly bool NativeAvailable;
+    private static readonly Exception? NativeLoadError;
+
+    static DefaultBbsCryptoProvider()
+    {
+        try
+        {
+            // Probe for the native library by calling a trivial function.
+            // bbs_sk_to_pk with empty input will return -1 (error) but that's fine —
+            // we only care that the DLL loaded.
+            ZkryptiumNative.bbs_sk_to_pk(ReadOnlySpan<byte>.Empty, Span<byte>.Empty);
+            NativeAvailable = true;
+        }
+        catch (DllNotFoundException ex)
+        {
+            NativeAvailable = false;
+            NativeLoadError = ex;
+        }
+        catch
+        {
+            // Any other exception means the library loaded but the call failed, which is fine.
+            NativeAvailable = true;
+        }
+    }
+
+    private static void EnsureNativeAvailable()
+    {
+        if (!NativeAvailable)
+            throw new PlatformNotSupportedException(
+                "BBS+ native library (zkryptium_ffi) not found for this platform. " +
+                "Pre-built binaries are included for osx-arm64 only. " +
+                "See native/zkryptium-ffi/README.md for build instructions for other platforms.",
+                NativeLoadError);
+    }
 
     public byte[] Sign(ReadOnlySpan<byte> privateKey, IReadOnlyList<byte[]> messages)
     {
+        EnsureNativeAvailable();
+
         if (privateKey.Length != SecretKeySize)
             throw new ArgumentException($"BBS+ secret key must be {SecretKeySize} bytes.", nameof(privateKey));
         if (messages.Count == 0)
@@ -44,6 +86,8 @@ public sealed class DefaultBbsCryptoProvider : IBbsCryptoProvider
 
     public bool Verify(ReadOnlySpan<byte> publicKey, ReadOnlySpan<byte> signature, IReadOnlyList<byte[]> messages)
     {
+        EnsureNativeAvailable();
+
         if (publicKey.Length != PublicKeySize)
             throw new ArgumentException($"BBS+ public key must be {PublicKeySize} bytes.", nameof(publicKey));
         if (signature.Length != SignatureSize)
@@ -67,6 +111,8 @@ public sealed class DefaultBbsCryptoProvider : IBbsCryptoProvider
         IReadOnlyList<int> revealedIndices,
         ReadOnlySpan<byte> nonce)
     {
+        EnsureNativeAvailable();
+
         if (publicKey.Length != PublicKeySize)
             throw new ArgumentException($"BBS+ public key must be {PublicKeySize} bytes.", nameof(publicKey));
         if (signature.Length != SignatureSize)
@@ -76,7 +122,11 @@ public sealed class DefaultBbsCryptoProvider : IBbsCryptoProvider
 
         var encodedMessages = ZkryptiumNative.EncodeMessages(messages);
         var encodedIndices = ZkryptiumNative.EncodeIndices(revealedIndices);
-        var proofBuf = new byte[MaxProofSize];
+
+        // Compute exact proof buffer size from the BLS12-381-SHA-256 formula
+        var undisclosed = messages.Count - revealedIndices.Count;
+        var proofBufSize = ProofPointOverhead + ProofScalarSize * (undisclosed + 1);
+        var proofBuf = new byte[Math.Max(proofBufSize, 512)];
 
         var rc = ZkryptiumNative.bbs_proof_gen(
             publicKey,
@@ -99,9 +149,10 @@ public sealed class DefaultBbsCryptoProvider : IBbsCryptoProvider
         byte[] proof,
         IReadOnlyList<byte[]> revealedMessages,
         IReadOnlyList<int> revealedIndices,
-        int totalMessageCount,
         ReadOnlySpan<byte> nonce)
     {
+        EnsureNativeAvailable();
+
         if (publicKey.Length != PublicKeySize)
             throw new ArgumentException($"BBS+ public key must be {PublicKeySize} bytes.", nameof(publicKey));
 

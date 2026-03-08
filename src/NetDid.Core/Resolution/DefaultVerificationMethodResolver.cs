@@ -1,5 +1,5 @@
+using NetCid;
 using NetDid.Core.Crypto;
-using NetDid.Core.Encoding;
 using NetDid.Core.Jwk;
 using NetDid.Core.Model;
 
@@ -27,8 +27,9 @@ public sealed class DefaultVerificationMethodResolver : IVerificationMethodResol
         // Try PublicKeyMultibase first (Multikey path)
         if (vm.PublicKeyMultibase is not null)
         {
-            var decoded = MultibaseEncoder.Decode(vm.PublicKeyMultibase);
-            var (keyType, rawKey) = MulticodecEncoder.Decode(decoded);
+            var decoded = Multibase.Decode(vm.PublicKeyMultibase);
+            var (codec, rawKey) = Multicodec.Decode(decoded);
+            var keyType = KeyTypeExtensions.ToKeyType(codec);
             return (keyType, rawKey);
         }
 

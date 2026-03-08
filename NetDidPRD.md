@@ -617,7 +617,8 @@ byte[] Sign(ReadOnlySpan<byte> privateKey, IReadOnlyList<byte[]> messages);
 - **P-256**: `System.Security.Cryptography.ECDsa` with `ECCurve.NamedCurves.nistP256`.
 - **P-384**: `System.Security.Cryptography.ECDsa` with `ECCurve.NamedCurves.nistP384`. Native .NET support, no third-party dependency needed.
 - **secp256k1**: `System.Security.Cryptography.ECDsa` with explicit curve parameters (secp256k1 is not a named curve in .NET), or `NBitcoin.Secp256k1` for a battle-tested implementation with Ethereum-compatible signing (recoverable signatures with v, r, s).
-- **BLS12-381 (G1/G2)**: No native .NET support. Use `Nethermind.Crypto.Bls` (C# wrapper around the Supranational `blst` library) or `BLS.NET`. The `blst` library is the most widely deployed and audited BLS12-381 implementation (used by Ethereum 2.0 consensus clients). BBS+ signature operations (multi-message sign, derive proof, verify proof) should be implemented on top of the BLS12-381 primitives following the IETF BBS Signature Scheme draft (draft-irtf-cfrg-bbs-signatures).
+- **BLS12-381 (G1/G2)**: No native .NET support. Uses `Nethermind.Crypto.Bls` v1.0.5 (C# wrapper around the Supranational `blst` library, Apache 2.0). The `blst` library is the most widely deployed and audited BLS12-381 implementation (used by Ethereum 2.0 consensus clients). Nethermind exposes full pairing primitives: `SecretKey` (keygen, import/export), `P1`/`P2` (point operations, hash-to-curve, sign), `P1Affine`/`P2Affine` (decode, group check, compress), `Pairing` (aggregate, commit, final verify), `Scalar` (field arithmetic), and `PT` (Miller loop, final exponentiation). Key generation uses `SecretKey.Keygen(ikm)` for G1 and `P2.Generator().Mult(scalar)` for G2 (since P2 lacks `FromSk()`). Signature verification uses `Pairing.Aggregate` + `Pairing.Commit` + `Pairing.FinalVerify` with DST `BLS_SIG_BLS12381G2_XMD:SHA-256_SSWU_RO_NUL_`.
+- **BBS+ Signatures**: Implemented via a Rust FFI shim (`native/zkryptium-ffi/`) wrapping the [zkryptium](https://github.com/Cybersecurity-LINKS/zkryptium) crate v0.2 (Apache 2.0, IETF draft-irtf-cfrg-bbs-signatures-10, BLS12-381-SHA-256 ciphersuite). The Rust shim compiles to a `cdylib` and is consumed via .NET `[LibraryImport]` P/Invoke source generation (NativeAOT-compatible). BBS+ keys use the same BLS12-381 scalar field as BLS keys (SK: 32 bytes, PK: 96 bytes G2 point), but are generated via the BBS+-specific `KeyGen` algorithm from the IETF draft. Signatures are 80 bytes; selective-disclosure proofs are variable-length. See `native/zkryptium-ffi/README.md` for build instructions and platform support.
 - **JCS (JSON Canonicalization Scheme)**: Required for `eddsa-jcs-2022` Data Integrity Proofs used by did:webvh. Implements RFC 8785 deterministic JSON serialization. Use a custom implementation or port — no widely-adopted .NET library exists. The canonicalization must handle Unicode normalization, number serialization (IEEE 754 double), and property ordering as specified by RFC 8785.
 
 ### 4.5 Multicodec & Multibase
@@ -2370,15 +2371,18 @@ netdid/
 │   │   ├── Crypto/
 │   │   │   ├── DefaultCryptoProvider.cs
 │   │   │   ├── DefaultKeyGenerator.cs
+│   │   │   ├── DefaultBbsCryptoProvider.cs
 │   │   │   ├── KeyPairSigner.cs
 │   │   │   ├── KeyStoreSigner.cs
 │   │   │   ├── KeyPair.cs
 │   │   │   ├── StoredKeyInfo.cs
 │   │   │   ├── KeyType.cs
-│   │   │   ├── IBbsCryptoProvider.cs
-│   │   │   ├── DefaultBbsCryptoProvider.cs
+│   │   │   ├── Native/
+│   │   │   │   └── ZkryptiumNative.cs       # P/Invoke declarations for BBS+ FFI
 │   │   │   └── Jcs/
 │   │   │       └── JsonCanonicalization.cs
+│   │   ├── runtimes/                        # Platform-specific native libraries
+│   │   │   └── osx-arm64/native/            # (additional RIDs as built)
 │   │   ├── Encoding/
 │   │   │   ├── MulticodecEncoder.cs
 │   │   │   ├── MultibaseEncoder.cs
@@ -2524,6 +2528,13 @@ netdid/
 │       ├── ZcapDotnetBridgeTests.cs
 │       └── AllMethodsRoundTripTests.cs
 │
+├── native/
+│   └── zkryptium-ffi/                  # Rust FFI shim for BBS+ signatures
+│       ├── Cargo.toml
+│       ├── src/lib.rs
+│       ├── build-all.sh                # Cross-platform build script
+│       └── README.md
+│
 └── docs/
     ├── getting-started.md
     ├── did-key-guide.md
@@ -2640,22 +2651,40 @@ netdid/
 
 ## 16. Implementation Phases
 
-### Phase 1: Core Foundation (Week 1-2)
+### Phase 1: Core Foundation (Week 1-2) — COMPLETE
 
-| Item | Description                                                                                                              |
-| ---- | ------------------------------------------------------------------------------------------------------------------------ |
-| 1.1  | Monorepo scaffolding: solution, projects, build props, CI pipeline                                                       |
-| 1.2  | `NetDid.Core`: DID Document model, serialization, DidParser                                                              |
-| 1.3  | Cryptographic primitives: `IKeyGenerator`, `ICryptoProvider` with Ed25519, P-256, P-384, and secp256k1                   |
-| 1.3b | BBS+ cryptographic primitives: `IBbsCryptoProvider` with BLS12-381 G1/G2, multi-message sign, derive proof, verify proof |
-| 1.3c | JCS (JSON Canonicalization Scheme, RFC 8785) implementation for Data Integrity Proofs                                    |
-| 1.4  | Multicodec and Multibase encoding/decoding                                                                               |
-| 1.5  | `IKeyStore` interface + `InMemoryKeyStore`                                                                               |
-| 1.6  | JWK conversion utilities                                                                                                 |
-| 1.7  | `CompositeDidResolver`, `CachingDidResolver`                                                                             |
-| 1.8  | Unit tests for all Core code                                                                                             |
+| Item | Description                                                                                                              | Status |
+| ---- | ------------------------------------------------------------------------------------------------------------------------ | ------ |
+| 1.1  | Monorepo scaffolding: solution, projects, build props, CI pipeline                                                       | Done   |
+| 1.2  | `NetDid.Core`: DID Document model, serialization, DidParser                                                              | Done   |
+| 1.3  | Cryptographic primitives: `IKeyGenerator`, `ICryptoProvider` with Ed25519, P-256, P-384, secp256k1, BLS12-381 G1/G2      | Done   |
+| 1.3b | BBS+ cryptographic primitives: `IBbsCryptoProvider` with BLS12-381 G2, multi-message sign, derive proof, verify proof    | Done   |
+| 1.3c | JCS (JSON Canonicalization Scheme, RFC 8785) implementation for Data Integrity Proofs                                    | Done   |
+| 1.4  | Multicodec and Multibase encoding/decoding                                                                               | Done   |
+| 1.5  | `IKeyStore` interface + `InMemoryKeyStore`                                                                               | Done   |
+| 1.6  | JWK conversion utilities                                                                                                 | Done   |
+| 1.7  | `CompositeDidResolver`, `CachingDidResolver`, `DefaultDidUrlDereferencer`                                                | Done   |
+| 1.8  | Unit tests for all Core code (219 tests, 0 failures, 0 warnings)                                                        | Done   |
 
-**Deliverable**: Core library compiles. Key generation, encoding, and DID Document model fully tested.
+**Deliverable**: Core library compiles with zero warnings. All cryptographic primitives fully implemented and tested including BLS12-381 and BBS+ selective disclosure.
+
+#### Phase 1 Implementation Summary
+
+**Cryptographic primitives** (7 key types, 219 tests):
+- Ed25519, X25519, P-256, P-384, secp256k1 — implemented using NSec.Cryptography, System.Security.Cryptography, and NBitcoin.Secp256k1
+- BLS12-381 G1/G2 key generation and sign/verify — implemented using `Nethermind.Crypto.Bls` (C# wrapper around Supranational's `blst` C library). G1 public keys are 48 bytes compressed, G2 public keys are 96 bytes compressed, private keys are 32-byte scalars. The G2 variant uses `P2.Generator().Mult(scalar)` for key derivation since P2 lacks `FromSk()`. Pairing-based signature verification uses the `Pairing` class with `Aggregate` + `Commit` + `FinalVerify`
+- BBS+ multi-message signatures with selective disclosure — implemented via a Rust FFI shim (`native/zkryptium-ffi/`) wrapping the [zkryptium](https://github.com/Cybersecurity-LINKS/zkryptium) crate (IETF draft-irtf-cfrg-bbs-signatures-10, BLS12-381-SHA-256 ciphersuite). The shim exposes 6 C-ABI functions (`bbs_keygen`, `bbs_sk_to_pk`, `bbs_sign`, `bbs_verify`, `bbs_proof_gen`, `bbs_proof_verify`) consumed via `[LibraryImport]` P/Invoke source generation. Messages and indices are serialized as flat little-endian TLV buffers across the FFI boundary. Signatures are 80 bytes; proofs are variable-length
+
+**Native interop architecture**:
+```
+Rust (zkryptium crate, Apache 2.0)
+  └── native/zkryptium-ffi/src/lib.rs    (C-ABI extern functions)
+       └── libzkryptium_ffi.{dylib,so,dll}  (per-platform native binary)
+            └── Crypto/Native/ZkryptiumNative.cs  ([LibraryImport] P/Invoke)
+                 └── Crypto/DefaultBbsCryptoProvider.cs  (managed IBbsCryptoProvider)
+```
+
+**Test coverage**: 219 unit tests across 19 test files covering all public API surface — cryptographic operations (keygen, sign/verify, key agreement, BBS+ selective disclosure), encoding (multibase, multicodec, base58, base64url), serialization (JSON-LD/JSON round-trips, polymorphic DID Document properties), resolution (composite routing, caching, URL dereferencing), key storage (InMemoryKeyStore), JWK conversion, and JSON canonicalization (RFC 8785).
 
 ### Phase 2: did:key + did:peer (Week 3-4)
 

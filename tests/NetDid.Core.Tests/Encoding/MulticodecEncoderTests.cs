@@ -1,10 +1,10 @@
 using FluentAssertions;
+using NetCid;
 using NetDid.Core.Crypto;
-using NetDid.Core.Encoding;
 
 namespace NetDid.Core.Tests.Encoding;
 
-public class MulticodecEncoderTests
+public class MulticodecKeyTypeTests
 {
     [Theory]
     [InlineData(KeyType.Ed25519)]
@@ -19,8 +19,9 @@ public class MulticodecEncoderTests
         var rawKey = new byte[32];
         Random.Shared.NextBytes(rawKey);
 
-        var prefixed = MulticodecEncoder.Prefix(keyType, rawKey);
-        var (decodedType, decodedKey) = MulticodecEncoder.Decode(prefixed);
+        var prefixed = Multicodec.Prefix(keyType.GetMulticodec(), rawKey);
+        var (codec, decodedKey) = Multicodec.Decode(prefixed);
+        var decodedType = KeyTypeExtensions.ToKeyType(codec);
 
         decodedType.Should().Be(keyType);
         decodedKey.Should().Equal(rawKey);
@@ -30,7 +31,7 @@ public class MulticodecEncoderTests
     public void Prefix_Ed25519_StartsWithCorrectVarintBytes()
     {
         var rawKey = new byte[32];
-        var prefixed = MulticodecEncoder.Prefix(KeyType.Ed25519, rawKey);
+        var prefixed = Multicodec.Prefix(Multicodec.Ed25519Pub, rawKey);
 
         // Ed25519 multicodec = 0xed, varint = [0xed, 0x01]
         prefixed[0].Should().Be(0xed);
@@ -42,7 +43,7 @@ public class MulticodecEncoderTests
     public void Prefix_P256_StartsWithCorrectVarintBytes()
     {
         var rawKey = new byte[65]; // uncompressed point
-        var prefixed = MulticodecEncoder.Prefix(KeyType.P256, rawKey);
+        var prefixed = Multicodec.Prefix(Multicodec.P256Pub, rawKey);
 
         // P-256 multicodec = 0x1200, varint = [0x80, 0x24]
         prefixed[0].Should().Be(0x80);
@@ -50,36 +51,21 @@ public class MulticodecEncoderTests
     }
 
     [Fact]
-    public void Decode_UnknownPrefix_ThrowsArgumentException()
+    public void ToKeyType_UnknownCodec_ThrowsArgumentException()
     {
-        var data = new byte[] { 0xFF, 0xFF, 0x01, 0x02, 0x03 };
-        var act = () => MulticodecEncoder.Decode(data);
+        var act = () => KeyTypeExtensions.ToKeyType(0xFFFF);
         act.Should().Throw<ArgumentException>();
     }
 
     [Fact]
-    public void EncodeVarint_SmallValue_SingleByte()
+    public void GetMulticodec_AllKeyTypes_ReturnExpectedConstants()
     {
-        var varint = MulticodecEncoder.EncodeVarint(0x01);
-        varint.Should().Equal(new byte[] { 0x01 });
-    }
-
-    [Fact]
-    public void EncodeVarint_LargeValue_MultipleBytes()
-    {
-        // 0x1200 = 4608 decimal = varint bytes [0x80, 0x24]
-        var varint = MulticodecEncoder.EncodeVarint(0x1200);
-        varint.Should().Equal(new byte[] { 0x80, 0x24 });
-    }
-
-    [Fact]
-    public void DecodeVarint_RoundTrip()
-    {
-        var originalValue = 0xed; // 237
-        var encoded = MulticodecEncoder.EncodeVarint(originalValue);
-        var (decoded, bytesRead) = MulticodecEncoder.DecodeVarint(encoded);
-
-        decoded.Should().Be(originalValue);
-        bytesRead.Should().Be(encoded.Length);
+        KeyType.Ed25519.GetMulticodec().Should().Be(Multicodec.Ed25519Pub);
+        KeyType.X25519.GetMulticodec().Should().Be(Multicodec.X25519Pub);
+        KeyType.P256.GetMulticodec().Should().Be(Multicodec.P256Pub);
+        KeyType.P384.GetMulticodec().Should().Be(Multicodec.P384Pub);
+        KeyType.Secp256k1.GetMulticodec().Should().Be(Multicodec.Secp256k1Pub);
+        KeyType.Bls12381G1.GetMulticodec().Should().Be(Multicodec.Bls12381G1Pub);
+        KeyType.Bls12381G2.GetMulticodec().Should().Be(Multicodec.Bls12381G2Pub);
     }
 }

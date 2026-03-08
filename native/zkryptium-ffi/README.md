@@ -46,13 +46,19 @@ cargo build --release --target x86_64-unknown-linux-gnu
 
 ## Supported platforms
 
-| RID | Rust target | Library name |
-|-----|------------|--------------|
-| `osx-arm64` | `aarch64-apple-darwin` | `libzkryptium_ffi.dylib` |
-| `osx-x64` | `x86_64-apple-darwin` | `libzkryptium_ffi.dylib` |
-| `linux-x64` | `x86_64-unknown-linux-gnu` | `libzkryptium_ffi.so` |
-| `linux-arm64` | `aarch64-unknown-linux-gnu` | `libzkryptium_ffi.so` |
-| `win-x64` | `x86_64-pc-windows-gnu` | `zkryptium_ffi.dll` |
+> **Note:** The repository ships a pre-built binary for **osx-arm64 only**. Other platforms
+> require building from source using `./build-all.sh` or `cargo build --release --target <target>`,
+> then copying the output to `src/NetDid.Core/runtimes/{rid}/native/`.
+> If the native library is missing at runtime, `DefaultBbsCryptoProvider` throws
+> `PlatformNotSupportedException` with instructions.
+
+| RID | Rust target | Library name | Pre-built |
+|-----|------------|--------------|-----------|
+| `osx-arm64` | `aarch64-apple-darwin` | `libzkryptium_ffi.dylib` | Yes |
+| `osx-x64` | `x86_64-apple-darwin` | `libzkryptium_ffi.dylib` | No |
+| `linux-x64` | `x86_64-unknown-linux-gnu` | `libzkryptium_ffi.so` | No |
+| `linux-arm64` | `aarch64-unknown-linux-gnu` | `libzkryptium_ffi.so` | No |
+| `win-x64` | `x86_64-pc-windows-gnu` | `zkryptium_ffi.dll` | No |
 
 ## Exported functions
 

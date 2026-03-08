@@ -126,7 +126,7 @@ public class DefaultBbsCryptoProviderTests
             messages[0],
             messages[2]
         };
-        var valid = _bbs.VerifyProof(pk, proof, revealedMessages, revealedIndices, messages.Count, nonce);
+        var valid = _bbs.VerifyProof(pk, proof, revealedMessages, revealedIndices, nonce);
         valid.Should().BeTrue();
     }
 
@@ -148,7 +148,7 @@ public class DefaultBbsCryptoProviderTests
 
         var wrongNonce = "nonce2"u8.ToArray();
         var revealedMessages = new List<byte[]> { messages[0] };
-        var valid = _bbs.VerifyProof(pk, proof, revealedMessages, revealedIndices, messages.Count, wrongNonce);
+        var valid = _bbs.VerifyProof(pk, proof, revealedMessages, revealedIndices, wrongNonce);
         valid.Should().BeFalse();
     }
 
@@ -170,7 +170,7 @@ public class DefaultBbsCryptoProviderTests
 
         // Try to verify with a different message at the disclosed index
         var fakeMessages = new List<byte[]> { "fake-name"u8.ToArray() };
-        var valid = _bbs.VerifyProof(pk, proof, fakeMessages, revealedIndices, messages.Count, nonce);
+        var valid = _bbs.VerifyProof(pk, proof, fakeMessages, revealedIndices, nonce);
         valid.Should().BeFalse();
     }
 
@@ -190,8 +190,49 @@ public class DefaultBbsCryptoProviderTests
         var nonce = "nonce"u8.ToArray();
 
         var proof = _bbs.DeriveProof(pk, signature, messages, allIndices, nonce);
-        var valid = _bbs.VerifyProof(pk, proof, messages, allIndices, messages.Count, nonce);
+        var valid = _bbs.VerifyProof(pk, proof, messages, allIndices, nonce);
         valid.Should().BeTrue();
+    }
+
+    // --- Key interop: Nethermind (blst) key generation → zkryptium BBS+ ---
+
+    [Fact]
+    public void Sign_WithNethermindGeneratedKey_VerifiesWithPublishedPublicKey()
+    {
+        // Generate key pair the production way (Nethermind/blst)
+        var keyGen = new DefaultKeyGenerator();
+        var keyPair = keyGen.Generate(KeyType.Bls12381G2);
+
+        // Sign with BBS+ (internally re-derives PK via zkryptium)
+        var messages = new List<byte[]> { "interop-test"u8.ToArray() };
+        var signature = _bbs.Sign(keyPair.PrivateKey, messages);
+
+        // Verify using the Nethermind-derived public key (the one published in DID documents).
+        // This proves both libraries derive the same G2 public key from the same scalar.
+        var valid = _bbs.Verify(keyPair.PublicKey, signature, messages);
+        valid.Should().BeTrue("Nethermind-derived G2 public key must match zkryptium-derived G2 public key");
+    }
+
+    [Fact]
+    public void DeriveProof_WithNethermindGeneratedKey_VerifiesWithPublishedPublicKey()
+    {
+        var keyGen = new DefaultKeyGenerator();
+        var keyPair = keyGen.Generate(KeyType.Bls12381G2);
+
+        var messages = new List<byte[]>
+        {
+            "claim-a"u8.ToArray(),
+            "claim-b"u8.ToArray()
+        };
+        var signature = _bbs.Sign(keyPair.PrivateKey, messages);
+
+        var revealedIndices = new List<int> { 0 };
+        var nonce = "verifier-nonce"u8.ToArray();
+        var proof = _bbs.DeriveProof(keyPair.PublicKey, signature, messages, revealedIndices, nonce);
+
+        var revealedMessages = new List<byte[]> { messages[0] };
+        var valid = _bbs.VerifyProof(keyPair.PublicKey, proof, revealedMessages, revealedIndices, nonce);
+        valid.Should().BeTrue("BBS+ proof must verify with Nethermind-derived G2 public key");
     }
 
     // --- Edge cases ---
