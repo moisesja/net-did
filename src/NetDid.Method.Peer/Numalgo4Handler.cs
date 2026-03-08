@@ -19,8 +19,8 @@ internal sealed class Numalgo4Handler
         if (options.InputDocument is null)
             throw new ArgumentException("Numalgo 4 requires InputDocument.");
 
-        // Serialize the input document to JSON
-        var json = DidDocumentSerializer.Serialize(options.InputDocument, DidContentTypes.Json);
+        // Serialize as JSON-LD so @context is included in the encoded document
+        var json = DidDocumentSerializer.Serialize(options.InputDocument, DidContentTypes.JsonLd);
         var docBytes = Encoding.UTF8.GetBytes(json);
 
         // Compute SHA-256 hash, multicodec-prefix with SHA-256 code (0x12), then multibase-encode
@@ -106,28 +106,26 @@ internal sealed class Numalgo4Handler
     private static DidDocument BuildResolvedDocument(string did, DidDocument inputDoc)
     {
         var didValue = new Did(did);
+        var originalDid = inputDoc.Id.Value;
 
         // Replace the id with the actual DID and prefix relative references
-        var verificationMethods = inputDoc.VerificationMethod?.Select(vm => new VerificationMethod
-        {
-            Id = PrefixId(vm.Id, did),
-            Type = vm.Type,
-            Controller = vm.Controller.Value == inputDoc.Id.Value ? didValue : vm.Controller,
-            PublicKeyMultibase = vm.PublicKeyMultibase,
-            PublicKeyJwk = vm.PublicKeyJwk,
-            BlockchainAccountId = vm.BlockchainAccountId
-        }).ToList();
+        var verificationMethods = inputDoc.VerificationMethod?.Select(vm =>
+            RewriteVerificationMethod(vm, did, didValue, originalDid)).ToList();
+
+        // Rewrite controller references
+        var controller = inputDoc.Controller?.Select(c =>
+            c.Value == originalDid ? didValue : c).ToList();
 
         return new DidDocument
         {
             Id = didValue,
-            Controller = inputDoc.Controller,
+            Controller = controller,
             VerificationMethod = verificationMethods,
-            Authentication = PrefixRelationships(inputDoc.Authentication, did, inputDoc.Id.Value),
-            AssertionMethod = PrefixRelationships(inputDoc.AssertionMethod, did, inputDoc.Id.Value),
-            KeyAgreement = PrefixRelationships(inputDoc.KeyAgreement, did, inputDoc.Id.Value),
-            CapabilityInvocation = PrefixRelationships(inputDoc.CapabilityInvocation, did, inputDoc.Id.Value),
-            CapabilityDelegation = PrefixRelationships(inputDoc.CapabilityDelegation, did, inputDoc.Id.Value),
+            Authentication = RewriteRelationships(inputDoc.Authentication, did, didValue, originalDid),
+            AssertionMethod = RewriteRelationships(inputDoc.AssertionMethod, did, didValue, originalDid),
+            KeyAgreement = RewriteRelationships(inputDoc.KeyAgreement, did, didValue, originalDid),
+            CapabilityInvocation = RewriteRelationships(inputDoc.CapabilityInvocation, did, didValue, originalDid),
+            CapabilityDelegation = RewriteRelationships(inputDoc.CapabilityDelegation, did, didValue, originalDid),
             Service = inputDoc.Service?.Select((svc, i) => new Service
             {
                 Id = PrefixId(svc.Id, did),
@@ -135,7 +133,23 @@ internal sealed class Numalgo4Handler
                 ServiceEndpoint = svc.ServiceEndpoint,
                 AdditionalProperties = svc.AdditionalProperties
             }).ToList(),
-            AlsoKnownAs = inputDoc.AlsoKnownAs
+            AlsoKnownAs = inputDoc.AlsoKnownAs,
+            Context = inputDoc.Context,
+            AdditionalProperties = inputDoc.AdditionalProperties
+        };
+    }
+
+    private static VerificationMethod RewriteVerificationMethod(
+        VerificationMethod vm, string did, Did didValue, string originalDid)
+    {
+        return new VerificationMethod
+        {
+            Id = PrefixId(vm.Id, did),
+            Type = vm.Type,
+            Controller = vm.Controller.Value == originalDid ? didValue : vm.Controller,
+            PublicKeyMultibase = vm.PublicKeyMultibase,
+            PublicKeyJwk = vm.PublicKeyJwk,
+            BlockchainAccountId = vm.BlockchainAccountId
         };
     }
 
@@ -147,8 +161,8 @@ internal sealed class Numalgo4Handler
         return id;
     }
 
-    private static List<VerificationRelationshipEntry>? PrefixRelationships(
-        IReadOnlyList<VerificationRelationshipEntry>? entries, string did, string originalDid)
+    private static List<VerificationRelationshipEntry>? RewriteRelationships(
+        IReadOnlyList<VerificationRelationshipEntry>? entries, string did, Did didValue, string originalDid)
     {
         if (entries is null) return null;
 
@@ -162,6 +176,13 @@ internal sealed class Numalgo4Handler
                 else if (reference.StartsWith(originalDid))
                     reference = did + reference[originalDid.Length..];
                 return VerificationRelationshipEntry.FromReference(reference);
+            }
+
+            // Embedded verification method — rewrite it too
+            if (entry.EmbeddedMethod is not null)
+            {
+                var rewritten = RewriteVerificationMethod(entry.EmbeddedMethod, did, didValue, originalDid);
+                return VerificationRelationshipEntry.FromEmbedded(rewritten);
             }
 
             return entry;

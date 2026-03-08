@@ -369,6 +369,204 @@ public class DidPeerMethodTests
     }
 
     [Fact]
+    public async Task Numalgo4_ControllerRewritten()
+    {
+        var keyPair = _keyGen.Generate(KeyType.Ed25519);
+
+        var inputDoc = new DidDocument
+        {
+            Id = new Did("did:peer:placeholder"),
+            Controller = [new Did("did:peer:placeholder")],
+            VerificationMethod =
+            [
+                new VerificationMethod
+                {
+                    Id = "#key-0",
+                    Type = "Multikey",
+                    Controller = new Did("did:peer:placeholder"),
+                    PublicKeyMultibase = keyPair.MultibasePublicKey
+                }
+            ],
+            Authentication =
+            [
+                VerificationRelationshipEntry.FromReference("#key-0")
+            ]
+        };
+
+        var result = await _method.CreateAsync(new DidPeerCreateOptions
+        {
+            Numalgo = PeerNumalgo.Four,
+            InputDocument = inputDoc
+        });
+
+        // Controller should be rewritten to actual DID
+        result.DidDocument.Controller.Should().HaveCount(1);
+        result.DidDocument.Controller![0].Value.Should().Be(result.Did.Value);
+        result.DidDocument.Controller[0].Value.Should().NotBe("did:peer:placeholder");
+
+        // VM controller also rewritten
+        result.DidDocument.VerificationMethod![0].Controller.Value.Should().Be(result.Did.Value);
+
+        // Resolve round-trip
+        var resolved = await _method.ResolveAsync(result.Did.Value);
+        resolved.DidDocument!.Controller.Should().HaveCount(1);
+        resolved.DidDocument.Controller![0].Value.Should().Be(result.Did.Value);
+        resolved.DidDocument.VerificationMethod![0].Controller.Value.Should().Be(result.Did.Value);
+    }
+
+    [Fact]
+    public async Task Numalgo4_EmbeddedVerificationMethod_Rewritten()
+    {
+        var keyPair = _keyGen.Generate(KeyType.Ed25519);
+
+        var inputDoc = new DidDocument
+        {
+            Id = new Did("did:peer:placeholder"),
+            Authentication =
+            [
+                VerificationRelationshipEntry.FromEmbedded(new VerificationMethod
+                {
+                    Id = "#embedded-key",
+                    Type = "Multikey",
+                    Controller = new Did("did:peer:placeholder"),
+                    PublicKeyMultibase = keyPair.MultibasePublicKey
+                })
+            ]
+        };
+
+        var result = await _method.CreateAsync(new DidPeerCreateOptions
+        {
+            Numalgo = PeerNumalgo.Four,
+            InputDocument = inputDoc
+        });
+
+        var embeddedVm = result.DidDocument.Authentication![0].EmbeddedMethod!;
+        embeddedVm.Id.Should().Be(result.Did.Value + "#embedded-key");
+        embeddedVm.Controller.Value.Should().Be(result.Did.Value);
+
+        // Resolve round-trip
+        var resolved = await _method.ResolveAsync(result.Did.Value);
+        var resolvedVm = resolved.DidDocument!.Authentication![0].EmbeddedMethod!;
+        resolvedVm.Id.Should().Be(result.Did.Value + "#embedded-key");
+        resolvedVm.Controller.Value.Should().Be(result.Did.Value);
+    }
+
+    [Fact]
+    public async Task Numalgo4_ContextPreserved()
+    {
+        var keyPair = _keyGen.Generate(KeyType.Ed25519);
+
+        var inputDoc = new DidDocument
+        {
+            Id = new Did("did:peer:placeholder"),
+            Context = ["https://www.w3.org/ns/did/v1", "https://w3id.org/security/multikey/v1"],
+            VerificationMethod =
+            [
+                new VerificationMethod
+                {
+                    Id = "#key-0",
+                    Type = "Multikey",
+                    Controller = new Did("did:peer:placeholder"),
+                    PublicKeyMultibase = keyPair.MultibasePublicKey
+                }
+            ]
+        };
+
+        var result = await _method.CreateAsync(new DidPeerCreateOptions
+        {
+            Numalgo = PeerNumalgo.Four,
+            InputDocument = inputDoc
+        });
+
+        result.DidDocument.Context.Should().HaveCount(2);
+
+        var resolved = await _method.ResolveAsync(result.Did.Value);
+        resolved.DidDocument!.Context.Should().HaveCount(2);
+    }
+
+    [Fact]
+    public async Task Numalgo4_AdditionalPropertiesPreserved()
+    {
+        var keyPair = _keyGen.Generate(KeyType.Ed25519);
+        var customElement = System.Text.Json.JsonDocument.Parse("\"custom-value\"").RootElement.Clone();
+
+        var inputDoc = new DidDocument
+        {
+            Id = new Did("did:peer:placeholder"),
+            VerificationMethod =
+            [
+                new VerificationMethod
+                {
+                    Id = "#key-0",
+                    Type = "Multikey",
+                    Controller = new Did("did:peer:placeholder"),
+                    PublicKeyMultibase = keyPair.MultibasePublicKey
+                }
+            ],
+            AdditionalProperties = new Dictionary<string, System.Text.Json.JsonElement>
+            {
+                ["customProp"] = customElement
+            }
+        };
+
+        var result = await _method.CreateAsync(new DidPeerCreateOptions
+        {
+            Numalgo = PeerNumalgo.Four,
+            InputDocument = inputDoc
+        });
+
+        result.DidDocument.AdditionalProperties.Should().ContainKey("customProp");
+
+        var resolved = await _method.ResolveAsync(result.Did.Value);
+        resolved.DidDocument!.AdditionalProperties.Should().ContainKey("customProp");
+        resolved.DidDocument.AdditionalProperties!["customProp"].GetString().Should().Be("custom-value");
+    }
+
+    [Fact]
+    public async Task Numalgo4_ServiceIdRewritten()
+    {
+        var keyPair = _keyGen.Generate(KeyType.Ed25519);
+
+        var inputDoc = new DidDocument
+        {
+            Id = new Did("did:peer:placeholder"),
+            VerificationMethod =
+            [
+                new VerificationMethod
+                {
+                    Id = "#key-0",
+                    Type = "Multikey",
+                    Controller = new Did("did:peer:placeholder"),
+                    PublicKeyMultibase = keyPair.MultibasePublicKey
+                }
+            ],
+            Service =
+            [
+                new Service
+                {
+                    Id = "#svc-0",
+                    Type = "DIDCommMessaging",
+                    ServiceEndpoint = ServiceEndpointValue.FromUri("https://example.com/endpoint")
+                }
+            ]
+        };
+
+        var result = await _method.CreateAsync(new DidPeerCreateOptions
+        {
+            Numalgo = PeerNumalgo.Four,
+            InputDocument = inputDoc
+        });
+
+        result.DidDocument.Service.Should().HaveCount(1);
+        result.DidDocument.Service![0].Id.Should().Be(result.Did.Value + "#svc-0");
+
+        var resolved = await _method.ResolveAsync(result.Did.Value);
+        resolved.DidDocument!.Service.Should().HaveCount(1);
+        resolved.DidDocument.Service![0].Id.Should().Be(result.Did.Value + "#svc-0");
+        resolved.DidDocument.Service[0].ServiceEndpoint.Uri.Should().Be("https://example.com/endpoint");
+    }
+
+    [Fact]
     public async Task Numalgo4_TamperedLongForm_ReturnsNotFound()
     {
         var keyPair = _keyGen.Generate(KeyType.Ed25519);
