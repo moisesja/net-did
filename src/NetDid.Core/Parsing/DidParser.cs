@@ -10,16 +10,22 @@ public static partial class DidParser
 {
     // W3C DID ABNF: did = "did:" method-name ":" method-specific-id
     // method-name = 1*method-char, method-char = %x61-7A / DIGIT (lowercase + digits)
-    // method-specific-id = *( *idchar ":" ) 1*idchar, idchar = ALPHA / DIGIT / "." / "-" / "_" / pct-encoded
-    [GeneratedRegex(@"^did:[a-z0-9]+:.+$", RegexOptions.Compiled)]
+    // method-specific-id = *( *idchar ":" ) 1*idchar
+    // idchar = ALPHA / DIGIT / "." / "-" / "_" / pct-encoded
+    // pct-encoded = "%" HEXDIG HEXDIG
+    private const string IdCharPattern = @"[A-Za-z0-9._-]|%[0-9A-Fa-f]{2}";
+    private const string MethodSpecificIdPattern = $@"(?:(?:{IdCharPattern})*:)*(?:{IdCharPattern})+";
+
+    [GeneratedRegex($@"^did:[a-z0-9]+:{MethodSpecificIdPattern}$", RegexOptions.Compiled)]
     private static partial Regex DidRegex();
 
-    // DID URL: did-url = did path-abempty [ "?" query ] [ "#" fragment ]
-    [GeneratedRegex(@"^(?<did>did:[a-z0-9]+:[^?#/]+)(?<path>/[^?#]*)?(?:\?(?<query>[^#]*))?(?:#(?<fragment>.*))?$", RegexOptions.Compiled)]
+    // DID URL: did-url = did path-abempty [ ";" params ] [ "?" query ] [ "#" fragment ]
+    [GeneratedRegex($@"^(?<did>did:[a-z0-9]+:(?:(?:{IdCharPattern})*:)*(?:{IdCharPattern})+)(?<path>/[^;?#]*)?(?:;(?<params>[^?#]*))?(?:\?(?<query>[^#]*))?(?:#(?<fragment>.*))?$", RegexOptions.Compiled)]
     private static partial Regex DidUrlRegex();
 
     /// <summary>
-    /// Validate a DID string conforms to W3C DID syntax: did:&lt;method&gt;:&lt;method-specific-id&gt;
+    /// Validate a bare DID string conforms to W3C DID syntax: did:&lt;method&gt;:&lt;method-specific-id&gt;.
+    /// Rejects DID URLs (paths, queries, fragments, parameters).
     /// </summary>
     public static bool IsValid(string did)
     {
@@ -50,7 +56,7 @@ public static partial class DidParser
         return did[(secondColon + 1)..];
     }
 
-    /// <summary>Parse a DID URL (DID + optional path, query, fragment).</summary>
+    /// <summary>Parse a DID URL (DID + optional path, params, query, fragment).</summary>
     public static DidUrl? ParseDidUrl(string didUrl)
     {
         if (string.IsNullOrEmpty(didUrl))
@@ -64,14 +70,20 @@ public static partial class DidParser
         if (!IsValid(didStr))
             return null;
 
-        var path = match.Groups["path"].Success ? match.Groups["path"].Value : null;
-        var query = match.Groups["query"].Success ? match.Groups["query"].Value : null;
-        var fragment = match.Groups["fragment"].Success ? match.Groups["fragment"].Value : null;
+        var path = match.Groups["path"].Success && match.Groups["path"].Value.Length > 0
+            ? match.Groups["path"].Value : null;
+        var parameters = match.Groups["params"].Success && match.Groups["params"].Value.Length > 0
+            ? match.Groups["params"].Value : null;
+        var query = match.Groups["query"].Success && match.Groups["query"].Value.Length > 0
+            ? match.Groups["query"].Value : null;
+        var fragment = match.Groups["fragment"].Success && match.Groups["fragment"].Value.Length > 0
+            ? match.Groups["fragment"].Value : null;
 
         return new DidUrl
         {
             Did = new Did(didStr),
             Path = path,
+            Parameters = parameters,
             Query = query,
             Fragment = fragment
         };

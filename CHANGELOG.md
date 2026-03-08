@@ -11,6 +11,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **did:peer purpose codes**: Aligned with the current DIF peer-DID spec. `KeyAgreement` now uses prefix `E` (was `A`). Added three new `PeerPurpose` members: `Assertion` (prefix `A`), `CapabilityInvocation` (prefix `I`), and `CapabilityDelegation` (prefix `D`). All five W3C DID Core verification relationships are now supported in numalgo 2.
 
+### Fixed
+
+- **DID parser validation**: `DidParser.IsValid` now enforces W3C DID Core ABNF — rejects DID URLs (fragments, queries, paths, parameters), spaces, and other illegal characters. The `Did` value object now truly guarantees syntactic validity.
+- **DID URL parameter parsing**: `DidParser.ParseDidUrl` now correctly parses DID parameters (`;param=value`), modeled via new `DidUrl.Parameters` property.
+
 ## [0.2.0] - 2026-03-08
 
 ### Added
