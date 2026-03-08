@@ -9,6 +9,7 @@ A specification-compliant .NET library for Decentralized Identifiers (DIDs). Net
 
 - **Four DID methods**: `did:key`, `did:peer`, `did:webvh`, `did:ethr`
 - **Seven key types**: Ed25519, X25519, P-256, P-384, secp256k1, BLS12-381 G1/G2
+- **BBS+ signatures**: Multi-message signing with selective disclosure proofs (IETF draft-10)
 - **W3C DID Core 1.0** compliant DID Document model and serialization
 - **Dual content types**: `application/did+ld+json` (JSON-LD) and `application/did+json`
 - **Pluggable key storage**: Bring your own HSM, vault, or file-based key store via `IKeyStore`
@@ -116,6 +117,7 @@ NetDid is built around a small set of core interfaces:
 | `ISigner` | Signing abstraction — works with in-memory keys or secure enclaves |
 | `IKeyGenerator` | Key pair generation and derivation for all supported key types |
 | `ICryptoProvider` | Low-level sign, verify, and key agreement operations |
+| `IBbsCryptoProvider` | BBS+ multi-message signatures with selective disclosure |
 
 ### Resolution Pipeline
 
@@ -138,7 +140,8 @@ netdid/
 ├── src/
 │   └── NetDid.Core/
 │       ├── Crypto/              # Key types, providers, signers
-│       │   └── Jcs/             # JSON Canonicalization (RFC 8785)
+│       │   ├── Jcs/             # JSON Canonicalization (RFC 8785)
+│       │   └── Native/          # P/Invoke FFI declarations
 │       ├── Encoding/            # Multibase, multicodec, Base58, Base64Url
 │       ├── Exceptions/          # Domain-specific exception hierarchy
 │       ├── Jwk/                 # JWK <-> raw key conversion
@@ -148,7 +151,7 @@ netdid/
 │       ├── Resolution/          # Composite, caching, and URL dereferencing
 │       └── Serialization/       # DID Document JSON/JSON-LD serializer
 ├── tests/
-│   └── NetDid.Core.Tests/       # 194 unit tests
+│   └── NetDid.Core.Tests/       # 219 unit tests
 ├── Directory.Build.props        # Shared build settings (net10.0)
 ├── Directory.Packages.props     # Central NuGet version management
 └── netdid.sln

@@ -5,6 +5,7 @@ Thank you for your interest in contributing to NetDid. This guide covers everyth
 ## Prerequisites
 
 - [.NET 10 SDK](https://dotnet.microsoft.com/download/dotnet/10.0)
+- [Rust toolchain](https://rustup.rs/) (1.70+) — required only for building native BBS+ library
 - Git
 - An editor with C# support (Visual Studio, VS Code with C# Dev Kit, Rider)
 
@@ -22,7 +23,7 @@ dotnet build
 dotnet test
 ```
 
-All 194 unit tests should pass with zero warnings.
+All unit tests should pass with zero warnings.
 
 ## Project Structure
 
@@ -30,7 +31,8 @@ All 194 unit tests should pass with zero warnings.
 netdid/
 ├── src/NetDid.Core/          # Core library
 │   ├── Crypto/               # Cryptographic providers, key generation, signers
-│   │   └── Jcs/              # JSON Canonicalization Scheme (RFC 8785)
+│   │   ├── Jcs/              # JSON Canonicalization Scheme (RFC 8785)
+│   │   └── Native/           # P/Invoke declarations for native FFI libraries
 │   ├── Encoding/             # Multibase, multicodec, Base58Btc, Base64Url
 │   ├── Exceptions/           # Custom exception hierarchy (8 types)
 │   ├── Jwk/                  # JWK <-> raw key byte conversion
@@ -38,7 +40,9 @@ netdid/
 │   ├── Model/                # DID Document model, result/option types
 │   ├── Parsing/              # DID string validation and URL parsing
 │   ├── Resolution/           # Composite resolver, caching, URL dereferencing
-│   └── Serialization/        # DID Document JSON/JSON-LD serializer
+│   ├── Serialization/        # DID Document JSON/JSON-LD serializer
+│   └── runtimes/             # Platform-specific native libraries
+├── native/zkryptium-ffi/     # Rust FFI shim for BBS+ signatures
 ├── tests/NetDid.Core.Tests/  # Unit tests (mirrors src/ structure)
 ├── Directory.Build.props     # Shared build properties
 ├── Directory.Packages.props  # Central NuGet version management
@@ -181,6 +185,57 @@ Adding support for a new cryptographic key type requires changes across several 
 4. **`Crypto/DefaultCryptoProvider.cs`** — Add sign/verify (or key agreement) implementations
 5. **`Jwk/JwkConverter.cs`** — Add JWK encoding/decoding for the key type
 6. **Tests** — Add round-trip tests for each of the above
+
+## Working with Native Libraries
+
+NetDid uses two native cryptographic libraries:
+
+### BLS12-381 (via Nethermind.Crypto.Bls)
+
+The `Nethermind.Crypto.Bls` NuGet package wraps Supranational's [blst](https://github.com/supranational/blst) C library and ships pre-built native binaries for all platforms. No manual build step is required — `dotnet restore` handles everything.
+
+Used for: BLS12-381 key generation, single-message signing/verification (G1 and G2 variants).
+
+### BBS+ Signatures (via zkryptium-ffi)
+
+BBS+ selective-disclosure signatures use a Rust FFI shim (`native/zkryptium-ffi/`) that wraps the [zkryptium](https://github.com/Cybersecurity-LINKS/zkryptium) crate (IETF draft-irtf-cfrg-bbs-signatures-10, BLS12-381-SHA-256 ciphersuite).
+
+**First-time setup:**
+
+```bash
+cd native/zkryptium-ffi
+
+# Build for current platform and copy to runtimes/
+./build-all.sh
+```
+
+The native binary is placed in `src/NetDid.Core/runtimes/{rid}/native/` and is automatically copied to the output directory during `dotnet build`.
+
+**Rebuilding after changes:**
+
+```bash
+cd native/zkryptium-ffi
+cargo build --release
+cp target/release/libzkryptium_ffi.dylib ../../src/NetDid.Core/runtimes/osx-arm64/native/
+```
+
+**Adding a new platform:**
+
+1. Install the Rust target: `rustup target add <target-triple>`
+2. Build: `cargo build --release --target <target-triple>`
+3. Copy the output to `src/NetDid.Core/runtimes/<rid>/native/`
+
+See [native/zkryptium-ffi/README.md](native/zkryptium-ffi/README.md) for detailed build instructions, cross-compilation, and troubleshooting.
+
+**Architecture:**
+
+```
+Rust (zkryptium crate)
+  └── native/zkryptium-ffi/src/lib.rs    (C-ABI extern functions)
+       └── libzkryptium_ffi.{dylib,so,dll}
+            └── ZkryptiumNative.cs        (P/Invoke declarations)
+                 └── DefaultBbsCryptoProvider.cs  (managed API)
+```
 
 ## Commit Messages
 

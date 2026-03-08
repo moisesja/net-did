@@ -123,4 +123,68 @@ public class DefaultKeyGeneratorTests
         var keyPair = _generator.Generate(KeyType.Ed25519);
         keyPair.MultibasePublicKey.Should().StartWith("z"); // base58btc prefix
     }
+
+    // --- BLS12-381 G1 ---
+
+    [Fact]
+    public void Generate_Bls12381G1_ProducesValidKeyPair()
+    {
+        var keyPair = _generator.Generate(KeyType.Bls12381G1);
+
+        keyPair.KeyType.Should().Be(KeyType.Bls12381G1);
+        keyPair.PublicKey.Should().HaveCount(48); // compressed G1 point
+        keyPair.PrivateKey.Should().HaveCount(32);
+    }
+
+    [Fact]
+    public void Generate_Bls12381G1_ProducesDifferentKeysEachTime()
+    {
+        var a = _generator.Generate(KeyType.Bls12381G1);
+        var b = _generator.Generate(KeyType.Bls12381G1);
+
+        a.PrivateKey.Should().NotEqual(b.PrivateKey);
+        a.PublicKey.Should().NotEqual(b.PublicKey);
+    }
+
+    [Fact]
+    public void FromPrivateKey_Bls12381G1_RestoresPublicKey()
+    {
+        var original = _generator.Generate(KeyType.Bls12381G1);
+        var restored = _generator.FromPrivateKey(KeyType.Bls12381G1, original.PrivateKey);
+
+        restored.PublicKey.Should().Equal(original.PublicKey);
+        restored.PrivateKey.Should().Equal(original.PrivateKey);
+    }
+
+    // --- BLS12-381 G2 ---
+
+    [Fact]
+    public void Generate_Bls12381G2_ProducesValidKeyPair()
+    {
+        var keyPair = _generator.Generate(KeyType.Bls12381G2);
+
+        keyPair.KeyType.Should().Be(KeyType.Bls12381G2);
+        keyPair.PublicKey.Should().HaveCount(96); // compressed G2 point
+        keyPair.PrivateKey.Should().HaveCount(32);
+    }
+
+    [Fact]
+    public void Generate_Bls12381G2_ProducesDifferentKeysEachTime()
+    {
+        var a = _generator.Generate(KeyType.Bls12381G2);
+        var b = _generator.Generate(KeyType.Bls12381G2);
+
+        a.PrivateKey.Should().NotEqual(b.PrivateKey);
+        a.PublicKey.Should().NotEqual(b.PublicKey);
+    }
+
+    [Fact]
+    public void FromPrivateKey_Bls12381G2_RestoresPublicKey()
+    {
+        var original = _generator.Generate(KeyType.Bls12381G2);
+        var restored = _generator.FromPrivateKey(KeyType.Bls12381G2, original.PrivateKey);
+
+        restored.PublicKey.Should().Equal(original.PublicKey);
+        restored.PrivateKey.Should().Equal(original.PrivateKey);
+    }
 }

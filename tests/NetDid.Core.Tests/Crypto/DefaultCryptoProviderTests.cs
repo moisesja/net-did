@@ -107,4 +107,112 @@ public class DefaultCryptoProviderTests
         bobShared.Should().NotBeEmpty();
         aliceShared.Should().Equal(bobShared);
     }
+
+    // --- BLS12-381 G1 (pubkey in G1, signature in G2) ---
+
+    [Fact]
+    public void SignVerify_Bls12381G1_RoundTrip()
+    {
+        var keyPair = _keyGen.Generate(KeyType.Bls12381G1);
+        var data = "Hello, BLS G1!"u8.ToArray();
+
+        var signature = _crypto.Sign(KeyType.Bls12381G1, keyPair.PrivateKey, data);
+        var valid = _crypto.Verify(KeyType.Bls12381G1, keyPair.PublicKey, data, signature);
+
+        signature.Should().HaveCount(96); // G2 signature compressed
+        valid.Should().BeTrue();
+    }
+
+    [Fact]
+    public void Verify_Bls12381G1_WrongData_ReturnsFalse()
+    {
+        var keyPair = _keyGen.Generate(KeyType.Bls12381G1);
+        var data = "Hello"u8.ToArray();
+        var wrongData = "Wrong"u8.ToArray();
+
+        var signature = _crypto.Sign(KeyType.Bls12381G1, keyPair.PrivateKey, data);
+        var valid = _crypto.Verify(KeyType.Bls12381G1, keyPair.PublicKey, wrongData, signature);
+
+        valid.Should().BeFalse();
+    }
+
+    [Fact]
+    public void Verify_Bls12381G1_WrongKey_ReturnsFalse()
+    {
+        var keyPair = _keyGen.Generate(KeyType.Bls12381G1);
+        var otherKey = _keyGen.Generate(KeyType.Bls12381G1);
+        var data = "Hello"u8.ToArray();
+
+        var signature = _crypto.Sign(KeyType.Bls12381G1, keyPair.PrivateKey, data);
+        var valid = _crypto.Verify(KeyType.Bls12381G1, otherKey.PublicKey, data, signature);
+
+        valid.Should().BeFalse();
+    }
+
+    [Fact]
+    public void SignVerify_Bls12381G1_RestoredKey_Works()
+    {
+        var keyPair = _keyGen.Generate(KeyType.Bls12381G1);
+        var restored = _keyGen.FromPrivateKey(KeyType.Bls12381G1, keyPair.PrivateKey);
+        var data = "Restored key test"u8.ToArray();
+
+        var signature = _crypto.Sign(KeyType.Bls12381G1, restored.PrivateKey, data);
+        var valid = _crypto.Verify(KeyType.Bls12381G1, restored.PublicKey, data, signature);
+
+        valid.Should().BeTrue();
+    }
+
+    // --- BLS12-381 G2 (pubkey in G2, signature in G1) ---
+
+    [Fact]
+    public void SignVerify_Bls12381G2_RoundTrip()
+    {
+        var keyPair = _keyGen.Generate(KeyType.Bls12381G2);
+        var data = "Hello, BLS G2!"u8.ToArray();
+
+        var signature = _crypto.Sign(KeyType.Bls12381G2, keyPair.PrivateKey, data);
+        var valid = _crypto.Verify(KeyType.Bls12381G2, keyPair.PublicKey, data, signature);
+
+        signature.Should().HaveCount(48); // G1 signature compressed
+        valid.Should().BeTrue();
+    }
+
+    [Fact]
+    public void Verify_Bls12381G2_WrongData_ReturnsFalse()
+    {
+        var keyPair = _keyGen.Generate(KeyType.Bls12381G2);
+        var data = "Hello"u8.ToArray();
+        var wrongData = "Wrong"u8.ToArray();
+
+        var signature = _crypto.Sign(KeyType.Bls12381G2, keyPair.PrivateKey, data);
+        var valid = _crypto.Verify(KeyType.Bls12381G2, keyPair.PublicKey, wrongData, signature);
+
+        valid.Should().BeFalse();
+    }
+
+    [Fact]
+    public void Verify_Bls12381G2_WrongKey_ReturnsFalse()
+    {
+        var keyPair = _keyGen.Generate(KeyType.Bls12381G2);
+        var otherKey = _keyGen.Generate(KeyType.Bls12381G2);
+        var data = "Hello"u8.ToArray();
+
+        var signature = _crypto.Sign(KeyType.Bls12381G2, keyPair.PrivateKey, data);
+        var valid = _crypto.Verify(KeyType.Bls12381G2, otherKey.PublicKey, data, signature);
+
+        valid.Should().BeFalse();
+    }
+
+    [Fact]
+    public void SignVerify_Bls12381G2_RestoredKey_Works()
+    {
+        var keyPair = _keyGen.Generate(KeyType.Bls12381G2);
+        var restored = _keyGen.FromPrivateKey(KeyType.Bls12381G2, keyPair.PrivateKey);
+        var data = "Restored key test"u8.ToArray();
+
+        var signature = _crypto.Sign(KeyType.Bls12381G2, restored.PrivateKey, data);
+        var valid = _crypto.Verify(KeyType.Bls12381G2, restored.PublicKey, data, signature);
+
+        valid.Should().BeTrue();
+    }
 }

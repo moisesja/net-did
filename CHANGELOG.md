@@ -12,10 +12,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **DID Document Model**: Full W3C DID Core 1.0 compliant data model including `DidDocument`, `VerificationMethod`, `Service`, `ServiceEndpointValue` (URI/map/set), and `VerificationRelationshipEntry` (reference/embedded)
 - **DID Parsing**: W3C DID syntax validation, method extraction, and DID URL parsing (path, query, fragment)
 - **Cryptographic Primitives**:
-  - Key generation for Ed25519, X25519, P-256, P-384, and secp256k1
-  - Sign/verify for Ed25519, P-256, P-384, and secp256k1
+  - Key generation for Ed25519, X25519, P-256, P-384, secp256k1, BLS12-381 G1, and BLS12-381 G2
+  - Sign/verify for Ed25519, P-256, P-384, secp256k1, BLS12-381 G1, and BLS12-381 G2
   - X25519 key agreement (ECDH)
   - Ed25519 to X25519 key derivation
+- **BBS+ Signatures** (IETF draft-irtf-cfrg-bbs-signatures-10, BLS12-381-SHA-256 ciphersuite):
+  - Multi-message signing and verification
+  - Selective disclosure proof generation and verification
+  - Native implementation via Rust FFI shim wrapping [zkryptium](https://github.com/Cybersecurity-LINKS/zkryptium)
 - **Encoding Utilities**: Multibase (Base58Btc, Base64Url, Base32Lower), multicodec (7 key types), Base58Btc, Base64Url-no-padding
 - **JWK Conversion**: Round-trip between raw key bytes and JSON Web Keys for all supported key types
 - **Serialization**: DID Document serializer supporting both `application/did+ld+json` (JSON-LD with auto-computed `@context`) and `application/did+json` (plain JSON)

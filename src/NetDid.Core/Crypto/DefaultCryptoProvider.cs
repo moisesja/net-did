@@ -1,6 +1,7 @@
 using System.Security.Cryptography;
 using NBitcoin.Secp256k1;
 using NSec.Cryptography;
+using Bls = Nethermind.Crypto.Bls;
 using SHA256 = System.Security.Cryptography.SHA256;
 
 namespace NetDid.Core.Crypto;
@@ -166,15 +167,78 @@ public sealed class DefaultCryptoProvider : ICryptoProvider
 
     // --- BLS12-381 (Nethermind.Crypto.Bls) ---
 
+    /// <summary>BLS DST for the Ethereum BLS scheme (used as default).</summary>
+    private static readonly byte[] BlsDst = "BLS_SIG_BLS12381G2_XMD:SHA-256_SSWU_RO_NUL_"u8.ToArray();
+
     private static byte[] SignBls(KeyType keyType, ReadOnlySpan<byte> privateKey, ReadOnlySpan<byte> data)
     {
-        // TODO: Implement BLS12-381 signing using Nethermind.Crypto.Bls
-        throw new NotImplementedException($"BLS12-381 {keyType} signing is not yet implemented.");
+        var sk = new Bls.SecretKey();
+        sk.FromBendian(privateKey);
+
+        if (keyType == KeyType.Bls12381G1)
+        {
+            // G1 public key variant: signature lives in G2
+            var msgPoint = new Bls.P2();
+            msgPoint.HashTo(data, BlsDst, ReadOnlySpan<byte>.Empty);
+            var sig = msgPoint.SignWith(sk);
+            return sig.Compress();
+        }
+        else
+        {
+            // G2 public key variant: signature lives in G1
+            var msgPoint = new Bls.P1();
+            msgPoint.HashTo(data, BlsDst, ReadOnlySpan<byte>.Empty);
+            var sig = msgPoint.SignWith(sk);
+            return sig.Compress();
+        }
     }
 
     private static bool VerifyBls(KeyType keyType, ReadOnlySpan<byte> publicKey, ReadOnlySpan<byte> data, ReadOnlySpan<byte> signature)
     {
-        // TODO: Implement BLS12-381 verification using Nethermind.Crypto.Bls
-        throw new NotImplementedException($"BLS12-381 {keyType} verification is not yet implemented.");
+        try
+        {
+            if (keyType == KeyType.Bls12381G1)
+            {
+                // G1 public key, G2 signature
+                var pk = new Bls.P1Affine();
+                pk.Decode(publicKey);
+                var sig = new Bls.P2Affine();
+                sig.Decode(signature);
+
+                if (!pk.InGroup() || !sig.InGroup())
+                    return false;
+
+                var pairing = new Bls.Pairing(true, BlsDst);
+                var err = pairing.Aggregate(pk, sig, data, ReadOnlySpan<byte>.Empty);
+                if (err != Bls.ERROR.SUCCESS)
+                    return false;
+
+                pairing.Commit();
+                return pairing.FinalVerify(default);
+            }
+            else
+            {
+                // G2 public key, G1 signature
+                var pk = new Bls.P2Affine();
+                pk.Decode(publicKey);
+                var sig = new Bls.P1Affine();
+                sig.Decode(signature);
+
+                if (!pk.InGroup() || !sig.InGroup())
+                    return false;
+
+                var pairing = new Bls.Pairing(true, BlsDst);
+                var err = pairing.Aggregate(pk, sig, data, ReadOnlySpan<byte>.Empty);
+                if (err != Bls.ERROR.SUCCESS)
+                    return false;
+
+                pairing.Commit();
+                return pairing.FinalVerify(default);
+            }
+        }
+        catch (Bls.BlsException)
+        {
+            return false;
+        }
     }
 }

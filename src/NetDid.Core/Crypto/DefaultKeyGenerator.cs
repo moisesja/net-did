@@ -1,6 +1,7 @@
 using System.Security.Cryptography;
 using NBitcoin.Secp256k1;
 using NSec.Cryptography;
+using Bls = Nethermind.Crypto.Bls;
 
 namespace NetDid.Core.Crypto;
 
@@ -234,13 +235,49 @@ public sealed class DefaultKeyGenerator : IKeyGenerator
 
     private static KeyPair GenerateBls(KeyType keyType)
     {
-        // TODO: Implement BLS12-381 key generation using Nethermind.Crypto.Bls
-        throw new NotImplementedException($"BLS12-381 {keyType} key generation is not yet implemented.");
+        // Generate 32 bytes of random IKM, then use blst keygen
+        Span<byte> ikm = stackalloc byte[32];
+        RandomNumberGenerator.Fill(ikm);
+
+        var sk = new Bls.SecretKey();
+        sk.Keygen(ikm);
+
+        return BuildBlsKeyPair(keyType, sk);
     }
 
     private static KeyPair RestoreBls(KeyType keyType, ReadOnlySpan<byte> privateKey)
     {
-        // TODO: Implement BLS12-381 key restoration using Nethermind.Crypto.Bls
-        throw new NotImplementedException($"BLS12-381 {keyType} key restoration is not yet implemented.");
+        var sk = new Bls.SecretKey();
+        sk.FromBendian(privateKey);
+
+        return BuildBlsKeyPair(keyType, sk);
+    }
+
+    private static KeyPair BuildBlsKeyPair(KeyType keyType, Bls.SecretKey sk)
+    {
+        byte[] publicKey;
+        if (keyType == KeyType.Bls12381G1)
+        {
+            // G1 public key: 48 bytes compressed
+            var pk = new Bls.P1();
+            pk.FromSk(sk);
+            publicKey = pk.Compress();
+        }
+        else
+        {
+            // G2 public key: 96 bytes compressed
+            // P2 doesn't have FromSk — use scalar multiplication on the generator
+            var scalar = new Bls.Scalar();
+            scalar.FromBendian(sk.ToBendian());
+            var pk = Bls.P2.Generator().Mult(scalar);
+            publicKey = pk.Compress();
+        }
+
+        return new KeyPair
+        {
+            KeyType = keyType,
+            PrivateKey = sk.ToBendian(),
+            PublicKey = publicKey
+        };
     }
 }
