@@ -3,17 +3,7 @@
   <PropertyGroup>
     <PackageId>NetDid.Core</PackageId>
     <Version>$(NetDidVersion)</Version>
-    <Authors>Moises E Jaramillo</Authors>
     <Description>Core abstractions, DID document model, crypto primitives, and encoding for the NetDid multi-method DID library.</Description>
-    <PackageLicenseExpression>Apache-2.0</PackageLicenseExpression>
-    <PackageProjectUrl>https://github.com/moisesja/netdid</PackageProjectUrl>
-    <RepositoryUrl>https://github.com/moisesja/netdid</RepositoryUrl>
-    <RepositoryType>git</RepositoryType>
-    <IncludeSymbols>true</IncludeSymbols>
-    <SymbolPackageFormat>snupkg</SymbolPackageFormat>
-  </PropertyGroup>
-
-  <PropertyGroup>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
   </PropertyGroup>
 
@@ -34,6 +24,10 @@
   <!-- Native BBS+ library (zkryptium-ffi) per platform -->
   <ItemGroup>
     <None Include="runtimes\**\native\*" Pack="true" PackagePath="runtimes" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Include="../../README.md" Pack="true" PackagePath="/" />
   </ItemGroup>
 
 </Project>

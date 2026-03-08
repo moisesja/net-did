@@ -11,4 +11,17 @@
     <IncludeSourceRevisionInInformationalVersion>true</IncludeSourceRevisionInInformationalVersion>
     <ContinuousIntegrationBuild Condition="'$(GITHUB_ACTIONS)' == 'true'">true</ContinuousIntegrationBuild>
   </PropertyGroup>
+
+  <!-- Shared NuGet package metadata for all publishable projects -->
+  <PropertyGroup>
+    <Authors>Moises E Jaramillo</Authors>
+    <PackageLicenseExpression>Apache-2.0</PackageLicenseExpression>
+    <PackageProjectUrl>https://github.com/moisesja/net-did</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/moisesja/net-did</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+    <PackageTags>did;decentralized-identity;ssi;did-key;did-peer;w3c;verifiable-credentials</PackageTags>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <IncludeSymbols>true</IncludeSymbols>
+    <SymbolPackageFormat>snupkg</SymbolPackageFormat>
+  </PropertyGroup>
 </Project>
