@@ -104,17 +104,20 @@ public sealed class DefaultDidUrlDereferencer : IDidUrlDereferencer
 
     private static object? FindByFragment(DidDocument doc, string fragment)
     {
-        // Search verification methods
+        // Search top-level verification methods
         if (doc.VerificationMethod is not null)
         {
-            var vm = doc.VerificationMethod.FirstOrDefault(v =>
-            {
-                var hashIndex = v.Id.IndexOf('#');
-                var vmFragment = hashIndex >= 0 ? v.Id[(hashIndex + 1)..] : v.Id;
-                return vmFragment == fragment;
-            });
+            var vm = FindVmByFragment(doc.VerificationMethod, fragment);
             if (vm is not null) return vm;
         }
+
+        // Search embedded verification methods in all relationship arrays
+        var embedded = FindEmbeddedVmByFragment(doc.Authentication, fragment)
+            ?? FindEmbeddedVmByFragment(doc.AssertionMethod, fragment)
+            ?? FindEmbeddedVmByFragment(doc.KeyAgreement, fragment)
+            ?? FindEmbeddedVmByFragment(doc.CapabilityInvocation, fragment)
+            ?? FindEmbeddedVmByFragment(doc.CapabilityDelegation, fragment);
+        if (embedded is not null) return embedded;
 
         // Search services
         if (doc.Service is not null)
@@ -128,6 +131,33 @@ public sealed class DefaultDidUrlDereferencer : IDidUrlDereferencer
             if (svc is not null) return svc;
         }
 
+        return null;
+    }
+
+    private static VerificationMethod? FindVmByFragment(
+        IReadOnlyList<VerificationMethod> methods, string fragment)
+    {
+        return methods.FirstOrDefault(v =>
+        {
+            var hashIndex = v.Id.IndexOf('#');
+            var vmFragment = hashIndex >= 0 ? v.Id[(hashIndex + 1)..] : v.Id;
+            return vmFragment == fragment;
+        });
+    }
+
+    private static VerificationMethod? FindEmbeddedVmByFragment(
+        IReadOnlyList<VerificationRelationshipEntry>? entries, string fragment)
+    {
+        if (entries is null) return null;
+        foreach (var entry in entries)
+        {
+            if (!entry.IsReference && entry.EmbeddedMethod is not null)
+            {
+                var hashIndex = entry.EmbeddedMethod.Id.IndexOf('#');
+                var vmFragment = hashIndex >= 0 ? entry.EmbeddedMethod.Id[(hashIndex + 1)..] : entry.EmbeddedMethod.Id;
+                if (vmFragment == fragment) return entry.EmbeddedMethod;
+            }
+        }
         return null;
     }
 

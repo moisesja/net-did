@@ -17,6 +17,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **DID URL parameter parsing**: `DidParser.ParseDidUrl` now correctly parses DID parameters (`;param=value`), modeled via new `DidUrl.Parameters` property.
 - **Private JWK key leak**: `DidDocumentSerializer` no longer emits private key member `d` from `publicKeyJwk`. Only public JWK members (`kty`, `crv`, `x`, `y`) are serialized.
 - **JSON-LD context objects**: Object-valued `@context` entries now round-trip correctly through serialization and deserialization. Previously they were dropped or caused `JsonException`.
+- **Embedded VM dereferencing**: `DefaultDidUrlDereferencer` now finds embedded verification methods inside all relationship arrays (`authentication`, `assertionMethod`, `keyAgreement`, `capabilityInvocation`, `capabilityDelegation`) when resolving by fragment.
 
 ## [0.2.0] - 2026-03-08
 
