@@ -171,4 +171,132 @@ public class DefaultDidUrlDereferencerTests
 
         result.DereferencingMetadata.Error.Should().Be("notFound");
     }
+
+    // --- Embedded verification method dereferencing ---
+
+    [Fact]
+    public async Task DereferenceAsync_EmbeddedVm_InAuthentication_ReturnsVm()
+    {
+        var doc = new DidDocument
+        {
+            Id = new Did("did:example:123"),
+            Authentication =
+            [
+                VerificationRelationshipEntry.FromEmbedded(new VerificationMethod
+                {
+                    Id = "did:example:123#embedded-auth",
+                    Type = "Multikey",
+                    Controller = new Did("did:example:123"),
+                    PublicKeyMultibase = "z6Mkexample"
+                })
+            ]
+        };
+        SetupResolverSuccess(doc);
+
+        var result = await _dereferencer.DereferenceAsync("did:example:123#embedded-auth");
+
+        result.DereferencingMetadata.Error.Should().BeNull();
+        result.ContentStream.Should().BeOfType<VerificationMethod>();
+        ((VerificationMethod)result.ContentStream!).Id.Should().Be("did:example:123#embedded-auth");
+    }
+
+    [Fact]
+    public async Task DereferenceAsync_EmbeddedVm_InKeyAgreement_ReturnsVm()
+    {
+        var doc = new DidDocument
+        {
+            Id = new Did("did:example:123"),
+            KeyAgreement =
+            [
+                VerificationRelationshipEntry.FromEmbedded(new VerificationMethod
+                {
+                    Id = "did:example:123#embedded-agree",
+                    Type = "Multikey",
+                    Controller = new Did("did:example:123"),
+                    PublicKeyMultibase = "z6LSexample"
+                })
+            ]
+        };
+        SetupResolverSuccess(doc);
+
+        var result = await _dereferencer.DereferenceAsync("did:example:123#embedded-agree");
+
+        result.DereferencingMetadata.Error.Should().BeNull();
+        result.ContentStream.Should().BeOfType<VerificationMethod>();
+    }
+
+    [Fact]
+    public async Task DereferenceAsync_EmbeddedVm_InAssertionMethod_ReturnsVm()
+    {
+        var doc = new DidDocument
+        {
+            Id = new Did("did:example:123"),
+            AssertionMethod =
+            [
+                VerificationRelationshipEntry.FromEmbedded(new VerificationMethod
+                {
+                    Id = "did:example:123#embedded-assert",
+                    Type = "Multikey",
+                    Controller = new Did("did:example:123"),
+                    PublicKeyMultibase = "z6Mkexample"
+                })
+            ]
+        };
+        SetupResolverSuccess(doc);
+
+        var result = await _dereferencer.DereferenceAsync("did:example:123#embedded-assert");
+
+        result.DereferencingMetadata.Error.Should().BeNull();
+        result.ContentStream.Should().BeOfType<VerificationMethod>();
+    }
+
+    [Fact]
+    public async Task DereferenceAsync_EmbeddedVm_InCapabilityInvocation_ReturnsVm()
+    {
+        var doc = new DidDocument
+        {
+            Id = new Did("did:example:123"),
+            CapabilityInvocation =
+            [
+                VerificationRelationshipEntry.FromEmbedded(new VerificationMethod
+                {
+                    Id = "did:example:123#embedded-invoke",
+                    Type = "Multikey",
+                    Controller = new Did("did:example:123"),
+                    PublicKeyMultibase = "z6Mkexample"
+                })
+            ]
+        };
+        SetupResolverSuccess(doc);
+
+        var result = await _dereferencer.DereferenceAsync("did:example:123#embedded-invoke");
+
+        result.DereferencingMetadata.Error.Should().BeNull();
+        result.ContentStream.Should().BeOfType<VerificationMethod>();
+    }
+
+    [Fact]
+    public async Task DereferenceAsync_EmbeddedVm_InCapabilityDelegation_ReturnsVm()
+    {
+        var doc = new DidDocument
+        {
+            Id = new Did("did:example:123"),
+            CapabilityDelegation =
+            [
+                VerificationRelationshipEntry.FromEmbedded(new VerificationMethod
+                {
+                    Id = "did:example:123#embedded-delegate",
+                    Type = "Multikey",
+                    Controller = new Did("did:example:123"),
+                    PublicKeyMultibase = "z6Mkexample"
+                })
+            ]
+        };
+        SetupResolverSuccess(doc);
+
+        var result = await _dereferencer.DereferenceAsync("did:example:123#embedded-delegate");
+
+        result.DereferencingMetadata.Error.Should().BeNull();
+        result.ContentStream.Should().BeOfType<VerificationMethod>();
+    }
 }
