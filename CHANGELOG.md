@@ -19,6 +19,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **JSON-LD context objects**: Object-valued `@context` entries now round-trip correctly through serialization and deserialization. Previously they were dropped or caused `JsonException`.
 - **Embedded VM dereferencing**: `DefaultDidUrlDereferencer` now finds embedded verification methods inside all relationship arrays (`authentication`, `assertionMethod`, `keyAgreement`, `capabilityInvocation`, `capabilityDelegation`) when resolving by fragment.
 - **Documentation alignment**: Aligned `CLAUDE.md`, `AGENTS.md`, and `NetDidPRD.md` with actual implementation status. Only `did:key` and `did:peer` are implemented; `did:webvh` and `did:ethr` are marked as planned. W3C Test Suite conformance claims downgraded to planned.
+- **did:peer numalgo 4 resolution fidelity**: `BuildResolvedDocument` now rewrites controller values matching the placeholder DID, rewrites embedded verification methods in relationship arrays, and preserves `@context` and `AdditionalProperties`. Input document now serialized as JSON-LD so `@context` survives round-trip.
 
 ## [0.2.0] - 2026-03-08
 
