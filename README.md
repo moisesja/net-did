@@ -163,7 +163,7 @@ Console.WriteLine(result.Did);
 
 ### Numalgo 2 — Inline keys and services (DIDComm)
 
-The most practical variant for DIDComm messaging. Keys and service endpoints are encoded directly in the DID string.
+The most practical variant for DIDComm messaging. Keys and service endpoints are encoded directly in the DID string. Purpose codes follow the DIF peer-DID spec: `A`=assertion, `E`=encryption (key agreement), `V`=verification (authentication), `I`=capability invocation, `D`=capability delegation, `S`=service.
 
 ```csharp
 var crypto = new DefaultCryptoProvider();
@@ -190,7 +190,7 @@ var result = await didPeer.CreateAsync(new DidPeerCreateOptions
 });
 
 Console.WriteLine(result.Did);
-// Output: did:peer:2.Vz6Mkf5r...Az6LSb...SeyJ0IjoiZG0i...
+// Output: did:peer:2.Vz6Mkf5r...Ez6LSb...SeyJ0IjoiZG0i...
 ```
 
 Resolution decodes everything from the DID string — no network call needed:
@@ -202,6 +202,8 @@ var doc = resolved.DidDocument!;
 Console.WriteLine(doc.Service![0].Type);                    // "DIDCommMessaging"
 Console.WriteLine(doc.Service[0].ServiceEndpoint.Uri);      // "https://example.com/didcomm"
 ```
+
+All five verification relationships are supported — use `PeerPurpose.Assertion`, `PeerPurpose.CapabilityInvocation`, or `PeerPurpose.CapabilityDelegation` to assign keys to additional relationships.
 
 Service types are abbreviated in the DID string per the DIF spec (`DIDCommMessaging` → `dm`, `type` → `t`, `serviceEndpoint` → `s`).
 

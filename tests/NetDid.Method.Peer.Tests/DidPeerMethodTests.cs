@@ -100,6 +100,8 @@ public class DidPeerMethodTests
         });
 
         result.Did.Value.Should().StartWith("did:peer:2.");
+        result.Did.Value.Should().Contain(".V"); // Authentication prefix
+        result.Did.Value.Should().Contain(".E"); // KeyAgreement prefix (was 'A', now 'E')
         result.DidDocument.VerificationMethod.Should().HaveCount(2);
         result.DidDocument.Authentication.Should().HaveCount(1);
         result.DidDocument.KeyAgreement.Should().HaveCount(1);
@@ -180,6 +182,109 @@ public class DidPeerMethodTests
         });
 
         await act.Should().ThrowAsync<ArgumentException>();
+    }
+
+    [Fact]
+    public async Task Numalgo2_AssertionMethod_RoundTrip()
+    {
+        var assertKey = _keyGen.Generate(KeyType.Ed25519);
+
+        var result = await _method.CreateAsync(new DidPeerCreateOptions
+        {
+            Numalgo = PeerNumalgo.Two,
+            Keys =
+            [
+                new PeerKeyPurpose(new KeyPairSigner(assertKey, _crypto), PeerPurpose.Assertion)
+            ]
+        });
+
+        result.Did.Value.Should().Contain(".A"); // Assertion prefix
+        result.DidDocument.AssertionMethod.Should().HaveCount(1);
+        result.DidDocument.Authentication.Should().BeNull();
+        result.DidDocument.KeyAgreement.Should().BeNull();
+
+        var resolved = await _method.ResolveAsync(result.Did.Value);
+        resolved.DidDocument!.AssertionMethod.Should().HaveCount(1);
+        resolved.DidDocument.Authentication.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task Numalgo2_CapabilityInvocationAndDelegation_RoundTrip()
+    {
+        var invokeKey = _keyGen.Generate(KeyType.Ed25519);
+        var delegateKey = _keyGen.Generate(KeyType.P256);
+
+        var result = await _method.CreateAsync(new DidPeerCreateOptions
+        {
+            Numalgo = PeerNumalgo.Two,
+            Keys =
+            [
+                new PeerKeyPurpose(new KeyPairSigner(invokeKey, _crypto), PeerPurpose.CapabilityInvocation),
+                new PeerKeyPurpose(new KeyPairSigner(delegateKey, _crypto), PeerPurpose.CapabilityDelegation)
+            ]
+        });
+
+        result.Did.Value.Should().Contain(".I"); // CapabilityInvocation prefix
+        result.Did.Value.Should().Contain(".D"); // CapabilityDelegation prefix
+        result.DidDocument.CapabilityInvocation.Should().HaveCount(1);
+        result.DidDocument.CapabilityDelegation.Should().HaveCount(1);
+        result.DidDocument.Authentication.Should().BeNull();
+
+        var resolved = await _method.ResolveAsync(result.Did.Value);
+        resolved.DidDocument!.CapabilityInvocation.Should().HaveCount(1);
+        resolved.DidDocument.CapabilityDelegation.Should().HaveCount(1);
+    }
+
+    [Fact]
+    public async Task Numalgo2_AllPurposeCodes_RoundTrip()
+    {
+        var assertKey = _keyGen.Generate(KeyType.Ed25519);
+        var agreeKey = _keyGen.Generate(KeyType.X25519);
+        var authKey = _keyGen.Generate(KeyType.Ed25519);
+        var invokeKey = _keyGen.Generate(KeyType.P256);
+        var delegateKey = _keyGen.Generate(KeyType.P256);
+
+        var result = await _method.CreateAsync(new DidPeerCreateOptions
+        {
+            Numalgo = PeerNumalgo.Two,
+            Keys =
+            [
+                new PeerKeyPurpose(new KeyPairSigner(assertKey, _crypto), PeerPurpose.Assertion),
+                new PeerKeyPurpose(new KeyPairSigner(agreeKey, _crypto), PeerPurpose.KeyAgreement),
+                new PeerKeyPurpose(new KeyPairSigner(authKey, _crypto), PeerPurpose.Authentication),
+                new PeerKeyPurpose(new KeyPairSigner(invokeKey, _crypto), PeerPurpose.CapabilityInvocation),
+                new PeerKeyPurpose(new KeyPairSigner(delegateKey, _crypto), PeerPurpose.CapabilityDelegation)
+            ],
+            Services =
+            [
+                new Service
+                {
+                    Id = "#svc",
+                    Type = "DIDCommMessaging",
+                    ServiceEndpoint = ServiceEndpointValue.FromUri("https://example.com/endpoint")
+                }
+            ]
+        });
+
+        result.Did.Value.Should().StartWith("did:peer:2.");
+        result.DidDocument.VerificationMethod.Should().HaveCount(5);
+        result.DidDocument.AssertionMethod.Should().HaveCount(1);
+        result.DidDocument.KeyAgreement.Should().HaveCount(1);
+        result.DidDocument.Authentication.Should().HaveCount(1);
+        result.DidDocument.CapabilityInvocation.Should().HaveCount(1);
+        result.DidDocument.CapabilityDelegation.Should().HaveCount(1);
+        result.DidDocument.Service.Should().HaveCount(1);
+
+        // Resolve and verify all relationships survive
+        var resolved = await _method.ResolveAsync(result.Did.Value);
+        resolved.DidDocument.Should().NotBeNull();
+        resolved.DidDocument!.VerificationMethod.Should().HaveCount(5);
+        resolved.DidDocument.AssertionMethod.Should().HaveCount(1);
+        resolved.DidDocument.KeyAgreement.Should().HaveCount(1);
+        resolved.DidDocument.Authentication.Should().HaveCount(1);
+        resolved.DidDocument.CapabilityInvocation.Should().HaveCount(1);
+        resolved.DidDocument.CapabilityDelegation.Should().HaveCount(1);
+        resolved.DidDocument.Service.Should().HaveCount(1);
     }
 
     // --- Numalgo 4 ---

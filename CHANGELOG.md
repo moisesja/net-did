@@ -5,7 +5,26 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.1.0] - Unreleased
+## [0.3.0] - Unreleased
+
+### Changed
+
+- **did:peer purpose codes**: Aligned with the current DIF peer-DID spec. `KeyAgreement` now uses prefix `E` (was `A`). Added three new `PeerPurpose` members: `Assertion` (prefix `A`), `CapabilityInvocation` (prefix `I`), and `CapabilityDelegation` (prefix `D`). All five W3C DID Core verification relationships are now supported in numalgo 2.
+
+## [0.2.0] - 2026-03-08
+
+### Added
+
+- **did:key method** (`NetDid.Method.Key`): Deterministic, self-certifying DID method. Create and resolve for all 7 key types. Ed25519 auto-derives X25519 key agreement key. Supports `Multikey` and `JsonWebKey2020` verification method representations. BLS12-381 keys use assertion-only relationships.
+- **did:peer method** (`NetDid.Method.Peer`): Peer-to-peer DID method with three numalgo variants:
+  - Numalgo 0: Inception key (functionally identical to did:key)
+  - Numalgo 2: Inline keys and services with DIF spec purpose codes and service abbreviation encoding
+  - Numalgo 4: Hash-based short/long form with SHA-256 integrity verification
+- **Ed25519 to X25519 public key derivation**: Birational map for resolve-path public-key-only conversion (`IKeyGenerator.DeriveX25519PublicKeyFromEd25519`)
+- **JWK from raw bytes**: `JwkConverter.ToPublicJwk(KeyType, byte[])` overload for resolve-path usage
+- **Samples**: Console app demonstrating did:key and did:peer usage across all variants
+
+## [0.1.0] - 2026-03-08
 
 ### Added
 

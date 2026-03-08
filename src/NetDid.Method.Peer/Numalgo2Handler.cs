@@ -7,7 +7,9 @@ namespace NetDid.Method.Peer;
 
 /// <summary>
 /// Numalgo 2: inline keys and services encoded in the DID string.
-/// Purpose prefixes: V = authentication, A = key agreement, S = service.
+/// Purpose prefixes per the DIF peer-DID spec:
+/// A = assertion, E = key agreement (encryption), V = authentication (verification),
+/// I = capability invocation, D = capability delegation, S = service.
 /// </summary>
 internal sealed class Numalgo2Handler
 {
@@ -22,8 +24,11 @@ internal sealed class Numalgo2Handler
         {
             var prefix = keyPurpose.Purpose switch
             {
+                PeerPurpose.Assertion => 'A',
+                PeerPurpose.KeyAgreement => 'E',
                 PeerPurpose.Authentication => 'V',
-                PeerPurpose.KeyAgreement => 'A',
+                PeerPurpose.CapabilityInvocation => 'I',
+                PeerPurpose.CapabilityDelegation => 'D',
                 _ => throw new ArgumentOutOfRangeException()
             };
             segments.Add($"{prefix}{keyPurpose.Key.MultibasePublicKey}");
@@ -56,7 +61,10 @@ internal sealed class Numalgo2Handler
 
         var verificationMethods = new List<VerificationMethod>();
         var authentication = new List<VerificationRelationshipEntry>();
+        var assertionMethod = new List<VerificationRelationshipEntry>();
         var keyAgreement = new List<VerificationRelationshipEntry>();
+        var capabilityInvocation = new List<VerificationRelationshipEntry>();
+        var capabilityDelegation = new List<VerificationRelationshipEntry>();
         var services = new List<Service>();
         var didValue = new Did(did);
         int keyIndex = 0;
@@ -71,42 +79,39 @@ internal sealed class Numalgo2Handler
 
             switch (purposeChar)
             {
-                case 'V':
-                {
-                    var decoded = Multibase.Decode(rest);
-                    var (codec, rawKey) = Multicodec.Decode(decoded);
-                    var keyType = KeyTypeExtensions.ToKeyType(codec);
-
-                    var vmId = $"{did}#key-{keyIndex}";
-                    var vm = new VerificationMethod
-                    {
-                        Id = vmId,
-                        Type = "Multikey",
-                        Controller = didValue,
-                        PublicKeyMultibase = rest
-                    };
-                    verificationMethods.Add(vm);
-                    authentication.Add(VerificationRelationshipEntry.FromReference(vmId));
-                    keyIndex++;
-                    break;
-                }
                 case 'A':
                 {
-                    var decoded = Multibase.Decode(rest);
-                    var (codec, rawKey) = Multicodec.Decode(decoded);
-                    var keyType = KeyTypeExtensions.ToKeyType(codec);
-
-                    var vmId = $"{did}#key-{keyIndex}";
-                    var vm = new VerificationMethod
-                    {
-                        Id = vmId,
-                        Type = "Multikey",
-                        Controller = didValue,
-                        PublicKeyMultibase = rest
-                    };
+                    var vm = DecodeKeySegment(rest, did, didValue, ref keyIndex);
                     verificationMethods.Add(vm);
-                    keyAgreement.Add(VerificationRelationshipEntry.FromReference(vmId));
-                    keyIndex++;
+                    assertionMethod.Add(VerificationRelationshipEntry.FromReference(vm.Id));
+                    break;
+                }
+                case 'E':
+                {
+                    var vm = DecodeKeySegment(rest, did, didValue, ref keyIndex);
+                    verificationMethods.Add(vm);
+                    keyAgreement.Add(VerificationRelationshipEntry.FromReference(vm.Id));
+                    break;
+                }
+                case 'V':
+                {
+                    var vm = DecodeKeySegment(rest, did, didValue, ref keyIndex);
+                    verificationMethods.Add(vm);
+                    authentication.Add(VerificationRelationshipEntry.FromReference(vm.Id));
+                    break;
+                }
+                case 'I':
+                {
+                    var vm = DecodeKeySegment(rest, did, didValue, ref keyIndex);
+                    verificationMethods.Add(vm);
+                    capabilityInvocation.Add(VerificationRelationshipEntry.FromReference(vm.Id));
+                    break;
+                }
+                case 'D':
+                {
+                    var vm = DecodeKeySegment(rest, did, didValue, ref keyIndex);
+                    verificationMethods.Add(vm);
+                    capabilityDelegation.Add(VerificationRelationshipEntry.FromReference(vm.Id));
                     break;
                 }
                 case 'S':
@@ -126,9 +131,29 @@ internal sealed class Numalgo2Handler
             Id = didValue,
             VerificationMethod = verificationMethods.Count > 0 ? verificationMethods : null,
             Authentication = authentication.Count > 0 ? authentication : null,
+            AssertionMethod = assertionMethod.Count > 0 ? assertionMethod : null,
             KeyAgreement = keyAgreement.Count > 0 ? keyAgreement : null,
+            CapabilityInvocation = capabilityInvocation.Count > 0 ? capabilityInvocation : null,
+            CapabilityDelegation = capabilityDelegation.Count > 0 ? capabilityDelegation : null,
             Service = services.Count > 0 ? services : null
         };
+    }
+
+    private static VerificationMethod DecodeKeySegment(string multibaseKey, string did, Did didValue, ref int keyIndex)
+    {
+        var decoded = Multibase.Decode(multibaseKey);
+        var (codec, rawKey) = Multicodec.Decode(decoded);
+
+        var vmId = $"{did}#key-{keyIndex}";
+        var vm = new VerificationMethod
+        {
+            Id = vmId,
+            Type = "Multikey",
+            Controller = didValue,
+            PublicKeyMultibase = multibaseKey
+        };
+        keyIndex++;
+        return vm;
     }
 
     private static DidDocument BuildDocument(
@@ -137,7 +162,10 @@ internal sealed class Numalgo2Handler
         var didValue = new Did(did);
         var verificationMethods = new List<VerificationMethod>();
         var authentication = new List<VerificationRelationshipEntry>();
+        var assertionMethod = new List<VerificationRelationshipEntry>();
         var keyAgreement = new List<VerificationRelationshipEntry>();
+        var capabilityInvocation = new List<VerificationRelationshipEntry>();
+        var capabilityDelegation = new List<VerificationRelationshipEntry>();
         int keyIndex = 0;
 
         foreach (var keyPurpose in keys)
@@ -155,11 +183,20 @@ internal sealed class Numalgo2Handler
             var vmRef = VerificationRelationshipEntry.FromReference(vmId);
             switch (keyPurpose.Purpose)
             {
-                case PeerPurpose.Authentication:
-                    authentication.Add(vmRef);
+                case PeerPurpose.Assertion:
+                    assertionMethod.Add(vmRef);
                     break;
                 case PeerPurpose.KeyAgreement:
                     keyAgreement.Add(vmRef);
+                    break;
+                case PeerPurpose.Authentication:
+                    authentication.Add(vmRef);
+                    break;
+                case PeerPurpose.CapabilityInvocation:
+                    capabilityInvocation.Add(vmRef);
+                    break;
+                case PeerPurpose.CapabilityDelegation:
+                    capabilityDelegation.Add(vmRef);
                     break;
             }
             keyIndex++;
@@ -186,7 +223,10 @@ internal sealed class Numalgo2Handler
             Id = didValue,
             VerificationMethod = verificationMethods.Count > 0 ? verificationMethods : null,
             Authentication = authentication.Count > 0 ? authentication : null,
+            AssertionMethod = assertionMethod.Count > 0 ? assertionMethod : null,
             KeyAgreement = keyAgreement.Count > 0 ? keyAgreement : null,
+            CapabilityInvocation = capabilityInvocation.Count > 0 ? capabilityInvocation : null,
+            CapabilityDelegation = capabilityDelegation.Count > 0 ? capabilityDelegation : null,
             Service = services
         };
     }

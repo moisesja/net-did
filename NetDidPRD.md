@@ -762,10 +762,13 @@ DIF Peer DID Method Specification — https://identity.foundation/peer-did-metho
 
 **Numalgo 0** — Inception key only. Functionally identical to did:key. Format: `did:peer:0<multibase-multicodec-public-key>`.
 
-**Numalgo 2** — Inline keys and services. Each key is purpose-prefixed per the DIF spec:
+**Numalgo 2** — Inline keys and services. Each key is purpose-prefixed per the DIF peer-DID spec:
 
-- `A` = key agreement (X25519)
-- `V` = verification / authentication (Ed25519) — used for authentication and assertion relationships
+- `A` = assertion (assertionMethod)
+- `E` = encryption / key agreement (keyAgreement)
+- `V` = verification / authentication (authentication)
+- `I` = capability invocation (capabilityInvocation)
+- `D` = capability delegation (capabilityDelegation)
 - `S` = service block (JSON encoded, then base64url-encoded)
 
 Format: `did:peer:2.<purpose><multibase-key>.<purpose><multibase-key>.<purpose><encoded-service>`
@@ -800,7 +803,7 @@ public sealed record DidPeerCreateOptions : DidCreateOptions
 /// (the public key is extracted via signer.PublicKey; SignAsync is not called).
 public sealed record PeerKeyPurpose(ISigner Key, PeerPurpose Purpose);
 
-public enum PeerPurpose { Authentication, KeyAgreement }
+public enum PeerPurpose { Assertion, KeyAgreement, Authentication, CapabilityInvocation, CapabilityDelegation }
 public enum PeerNumalgo { Zero = 0, Two = 2, Four = 4 }
 ```
 

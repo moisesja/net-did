@@ -110,11 +110,15 @@ Console.WriteLine();
 
 // -------------------------------------------------------
 // 7. did:peer numalgo 2 — Inline keys + DIDComm service
+//    Purpose codes per DIF spec: A=assertion, E=encryption
+//    (key agreement), V=verification (auth), I=invocation,
+//    D=delegation, S=service
 // -------------------------------------------------------
 Console.WriteLine("=== did:peer — Numalgo 2 (DIDComm) ===");
 
 var authKey = keyGen.Generate(KeyType.Ed25519);
 var agreeKey = keyGen.Generate(KeyType.X25519);
+var assertKey = keyGen.Generate(KeyType.Ed25519);
 
 var peer2 = await didPeer.CreateAsync(new DidPeerCreateOptions
 {
@@ -122,7 +126,8 @@ var peer2 = await didPeer.CreateAsync(new DidPeerCreateOptions
     Keys =
     [
         new PeerKeyPurpose(new KeyPairSigner(authKey, crypto), PeerPurpose.Authentication),
-        new PeerKeyPurpose(new KeyPairSigner(agreeKey, crypto), PeerPurpose.KeyAgreement)
+        new PeerKeyPurpose(new KeyPairSigner(agreeKey, crypto), PeerPurpose.KeyAgreement),
+        new PeerKeyPurpose(new KeyPairSigner(assertKey, crypto), PeerPurpose.Assertion)
     ],
     Services =
     [
@@ -139,7 +144,9 @@ Console.WriteLine($"  Created:  {peer2.Did}");
 Console.WriteLine($"  VMs:      {peer2.DidDocument.VerificationMethod!.Count}");
 Console.WriteLine($"  Auth:     {peer2.DidDocument.Authentication!.Count}");
 Console.WriteLine($"  KeyAgree: {peer2.DidDocument.KeyAgreement!.Count}");
+Console.WriteLine($"  Assert:   {peer2.DidDocument.AssertionMethod!.Count}");
 Console.WriteLine($"  Services: {peer2.DidDocument.Service!.Count}");
+Console.WriteLine($"  (Purpose codes: V=auth, E=keyAgreement, A=assertion)");
 
 // Resolve the numalgo 2 DID
 var peer2Resolved = await didPeer.ResolveAsync(peer2.Did.Value);
