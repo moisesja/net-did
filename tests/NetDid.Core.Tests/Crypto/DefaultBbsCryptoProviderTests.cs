@@ -5,6 +5,7 @@ using NetDid.Core.Crypto.Native;
 
 namespace NetDid.Core.Tests.Crypto;
 
+[Trait("Category", "NativeFFI")]
 public class DefaultBbsCryptoProviderTests
 {
     private readonly DefaultBbsCryptoProvider _bbs = new();
