@@ -1,0 +1,21 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <PackageId>NetDid.Method.WebVh</PackageId>
+    <Version>$(NetDidVersion)</Version>
+    <Description>did:webvh method implementation for the NetDid multi-method DID library.</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="NetDid.Method.WebVh.Tests" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="../NetDid.Core/NetDid.Core.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Include="../../README.md" Pack="true" PackagePath="/" />
+  </ItemGroup>
+
+</Project>

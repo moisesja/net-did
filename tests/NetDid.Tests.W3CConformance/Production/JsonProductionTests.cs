@@ -10,7 +10,7 @@ public class JsonProductionTests
 {
     private readonly TestDidFactory _factory = new();
 
-    public static TheoryData<string> AllMethods => new() { "did:key", "did:peer" };
+    public static TheoryData<string> AllMethods => new() { "did:key", "did:peer", "did:webvh" };
 
     [Theory, MemberData(nameof(AllMethods))]
     [Trait("W3CCategory", "did-production")]
@@ -87,8 +87,8 @@ public class JsonProductionTests
         var json = DidDocumentSerializer.Serialize(doc, DidContentTypes.Json);
         using var parsed = JsonDocument.Parse(json);
 
-        // alsoKnownAs is null by default — should not appear
-        var omitted = !parsed.RootElement.TryGetProperty("alsoKnownAs", out _);
+        // controller is null by default for all test methods — should not appear
+        var omitted = !parsed.RootElement.TryGetProperty("controller", out _);
         ConformanceReportSink.Record(method, "did-production", "6", "6-5",
             "Null properties omitted from JSON", omitted);
         omitted.Should().BeTrue();

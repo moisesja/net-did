@@ -9,8 +9,8 @@ public class DereferenceTests
 {
     private readonly TestDidFactory _factory = new();
 
-    public static TheoryData<string> AllMethods => new() { "did:key", "did:peer" };
-    public static TheoryData<string> MethodsWithServices => new() { "did:peer" };
+    public static TheoryData<string> AllMethods => new() { "did:key", "did:peer", "did:webvh" };
+    public static TheoryData<string> MethodsWithServices => new() { "did:peer", "did:webvh" };
 
     [Theory, MemberData(nameof(AllMethods))]
     [Trait("W3CCategory", "did-url-dereferencing")]
