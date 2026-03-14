@@ -6,7 +6,6 @@ using NetDid.Core.Serialization;
 using NetDid.Method.Key;
 using NetDid.Method.Peer;
 using NetDid.Method.WebVh;
-using NetDid.Method.WebVh.Model;
 
 // ============================================================
 // NetDid Samples — did:key, did:peer, and did:webvh examples

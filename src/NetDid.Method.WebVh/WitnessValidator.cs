@@ -29,15 +29,17 @@ internal sealed class WitnessValidator
         if (witnessConfig.Threshold <= 0)
             return true; // No witness requirement
 
-        if (witnessFile.VersionId != entry.VersionId)
-            return false; // Witness file doesn't match this entry
+        // Find the witness proof entry matching this log version
+        var proofEntry = witnessFile.Entries.FirstOrDefault(e => e.VersionId == entry.VersionId);
+        if (proofEntry is null)
+            return false; // No witness proofs for this version
 
         // The data that witnesses signed is the log entry without proof
         var entryJsonWithoutProof = LogEntrySerializer.SerializeWithoutProof(entry);
 
         var totalWeight = 0;
 
-        foreach (var witnessProof in witnessFile.Proofs)
+        foreach (var witnessProof in proofEntry.Proofs)
         {
             // Find this witness in the config
             var witness = witnessConfig.Witnesses?.FirstOrDefault(w =>
@@ -67,7 +69,10 @@ internal sealed class WitnessValidator
         return totalWeight >= witnessConfig.Threshold;
     }
 
-    /// <summary>Parse a did-witness.json file.</summary>
+    /// <summary>
+    /// Parse a did-witness.json file.
+    /// The spec defines this as a JSON array of witness proof entries.
+    /// </summary>
     public static WitnessFile? ParseWitnessFile(byte[] content)
     {
         try
@@ -76,26 +81,51 @@ internal sealed class WitnessValidator
             using var doc = JsonDocument.Parse(json);
             var root = doc.RootElement;
 
-            var versionId = root.GetProperty("versionId").GetString()!;
-            var proofs = root.GetProperty("proofs").EnumerateArray().Select(e => new DataIntegrityProofValue
-            {
-                Type = e.GetProperty("type").GetString()!,
-                Cryptosuite = e.GetProperty("cryptosuite").GetString()!,
-                VerificationMethod = e.GetProperty("verificationMethod").GetString()!,
-                Created = e.GetProperty("created").GetString()!,
-                ProofPurpose = e.GetProperty("proofPurpose").GetString()!,
-                ProofValue = e.GetProperty("proofValue").GetString()!
-            }).ToList();
+            var entries = new List<WitnessProofEntry>();
 
-            return new WitnessFile
+            if (root.ValueKind == JsonValueKind.Array)
             {
-                VersionId = versionId,
-                Proofs = proofs
-            };
+                // Spec-compliant format: array of { versionId, proofs }
+                foreach (var element in root.EnumerateArray())
+                {
+                    entries.Add(ParseProofEntry(element));
+                }
+            }
+            else if (root.ValueKind == JsonValueKind.Object)
+            {
+                // Legacy single-object format for backwards compatibility
+                entries.Add(ParseProofEntry(root));
+            }
+            else
+            {
+                return null;
+            }
+
+            return new WitnessFile { Entries = entries };
         }
         catch
         {
             return null;
         }
+    }
+
+    private static WitnessProofEntry ParseProofEntry(JsonElement element)
+    {
+        var versionId = element.GetProperty("versionId").GetString()!;
+        var proofs = element.GetProperty("proofs").EnumerateArray().Select(e => new DataIntegrityProofValue
+        {
+            Type = e.GetProperty("type").GetString()!,
+            Cryptosuite = e.GetProperty("cryptosuite").GetString()!,
+            VerificationMethod = e.GetProperty("verificationMethod").GetString()!,
+            Created = e.GetProperty("created").GetString()!,
+            ProofPurpose = e.GetProperty("proofPurpose").GetString()!,
+            ProofValue = e.GetProperty("proofValue").GetString()!
+        }).ToList();
+
+        return new WitnessProofEntry
+        {
+            VersionId = versionId,
+            Proofs = proofs
+        };
     }
 }

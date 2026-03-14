@@ -113,7 +113,8 @@ public sealed class DidWebVhMethod : DidMethodBase
             Metadata = new DidDocumentMetadata
             {
                 Created = finalEntry.VersionTime,
-                VersionId = finalEntry.VersionId
+                VersionId = finalEntry.VersionId,
+                VersionTime = finalEntry.VersionTime
             },
             Artifacts = new Dictionary<string, object>
             {
@@ -136,42 +137,79 @@ public sealed class DidWebVhMethod : DidMethodBase
             if (logContent is null || logContent.Length == 0)
                 return DidResolutionResult.NotFound(did);
 
-            // Parse and validate
+            // Parse entries
             var entries = LogEntrySerializer.ParseJsonLines(logContent);
             if (entries.Count == 0)
                 return DidResolutionResult.NotFound(did);
 
-            // Validate the chain
-            var effectiveParams = _chainValidator.ValidateChain(entries);
+            // Determine the target entry index before validation
+            // This allows versioned queries to succeed even if later entries are invalid
+            var targetIndex = FindTargetIndex(entries, options);
+            if (targetIndex < 0)
+                return DidResolutionResult.NotFound(did);
+
+            // Validate the chain up to the target version
+            var effectiveParams = _chainValidator.ValidateChain(entries, targetIndex + 1);
+
+            var targetEntry = entries[targetIndex];
+
+            // Verify the resolved document's id matches the requested DID
+            if (targetEntry.State.Id.Value != did)
+            {
+                return new DidResolutionResult
+                {
+                    DidDocument = null,
+                    ResolutionMetadata = new DidResolutionMetadata
+                    {
+                        Error = "invalidDidLog"
+                    }
+                };
+            }
 
             // Validate witnesses if configured
             if (effectiveParams.Witness is { Threshold: > 0 })
             {
                 var witnessUrl = DidUrlMapper.MapToWitnessUrl(did);
                 var witnessContent = await _httpClient.FetchWitnessFileAsync(witnessUrl, ct);
-                if (witnessContent is not null)
+
+                // Missing witness file is a validation failure when witnessing is required
+                if (witnessContent is null)
                 {
-                    var witnessFile = WitnessValidator.ParseWitnessFile(witnessContent);
-                    if (witnessFile is not null)
+                    return new DidResolutionResult
                     {
-                        var lastEntry = entries[^1];
-                        if (!_witnessValidator.ValidateWitnesses(witnessFile, lastEntry, effectiveParams.Witness))
+                        DidDocument = null,
+                        ResolutionMetadata = new DidResolutionMetadata
                         {
-                            return new DidResolutionResult
-                            {
-                                DidDocument = null,
-                                ResolutionMetadata = new DidResolutionMetadata
-                                {
-                                    Error = "witnessValidationFailed"
-                                }
-                            };
+                            Error = "witnessValidationFailed"
                         }
-                    }
+                    };
+                }
+
+                var witnessFile = WitnessValidator.ParseWitnessFile(witnessContent);
+                if (witnessFile is null)
+                {
+                    return new DidResolutionResult
+                    {
+                        DidDocument = null,
+                        ResolutionMetadata = new DidResolutionMetadata
+                        {
+                            Error = "witnessValidationFailed"
+                        }
+                    };
+                }
+
+                if (!_witnessValidator.ValidateWitnesses(witnessFile, targetEntry, effectiveParams.Witness))
+                {
+                    return new DidResolutionResult
+                    {
+                        DidDocument = null,
+                        ResolutionMetadata = new DidResolutionMetadata
+                        {
+                            Error = "witnessValidationFailed"
+                        }
+                    };
                 }
             }
-
-            // Select the target entry based on options
-            var targetEntry = SelectTargetEntry(entries, options);
 
             // Check if deactivated
             var isDeactivated = effectiveParams.Deactivated == true;
@@ -188,6 +226,7 @@ public sealed class DidWebVhMethod : DidMethodBase
                     Created = entries[0].VersionTime,
                     Updated = entries.Count > 1 ? entries[^1].VersionTime : null,
                     VersionId = targetEntry.VersionId,
+                    VersionTime = targetEntry.VersionTime,
                     Deactivated = isDeactivated ? true : null
                 }
             };
@@ -227,11 +266,14 @@ public sealed class DidWebVhMethod : DidMethodBase
         if (effectiveParams.UpdateKeys?.Contains(signerMultibase) != true)
             throw new ArgumentException("SigningKey is not an authorized update key.");
 
-        // Check pre-rotation if active: validate that new updateKeys match committed hashes
-        if (effectiveParams.Prerotation == true && effectiveParams.NextKeyHashes is { Count: > 0 }
-            && updateOptions.ParameterUpdates?.UpdateKeys is { Count: > 0 } newKeys)
+        // If pre-rotation is active, new updateKeys MUST be provided
+        if (effectiveParams.Prerotation == true && effectiveParams.NextKeyHashes is { Count: > 0 })
         {
-            foreach (var newKey in newKeys)
+            if (updateOptions.ParameterUpdates?.UpdateKeys is not { Count: > 0 })
+                throw new ArgumentException(
+                    "Pre-rotation is active — updateKeys must be provided to rotate keys.");
+
+            foreach (var newKey in updateOptions.ParameterUpdates.UpdateKeys)
             {
                 PreRotationManager.ValidateKeyRotation(
                     newKey, effectiveParams.NextKeyHashes, entries.Count + 1);
@@ -246,17 +288,17 @@ public sealed class DidWebVhMethod : DidMethodBase
         // Build updated parameters (only include changed fields)
         var newParams = BuildUpdateParameters(updateOptions.ParameterUpdates);
 
-        // Build new entry
+        // Build new entry — hash includes previous versionId per spec
         var versionNumber = entries.Count + 1;
         var newEntry = new LogEntry
         {
-            VersionId = $"{versionNumber}-placeholder",
+            VersionId = $"{versionNumber}-{previousEntry.VersionId}",
             VersionTime = DateTimeOffset.UtcNow,
             Parameters = newParams,
             State = newDocument
         };
 
-        // Compute entry hash
+        // Compute entry hash from the entry with previous versionId
         var entryJsonWithoutProof = LogEntrySerializer.SerializeWithoutProof(newEntry);
         var entryHash = ScidGenerator.ComputeEntryHash(entryJsonWithoutProof);
         newEntry.VersionId = $"{versionNumber}-{entryHash}";
@@ -315,6 +357,8 @@ public sealed class DidWebVhMethod : DidMethodBase
         if (effectiveParams.UpdateKeys?.Contains(signerMultibase) != true)
             throw new ArgumentException("SigningKey is not an authorized update key.");
 
+        var previousEntry = entries[^1];
+
         // Build deactivation entry with minimal document
         var versionNumber = entries.Count + 1;
         var minimalDoc = new DidDocument { Id = new Did(did) };
@@ -326,7 +370,7 @@ public sealed class DidWebVhMethod : DidMethodBase
 
         var deactivationEntry = new LogEntry
         {
-            VersionId = $"{versionNumber}-placeholder",
+            VersionId = $"{versionNumber}-{previousEntry.VersionId}",
             VersionTime = DateTimeOffset.UtcNow,
             Parameters = deactivationParams,
             State = minimalDoc
@@ -480,30 +524,39 @@ public sealed class DidWebVhMethod : DidMethodBase
         };
     }
 
-    private static LogEntry SelectTargetEntry(
+    /// <summary>
+    /// Find the target entry index based on resolution options.
+    /// Returns -1 if a specific version was requested but not found.
+    /// </summary>
+    private static int FindTargetIndex(
         IReadOnlyList<LogEntry> entries, DidResolutionOptions? options)
     {
         if (options is null)
-            return entries[^1]; // Latest entry
+            return entries.Count - 1; // Latest entry
 
         // VersionId filtering
         if (options.VersionId is not null)
         {
-            var match = entries.FirstOrDefault(e => e.VersionId == options.VersionId);
-            if (match is not null) return match;
+            for (int i = 0; i < entries.Count; i++)
+            {
+                if (entries[i].VersionId == options.VersionId)
+                    return i;
+            }
+            return -1; // Requested version not found
         }
 
         // VersionTime filtering — find latest entry at or before the specified time
         if (options.VersionTime is not null && DateTimeOffset.TryParse(options.VersionTime, out var versionTime))
         {
-            var match = entries
-                .Where(e => e.VersionTime <= versionTime)
-                .OrderByDescending(e => e.VersionNumber)
-                .FirstOrDefault();
-
-            if (match is not null) return match;
+            int bestIndex = -1;
+            for (int i = 0; i < entries.Count; i++)
+            {
+                if (entries[i].VersionTime <= versionTime)
+                    bestIndex = i;
+            }
+            return bestIndex; // -1 if no entry found before the specified time
         }
 
-        return entries[^1];
+        return entries.Count - 1; // Default to latest
     }
 }

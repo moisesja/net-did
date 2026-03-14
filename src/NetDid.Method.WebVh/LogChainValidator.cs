@@ -23,8 +23,20 @@ internal sealed class LogChainValidator
     /// </summary>
     public LogEntryParameters ValidateChain(IReadOnlyList<LogEntry> entries)
     {
+        return ValidateChain(entries, entries.Count);
+    }
+
+    /// <summary>
+    /// Validate the log chain up to the specified entry count.
+    /// Returns the effective parameters at the last validated entry.
+    /// Throws LogChainValidationException on failure.
+    /// </summary>
+    public LogEntryParameters ValidateChain(IReadOnlyList<LogEntry> entries, int upToCount)
+    {
         if (entries.Count == 0)
             throw new LogChainValidationException(0, "DID log is empty.");
+
+        var count = Math.Min(upToCount, entries.Count);
 
         // Validate genesis entry
         var genesis = entries[0];
@@ -33,7 +45,7 @@ internal sealed class LogChainValidator
         var effectiveParams = genesis.Parameters;
 
         // Validate subsequent entries
-        for (int i = 1; i < entries.Count; i++)
+        for (int i = 1; i < count; i++)
         {
             var previous = entries[i - 1];
             var current = entries[i];
@@ -95,10 +107,10 @@ internal sealed class LogChainValidator
             throw new LogChainValidationException(expectedVersion,
                 $"Expected version {expectedVersion}, got {current.VersionNumber}.");
 
-        // Verify entry hash: recreate the entry with the placeholder versionId
-        // used during creation to get the same hash
+        // Verify entry hash: recreate the entry with the previous versionId
+        // as specified by the spec: versionId = "<versionNumber>-<previousVersionId>"
         var savedVersionId = current.VersionId;
-        current.VersionId = $"{expectedVersion}-placeholder";
+        current.VersionId = $"{expectedVersion}-{previous.VersionId}";
         var entryJsonWithoutProof = LogEntrySerializer.SerializeWithoutProof(current);
         var computedHash = ScidGenerator.ComputeEntryHash(entryJsonWithoutProof);
         current.VersionId = savedVersionId; // Restore original
@@ -175,10 +187,13 @@ internal sealed class LogChainValidator
         IReadOnlyList<string> previousNextKeyHashes,
         int version)
     {
-        // Pre-rotation validates that the NEW updateKeys in this entry
-        // match previously committed nextKeyHashes
+        // Pre-rotation requires that this entry introduces new updateKeys
+        // that match the previously committed nextKeyHashes.
+        // If no new updateKeys are provided, the entry is invalid under pre-rotation.
         if (current.Parameters.UpdateKeys is not { Count: > 0 })
-            return; // No new updateKeys in this entry, no rotation happening
+            throw new LogChainValidationException(version,
+                $"Pre-rotation is active but version {version} does not introduce new updateKeys. " +
+                "When pre-rotation is enabled, every update must rotate keys.");
 
         foreach (var newKey in current.Parameters.UpdateKeys)
         {
