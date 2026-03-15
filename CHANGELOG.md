@@ -16,6 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **`IDidManager.CreateAsync`**: Method is now inferred from the options type via `DidCreateOptions.MethodName` instead of a separate `string method` parameter. Callers write `manager.CreateAsync(new DidKeyCreateOptions { ... })` instead of `manager.CreateAsync("key", new DidKeyCreateOptions { ... })`.
 - **Samples split into per-method projects**: `NetDid.Samples.DidKey`, `NetDid.Samples.DidPeer`, `NetDid.Samples.DidWebVh`, and `NetDid.Samples.DependencyInjection` replace the monolithic `NetDid.Samples` project.
 
 ### Removed
