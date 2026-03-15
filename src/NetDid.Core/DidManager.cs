@@ -22,10 +22,10 @@ public sealed class DidManager : IDidManager, IDidResolver
     public IDidMethod? GetMethod(string methodName) =>
         _methods.GetValueOrDefault(methodName);
 
-    public Task<DidCreateResult> CreateAsync(string method, DidCreateOptions options, CancellationToken ct = default)
+    public Task<DidCreateResult> CreateAsync(DidCreateOptions options, CancellationToken ct = default)
     {
-        if (!_methods.TryGetValue(method, out var didMethod))
-            throw new MethodNotSupportedException(method);
+        if (!_methods.TryGetValue(options.MethodName, out var didMethod))
+            throw new MethodNotSupportedException(options.MethodName);
         return didMethod.CreateAsync(options, ct);
     }
 

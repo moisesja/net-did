@@ -7,7 +7,10 @@ namespace NetDid.Core.Tests;
 
 public class DidManagerTests
 {
-    private sealed record StubCreateOptions : DidCreateOptions;
+    private sealed record StubCreateOptions : DidCreateOptions
+    {
+        public override string MethodName => "key";
+    }
     private sealed record StubUpdateOptions : DidUpdateOptions;
     private sealed record StubDeactivateOptions : DidDeactivateOptions;
 
@@ -58,15 +61,20 @@ public class DidManagerTests
         _keyMethod.CreateAsync(options, Arg.Any<CancellationToken>())
             .Returns(expected);
 
-        var result = await _manager.CreateAsync("key", options);
+        var result = await _manager.CreateAsync(options);
 
         result.Should().BeSameAs(expected);
+    }
+
+    private sealed record UnregisteredCreateOptions : DidCreateOptions
+    {
+        public override string MethodName => "ethr";
     }
 
     [Fact]
     public async Task CreateAsync_ThrowsForUnregisteredMethod()
     {
-        var act = () => _manager.CreateAsync("ethr", new StubCreateOptions());
+        var act = () => _manager.CreateAsync(new UnregisteredCreateOptions());
 
         await act.Should().ThrowAsync<MethodNotSupportedException>()
             .WithMessage("*ethr*");

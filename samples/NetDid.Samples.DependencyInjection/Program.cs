@@ -36,13 +36,13 @@ Console.WriteLine();
 // -------------------------------------------------------
 Console.WriteLine("=== Create via IDidManager ===");
 
-var keyResult = await manager.CreateAsync("key", new DidKeyCreateOptions
+var keyResult = await manager.CreateAsync(new DidKeyCreateOptions
 {
     KeyType = KeyType.Ed25519
 });
 Console.WriteLine($"  did:key created: {keyResult.Did}");
 
-var peerResult = await manager.CreateAsync("peer", new DidPeerCreateOptions
+var peerResult = await manager.CreateAsync(new DidPeerCreateOptions
 {
     Numalgo = PeerNumalgo.Zero,
     InceptionKeyType = KeyType.Ed25519

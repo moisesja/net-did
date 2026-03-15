@@ -9,6 +9,9 @@ namespace NetDid.Method.Peer;
 /// </summary>
 public sealed record DidPeerCreateOptions : DidCreateOptions
 {
+    /// <inheritdoc />
+    public override string MethodName => "peer";
+
     /// <summary>Which numalgo variant to use.</summary>
     public required PeerNumalgo Numalgo { get; init; }
 

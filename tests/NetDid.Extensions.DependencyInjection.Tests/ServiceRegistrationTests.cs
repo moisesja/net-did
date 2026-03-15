@@ -120,7 +120,7 @@ public class ServiceRegistrationTests
 
         var manager = provider.GetRequiredService<IDidManager>();
 
-        var result = await manager.CreateAsync("key", new DidKeyCreateOptions
+        var result = await manager.CreateAsync(new DidKeyCreateOptions
         {
             KeyType = KeyType.Ed25519
         });
@@ -139,7 +139,7 @@ public class ServiceRegistrationTests
         var manager = provider.GetRequiredService<IDidManager>();
 
         // Create then resolve
-        var created = await manager.CreateAsync("key", new DidKeyCreateOptions
+        var created = await manager.CreateAsync(new DidKeyCreateOptions
         {
             KeyType = KeyType.Ed25519
         });

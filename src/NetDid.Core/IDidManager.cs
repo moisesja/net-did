@@ -9,8 +9,8 @@ namespace NetDid.Core;
 /// </summary>
 public interface IDidManager
 {
-    /// <summary>Create a DID using the specified method name (e.g., "key", "peer", "webvh").</summary>
-    Task<DidCreateResult> CreateAsync(string method, DidCreateOptions options, CancellationToken ct = default);
+    /// <summary>Create a DID. The method is inferred from the options type.</summary>
+    Task<DidCreateResult> CreateAsync(DidCreateOptions options, CancellationToken ct = default);
 
     /// <summary>Resolve any DID. The method is determined by parsing the DID string.</summary>
     Task<DidResolutionResult> ResolveAsync(string did, DidResolutionOptions? options = null, CancellationToken ct = default);

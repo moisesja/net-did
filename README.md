@@ -301,7 +301,7 @@ public class MyService(IDidManager manager)
 {
     public async Task CreateIdentity()
     {
-        var result = await manager.CreateAsync("key", new DidKeyCreateOptions
+        var result = await manager.CreateAsync(new DidKeyCreateOptions
         {
             KeyType = KeyType.Ed25519
         });
