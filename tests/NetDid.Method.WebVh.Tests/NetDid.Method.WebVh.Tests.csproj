@@ -10,14 +10,13 @@
     <PackageReference Include="xunit" />
     <PackageReference Include="xunit.runner.visualstudio" />
     <PackageReference Include="FluentAssertions" />
+    <PackageReference Include="NSubstitute" />
     <PackageReference Include="coverlet.collector" />
   </ItemGroup>
 
   <ItemGroup>
-    <ProjectReference Include="../../src/NetDid.Core/NetDid.Core.csproj" />
-    <ProjectReference Include="../../src/NetDid.Method.Key/NetDid.Method.Key.csproj" />
-    <ProjectReference Include="../../src/NetDid.Method.Peer/NetDid.Method.Peer.csproj" />
     <ProjectReference Include="../../src/NetDid.Method.WebVh/NetDid.Method.WebVh.csproj" />
+    <ProjectReference Include="../../src/NetDid.Core/NetDid.Core.csproj" />
   </ItemGroup>
 
 </Project>

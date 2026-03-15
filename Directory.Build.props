@@ -19,7 +19,7 @@
     <PackageProjectUrl>https://github.com/moisesja/net-did</PackageProjectUrl>
     <RepositoryUrl>https://github.com/moisesja/net-did</RepositoryUrl>
     <RepositoryType>git</RepositoryType>
-    <PackageTags>did;decentralized-identity;ssi;did-key;did-peer;w3c;verifiable-credentials</PackageTags>
+    <PackageTags>did;decentralized-identity;ssi;did-key;did-peer;did-webvh;w3c;verifiable-credentials</PackageTags>
     <PackageReadmeFile>README.md</PackageReadmeFile>
     <IncludeSymbols>true</IncludeSymbols>
     <SymbolPackageFormat>snupkg</SymbolPackageFormat>

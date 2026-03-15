@@ -9,7 +9,7 @@ public partial class ResolutionMetadataTests
 {
     private readonly TestDidFactory _factory = new();
 
-    public static TheoryData<string> AllMethods => new() { "did:key", "did:peer" };
+    public static TheoryData<string> AllMethods => new() { "did:key", "did:peer", "did:webvh" };
 
     [Theory, MemberData(nameof(AllMethods))]
     [Trait("W3CCategory", "did-resolution")]

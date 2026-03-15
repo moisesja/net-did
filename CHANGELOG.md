@@ -5,6 +5,39 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0] - Unreleased
+
+### Added
+
+- **did:webvh method** (`NetDid.Method.WebVh`): Full CRUD implementation of the DIF did:webvh v1.0 specification (did:web + Verifiable History). Supports:
+  - **Create**: Genesis log entry generation with SCID (Self-Certifying Identifier) via two-pass algorithm (JCS → SHA-256 → multihash → base58btc multibase)
+  - **Resolve**: Fetch `did.jsonl`, validate hash chain and Data Integrity Proofs, return DID Document
+  - **Update**: Append log entries with cryptographic chaining to previous entry's `versionId`
+  - **Deactivate**: Append deactivation entry with minimal document
+  - **Pre-rotation**: Commit to future update keys via SHA-256 hash commitments (`nextKeyHashes`). Every update under pre-rotation must rotate keys.
+  - **Witness validation**: Configurable witness threshold with weighted witness proofs via `did-witness.json`
+  - **did:web backwards compatibility**: Automatic `did.json` generation alongside `did.jsonl`
+  - **Versioned resolution**: Resolve by `versionId` or `versionTime` with partial chain validation
+- **Data Integrity Proof engine** (`eddsa-jcs-2022`): JCS canonicalization → Ed25519 signing → multibase encoding. Reusable across DID methods.
+- **`IWebVhHttpClient`** interface with `MockWebVhHttpClient` for testing
+- **`DidUrlMapper`**: Maps `did:webvh:<SCID>:<domain>` → `https://<domain>/.well-known/did.jsonl`
+- **`PreRotationManager`**: Key commitment computation and validation
+- **`WitnessValidator`**: Witness proof validation with configurable thresholds and weights
+- **`LogChainValidator`**: Full chain validation with partial validation support for versioned queries
+- **`VersionTime` metadata**: `DidDocumentMetadata.VersionTime` property for did:webvh resolution output
+- **W3C conformance tests** for did:webvh (57/57 DID Core checks passing)
+- **Web server setup documentation**: ASP.NET Core, NGINX, Apache, Caddy, and cloud hosting configurations
+- **Samples**: 7 did:webvh usage examples (create, artifacts, resolve, update, key rotation with pre-rotation, deactivate, dual-identity pattern)
+
+### Fixed
+
+- **Entry hash chaining** (#14): Log entry hashes now include the previous entry's full `versionId` per the did:webvh spec, preventing history rewriting attacks.
+- **Witness validation security** (#15): Missing or malformed `did-witness.json` now correctly fails resolution when witness threshold > 0. Parser handles spec-compliant JSON array format and legacy single-object format.
+- **DID binding during resolution** (#16): Resolver now verifies that the resolved document's `id` matches the requested DID, preventing wrong-SCID resolution attacks.
+- **Versioned resolution** (#20): Returns `notFound` when a requested `versionId` or `versionTime` doesn't match any entry (previously fell back to latest). Earlier valid versions can now be resolved even if later entries are corrupt via partial chain validation.
+- **Pre-rotation bypass** (#21): Updates under active pre-rotation now require `updateKeys` to be provided. Both the API and chain validator reject entries that omit key rotation when pre-rotation is enabled.
+- **Documentation staleness** (#18): README updated to reflect did:webvh as implemented. Installation instructions include `NetDid.Method.WebVh`. Roadmap Phase III marked as Complete.
+
 ## [0.3.0] - Unreleased
 
 ### Changed

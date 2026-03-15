@@ -9,6 +9,7 @@
     <ProjectReference Include="../../src/NetDid.Core/NetDid.Core.csproj" />
     <ProjectReference Include="../../src/NetDid.Method.Key/NetDid.Method.Key.csproj" />
     <ProjectReference Include="../../src/NetDid.Method.Peer/NetDid.Method.Peer.csproj" />
+    <ProjectReference Include="../../src/NetDid.Method.WebVh/NetDid.Method.WebVh.csproj" />
   </ItemGroup>
 
 </Project>

@@ -74,7 +74,7 @@ The library generates cryptographic keys using well-tested elliptic curve algori
 | ------------- | --------------- | ---------------------- | ------ | ------- | -------------- | -------------- | ----------------- | ------------------------------------------------------ |
 | **did:key**   | ✅ Implemented  | W3C CCG Final          | ✅     | ✅      | ❌ (immutable) | ❌ (immutable) | ❌                | Ed25519, P-256, P-384, secp256k1, X25519, BLS12-381 G2 |
 | **did:peer**  | ✅ Implemented  | DIF v2 (numalgo 0,2,4) | ✅     | ✅      | ❌ (static)    | ❌             | ✅ (numalgo 2,4)  | Ed25519, X25519                                        |
-| **did:webvh** | 🔲 Planned     | DIF v1.0               | ✅     | ✅      | ✅             | ✅             | ✅                | Ed25519 (required), P-256 (optional)                   |
+| **did:webvh** | ✅ Implemented | DIF v1.0               | ✅     | ✅      | ✅             | ✅             | ✅                | Ed25519 (required), P-256 (optional)                   |
 | **did:ethr**  | 🔲 Planned     | ERC-1056 / DIF         | ✅     | ✅      | ✅             | ✅             | ✅                | secp256k1 (primary), Ed25519 (delegate)                |
 
 ### 2.2 CRUD Operations Per Method
@@ -2704,25 +2704,40 @@ Rust (zkryptium crate, Apache 2.0)
 
 **Deliverable**: did:key and did:peer fully working. First W3C conformance run passes.
 
-### Phase 3: did:webvh (Week 5-7)
+### Phase 3: did:webvh (Week 5-7) — COMPLETE
 
-| Item | Description                                                     |
-| ---- | --------------------------------------------------------------- |
-| 3.1  | Log entry model and JSON Lines parser                           |
-| 3.2  | SCID generation from genesis entry                              |
-| 3.3  | Data Integrity Proof creation (eddsa-jcs-2022) and verification |
-| 3.4  | Hash chain validation across log entries                        |
-| 3.5  | Create: genesis log entry generation                            |
-| 3.6  | Resolve: fetch log, validate chain, return document             |
-| 3.7  | Update: append log entry with chaining                          |
-| 3.8  | Pre-rotation manager                                            |
-| 3.9  | Witness validation                                              |
-| 3.10 | Deactivation                                                    |
-| 3.11 | did:web backwards compatibility conversion                      |
-| 3.12 | `IWebVhHttpClient` with mock for testing                        |
-| 3.13 | W3C conformance tests                                           |
+| Item | Description                                                     | Status |
+| ---- | --------------------------------------------------------------- | ------ |
+| 3.1  | Log entry model and JSON Lines parser                           | Done   |
+| 3.2  | SCID generation from genesis entry                              | Done   |
+| 3.3  | Data Integrity Proof creation (eddsa-jcs-2022) and verification | Done   |
+| 3.4  | Hash chain validation across log entries                        | Done   |
+| 3.5  | Create: genesis log entry generation                            | Done   |
+| 3.6  | Resolve: fetch log, validate chain, return document             | Done   |
+| 3.7  | Update: append log entry with chaining                          | Done   |
+| 3.8  | Pre-rotation manager                                            | Done   |
+| 3.9  | Witness validation                                              | Done   |
+| 3.10 | Deactivation                                                    | Done   |
+| 3.11 | did:web backwards compatibility conversion                      | Done   |
+| 3.12 | `IWebVhHttpClient` with mock for testing                        | Done   |
+| 3.13 | W3C conformance tests                                           | Done   |
 
 **Deliverable**: did:webvh full CRUD operational. Log chain validation hardened.
+
+#### Phase 3 Implementation Summary
+
+**did:webvh method** (47 dedicated tests + W3C conformance coverage):
+- Full CRUD lifecycle: Create, Resolve, Update, Deactivate with cryptographically chained JSON Lines log
+- SCID (Self-Certifying Identifier) generation via two-pass algorithm: JCS canonicalize → SHA-256 → multihash → base58btc multibase
+- Data Integrity Proofs (eddsa-jcs-2022) engine in NetDid.Core for reuse by future methods
+- Hash chain validation across log entries with entry hash linking
+- Pre-rotation manager with key commitment validation (SHA-256 hash commitments via nextKeyHashes)
+- Witness validation with configurable threshold and weighted witness proofs
+- did:web backwards compatibility: automatic did.json generation alongside did.jsonl
+- HTTP client abstraction (`IWebVhHttpClient`) with mock for testing
+- DID URL mapper: `did:webvh:<SCID>:<domain>` → `https://<domain>/.well-known/did.jsonl`
+- Comprehensive samples with 7 usage examples (create, resolve, update, key rotation, deactivate, dual-identity)
+- Web server setup documentation (ASP.NET Core, NGINX, Apache, Caddy, cloud hosting)
 
 ### Phase 4: did:ethr (Week 8-11)
 

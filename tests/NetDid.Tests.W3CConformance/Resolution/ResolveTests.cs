@@ -9,7 +9,7 @@ public class ResolveTests
 {
     private readonly TestDidFactory _factory = new();
 
-    public static TheoryData<string> AllMethods => new() { "did:key", "did:peer" };
+    public static TheoryData<string> AllMethods => new() { "did:key", "did:peer", "did:webvh" };
 
     [Theory, MemberData(nameof(AllMethods))]
     [Trait("W3CCategory", "did-resolution")]
@@ -108,6 +108,7 @@ public class ResolveTests
         {
             "did:key" => "did:key:z6MkinvalidNotARealKeyButValidSyntax",
             "did:peer" => "did:peer:3invalidnumalgo",
+            "did:webvh" => "did:webvh:zNotExist:example.com",
             _ => throw new ArgumentException()
         };
 

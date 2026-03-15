@@ -7,7 +7,7 @@ A specification-compliant .NET library for Decentralized Identifiers (DIDs). Net
 
 ## Features
 
-- **DID methods**: `did:key` and `did:peer` (implemented), `did:webvh` and `did:ethr` (planned)
+- **DID methods**: `did:key`, `did:peer`, and `did:webvh` (implemented), `did:ethr` (planned)
 - **Seven key types**: Ed25519, X25519, P-256, P-384, secp256k1, BLS12-381 G1/G2
 - **BBS+ signatures**: Multi-message signing with selective disclosure proofs (IETF draft-10)
 - **W3C DID Core 1.0** compliant DID Document model and serialization
@@ -23,6 +23,7 @@ A specification-compliant .NET library for Decentralized Identifiers (DIDs). Net
 dotnet add package NetDid.Core
 dotnet add package NetDid.Method.Key    # did:key method
 dotnet add package NetDid.Method.Peer   # did:peer method
+dotnet add package NetDid.Method.WebVh  # did:webvh method
 ```
 
 > **Note**: NetDid targets .NET 10. Ensure you have the [.NET 10 SDK](https://dotnet.microsoft.com/download/dotnet/10.0) installed.
@@ -358,7 +359,7 @@ NetDid is developed in four phases (see [NetDidPRD.md](NetDidPRD.md) for full de
 |-------|-------|--------|
 | **I** | Core Foundation — DID Document model, crypto primitives, encoding, serialization, resolver infrastructure | Complete |
 | **II** | `did:key` and `did:peer` method implementations | Complete |
-| **III** | `did:webvh` method implementation | Planned |
+| **III** | `did:webvh` method implementation | Complete |
 | **IV** | `did:ethr` method implementation | Planned |
 
 ## Contributing
