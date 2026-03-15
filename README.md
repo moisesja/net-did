@@ -379,6 +379,34 @@ ISigner signer = await store.CreateSignerAsync("my-signing-key");
 byte[] sig = await signer.SignAsync("payload"u8.ToArray());
 ```
 
+## Document Builder
+
+Build DID Documents programmatically with the fluent API:
+
+```csharp
+using NetDid.Core.Model;
+
+var doc = new DidDocumentBuilder("did:example:123")
+    .AddVerificationMethod(vm => vm
+        .WithId("#key-1")
+        .WithType("Multikey")
+        .WithMultibasePublicKey("z6MkSigningKey"))
+    .AddVerificationMethod(vm => vm
+        .WithId("#key-2")
+        .WithType("Multikey")
+        .WithMultibasePublicKey("z6LSKeyAgree"))
+    .AddAuthentication("#key-1")
+    .AddAssertionMethod("#key-1")
+    .AddKeyAgreement("#key-2")
+    .AddService(svc => svc
+        .WithId("#pds")
+        .WithType("PersonalDataStore")
+        .WithEndpoint("https://example.com/pds"))
+    .Build();
+```
+
+The builder auto-sets `controller` to the document `id` when not explicitly specified. Validates required fields (`Id`, `Type`) at `Build()` time.
+
 ## Dependency Injection
 
 For ASP.NET Core or any Microsoft DI host, use the builder pattern to register all methods in one call:
