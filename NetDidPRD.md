@@ -2339,6 +2339,8 @@ netdid/
 │   │   ├── NetDid.Core.csproj
 │   │   ├── IDidMethod.cs
 │   │   ├── IDidResolver.cs
+│   │   ├── IDidManager.cs             # Unified DID lifecycle manager (Veramo-inspired)
+│   │   ├── DidManager.cs              # Default IDidManager routing across methods
 │   │   ├── DidMethodBase.cs
 │   │   ├── Exceptions/
 │   │   │   ├── NetDidException.cs
@@ -2357,6 +2359,7 @@ netdid/
 │   │   ├── Model/
 │   │   │   ├── Did.cs
 │   │   │   ├── DidDocument.cs
+│   │   │   ├── DidDocumentBuilder.cs   # Fluent API for building DID Documents
 │   │   │   ├── VerificationMethod.cs
 │   │   │   ├── Service.cs
 │   │   │   ├── VerificationRelationshipEntry.cs
@@ -2453,7 +2456,8 @@ netdid/
 │   │
 │   ├── NetDid.Extensions.DependencyInjection/  # Optional Microsoft.Extensions.DI integration
 │   │   ├── NetDid.Extensions.DependencyInjection.csproj
-│   │   └── ServiceCollectionExtensions.cs
+│   │   ├── NetDidServiceCollectionExtensions.cs
+│   │   └── NetDidBuilder.cs
 │   │
 │   └── NetDid.TestSuite.W3C.Cli/     # CLI tool that generates W3C test fixtures
 │       ├── NetDid.TestSuite.W3C.Cli.csproj
@@ -2476,8 +2480,10 @@ netdid/
 │   │   │   ├── DefaultCryptoProviderTests.cs
 │   │   │   ├── DefaultBbsCryptoProviderTests.cs
 │   │   │   └── JsonCanonicalizationTests.cs
+│   │   ├── DidManagerTests.cs
 │   │   ├── Model/
-│   │   │   └── DidDocumentTests.cs
+│   │   │   ├── DidDocumentTests.cs
+│   │   │   └── DidDocumentBuilderTests.cs
 │   │   ├── Serialization/
 │   │   │   └── DidDocumentSerializerTests.cs
 │   │   └── Resolution/
@@ -2525,6 +2531,9 @@ netdid/
 │   │   ├── DidProductionConformanceTests.cs
 │   │   ├── DidConsumptionConformanceTests.cs
 │   │   └── DidResolutionConformanceTests.cs
+│   │
+│   ├── NetDid.Extensions.DependencyInjection.Tests/  # DI registration tests
+│   │   └── ServiceRegistrationTests.cs
 │   │
 │   └── NetDid.Integration.Tests/
 │       ├── DualIdentityPatternTests.cs

@@ -9,6 +9,9 @@ namespace NetDid.Method.Key;
 /// </summary>
 public sealed record DidKeyCreateOptions : DidCreateOptions
 {
+    /// <inheritdoc />
+    public override string MethodName => "key";
+
     /// <summary>The cryptographic key type to use.</summary>
     public required KeyType KeyType { get; init; }
 

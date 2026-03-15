@@ -15,7 +15,8 @@ A specification-compliant .NET library for Decentralized Identifiers (DIDs). Net
 - **Pluggable key storage**: Bring your own HSM, vault, or file-based key store via `IKeyStore`
 - **Resolver infrastructure**: Composite routing, caching, and W3C DID URL dereferencing
 - **JWK conversion**: Round-trip between raw key bytes and JSON Web Keys
-- **Zero framework opinions**: No ASP.NET dependency, no DI container required
+- **DI integration**: `services.AddNetDid()` for Microsoft.Extensions.DependencyInjection, or use standalone with zero framework opinions
+- **Fluent document builder**: `new DidDocumentBuilder(did).AddVerificationMethod(...).Build()`
 
 ## Installation
 
@@ -24,6 +25,7 @@ dotnet add package NetDid.Core
 dotnet add package NetDid.Method.Key    # did:key method
 dotnet add package NetDid.Method.Peer   # did:peer method
 dotnet add package NetDid.Method.WebVh  # did:webvh method
+dotnet add package NetDid.Extensions.DependencyInjection  # Microsoft DI integration
 ```
 
 > **Note**: NetDid targets .NET 10. Ensure you have the [.NET 10 SDK](https://dotnet.microsoft.com/download/dotnet/10.0) installed.
@@ -276,13 +278,48 @@ ISigner signer = await store.CreateSignerAsync("my-signing-key");
 byte[] sig = await signer.SignAsync("payload"u8.ToArray());
 ```
 
+## Dependency Injection
+
+For ASP.NET Core or any Microsoft DI host, use the builder pattern to register all methods in one call:
+
+```csharp
+using NetDid.Extensions.DependencyInjection;
+
+services.AddNetDid(builder =>
+{
+    builder.AddDidKey();
+    builder.AddDidPeer();
+    builder.AddDidWebVh();
+    builder.AddCaching(TimeSpan.FromMinutes(15));
+});
+```
+
+Then inject `IDidManager` or `IDidResolver`:
+
+```csharp
+public class MyService(IDidManager manager)
+{
+    public async Task CreateIdentity()
+    {
+        var result = await manager.CreateAsync(new DidKeyCreateOptions
+        {
+            KeyType = KeyType.Ed25519
+        });
+
+        // Resolve any DID — auto-routes to the correct method
+        var resolved = await manager.ResolveAsync(result.Did.Value);
+    }
+}
+```
+
 ## Architecture
 
 NetDid is built around a small set of core interfaces:
 
 | Interface | Purpose |
 |-----------|---------|
-| `IDidMethod` | Unified CRUD operations for a DID method (create, resolve, update, deactivate) |
+| `IDidManager` | Unified DID lifecycle manager — routes CRUD operations across registered methods |
+| `IDidMethod` | Single DID method implementation (create, resolve, update, deactivate) |
 | `IDidResolver` | Standalone DID resolution (for consumers who only need to resolve) |
 | `IKeyStore` | Pluggable key storage — swap in HSM, vault, or cloud KMS |
 | `ISigner` | Signing abstraction — works with in-memory keys or secure enclaves |
@@ -309,27 +346,23 @@ DID string
 ```
 netdid/
 ├── src/
-│   ├── NetDid.Core/                # Core abstractions, crypto, encoding, serialization
-│   │   ├── Crypto/                 # Key types, providers, signers
-│   │   │   ├── Jcs/                # JSON Canonicalization (RFC 8785)
-│   │   │   └── Native/             # P/Invoke FFI declarations
-│   │   ├── Exceptions/             # Domain-specific exception hierarchy
-│   │   ├── Jwk/                    # JWK <-> raw key conversion
-│   │   ├── KeyStore/               # InMemoryKeyStore implementation
-│   │   ├── Model/                  # DID Document, result types, options
-│   │   ├── Parsing/                # DID syntax validation and URL parsing
-│   │   ├── Resolution/             # Composite, caching, and URL dereferencing
-│   │   └── Serialization/          # DID Document JSON/JSON-LD serializer
-│   ├── NetDid.Method.Key/          # did:key method implementation
-│   └── NetDid.Method.Peer/         # did:peer method (numalgo 0, 2, 4)
+│   ├── NetDid.Core/                         # Core abstractions, crypto, encoding, serialization
+│   ├── NetDid.Method.Key/                   # did:key method
+│   ├── NetDid.Method.Peer/                  # did:peer method (numalgo 0, 2, 4)
+│   ├── NetDid.Method.WebVh/                 # did:webvh method (full CRUD)
+│   └── NetDid.Extensions.DependencyInjection/  # Microsoft DI integration
 ├── tests/
-│   ├── NetDid.Core.Tests/          # 208 unit tests
-│   ├── NetDid.Method.Key.Tests/    # 22 tests
-│   └── NetDid.Method.Peer.Tests/   # 17 tests
+│   ├── NetDid.Core.Tests/                   # 280 unit tests
+│   ├── NetDid.Method.Key.Tests/             # 22 tests
+│   ├── NetDid.Method.Peer.Tests/            # 25 tests
+│   ├── NetDid.Method.WebVh.Tests/           # 63 tests
+│   ├── NetDid.Tests.W3CConformance/         # 173 W3C conformance tests
+│   └── NetDid.Extensions.DependencyInjection.Tests/  # 10 tests
 ├── samples/
-│   └── NetDid.Samples/             # Runnable usage examples
-├── Directory.Build.props            # Shared build settings (net10.0)
-├── Directory.Packages.props         # Central NuGet version management
+│   ├── NetDid.Samples.DidKey/               # did:key usage examples
+│   ├── NetDid.Samples.DidPeer/              # did:peer usage examples
+│   ├── NetDid.Samples.DidWebVh/             # did:webvh CRUD examples
+│   └── NetDid.Samples.DependencyInjection/  # DI registration pattern
 └── netdid.sln
 ```
 
@@ -348,7 +381,10 @@ dotnet test
 ## Samples
 
 ```bash
-dotnet run --project samples/NetDid.Samples
+dotnet run --project samples/NetDid.Samples.DidKey
+dotnet run --project samples/NetDid.Samples.DidPeer
+dotnet run --project samples/NetDid.Samples.DidWebVh
+dotnet run --project samples/NetDid.Samples.DependencyInjection
 ```
 
 ## Roadmap

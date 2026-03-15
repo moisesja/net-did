@@ -5,6 +5,24 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.0] - Unreleased
+
+### Added
+
+- **`IDidManager`** + **`DidManager`**: Unified DID lifecycle manager that routes Create, Resolve, Update, and Deactivate operations across registered methods. Inspired by Veramo's `IDIDManager` pattern.
+- **`DidDocumentBuilder`**: Fluent API for constructing `DidDocument` instances with auto-set controller, verification methods, relationships, and services. Includes `VerificationMethodBuilder` and `ServiceBuilder`.
+- **`NetDid.Extensions.DependencyInjection`**: Microsoft DI integration package with `services.AddNetDid(builder => {...})` composition pattern. Supports `AddDidKey()`, `AddDidPeer()`, `AddDidWebVh()`, and `AddCaching()`.
+- **Logging support**: Optional `ILogger<T>` integration in `CompositeDidResolver`, `CachingDidResolver`, and `DidWebVhMethod` via `Microsoft.Extensions.Logging.Abstractions`.
+
+### Changed
+
+- **`IDidManager.CreateAsync`**: Method is now inferred from the options type via `DidCreateOptions.MethodName` instead of a separate `string method` parameter. Callers write `manager.CreateAsync(new DidKeyCreateOptions { ... })` instead of `manager.CreateAsync("key", new DidKeyCreateOptions { ... })`.
+- **Samples split into per-method projects**: `NetDid.Samples.DidKey`, `NetDid.Samples.DidPeer`, `NetDid.Samples.DidWebVh`, and `NetDid.Samples.DependencyInjection` replace the monolithic `NetDid.Samples` project.
+
+### Removed
+
+- **`NetDid.Samples`**: Monolithic samples project replaced by per-method sample projects.
+
 ## [0.4.0] - Unreleased
 
 ### Added

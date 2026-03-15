@@ -8,6 +8,9 @@ namespace NetDid.Method.WebVh;
 /// </summary>
 public sealed record DidWebVhCreateOptions : DidCreateOptions
 {
+    /// <inheritdoc />
+    public override string MethodName => "webvh";
+
     /// <summary>The domain where the DID log will be hosted (e.g., "example.com").</summary>
     public required string Domain { get; init; }
 
