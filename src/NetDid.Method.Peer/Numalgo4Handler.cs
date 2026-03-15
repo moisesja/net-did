@@ -23,9 +23,11 @@ internal sealed class Numalgo4Handler
             throw new ArgumentException("Numalgo 4 requires InputDocument.");
 
         // Per did:peer:4 spec:
-        // 1. JSON stringify → UTF-8 bytes → multicodec prefix (JSON 0x0200) → multibase base58btc
+        // 1. JSON stringify the input document (without id) → UTF-8 bytes → multicodec prefix (JSON 0x0200) → multibase base58btc
         // 2. Hash the multibase-encoded STRING, not the raw bytes
         // 3. Multihash prefix [0x12, 0x20] → multibase base58btc
+        // Serialize the input document. Using JSON-LD preserves @context for round-trip.
+        // The id field is omitted automatically when Id.Value is null (per spec: input doc MUST NOT have id).
         var json = DidDocumentSerializer.Serialize(options.InputDocument, DidContentTypes.JsonLd);
         var docBytes = Encoding.UTF8.GetBytes(json);
 
@@ -119,7 +121,7 @@ internal sealed class Numalgo4Handler
     private static DidDocument BuildResolvedDocument(string did, DidDocument inputDoc)
     {
         var didValue = new Did(did);
-        var originalDid = inputDoc.Id.Value;
+        var originalDid = inputDoc.Id.Value; // null if input document has no id (per spec)
 
         // Replace the id with the actual DID and prefix relative references
         var verificationMethods = inputDoc.VerificationMethod?.Select(vm =>
@@ -127,7 +129,7 @@ internal sealed class Numalgo4Handler
 
         // Rewrite controller references
         var controller = inputDoc.Controller?.Select(c =>
-            c.Value == originalDid ? didValue : c).ToList();
+            c.Value == originalDid || c.Value is null ? didValue : c).ToList();
 
         // Per spec: alsoKnownAs must include the short-form DID
         var shortFormDid = ExtractShortFormDid(did);
@@ -177,13 +179,17 @@ internal sealed class Numalgo4Handler
     }
 
     private static VerificationMethod RewriteVerificationMethod(
-        VerificationMethod vm, string did, Did didValue, string originalDid)
+        VerificationMethod vm, string did, Did didValue, string? originalDid)
     {
+        // Set controller to the DID if it matches the original placeholder or was not set
+        var controller = (vm.Controller.Value == originalDid || vm.Controller.Value is null)
+            ? didValue : vm.Controller;
+
         return new VerificationMethod
         {
             Id = PrefixId(vm.Id, did),
             Type = vm.Type,
-            Controller = vm.Controller.Value == originalDid ? didValue : vm.Controller,
+            Controller = controller,
             PublicKeyMultibase = vm.PublicKeyMultibase,
             PublicKeyJwk = vm.PublicKeyJwk,
             BlockchainAccountId = vm.BlockchainAccountId
@@ -199,7 +205,7 @@ internal sealed class Numalgo4Handler
     }
 
     private static List<VerificationRelationshipEntry>? RewriteRelationships(
-        IReadOnlyList<VerificationRelationshipEntry>? entries, string did, Did didValue, string originalDid)
+        IReadOnlyList<VerificationRelationshipEntry>? entries, string did, Did didValue, string? originalDid)
     {
         if (entries is null) return null;
 
@@ -210,7 +216,7 @@ internal sealed class Numalgo4Handler
                 var reference = entry.Reference!;
                 if (reference.StartsWith('#'))
                     reference = did + reference;
-                else if (reference.StartsWith(originalDid))
+                else if (originalDid is not null && reference.StartsWith(originalDid))
                     reference = did + reference[originalDid.Length..];
                 return VerificationRelationshipEntry.FromReference(reference);
             }

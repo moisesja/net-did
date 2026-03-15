@@ -28,7 +28,7 @@ internal sealed class Numalgo0Handler
             keyType = options.ExistingKey.KeyType;
             if (options.InceptionKeyType.HasValue && options.InceptionKeyType.Value != keyType)
                 throw new ArgumentException("ExistingKey.KeyType must match InceptionKeyType.");
-            publicKey = options.ExistingKey.PublicKey.ToArray();
+            publicKey = keyType.NormalizeToCompressed(options.ExistingKey.PublicKey.ToArray());
         }
         else
         {
@@ -57,6 +57,9 @@ internal sealed class Numalgo0Handler
         var keyType = KeyTypeExtensions.ToKeyType(codec);
 
         if (!keyType.IsValidKeyLength(rawKey.Length))
+            return null;
+
+        if (!keyType.IsValidEcPoint(rawKey))
             return null;
 
         return BuildDocument(did, keyType, rawKey, multibaseKey);

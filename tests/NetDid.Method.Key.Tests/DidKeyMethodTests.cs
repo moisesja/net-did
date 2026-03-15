@@ -1,4 +1,5 @@
 using FluentAssertions;
+using NetCid;
 using NetDid.Core;
 using NetDid.Core.Crypto;
 using NetDid.Core.Model;
@@ -243,6 +244,69 @@ public class DidKeyMethodTests
         createX25519.PublicKeyMultibase.Should().Be(resolveX25519.PublicKeyMultibase);
     }
 
+    // --- ExistingKey EC normalization ---
+
+    [Fact]
+    public async Task Create_ExistingKey_UncompressedP256_NormalizedToCompressed()
+    {
+        // Generate a P-256 key pair using ECDsa to get access to the uncompressed form
+        using var ecdsa = System.Security.Cryptography.ECDsa.Create(
+            System.Security.Cryptography.ECCurve.NamedCurves.nistP256);
+        var ecParams = ecdsa.ExportParameters(includePrivateParameters: true);
+
+        // Build uncompressed public key: 0x04 || x || y
+        var uncompressed = new byte[65];
+        uncompressed[0] = 0x04;
+        ecParams.Q.X!.CopyTo(uncompressed, 1);
+        ecParams.Q.Y!.CopyTo(uncompressed, 33);
+
+        // Build compressed public key for comparison
+        var yLastByte = ecParams.Q.Y![31];
+        var compressedPrefix = (byte)((yLastByte & 1) == 0 ? 0x02 : 0x03);
+        var compressedExpected = new byte[33];
+        compressedExpected[0] = compressedPrefix;
+        ecParams.Q.X.CopyTo(compressedExpected, 1);
+
+        // Create a signer with the uncompressed key
+        var signer = new UncompressedKeySigner(KeyType.P256, uncompressed, ecParams.D!, _crypto);
+
+        var result = await _method.CreateAsync(new DidKeyCreateOptions
+        {
+            KeyType = KeyType.P256,
+            ExistingKey = signer
+        });
+
+        // The DID should resolve successfully — uncompressed key was normalized
+        var resolved = await _method.ResolveAsync(result.Did.Value);
+        resolved.DidDocument.Should().NotBeNull();
+        resolved.ResolutionMetadata.Error.Should().BeNull();
+
+        // Create from the compressed key directly — should produce the same DID
+        var compressedSigner = new UncompressedKeySigner(KeyType.P256, compressedExpected, ecParams.D!, _crypto);
+        var compressedResult = await _method.CreateAsync(new DidKeyCreateOptions
+        {
+            KeyType = KeyType.P256,
+            ExistingKey = compressedSigner
+        });
+        result.Did.Value.Should().Be(compressedResult.Did.Value);
+    }
+
+    [Fact]
+    public async Task Resolve_MalformedEcPoint_ReturnsInvalidDid()
+    {
+        // Create a valid P-256 DID first
+        var result = await _method.CreateAsync(new DidKeyCreateOptions { KeyType = KeyType.P256 });
+
+        // Tamper with the multibase portion — change last character to corrupt the EC point
+        var did = result.Did.Value;
+        var lastChar = did[^1];
+        var tampered = did[..^1] + (lastChar == 'a' ? 'b' : 'a');
+
+        var resolved = await _method.ResolveAsync(tampered);
+        resolved.DidDocument.Should().BeNull();
+        resolved.ResolutionMetadata.Error.Should().Be("invalidDid");
+    }
+
     // --- Capabilities ---
 
     [Fact]
@@ -258,5 +322,33 @@ public class DidKeyMethodTests
     public void MethodName_IsKey()
     {
         _method.MethodName.Should().Be("key");
+    }
+
+    /// <summary>Test helper: ISigner that returns uncompressed EC public key bytes.</summary>
+    private sealed class UncompressedKeySigner : ISigner
+    {
+        private readonly byte[] _privateKey;
+        private readonly ICryptoProvider _crypto;
+
+        public UncompressedKeySigner(KeyType keyType, byte[] uncompressedPublicKey, byte[] privateKey, ICryptoProvider crypto)
+        {
+            KeyType = keyType;
+            PublicKey = uncompressedPublicKey;
+            _privateKey = privateKey;
+            _crypto = crypto;
+            // Build multibase from the uncompressed key (this is intentionally "wrong" — we test normalization)
+            var prefixed = Multicodec.Prefix(keyType.GetMulticodec(), uncompressedPublicKey);
+            MultibasePublicKey = Multibase.Encode(prefixed, MultibaseEncoding.Base58Btc);
+        }
+
+        public KeyType KeyType { get; }
+        public ReadOnlyMemory<byte> PublicKey { get; }
+        public string MultibasePublicKey { get; }
+
+        public Task<byte[]> SignAsync(ReadOnlyMemory<byte> data, CancellationToken ct = default)
+        {
+            var sig = _crypto.Sign(KeyType, _privateKey, data.Span);
+            return Task.FromResult(sig);
+        }
     }
 }

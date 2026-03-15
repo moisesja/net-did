@@ -18,7 +18,7 @@ public class VerificationRelationshipTests
         return entries.All(entry =>
         {
             if (entry.IsReference)
-                return DidParser.ParseDidUrl(entry.Reference!) is not null;
+                return DidParser.IsValidDidReference(entry.Reference!);
             if (entry.EmbeddedMethod is not null)
                 return entry.EmbeddedMethod.Id is not null
                     && entry.EmbeddedMethod.Type is not null

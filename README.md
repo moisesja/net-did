@@ -218,14 +218,13 @@ Uses a SHA-256 hash as the short form and encodes the full input document as the
 var peer4Key = keyGen.Generate(KeyType.Ed25519);
 var inputDoc = new DidDocument
 {
-    Id = new Did("did:peer:placeholder"),
+    // Per spec: input document MUST NOT include id — it's assigned during creation
     VerificationMethod =
     [
         new VerificationMethod
         {
             Id = "#key-0",
             Type = "Multikey",
-            Controller = new Did("did:peer:placeholder"),
             PublicKeyMultibase = peer4Key.MultibasePublicKey
         }
     ],

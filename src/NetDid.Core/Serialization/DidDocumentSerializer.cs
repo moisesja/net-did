@@ -174,8 +174,9 @@ public static class DidDocumentSerializer
                 WriteContextArray(writer, contexts);
             }
 
-            // id
-            writer.WriteString("id", doc.Id.Value);
+            // id (omitted for input documents where Id is not set)
+            if (doc.Id.Value is not null)
+                writer.WriteString("id", doc.Id.Value);
 
             // alsoKnownAs
             if (doc.AlsoKnownAs is { Count: > 0 })
@@ -291,11 +292,15 @@ public static class DidDocumentSerializer
             if (root.TryGetProperty("blockchainAccountId", out var bca))
                 blockchainAccountId = bca.GetString();
 
+            Did controller = default;
+            if (root.TryGetProperty("controller", out var ctrlElement) && ctrlElement.ValueKind == JsonValueKind.String)
+                controller = new Did(ctrlElement.GetString()!);
+
             return new VerificationMethod
             {
                 Id = root.GetProperty("id").GetString()!,
                 Type = root.GetProperty("type").GetString()!,
-                Controller = new Did(root.GetProperty("controller").GetString()!),
+                Controller = controller,
                 PublicKeyMultibase = publicKeyMultibase,
                 PublicKeyJwk = publicKeyJwk,
                 BlockchainAccountId = blockchainAccountId
@@ -307,7 +312,8 @@ public static class DidDocumentSerializer
             writer.WriteStartObject();
             writer.WriteString("id", value.Id);
             writer.WriteString("type", value.Type);
-            writer.WriteString("controller", value.Controller.Value);
+            if (value.Controller.Value is not null)
+                writer.WriteString("controller", value.Controller.Value);
 
             if (value.PublicKeyMultibase is not null)
                 writer.WriteString("publicKeyMultibase", value.PublicKeyMultibase);
@@ -541,9 +547,13 @@ public static class DidDocumentSerializer
                 additional[prop.Name] = prop.Value.Clone();
             }
 
+            Did id = default;
+            if (root.TryGetProperty("id", out var idProp) && idProp.ValueKind == JsonValueKind.String)
+                id = new Did(idProp.GetString()!);
+
             return new DidDocument
             {
-                Id = new Did(root.GetProperty("id").GetString()!),
+                Id = id,
                 AlsoKnownAs = alsoKnownAs,
                 Controller = controller,
                 VerificationMethod = vms,

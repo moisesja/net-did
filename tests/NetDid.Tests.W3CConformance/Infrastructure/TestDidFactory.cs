@@ -67,15 +67,12 @@ public sealed class TestDidFactory
         var keyPair = _keyGen.Generate(KeyType.Ed25519);
         var inputDoc = new DidDocument
         {
-            Id = new Did("did:peer:placeholder"),
-            Controller = [new Did("did:peer:placeholder")],
             VerificationMethod =
             [
                 new VerificationMethod
                 {
                     Id = "#key-0",
                     Type = "Multikey",
-                    Controller = new Did("did:peer:placeholder"),
                     PublicKeyMultibase = keyPair.MultibasePublicKey
                 }
             ],

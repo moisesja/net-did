@@ -4,7 +4,12 @@ namespace NetDid.Core.Model;
 
 public sealed record DidDocument
 {
-    public required Did Id { get; init; }
+    /// <summary>
+    /// The DID subject identifier. Required for resolved DID documents.
+    /// Omitted for input documents (e.g., did:peer:4 pre-contextualization documents).
+    /// When not set, <see cref="Did.Value"/> is null.
+    /// </summary>
+    public Did Id { get; init; }
     public IReadOnlyList<string>? AlsoKnownAs { get; init; }
 
     /// <summary>

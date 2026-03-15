@@ -81,35 +81,35 @@ internal sealed class Numalgo2Handler
             {
                 case 'A':
                 {
-                    var vm = DecodeKeySegment(rest, did, didValue, ref keyIndex);
+                    var vm = DecodeKeySegment(rest, didValue, ref keyIndex);
                     verificationMethods.Add(vm);
                     assertionMethod.Add(VerificationRelationshipEntry.FromReference(vm.Id));
                     break;
                 }
                 case 'E':
                 {
-                    var vm = DecodeKeySegment(rest, did, didValue, ref keyIndex);
+                    var vm = DecodeKeySegment(rest, didValue, ref keyIndex);
                     verificationMethods.Add(vm);
                     keyAgreement.Add(VerificationRelationshipEntry.FromReference(vm.Id));
                     break;
                 }
                 case 'V':
                 {
-                    var vm = DecodeKeySegment(rest, did, didValue, ref keyIndex);
+                    var vm = DecodeKeySegment(rest, didValue, ref keyIndex);
                     verificationMethods.Add(vm);
                     authentication.Add(VerificationRelationshipEntry.FromReference(vm.Id));
                     break;
                 }
                 case 'I':
                 {
-                    var vm = DecodeKeySegment(rest, did, didValue, ref keyIndex);
+                    var vm = DecodeKeySegment(rest, didValue, ref keyIndex);
                     verificationMethods.Add(vm);
                     capabilityInvocation.Add(VerificationRelationshipEntry.FromReference(vm.Id));
                     break;
                 }
                 case 'D':
                 {
-                    var vm = DecodeKeySegment(rest, did, didValue, ref keyIndex);
+                    var vm = DecodeKeySegment(rest, didValue, ref keyIndex);
                     verificationMethods.Add(vm);
                     capabilityDelegation.Add(VerificationRelationshipEntry.FromReference(vm.Id));
                     break;
@@ -117,17 +117,6 @@ internal sealed class Numalgo2Handler
                 case 'S':
                 {
                     var service = Numalgo2ServiceEncoder.Decode(rest, ref autoServiceIndex);
-                    // Make service ID absolute by prepending the DID
-                    if (service.Id.StartsWith('#'))
-                    {
-                        service = new Service
-                        {
-                            Id = $"{did}{service.Id}",
-                            Type = service.Type,
-                            ServiceEndpoint = service.ServiceEndpoint,
-                            AdditionalProperties = service.AdditionalProperties
-                        };
-                    }
                     services.Add(service);
                     break;
                 }
@@ -149,14 +138,14 @@ internal sealed class Numalgo2Handler
         };
     }
 
-    private static VerificationMethod DecodeKeySegment(string multibaseKey, string did, Did didValue, ref int keyIndex)
+    private static VerificationMethod DecodeKeySegment(string multibaseKey, Did controller, ref int keyIndex)
     {
-        var vmId = $"{did}#key-{keyIndex}";
+        var vmId = $"#key-{keyIndex}";
         var vm = new VerificationMethod
         {
             Id = vmId,
             Type = "Multikey",
-            Controller = didValue,
+            Controller = controller,
             PublicKeyMultibase = multibaseKey
         };
         keyIndex++;
@@ -177,7 +166,7 @@ internal sealed class Numalgo2Handler
 
         foreach (var keyPurpose in keys)
         {
-            var vmId = $"{did}#key-{keyIndex}";
+            var vmId = $"#key-{keyIndex}";
             var vm = new VerificationMethod
             {
                 Id = vmId,
@@ -218,7 +207,7 @@ internal sealed class Numalgo2Handler
             {
                 services.Add(new Service
                 {
-                    Id = GenerateServiceId(did, inputServices[i].Id, ref autoServiceIndex),
+                    Id = GenerateServiceId(inputServices[i].Id, ref autoServiceIndex),
                     Type = inputServices[i].Type,
                     ServiceEndpoint = inputServices[i].ServiceEndpoint,
                     AdditionalProperties = inputServices[i].AdditionalProperties
@@ -242,15 +231,15 @@ internal sealed class Numalgo2Handler
     /// <summary>
     /// Per DIF peer-DID spec: if the service has an explicit ID, preserve it;
     /// otherwise auto-generate: first = "#service", subsequent = "#service-1", "#service-2", etc.
-    /// Fragment IDs are prefixed with the DID to form absolute DID URLs.
+    /// IDs use relative fragment form per spec.
     /// </summary>
-    private static string GenerateServiceId(string did, string? existingId, ref int autoServiceIndex)
+    private static string GenerateServiceId(string? existingId, ref int autoServiceIndex)
     {
         if (!string.IsNullOrEmpty(existingId) && existingId.StartsWith('#'))
-            return $"{did}{existingId}";
+            return existingId;
 
         var fragment = autoServiceIndex == 0 ? "#service" : $"#service-{autoServiceIndex}";
         autoServiceIndex++;
-        return $"{did}{fragment}";
+        return fragment;
     }
 }

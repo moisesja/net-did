@@ -288,7 +288,7 @@ public class DidPeerMethodTests
     }
 
     [Fact]
-    public async Task Numalgo2_VmIds_Are1Based_AndAbsolute()
+    public async Task Numalgo2_VmIds_Are1Based_AndRelative()
     {
         var key1 = _keyGen.Generate(KeyType.Ed25519);
         var key2 = _keyGen.Generate(KeyType.X25519);
@@ -305,14 +305,14 @@ public class DidPeerMethodTests
 
         var did = result.Did.Value;
 
-        // Create path: IDs should be absolute and 1-based
-        result.DidDocument.VerificationMethod![0].Id.Should().Be($"{did}#key-1");
-        result.DidDocument.VerificationMethod[1].Id.Should().Be($"{did}#key-2");
+        // Create path: IDs should be relative and 1-based per DIF peer-DID spec
+        result.DidDocument.VerificationMethod![0].Id.Should().Be("#key-1");
+        result.DidDocument.VerificationMethod[1].Id.Should().Be("#key-2");
 
         // Resolve path: same
         var resolved = await _method.ResolveAsync(did);
-        resolved.DidDocument!.VerificationMethod![0].Id.Should().Be($"{did}#key-1");
-        resolved.DidDocument.VerificationMethod[1].Id.Should().Be($"{did}#key-2");
+        resolved.DidDocument!.VerificationMethod![0].Id.Should().Be("#key-1");
+        resolved.DidDocument.VerificationMethod[1].Id.Should().Be("#key-2");
     }
 
     [Fact]
@@ -340,12 +340,12 @@ public class DidPeerMethodTests
 
         var did = result.Did.Value;
 
-        // Create path: caller-provided ID preserved (absolute)
-        result.DidDocument.Service![0].Id.Should().Be($"{did}#my-custom-svc");
+        // Create path: caller-provided ID preserved as relative fragment
+        result.DidDocument.Service![0].Id.Should().Be("#my-custom-svc");
 
         // Resolve path: same
         var resolved = await _method.ResolveAsync(did);
-        resolved.DidDocument!.Service![0].Id.Should().Be($"{did}#my-custom-svc");
+        resolved.DidDocument!.Service![0].Id.Should().Be("#my-custom-svc");
     }
 
     [Fact]
@@ -377,11 +377,9 @@ public class DidPeerMethodTests
             ]
         });
 
-        var did = result.Did.Value;
-
-        // Per spec: first auto = "#service", second auto = "#service-1"
-        result.DidDocument.Service![0].Id.Should().Be($"{did}#service");
-        result.DidDocument.Service[1].Id.Should().Be($"{did}#service-1");
+        // Per spec: first auto = "#service", second auto = "#service-1" (relative fragments)
+        result.DidDocument.Service![0].Id.Should().Be("#service");
+        result.DidDocument.Service[1].Id.Should().Be("#service-1");
     }
 
     // --- Numalgo 4 ---
@@ -393,14 +391,12 @@ public class DidPeerMethodTests
 
         var inputDoc = new DidDocument
         {
-            Id = new Did("did:peer:placeholder"),
             VerificationMethod =
             [
                 new VerificationMethod
                 {
                     Id = "#key-0",
                     Type = "Multikey",
-                    Controller = new Did("did:peer:placeholder"),
                     PublicKeyMultibase = keyPair.MultibasePublicKey
                 }
             ],
@@ -435,14 +431,12 @@ public class DidPeerMethodTests
 
         var inputDoc = new DidDocument
         {
-            Id = new Did("did:peer:placeholder"),
             VerificationMethod =
             [
                 new VerificationMethod
                 {
                     Id = "#key-0",
                     Type = "Multikey",
-                    Controller = new Did("did:peer:placeholder"),
                     PublicKeyMultibase = keyPair.MultibasePublicKey
                 }
             ]
@@ -470,17 +464,16 @@ public class DidPeerMethodTests
     {
         var keyPair = _keyGen.Generate(KeyType.Ed25519);
 
+        // Per spec: input document MUST NOT include id. Controller and VM controller
+        // are omitted — they will be set to the DID during contextualization.
         var inputDoc = new DidDocument
         {
-            Id = new Did("did:peer:placeholder"),
-            Controller = [new Did("did:peer:placeholder")],
             VerificationMethod =
             [
                 new VerificationMethod
                 {
                     Id = "#key-0",
                     Type = "Multikey",
-                    Controller = new Did("did:peer:placeholder"),
                     PublicKeyMultibase = keyPair.MultibasePublicKey
                 }
             ],
@@ -496,19 +489,12 @@ public class DidPeerMethodTests
             InputDocument = inputDoc
         });
 
-        // Controller should be rewritten to actual DID
-        result.DidDocument.Controller.Should().HaveCount(1);
-        result.DidDocument.Controller![0].Value.Should().Be(result.Did.Value);
-        result.DidDocument.Controller[0].Value.Should().NotBe("did:peer:placeholder");
-
-        // VM controller also rewritten
+        // VM controller should be set to the actual DID during contextualization
         result.DidDocument.VerificationMethod![0].Controller.Value.Should().Be(result.Did.Value);
 
         // Resolve round-trip
         var resolved = await _method.ResolveAsync(result.Did.Value);
-        resolved.DidDocument!.Controller.Should().HaveCount(1);
-        resolved.DidDocument.Controller![0].Value.Should().Be(result.Did.Value);
-        resolved.DidDocument.VerificationMethod![0].Controller.Value.Should().Be(result.Did.Value);
+        resolved.DidDocument!.VerificationMethod![0].Controller.Value.Should().Be(result.Did.Value);
     }
 
     [Fact]
@@ -518,14 +504,12 @@ public class DidPeerMethodTests
 
         var inputDoc = new DidDocument
         {
-            Id = new Did("did:peer:placeholder"),
             Authentication =
             [
                 VerificationRelationshipEntry.FromEmbedded(new VerificationMethod
                 {
                     Id = "#embedded-key",
                     Type = "Multikey",
-                    Controller = new Did("did:peer:placeholder"),
                     PublicKeyMultibase = keyPair.MultibasePublicKey
                 })
             ]
@@ -555,7 +539,6 @@ public class DidPeerMethodTests
 
         var inputDoc = new DidDocument
         {
-            Id = new Did("did:peer:placeholder"),
             Context = ["https://www.w3.org/ns/did/v1", "https://w3id.org/security/multikey/v1"],
             VerificationMethod =
             [
@@ -563,7 +546,6 @@ public class DidPeerMethodTests
                 {
                     Id = "#key-0",
                     Type = "Multikey",
-                    Controller = new Did("did:peer:placeholder"),
                     PublicKeyMultibase = keyPair.MultibasePublicKey
                 }
             ]
@@ -589,14 +571,12 @@ public class DidPeerMethodTests
 
         var inputDoc = new DidDocument
         {
-            Id = new Did("did:peer:placeholder"),
             VerificationMethod =
             [
                 new VerificationMethod
                 {
                     Id = "#key-0",
                     Type = "Multikey",
-                    Controller = new Did("did:peer:placeholder"),
                     PublicKeyMultibase = keyPair.MultibasePublicKey
                 }
             ],
@@ -626,14 +606,12 @@ public class DidPeerMethodTests
 
         var inputDoc = new DidDocument
         {
-            Id = new Did("did:peer:placeholder"),
             VerificationMethod =
             [
                 new VerificationMethod
                 {
                     Id = "#key-0",
                     Type = "Multikey",
-                    Controller = new Did("did:peer:placeholder"),
                     PublicKeyMultibase = keyPair.MultibasePublicKey
                 }
             ],
@@ -670,14 +648,12 @@ public class DidPeerMethodTests
 
         var inputDoc = new DidDocument
         {
-            Id = new Did("did:peer:placeholder"),
             VerificationMethod =
             [
                 new VerificationMethod
                 {
                     Id = "#key-0",
                     Type = "Multikey",
-                    Controller = new Did("did:peer:placeholder"),
                     PublicKeyMultibase = keyPair.MultibasePublicKey
                 }
             ]
@@ -702,14 +678,12 @@ public class DidPeerMethodTests
 
         var inputDoc = new DidDocument
         {
-            Id = new Did("did:peer:placeholder"),
             VerificationMethod =
             [
                 new VerificationMethod
                 {
                     Id = "#key-0",
                     Type = "Multikey",
-                    Controller = new Did("did:peer:placeholder"),
                     PublicKeyMultibase = keyPair.MultibasePublicKey
                 }
             ]
@@ -739,14 +713,12 @@ public class DidPeerMethodTests
 
         var inputDoc = new DidDocument
         {
-            Id = new Did("did:peer:placeholder"),
             VerificationMethod =
             [
                 new VerificationMethod
                 {
                     Id = "#key-0",
                     Type = "Multikey",
-                    Controller = new Did("did:peer:placeholder"),
                     PublicKeyMultibase = keyPair.MultibasePublicKey
                 }
             ]
@@ -779,14 +751,12 @@ public class DidPeerMethodTests
 
         var inputDoc = new DidDocument
         {
-            Id = new Did("did:peer:placeholder"),
             VerificationMethod =
             [
                 new VerificationMethod
                 {
                     Id = "#key-0",
                     Type = "Multikey",
-                    Controller = new Did("did:peer:placeholder"),
                     PublicKeyMultibase = keyPair.MultibasePublicKey
                 }
             ],
