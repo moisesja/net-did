@@ -249,30 +249,113 @@ public class DidKeyMethodTests
     [Fact]
     public async Task Create_ExistingKey_UncompressedP256_NormalizedToCompressed()
     {
-        // Generate a P-256 key pair using ECDsa to get access to the uncompressed form
-        using var ecdsa = System.Security.Cryptography.ECDsa.Create(
-            System.Security.Cryptography.ECCurve.NamedCurves.nistP256);
-        var ecParams = ecdsa.ExportParameters(includePrivateParameters: true);
+        await AssertNistUncompressedNormalization(
+            KeyType.P256,
+            System.Security.Cryptography.ECCurve.NamedCurves.nistP256,
+            coordLen: 32);
+    }
 
-        // Build uncompressed public key: 0x04 || x || y
+    [Fact]
+    public async Task Create_ExistingKey_UncompressedP384_NormalizedToCompressed()
+    {
+        await AssertNistUncompressedNormalization(
+            KeyType.P384,
+            System.Security.Cryptography.ECCurve.NamedCurves.nistP384,
+            coordLen: 48);
+    }
+
+    [Fact]
+    public async Task Create_ExistingKey_UncompressedSecp256k1_NormalizedToCompressed()
+    {
+        // Generate secp256k1 key pair via NBitcoin
+        using var rng = System.Security.Cryptography.RandomNumberGenerator.Create();
+        var privBytes = new byte[32];
+        rng.GetBytes(privBytes);
+        var ecPrivKey = NBitcoin.Secp256k1.ECPrivKey.Create(privBytes);
+        var ecPubKey = ecPrivKey.CreatePubKey();
+
+        // Get uncompressed (65 bytes) and compressed (33 bytes)
         var uncompressed = new byte[65];
-        uncompressed[0] = 0x04;
-        ecParams.Q.X!.CopyTo(uncompressed, 1);
-        ecParams.Q.Y!.CopyTo(uncompressed, 33);
-
-        // Build compressed public key for comparison
-        var yLastByte = ecParams.Q.Y![31];
-        var compressedPrefix = (byte)((yLastByte & 1) == 0 ? 0x02 : 0x03);
+        ecPubKey.WriteToSpan(compressed: false, uncompressed, out _);
         var compressedExpected = new byte[33];
-        compressedExpected[0] = compressedPrefix;
-        ecParams.Q.X.CopyTo(compressedExpected, 1);
+        ecPubKey.WriteToSpan(compressed: true, compressedExpected, out _);
 
-        // Create a signer with the uncompressed key
-        var signer = new UncompressedKeySigner(KeyType.P256, uncompressed, ecParams.D!, _crypto);
+        var signer = new UncompressedKeySigner(KeyType.Secp256k1, uncompressed, privBytes, _crypto);
 
         var result = await _method.CreateAsync(new DidKeyCreateOptions
         {
-            KeyType = KeyType.P256,
+            KeyType = KeyType.Secp256k1,
+            ExistingKey = signer
+        });
+
+        // The DID should resolve successfully
+        var resolved = await _method.ResolveAsync(result.Did.Value);
+        resolved.DidDocument.Should().NotBeNull();
+        resolved.ResolutionMetadata.Error.Should().BeNull();
+
+        // Create from compressed key directly — should produce the same DID
+        var compressedSigner = new UncompressedKeySigner(KeyType.Secp256k1, compressedExpected, privBytes, _crypto);
+        var compressedResult = await _method.CreateAsync(new DidKeyCreateOptions
+        {
+            KeyType = KeyType.Secp256k1,
+            ExistingKey = compressedSigner
+        });
+        result.Did.Value.Should().Be(compressedResult.Did.Value);
+    }
+
+    [Theory]
+    [InlineData(KeyType.P256, 33)]
+    [InlineData(KeyType.P384, 49)]
+    [InlineData(KeyType.Secp256k1, 33)]
+    public async Task Resolve_MalformedEcPoint_ReturnsInvalidDid(KeyType keyType, int compressedLen)
+    {
+        // Build a correct-length compressed key with valid prefix (0x02) but an X coordinate
+        // whose corresponding rhs = x³ + ax + b is not a quadratic residue mod p.
+        // We try small X values until we find one that fails validation.
+        var badKey = new byte[compressedLen];
+        badKey[0] = 0x02; // valid compressed prefix
+        // Set X to a value that is not a valid point; try X=1,2,3... until one fails
+        for (byte x = 1; x < 255; x++)
+        {
+            badKey[compressedLen - 1] = x;
+            if (!keyType.IsValidEcPoint(badKey))
+                break; // found an invalid X
+        }
+
+        // Wrap in multicodec + multibase to form a syntactically valid did:key
+        var prefixed = Multicodec.Prefix(keyType.GetMulticodec(), badKey);
+        var multibase = Multibase.Encode(prefixed, MultibaseEncoding.Base58Btc);
+        var did = $"did:key:{multibase}";
+
+        var resolved = await _method.ResolveAsync(did);
+        resolved.DidDocument.Should().BeNull();
+        resolved.ResolutionMetadata.Error.Should().Be("invalidDid");
+    }
+
+    private async Task AssertNistUncompressedNormalization(
+        KeyType keyType, System.Security.Cryptography.ECCurve curve, int coordLen)
+    {
+        using var ecdsa = System.Security.Cryptography.ECDsa.Create(curve);
+        var ecParams = ecdsa.ExportParameters(includePrivateParameters: true);
+
+        // Build uncompressed public key: 0x04 || x || y
+        var uncompressed = new byte[1 + coordLen * 2];
+        uncompressed[0] = 0x04;
+        ecParams.Q.X!.CopyTo(uncompressed, 1);
+        ecParams.Q.Y!.CopyTo(uncompressed, 1 + coordLen);
+
+        // Build compressed public key for comparison
+        var yLastByte = ecParams.Q.Y![coordLen - 1];
+        var compressedPrefix = (byte)((yLastByte & 1) == 0 ? 0x02 : 0x03);
+        var compressedExpected = new byte[coordLen + 1];
+        compressedExpected[0] = compressedPrefix;
+        ecParams.Q.X.CopyTo(compressedExpected, 1);
+
+        var signer = new UncompressedKeySigner(keyType, uncompressed, ecParams.D!, _crypto);
+
+        var result = await _method.CreateAsync(new DidKeyCreateOptions
+        {
+            KeyType = keyType,
             ExistingKey = signer
         });
 
@@ -282,29 +365,13 @@ public class DidKeyMethodTests
         resolved.ResolutionMetadata.Error.Should().BeNull();
 
         // Create from the compressed key directly — should produce the same DID
-        var compressedSigner = new UncompressedKeySigner(KeyType.P256, compressedExpected, ecParams.D!, _crypto);
+        var compressedSigner = new UncompressedKeySigner(keyType, compressedExpected, ecParams.D!, _crypto);
         var compressedResult = await _method.CreateAsync(new DidKeyCreateOptions
         {
-            KeyType = KeyType.P256,
+            KeyType = keyType,
             ExistingKey = compressedSigner
         });
         result.Did.Value.Should().Be(compressedResult.Did.Value);
-    }
-
-    [Fact]
-    public async Task Resolve_MalformedEcPoint_ReturnsInvalidDid()
-    {
-        // Create a valid P-256 DID first
-        var result = await _method.CreateAsync(new DidKeyCreateOptions { KeyType = KeyType.P256 });
-
-        // Tamper with the multibase portion — change last character to corrupt the EC point
-        var did = result.Did.Value;
-        var lastChar = did[^1];
-        var tampered = did[..^1] + (lastChar == 'a' ? 'b' : 'a');
-
-        var resolved = await _method.ResolveAsync(tampered);
-        resolved.DidDocument.Should().BeNull();
-        resolved.ResolutionMetadata.Error.Should().Be("invalidDid");
     }
 
     // --- Capabilities ---

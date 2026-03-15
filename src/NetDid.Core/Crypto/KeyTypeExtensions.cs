@@ -118,10 +118,25 @@ public static class KeyTypeExtensions
 
     private static bool ValidateNistPoint(byte[] rawKey, ECCurve curve)
     {
+        // Decompress the point to get explicit (X, Y) coordinates
         var parameters = DefaultCryptoProvider.ImportEcPublicKey(rawKey, curve);
-        using var ecdsa = ECDsa.Create();
-        ecdsa.ImportParameters(parameters);
-        // If ImportParameters succeeds, the point is valid on the curve
-        return true;
+        var x = parameters.Q.X!;
+        var y = parameters.Q.Y!;
+
+        // Verify the point satisfies the curve equation: y² ≡ x³ + ax + b (mod p)
+        // This is necessary because DecompressEcPoint computes a candidate Y for any X,
+        // but that Y is only valid if x³ + ax + b is a quadratic residue mod p.
+        var (p, b) = DefaultCryptoProvider.GetCurveParams(curve);
+        var a = p - 3; // a = -3 for both P-256 and P-384
+
+        var xInt = new System.Numerics.BigInteger(x, isUnsigned: true, isBigEndian: true);
+        var yInt = new System.Numerics.BigInteger(y, isUnsigned: true, isBigEndian: true);
+
+        var y2 = System.Numerics.BigInteger.ModPow(yInt, 2, p);
+        var x3 = System.Numerics.BigInteger.ModPow(xInt, 3, p);
+        var rhs = (x3 + a * xInt % p + b) % p;
+        if (rhs < 0) rhs += p;
+
+        return y2 == rhs;
     }
 }

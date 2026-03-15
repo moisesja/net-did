@@ -197,7 +197,7 @@ public sealed class DefaultCryptoProvider : ICryptoProvider
         return (uncompressed[1..33], uncompressed[33..65]);
     }
 
-    private static (BigInteger p, BigInteger b) GetCurveParams(ECCurve curve)
+    internal static (BigInteger p, BigInteger b) GetCurveParams(ECCurve curve)
     {
         var oidValue = curve.Oid?.Value;
         if (oidValue == "1.2.840.10045.3.1.7") return (P256Prime, P256B);
