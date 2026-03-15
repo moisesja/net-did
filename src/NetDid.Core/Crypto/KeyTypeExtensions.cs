@@ -32,4 +32,20 @@ public static class KeyTypeExtensions
         KeyTypeByCode.TryGetValue(codec, out var keyType)
             ? keyType
             : throw new ArgumentException($"Unknown multicodec: 0x{codec:X}");
+
+    /// <summary>
+    /// Validates that raw key bytes have the expected length for the given key type.
+    /// Returns true if valid.
+    /// </summary>
+    public static bool IsValidKeyLength(this KeyType keyType, int length) => keyType switch
+    {
+        KeyType.Ed25519 => length == 32,
+        KeyType.X25519 => length == 32,
+        KeyType.P256 => length == 33,       // compressed SEC1 point
+        KeyType.P384 => length == 49,       // compressed SEC1 point
+        KeyType.Secp256k1 => length == 33,  // compressed SEC1 point
+        KeyType.Bls12381G1 => length == 48,
+        KeyType.Bls12381G2 => length == 96,
+        _ => false
+    };
 }

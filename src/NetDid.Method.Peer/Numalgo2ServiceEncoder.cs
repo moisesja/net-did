@@ -30,6 +30,10 @@ internal static class Numalgo2ServiceEncoder
     {
         var abbreviated = new Dictionary<string, object>();
 
+        // Preserve explicit service ID in the encoded block
+        if (!string.IsNullOrEmpty(service.Id) && service.Id.StartsWith('#'))
+            abbreviated["id"] = service.Id;
+
         // Type
         var type = AbbreviateMap.TryGetValue(service.Type, out var abbrevType)
             ? abbrevType
@@ -62,8 +66,10 @@ internal static class Numalgo2ServiceEncoder
 
     /// <summary>
     /// Decode a base64url-encoded abbreviated service JSON back to a Service.
+    /// Per spec: if encoded JSON contains an explicit "id", preserve it;
+    /// otherwise auto-generate: first = "#service", subsequent = "#service-1", etc.
     /// </summary>
-    public static Service Decode(string encoded, string did, int serviceIndex)
+    public static Service Decode(string encoded, ref int autoServiceIndex)
     {
         var base64 = encoded.Replace('-', '+').Replace('_', '/');
         // Add padding
@@ -86,11 +92,23 @@ internal static class Numalgo2ServiceEncoder
         var endpointElement = root.GetProperty("s");
         var endpoint = DeserializeEndpoint(endpointElement);
 
+        // Check for explicit service ID
+        string serviceId;
+        if (root.TryGetProperty("id", out var idElement))
+        {
+            serviceId = idElement.GetString()!;
+        }
+        else
+        {
+            serviceId = autoServiceIndex == 0 ? "#service" : $"#service-{autoServiceIndex}";
+            autoServiceIndex++;
+        }
+
         // Collect additional expanded properties
         Dictionary<string, JsonElement>? additional = null;
         foreach (var prop in root.EnumerateObject())
         {
-            if (prop.Name is "t" or "s") continue;
+            if (prop.Name is "t" or "s" or "id") continue;
             var expandedKey = ExpandMap.TryGetValue(prop.Name, out var ek) ? ek : prop.Name;
             additional ??= new Dictionary<string, JsonElement>();
             additional[expandedKey] = prop.Value.Clone();
@@ -98,7 +116,7 @@ internal static class Numalgo2ServiceEncoder
 
         return new Service
         {
-            Id = $"{did}#service-{serviceIndex}",
+            Id = serviceId,
             Type = type,
             ServiceEndpoint = endpoint,
             AdditionalProperties = additional

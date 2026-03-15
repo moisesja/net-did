@@ -73,6 +73,9 @@ public sealed class DidKeyMethod : DidMethodBase
             var (codec, rawKey) = Multicodec.Decode(decoded);
             var keyType = KeyTypeExtensions.ToKeyType(codec);
 
+            if (!keyType.IsValidKeyLength(rawKey.Length))
+                return Task.FromResult(DidResolutionResult.InvalidDid(did));
+
             var doc = BuildDocument(
                 did, keyType, rawKey, methodSpecificId,
                 VerificationMethodRepresentation.Multikey, enableEncryptionKeyDerivation: true);

@@ -187,11 +187,11 @@ public sealed class DefaultKeyGenerator : IKeyGenerator
         using var ecdsa = ECDsa.Create(curve);
         var parameters = ecdsa.ExportParameters(true);
 
-        // Public key as uncompressed point: 0x04 || x || y
-        var publicKey = new byte[1 + parameters.Q.X!.Length + parameters.Q.Y!.Length];
-        publicKey[0] = 0x04;
+        // Public key as compressed SEC1 point: 0x02 (even Y) or 0x03 (odd Y) || X
+        var prefix = (parameters.Q.Y![^1] & 1) == 0 ? (byte)0x02 : (byte)0x03;
+        var publicKey = new byte[1 + parameters.Q.X!.Length];
+        publicKey[0] = prefix;
         parameters.Q.X.CopyTo(publicKey, 1);
-        parameters.Q.Y.CopyTo(publicKey, 1 + parameters.Q.X.Length);
 
         return new KeyPair
         {
@@ -209,10 +209,10 @@ public sealed class DefaultKeyGenerator : IKeyGenerator
 
         var parameters = ecdsa.ExportParameters(false);
 
-        var publicKey = new byte[1 + parameters.Q.X!.Length + parameters.Q.Y!.Length];
-        publicKey[0] = 0x04;
+        var prefix = (parameters.Q.Y![^1] & 1) == 0 ? (byte)0x02 : (byte)0x03;
+        var publicKey = new byte[1 + parameters.Q.X!.Length];
+        publicKey[0] = prefix;
         parameters.Q.X.CopyTo(publicKey, 1);
-        parameters.Q.Y.CopyTo(publicKey, 1 + parameters.Q.X.Length);
 
         return new KeyPair
         {
@@ -237,9 +237,9 @@ public sealed class DefaultKeyGenerator : IKeyGenerator
 
         var pubKey = privKey.CreatePubKey();
 
-        // Store uncompressed public key (65 bytes)
-        var publicKeyBytes = new byte[65];
-        pubKey.WriteToSpan(compressed: false, publicKeyBytes, out _);
+        // Store compressed public key (33 bytes)
+        var publicKeyBytes = new byte[33];
+        pubKey.WriteToSpan(compressed: true, publicKeyBytes, out _);
 
         var privateKeyBytes = new byte[32];
         privKey.WriteToSpan(privateKeyBytes);
@@ -257,8 +257,8 @@ public sealed class DefaultKeyGenerator : IKeyGenerator
         var privKey = ECPrivKey.Create(privateKey);
         var pubKey = privKey.CreatePubKey();
 
-        var publicKeyBytes = new byte[65];
-        pubKey.WriteToSpan(compressed: false, publicKeyBytes, out _);
+        var publicKeyBytes = new byte[33];
+        pubKey.WriteToSpan(compressed: true, publicKeyBytes, out _);
 
         return new KeyPair
         {
