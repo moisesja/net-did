@@ -29,25 +29,41 @@ All unit tests should pass with zero warnings.
 
 ```
 netdid/
-├── src/NetDid.Core/          # Core library
-│   ├── Crypto/               # Cryptographic providers, key generation, signers
-│   │   ├── Jcs/              # JSON Canonicalization Scheme (RFC 8785)
-│   │   └── Native/           # P/Invoke declarations for native FFI libraries
-│   ├── Encoding/             # Multibase, multicodec, Base58Btc, Base64Url
-│   ├── Exceptions/           # Custom exception hierarchy (8 types)
-│   ├── Jwk/                  # JWK <-> raw key byte conversion
-│   ├── KeyStore/             # InMemoryKeyStore implementation
-│   ├── Model/                # DID Document model, result/option types
-│   ├── Parsing/              # DID string validation and URL parsing
-│   ├── Resolution/           # Composite resolver, caching, URL dereferencing
-│   ├── Serialization/        # DID Document JSON/JSON-LD serializer
-│   └── runtimes/             # Platform-specific native libraries
-├── native/zkryptium-ffi/     # Rust FFI shim for BBS+ signatures
-├── tests/NetDid.Core.Tests/  # Unit tests (mirrors src/ structure)
-├── Directory.Build.props     # Shared build properties
-├── Directory.Packages.props  # Central NuGet version management
-├── .editorconfig             # Code style rules
-└── netdid.sln                # Solution file
+├── src/
+│   ├── NetDid.Core/                         # Core abstractions, crypto, encoding, serialization
+│   │   ├── Crypto/                          # Cryptographic providers, key generation, signers
+│   │   │   ├── Jcs/                         # JSON Canonicalization Scheme (RFC 8785)
+│   │   │   └── Native/                      # P/Invoke declarations for native FFI libraries
+│   │   ├── Encoding/                        # Multibase, multicodec, Base58Btc, Base64Url
+│   │   ├── Exceptions/                      # Custom exception hierarchy (8 types)
+│   │   ├── Jwk/                             # JWK <-> raw key byte conversion
+│   │   ├── KeyStore/                        # InMemoryKeyStore implementation
+│   │   ├── Model/                           # DID Document model, builder, result/option types
+│   │   ├── Parsing/                         # DID string validation and URL parsing
+│   │   ├── Resolution/                      # Composite resolver, caching, URL dereferencing
+│   │   ├── Serialization/                   # DID Document JSON/JSON-LD serializer
+│   │   └── runtimes/                        # Platform-specific native libraries
+│   ├── NetDid.Method.Key/                   # did:key method
+│   ├── NetDid.Method.Peer/                  # did:peer method (numalgo 0, 2, 4)
+│   ├── NetDid.Method.WebVh/                 # did:webvh method (full CRUD)
+│   └── NetDid.Extensions.DependencyInjection/  # Microsoft DI integration
+├── tests/
+│   ├── NetDid.Core.Tests/                   # Core unit tests (mirrors src/ structure)
+│   ├── NetDid.Method.Key.Tests/
+│   ├── NetDid.Method.Peer.Tests/
+│   ├── NetDid.Method.WebVh.Tests/
+│   ├── NetDid.Tests.W3CConformance/         # W3C DID Core conformance tests
+│   └── NetDid.Extensions.DependencyInjection.Tests/
+├── samples/
+│   ├── NetDid.Samples.DidKey/               # did:key usage examples
+│   ├── NetDid.Samples.DidPeer/              # did:peer usage examples
+│   ├── NetDid.Samples.DidWebVh/             # did:webvh CRUD examples
+│   └── NetDid.Samples.DependencyInjection/  # DI registration pattern
+├── native/zkryptium-ffi/                    # Rust FFI shim for BBS+ signatures
+├── Directory.Build.props                    # Shared build properties
+├── Directory.Packages.props                 # Central NuGet version management
+├── .editorconfig                            # Code style rules
+└── netdid.sln
 ```
 
 ## Code Style
@@ -145,12 +161,18 @@ Change the version only in `Directory.Packages.props`. All projects referencing 
 
 To implement a new DID method (e.g., `did:web`):
 
-1. **Create a new project** (or add to `NetDid.Core` if simple):
-   ```
-   src/NetDid.DidWeb/DidWebMethod.cs
+1. **Create a new project**: `src/NetDid.Method.Web/`
+
+2. **Define create options** with the `MethodName` override:
+   ```csharp
+   public sealed record DidWebCreateOptions : DidCreateOptions
+   {
+       public override string MethodName => "web";
+       // Method-specific properties...
+   }
    ```
 
-2. **Implement `IDidMethod`** (or extend `DidMethodBase`):
+3. **Implement `IDidMethod`** (or extend `DidMethodBase`):
    ```csharp
    public class DidWebMethod : DidMethodBase
    {
@@ -162,18 +184,21 @@ To implement a new DID method (e.g., `did:web`):
    }
    ```
 
-3. **Register with `CompositeDidResolver`**:
+4. **Add DI registration** in `NetDid.Extensions.DependencyInjection/NetDidBuilder.cs`:
    ```csharp
-   var resolver = new CompositeDidResolver(new IDidMethod[]
+   public NetDidBuilder AddDidWeb()
    {
-       new DidKeyMethod(...),
-       new DidWebMethod(...)
-   });
+       Services.TryAddSingleton<DidWebMethod>();
+       Services.AddSingleton<IDidMethod>(sp => sp.GetRequiredService<DidWebMethod>());
+       return this;
+   }
    ```
 
-4. **Add tests** following the existing pattern in `tests/`.
+5. **Add tests** following the existing pattern in `tests/`.
 
-5. **Update `NetDidPRD.md`** with the method's specification details.
+6. **Add a sample project**: `samples/NetDid.Samples.DidWeb/`
+
+7. **Update `NetDidPRD.md`** with the method's specification details.
 
 ## How to Add a New Key Type
 

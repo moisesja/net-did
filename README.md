@@ -251,6 +251,107 @@ var resolved = await didPeer.ResolveAsync(result.Did.Value);
 
 Short-form-only resolution returns `notFound` (requires prior long-form exchange).
 
+## did:webvh
+
+`did:webvh` (DID Web with Verifiable History) combines web-based hosting with a cryptographically verifiable log of all changes. Full CRUD with hash chain integrity, pre-rotation, and witness validation.
+
+### Create a did:webvh
+
+```csharp
+using NetDid.Core.Crypto;
+using NetDid.Core.Model;
+using NetDid.Method.WebVh;
+
+var keyGen = new DefaultKeyGenerator();
+var crypto = new DefaultCryptoProvider();
+var updateKey = keyGen.Generate(KeyType.Ed25519);
+var signer = new KeyPairSigner(updateKey, crypto);
+
+var httpClient = new DefaultWebVhHttpClient();
+var didWebVh = new DidWebVhMethod(httpClient, crypto);
+
+var result = await didWebVh.CreateAsync(new DidWebVhCreateOptions
+{
+    Domain = "example.com",
+    UpdateKey = signer,
+    Services =
+    [
+        new Service
+        {
+            Id = "#pds",
+            Type = "TurtleShellPds",
+            ServiceEndpoint = ServiceEndpointValue.FromUri("https://example.com/pds")
+        }
+    ]
+});
+
+Console.WriteLine(result.Did);
+// Output: did:webvh:z6Rk8Rx...:example.com
+```
+
+The result includes `Artifacts["did.jsonl"]` (the verifiable log) and `Artifacts["did.json"]` (did:web backwards-compatible document). Host these at `https://example.com/.well-known/did.jsonl` and `did.json`.
+
+### Resolve a did:webvh
+
+```csharp
+var resolved = await didWebVh.ResolveAsync("did:webvh:z6Rk8Rx...:example.com");
+var doc = resolved.DidDocument!;
+
+Console.WriteLine(doc.Service![0].Type);  // "TurtleShellPds"
+Console.WriteLine(resolved.DocumentMetadata!.VersionId);  // "1-z6Rk8Rx..."
+```
+
+Resolution fetches the `did.jsonl` log over HTTPS, validates the hash chain and Data Integrity Proofs, and returns the latest DID Document.
+
+### Update (append to log)
+
+```csharp
+var updatedDoc = result.DidDocument with
+{
+    Service = [ result.DidDocument.Service![0], new Service
+    {
+        Id = $"{result.Did}#api",
+        Type = "ApiEndpoint",
+        ServiceEndpoint = ServiceEndpointValue.FromUri("https://api.example.com/v1")
+    }]
+};
+
+var updateResult = await didWebVh.UpdateAsync(result.Did.Value, new DidWebVhUpdateOptions
+{
+    CurrentLogContent = (byte[])result.Artifacts!["did.jsonl"],
+    SigningKey = signer,
+    NewDocument = updatedDoc
+});
+// Re-host the updated did.jsonl
+```
+
+### Pre-rotation (key commitment)
+
+```csharp
+var nextKey = keyGen.Generate(KeyType.Ed25519);
+var commitment = PreRotationManager.ComputeKeyCommitment(nextKey.MultibasePublicKey);
+
+var result = await didWebVh.CreateAsync(new DidWebVhCreateOptions
+{
+    Domain = "example.com",
+    UpdateKey = signer,
+    EnablePreRotation = true,
+    PreRotationCommitments = [commitment]
+});
+```
+
+Pre-rotation commits to the next update key hash at creation time. Every subsequent update must rotate to the committed key, preventing unauthorized key changes even if the current key is compromised.
+
+### Deactivate
+
+```csharp
+await didWebVh.DeactivateAsync(result.Did.Value, new DidWebVhDeactivateOptions
+{
+    CurrentLogContent = logContent,
+    SigningKey = signer
+});
+```
+
 ## Serialization
 
 ```csharp
