@@ -1,3 +1,5 @@
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 using NetDid.Core;
 using NetDid.Core.Crypto;
 using NetDid.Core.Crypto.DataIntegrity;
@@ -17,16 +19,18 @@ public sealed class DidWebVhMethod : DidMethodBase
     private readonly DataIntegrityProofEngine _proofEngine;
     private readonly LogChainValidator _chainValidator;
     private readonly WitnessValidator _witnessValidator;
+    private readonly ILogger<DidWebVhMethod> _logger;
 
     internal const string MethodVersion = "did:webvh:1.0";
 
-    public DidWebVhMethod(IWebVhHttpClient httpClient, ICryptoProvider crypto)
+    public DidWebVhMethod(IWebVhHttpClient httpClient, ICryptoProvider crypto, ILogger<DidWebVhMethod>? logger = null)
     {
         _httpClient = httpClient ?? throw new ArgumentNullException(nameof(httpClient));
         _crypto = crypto ?? throw new ArgumentNullException(nameof(crypto));
         _proofEngine = new DataIntegrityProofEngine(crypto);
         _chainValidator = new LogChainValidator(_proofEngine);
         _witnessValidator = new WitnessValidator(_proofEngine);
+        _logger = logger ?? NullLogger<DidWebVhMethod>.Instance;
     }
 
     public override string MethodName => "webvh";
@@ -131,6 +135,7 @@ public sealed class DidWebVhMethod : DidMethodBase
         {
             // Map DID to URL
             var logUrl = DidUrlMapper.MapToLogUrl(did);
+            _logger.LogDebug("Resolving {Did} from {Url}", did, logUrl);
 
             // Fetch the log
             var logContent = await _httpClient.FetchDidLogAsync(logUrl, ct);
@@ -231,8 +236,9 @@ public sealed class DidWebVhMethod : DidMethodBase
                 }
             };
         }
-        catch (Core.Exceptions.LogChainValidationException)
+        catch (Core.Exceptions.LogChainValidationException ex)
         {
+            _logger.LogWarning(ex, "Chain validation failed for {Did}", did);
             return new DidResolutionResult
             {
                 DidDocument = null,
@@ -242,8 +248,9 @@ public sealed class DidWebVhMethod : DidMethodBase
                 }
             };
         }
-        catch (Exception)
+        catch (Exception ex)
         {
+            _logger.LogWarning(ex, "Resolution failed for {Did}", did);
             return DidResolutionResult.NotFound(did);
         }
     }
