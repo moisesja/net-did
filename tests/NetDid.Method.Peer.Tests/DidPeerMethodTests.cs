@@ -695,6 +695,120 @@ public class DidPeerMethodTests
         resolved.DidDocument.Should().BeNull();
     }
 
+    [Fact]
+    public async Task Numalgo4_LongFormUsesMultibaseMulticodecEncoding()
+    {
+        var keyPair = _keyGen.Generate(KeyType.Ed25519);
+
+        var inputDoc = new DidDocument
+        {
+            Id = new Did("did:peer:placeholder"),
+            VerificationMethod =
+            [
+                new VerificationMethod
+                {
+                    Id = "#key-0",
+                    Type = "Multikey",
+                    Controller = new Did("did:peer:placeholder"),
+                    PublicKeyMultibase = keyPair.MultibasePublicKey
+                }
+            ]
+        };
+
+        var result = await _method.CreateAsync(new DidPeerCreateOptions
+        {
+            Numalgo = PeerNumalgo.Four,
+            InputDocument = inputDoc
+        });
+
+        // Long-form should use multibase base58btc (starts with 'z'), not base64url
+        var fullDid = result.Did.Value;
+        var lastColon = fullDid.LastIndexOf(':');
+        var longFormPart = fullDid[(lastColon + 1)..];
+        longFormPart.Should().StartWith("z", "long-form should be multibase base58btc encoded");
+
+        // Short-form hash should also be multibase base58btc
+        var shortFormPart = fullDid["did:peer:4".Length..lastColon];
+        shortFormPart.Should().StartWith("z", "short-form hash should be multibase base58btc encoded");
+    }
+
+    [Fact]
+    public async Task Numalgo4_AlsoKnownAs_ContainsShortFormDid()
+    {
+        var keyPair = _keyGen.Generate(KeyType.Ed25519);
+
+        var inputDoc = new DidDocument
+        {
+            Id = new Did("did:peer:placeholder"),
+            VerificationMethod =
+            [
+                new VerificationMethod
+                {
+                    Id = "#key-0",
+                    Type = "Multikey",
+                    Controller = new Did("did:peer:placeholder"),
+                    PublicKeyMultibase = keyPair.MultibasePublicKey
+                }
+            ]
+        };
+
+        var result = await _method.CreateAsync(new DidPeerCreateOptions
+        {
+            Numalgo = PeerNumalgo.Four,
+            InputDocument = inputDoc
+        });
+
+        var fullDid = result.Did.Value;
+        var lastColon = fullDid.LastIndexOf(':');
+        var shortFormDid = fullDid[..lastColon];
+
+        // Create path: alsoKnownAs should include short-form DID
+        result.DidDocument.AlsoKnownAs.Should().NotBeNull();
+        result.DidDocument.AlsoKnownAs.Should().Contain(shortFormDid);
+
+        // Resolve path: same
+        var resolved = await _method.ResolveAsync(fullDid);
+        resolved.DidDocument!.AlsoKnownAs.Should().NotBeNull();
+        resolved.DidDocument.AlsoKnownAs.Should().Contain(shortFormDid);
+    }
+
+    [Fact]
+    public async Task Numalgo4_AlsoKnownAs_PreservesExistingEntries()
+    {
+        var keyPair = _keyGen.Generate(KeyType.Ed25519);
+
+        var inputDoc = new DidDocument
+        {
+            Id = new Did("did:peer:placeholder"),
+            VerificationMethod =
+            [
+                new VerificationMethod
+                {
+                    Id = "#key-0",
+                    Type = "Multikey",
+                    Controller = new Did("did:peer:placeholder"),
+                    PublicKeyMultibase = keyPair.MultibasePublicKey
+                }
+            ],
+            AlsoKnownAs = ["https://example.com/user/alice"]
+        };
+
+        var result = await _method.CreateAsync(new DidPeerCreateOptions
+        {
+            Numalgo = PeerNumalgo.Four,
+            InputDocument = inputDoc
+        });
+
+        // Should have both the original entry and the short-form DID
+        result.DidDocument.AlsoKnownAs.Should().HaveCount(2);
+        result.DidDocument.AlsoKnownAs.Should().Contain("https://example.com/user/alice");
+
+        var fullDid = result.Did.Value;
+        var lastColon = fullDid.LastIndexOf(':');
+        var shortFormDid = fullDid[..lastColon];
+        result.DidDocument.AlsoKnownAs.Should().Contain(shortFormDid);
+    }
+
     // --- Resolution edge cases ---
 
     [Fact]

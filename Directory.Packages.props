@@ -7,27 +7,20 @@
     <PackageVersion Include="NSec.Cryptography" Version="24.4.0" />
     <PackageVersion Include="NBitcoin.Secp256k1" Version="3.1.5" />
     <PackageVersion Include="Nethermind.Crypto.Bls" Version="1.0.5" />
-
     <!-- Encoding -->
-    <PackageVersion Include="NetCid" Version="1.2.1" />
-
+    <PackageVersion Include="NetCid" Version="1.3.0" />
     <!-- Caching -->
     <PackageVersion Include="Microsoft.Extensions.Caching.Memory" Version="10.0.0-preview.1.25080.5" />
-
     <!-- Logging -->
     <PackageVersion Include="Microsoft.Extensions.Logging.Abstractions" Version="10.0.0-preview.1.25080.5" />
-
     <!-- Dependency Injection -->
     <PackageVersion Include="Microsoft.Extensions.DependencyInjection" Version="10.0.0-preview.1.25080.5" />
     <PackageVersion Include="Microsoft.Extensions.DependencyInjection.Abstractions" Version="10.0.0-preview.1.25080.5" />
     <PackageVersion Include="Microsoft.Extensions.Http" Version="10.0.0-preview.1.25080.5" />
-
     <!-- Identity / JWK -->
     <PackageVersion Include="Microsoft.IdentityModel.Tokens" Version="8.3.0" />
-
     <!-- Source Link -->
     <PackageVersion Include="Microsoft.SourceLink.GitHub" Version="8.0.0" />
-
     <!-- Testing -->
     <PackageVersion Include="Microsoft.NET.Test.Sdk" Version="17.12.0" />
     <PackageVersion Include="xunit" Version="2.9.3" />
