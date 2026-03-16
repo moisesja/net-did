@@ -8,6 +8,7 @@
 
   <ItemGroup>
     <InternalsVisibleTo Include="NetDid.Method.WebVh.Tests" />
+    <InternalsVisibleTo Include="NetDid.Tools.WebVhCli" />
   </ItemGroup>
 
   <ItemGroup>

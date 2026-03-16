@@ -17,6 +17,8 @@
     <PackageVersion Include="Microsoft.Extensions.DependencyInjection" Version="10.0.0-preview.1.25080.5" />
     <PackageVersion Include="Microsoft.Extensions.DependencyInjection.Abstractions" Version="10.0.0-preview.1.25080.5" />
     <PackageVersion Include="Microsoft.Extensions.Http" Version="10.0.0-preview.1.25080.5" />
+    <!-- CLI -->
+    <PackageVersion Include="System.CommandLine" Version="2.0.5" />
     <!-- Identity / JWK -->
     <PackageVersion Include="Microsoft.IdentityModel.Tokens" Version="8.3.0" />
     <!-- Source Link -->

@@ -1,0 +1,21 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <PackAsTool>true</PackAsTool>
+    <ToolCommandName>webvh-cli</ToolCommandName>
+    <IsPackable>true</IsPackable>
+    <PackageId>NetDid.Tools.WebVhCli</PackageId>
+    <Version>$(NetDidVersion)</Version>
+    <Description>A step-by-step CLI tool for creating and managing did:webvh Decentralized Identifiers.</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="../../src/NetDid.Method.WebVh/NetDid.Method.WebVh.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="System.CommandLine" />
+  </ItemGroup>
+
+</Project>

@@ -17,6 +17,7 @@ A specification-compliant .NET library for Decentralized Identifiers (DIDs). Net
 - **JWK conversion**: Round-trip between raw key bytes and JSON Web Keys
 - **DI integration**: `services.AddNetDid()` for Microsoft.Extensions.DependencyInjection, or use standalone with zero framework opinions
 - **Fluent document builder**: `new DidDocumentBuilder(did).AddVerificationMethod(...).Build()`
+- **CLI tool**: Step-by-step `did:webvh` creation via `webvh-cli` ([documentation](tools/NetDid.Tools.WebVhCli/README.md))
 
 ## Installation
 
@@ -486,6 +487,8 @@ netdid/
 │   ├── NetDid.Method.WebVh.Tests/           # 70 tests
 │   ├── NetDid.Tests.W3CConformance/         # 175 W3C conformance tests
 │   └── NetDid.Extensions.DependencyInjection.Tests/  # 10 tests
+├── tools/
+│   └── NetDid.Tools.WebVhCli/               # did:webvh CLI tool (step-by-step DID creation)
 ├── samples/
 │   ├── NetDid.Samples.DidKey/               # did:key usage examples
 │   ├── NetDid.Samples.DidPeer/              # did:peer usage examples
