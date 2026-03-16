@@ -14,25 +14,32 @@ namespace NetDid.Method.Peer;
 /// </summary>
 internal sealed class Numalgo4Handler
 {
+    // JSON multicodec code 0x0200, varint-encoded as [0x80, 0x04]
+    private const ulong JsonMulticodec = 0x0200;
+
     public DidCreateResult Create(DidPeerCreateOptions options)
     {
         if (options.InputDocument is null)
             throw new ArgumentException("Numalgo 4 requires InputDocument.");
 
-        // Serialize as JSON-LD so @context is included in the encoded document
+        // Per did:peer:4 spec:
+        // 1. JSON stringify the input document (without id) → UTF-8 bytes → multicodec prefix (JSON 0x0200) → multibase base58btc
+        // 2. Hash the multibase-encoded STRING, not the raw bytes
+        // 3. Multihash prefix [0x12, 0x20] → multibase base58btc
+        // Serialize the input document. Using JSON-LD preserves @context for round-trip.
+        // The id field is omitted automatically when Id.Value is null (per spec: input doc MUST NOT have id).
         var json = DidDocumentSerializer.Serialize(options.InputDocument, DidContentTypes.JsonLd);
         var docBytes = Encoding.UTF8.GetBytes(json);
 
-        // Compute SHA-256 hash, multicodec-prefix with SHA-256 code (0x12), then multibase-encode
-        var hash = SHA256.HashData(docBytes);
-        var multihash = Multicodec.Prefix(0x12, hash); // 0x12 = sha2-256
-        var shortForm = Multibase.Encode(multihash, MultibaseEncoding.Base58Btc);
+        // Long-form: multicodec(JSON) prefix + multibase base58btc
+        var multicodecPrefixed = Multicodec.Prefix(JsonMulticodec, docBytes);
+        var longForm = Multibase.Encode(multicodecPrefixed, MultibaseEncoding.Base58Btc);
 
-        // Long-form: base64url-encode the document bytes
-        var longForm = Convert.ToBase64String(docBytes)
-            .TrimEnd('=')
-            .Replace('+', '-')
-            .Replace('/', '_');
+        // Short-form: SHA-256 hash of the multibase-encoded long-form STRING bytes
+        var longFormStringBytes = Encoding.UTF8.GetBytes(longForm);
+        var hash = SHA256.HashData(longFormStringBytes);
+        var multihash = Multihash.Encode(0x12, hash); // 0x12 = sha2-256
+        var shortForm = Multibase.Encode(multihash, MultibaseEncoding.Base58Btc);
 
         var did = $"did:peer:4{shortForm}:{longForm}";
 
@@ -62,27 +69,35 @@ internal sealed class Numalgo4Handler
         var shortForm = body[..colonIndex];
         var longForm = body[(colonIndex + 1)..];
 
-        // Decode the long-form document
-        var base64 = longForm.Replace('-', '+').Replace('_', '/');
-        switch (base64.Length % 4)
-        {
-            case 2: base64 += "=="; break;
-            case 3: base64 += "="; break;
-        }
-
-        byte[] docBytes;
+        // Decode long-form: multibase decode → strip multicodec JSON prefix → UTF-8 JSON
+        byte[] multicodecPrefixed;
         try
         {
-            docBytes = Convert.FromBase64String(base64);
+            multicodecPrefixed = Multibase.Decode(longForm);
         }
         catch
         {
             return null;
         }
 
-        // Verify the hash matches
-        var hash = SHA256.HashData(docBytes);
-        var multihash = Multicodec.Prefix(0x12, hash);
+        // Strip multicodec JSON prefix and get raw document bytes
+        byte[] docBytes;
+        try
+        {
+            var (code, rawBytes) = Multicodec.Decode(multicodecPrefixed);
+            if (code != JsonMulticodec)
+                return null; // Wrong multicodec — not a JSON document
+            docBytes = rawBytes;
+        }
+        catch
+        {
+            return null;
+        }
+
+        // Verify the hash: SHA-256 of the long-form multibase STRING bytes
+        var longFormStringBytes = Encoding.UTF8.GetBytes(longForm);
+        var hash = SHA256.HashData(longFormStringBytes);
+        var multihash = Multihash.Encode(0x12, hash);
         var expectedShortForm = Multibase.Encode(multihash, MultibaseEncoding.Base58Btc);
 
         if (shortForm != expectedShortForm)
@@ -106,7 +121,7 @@ internal sealed class Numalgo4Handler
     private static DidDocument BuildResolvedDocument(string did, DidDocument inputDoc)
     {
         var didValue = new Did(did);
-        var originalDid = inputDoc.Id.Value;
+        var originalDid = inputDoc.Id.Value; // null if input document has no id (per spec)
 
         // Replace the id with the actual DID and prefix relative references
         var verificationMethods = inputDoc.VerificationMethod?.Select(vm =>
@@ -114,7 +129,13 @@ internal sealed class Numalgo4Handler
 
         // Rewrite controller references
         var controller = inputDoc.Controller?.Select(c =>
-            c.Value == originalDid ? didValue : c).ToList();
+            c.Value == originalDid || c.Value is null ? didValue : c).ToList();
+
+        // Per spec: alsoKnownAs must include the short-form DID
+        var shortFormDid = ExtractShortFormDid(did);
+        var alsoKnownAs = inputDoc.AlsoKnownAs?.ToList() ?? [];
+        if (shortFormDid is not null && !alsoKnownAs.Contains(shortFormDid))
+            alsoKnownAs.Add(shortFormDid);
 
         return new DidDocument
         {
@@ -133,20 +154,42 @@ internal sealed class Numalgo4Handler
                 ServiceEndpoint = svc.ServiceEndpoint,
                 AdditionalProperties = svc.AdditionalProperties
             }).ToList(),
-            AlsoKnownAs = inputDoc.AlsoKnownAs,
+            AlsoKnownAs = alsoKnownAs.Count > 0 ? alsoKnownAs : null,
             Context = inputDoc.Context,
             AdditionalProperties = inputDoc.AdditionalProperties
         };
     }
 
-    private static VerificationMethod RewriteVerificationMethod(
-        VerificationMethod vm, string did, Did didValue, string originalDid)
+    /// <summary>
+    /// Extract the short-form DID from a long-form did:peer:4 DID.
+    /// Long-form: did:peer:4{hash}:{encoded} → Short-form: did:peer:4{hash}
+    /// </summary>
+    private static string? ExtractShortFormDid(string did)
     {
+        // did = "did:peer:4{shortForm}:{longForm}"
+        // We need to find the ':' after "did:peer:4..."
+        const string prefix = "did:peer:4";
+        if (!did.StartsWith(prefix)) return null;
+
+        var rest = did[prefix.Length..];
+        var colonIdx = rest.IndexOf(':');
+        if (colonIdx < 0) return null; // Already short-form
+
+        return prefix + rest[..colonIdx];
+    }
+
+    private static VerificationMethod RewriteVerificationMethod(
+        VerificationMethod vm, string did, Did didValue, string? originalDid)
+    {
+        // Set controller to the DID if it matches the original placeholder or was not set
+        var controller = (vm.Controller.Value == originalDid || vm.Controller.Value is null)
+            ? didValue : vm.Controller;
+
         return new VerificationMethod
         {
             Id = PrefixId(vm.Id, did),
             Type = vm.Type,
-            Controller = vm.Controller.Value == originalDid ? didValue : vm.Controller,
+            Controller = controller,
             PublicKeyMultibase = vm.PublicKeyMultibase,
             PublicKeyJwk = vm.PublicKeyJwk,
             BlockchainAccountId = vm.BlockchainAccountId
@@ -162,7 +205,7 @@ internal sealed class Numalgo4Handler
     }
 
     private static List<VerificationRelationshipEntry>? RewriteRelationships(
-        IReadOnlyList<VerificationRelationshipEntry>? entries, string did, Did didValue, string originalDid)
+        IReadOnlyList<VerificationRelationshipEntry>? entries, string did, Did didValue, string? originalDid)
     {
         if (entries is null) return null;
 
@@ -173,7 +216,7 @@ internal sealed class Numalgo4Handler
                 var reference = entry.Reference!;
                 if (reference.StartsWith('#'))
                     reference = did + reference;
-                else if (reference.StartsWith(originalDid))
+                else if (originalDid is not null && reference.StartsWith(originalDid))
                     reference = did + reference[originalDid.Length..];
                 return VerificationRelationshipEntry.FromReference(reference);
             }

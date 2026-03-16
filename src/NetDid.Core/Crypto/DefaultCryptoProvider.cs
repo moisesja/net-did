@@ -1,3 +1,5 @@
+using System.Globalization;
+using System.Numerics;
 using System.Security.Cryptography;
 using NBitcoin.Secp256k1;
 using NSec.Cryptography;
@@ -109,29 +111,98 @@ public sealed class DefaultCryptoProvider : ICryptoProvider
 
     internal static ECParameters ImportEcPublicKey(ReadOnlySpan<byte> publicKey, ECCurve curve)
     {
-        // Handle both uncompressed (0x04 || x || y) and raw (x || y)
-        int offset = 0;
-        int coordLen;
+        if (publicKey.Length > 0 && (publicKey[0] == 0x02 || publicKey[0] == 0x03))
+        {
+            // Compressed SEC1 point — decompress via SubjectPublicKeyInfo import
+            return DecompressEcPoint(publicKey, curve);
+        }
 
         if (publicKey.Length > 0 && publicKey[0] == 0x04)
         {
-            offset = 1;
-            coordLen = (publicKey.Length - 1) / 2;
+            // Uncompressed: 0x04 || x || y
+            var coordLen = (publicKey.Length - 1) / 2;
+            return new ECParameters
+            {
+                Curve = curve,
+                Q = new ECPoint
+                {
+                    X = publicKey.Slice(1, coordLen).ToArray(),
+                    Y = publicKey.Slice(1 + coordLen, coordLen).ToArray()
+                }
+            };
         }
-        else
+
+        throw new ArgumentException("Invalid EC public key format. Expected compressed (0x02/0x03) or uncompressed (0x04) SEC1 point.");
+    }
+
+    // NIST P-256 curve parameters for point decompression
+    private static readonly BigInteger P256Prime = BigInteger.Parse("0FFFFFFFF00000001000000000000000000000000FFFFFFFFFFFFFFFFFFFFFFFF", NumberStyles.HexNumber);
+    private static readonly BigInteger P256B = BigInteger.Parse("05AC635D8AA3A93E7B3EBBD55769886BC651D06B0CC53B0F63BCE3C3E27D2604B", NumberStyles.HexNumber);
+
+    // NIST P-384 curve parameters for point decompression
+    private static readonly BigInteger P384Prime = BigInteger.Parse("0FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEFFFFFFFF0000000000000000FFFFFFFF", NumberStyles.HexNumber);
+    private static readonly BigInteger P384B = BigInteger.Parse("0B3312FA7E23EE7E4988E056BE3F82D19181D9C6EFE8141120314088F5013875AC656398D8A2ED19D2A85C8EDD3EC2AEF", NumberStyles.HexNumber);
+
+    /// <summary>
+    /// Decompress a compressed SEC1 EC point using the curve equation y² = x³ - 3x + b (mod p).
+    /// Works for NIST P-256 and P-384 where p ≡ 3 (mod 4).
+    /// </summary>
+    internal static ECParameters DecompressEcPoint(ReadOnlySpan<byte> compressedPoint, ECCurve curve)
+    {
+        var prefix = compressedPoint[0];
+        var coordLen = compressedPoint.Length - 1;
+        var xBytes = compressedPoint[1..].ToArray();
+
+        var (p, b) = GetCurveParams(curve);
+        var a = p - 3; // a = -3 for both P-256 and P-384
+
+        var x = new BigInteger(xBytes, isUnsigned: true, isBigEndian: true);
+
+        // y² = x³ + ax + b (mod p)
+        var x3 = BigInteger.ModPow(x, 3, p);
+        var rhs = (x3 + a * x % p + b) % p;
+        if (rhs < 0) rhs += p;
+
+        // y = rhs^((p+1)/4) mod p (valid since p ≡ 3 mod 4)
+        var y = BigInteger.ModPow(rhs, (p + 1) / 4, p);
+
+        // 0x02 = even y, 0x03 = odd y
+        if ((prefix == 0x02) != y.IsEven)
+            y = p - y;
+
+        var yBytes = y.ToByteArray(isUnsigned: true, isBigEndian: true);
+        if (yBytes.Length < coordLen)
         {
-            coordLen = publicKey.Length / 2;
+            var padded = new byte[coordLen];
+            yBytes.CopyTo(padded, coordLen - yBytes.Length);
+            yBytes = padded;
         }
 
         return new ECParameters
         {
             Curve = curve,
-            Q = new ECPoint
-            {
-                X = publicKey.Slice(offset, coordLen).ToArray(),
-                Y = publicKey.Slice(offset + coordLen, coordLen).ToArray()
-            }
+            Q = new ECPoint { X = xBytes, Y = yBytes }
         };
+    }
+
+    /// <summary>
+    /// Decompress a secp256k1 compressed point using NBitcoin and return (X, Y) coordinates.
+    /// </summary>
+    internal static (byte[] X, byte[] Y) DecompressSecp256k1Point(ReadOnlySpan<byte> compressedPoint)
+    {
+        if (!ECPubKey.TryCreate(compressedPoint, null, out _, out var pubKey))
+            throw new ArgumentException("Invalid secp256k1 compressed point.");
+        var uncompressed = new byte[65];
+        pubKey.WriteToSpan(compressed: false, uncompressed, out _);
+        return (uncompressed[1..33], uncompressed[33..65]);
+    }
+
+    internal static (BigInteger p, BigInteger b) GetCurveParams(ECCurve curve)
+    {
+        var oidValue = curve.Oid?.Value;
+        if (oidValue == "1.2.840.10045.3.1.7") return (P256Prime, P256B);
+        if (oidValue == "1.3.132.0.34") return (P384Prime, P384B);
+        throw new ArgumentException("Unsupported curve for EC point decompression.");
     }
 
     // --- secp256k1 (NBitcoin.Secp256k1) ---

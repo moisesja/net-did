@@ -33,8 +33,8 @@ public class DefaultKeyGeneratorTests
         var keyPair = _generator.Generate(KeyType.P256);
 
         keyPair.KeyType.Should().Be(KeyType.P256);
-        keyPair.PublicKey.Should().HaveCount(65); // uncompressed point
-        keyPair.PublicKey[0].Should().Be(0x04);
+        keyPair.PublicKey.Should().HaveCount(33); // compressed SEC1 point
+        keyPair.PublicKey[0].Should().BeOneOf(0x02, 0x03);
         keyPair.PrivateKey.Should().HaveCount(32);
     }
 
@@ -44,7 +44,8 @@ public class DefaultKeyGeneratorTests
         var keyPair = _generator.Generate(KeyType.P384);
 
         keyPair.KeyType.Should().Be(KeyType.P384);
-        keyPair.PublicKey[0].Should().Be(0x04);
+        keyPair.PublicKey.Should().HaveCount(49); // compressed SEC1 point
+        keyPair.PublicKey[0].Should().BeOneOf(0x02, 0x03);
         keyPair.PrivateKey.Should().HaveCount(48);
     }
 
@@ -54,8 +55,8 @@ public class DefaultKeyGeneratorTests
         var keyPair = _generator.Generate(KeyType.Secp256k1);
 
         keyPair.KeyType.Should().Be(KeyType.Secp256k1);
-        keyPair.PublicKey.Should().HaveCount(65); // uncompressed
-        keyPair.PublicKey[0].Should().Be(0x04);
+        keyPair.PublicKey.Should().HaveCount(33); // compressed SEC1 point
+        keyPair.PublicKey[0].Should().BeOneOf(0x02, 0x03);
         keyPair.PrivateKey.Should().HaveCount(32);
     }
 

@@ -56,6 +56,24 @@ public static partial class DidParser
         return did[(secondColon + 1)..];
     }
 
+    /// <summary>
+    /// Validates a DID reference, which can be either an absolute DID URL
+    /// or a relative fragment reference (e.g., "#key-1").
+    /// Per W3C DID Core §3.2, relative DID URLs are valid within DID documents.
+    /// </summary>
+    public static bool IsValidDidReference(string reference)
+    {
+        if (string.IsNullOrEmpty(reference))
+            return false;
+
+        // Relative fragment reference: #fragment
+        if (reference.StartsWith('#'))
+            return reference.Length > 1;
+
+        // Otherwise, must be a valid absolute DID URL
+        return ParseDidUrl(reference) is not null;
+    }
+
     /// <summary>Parse a DID URL (DID + optional path, params, query, fragment).</summary>
     public static DidUrl? ParseDidUrl(string didUrl)
     {

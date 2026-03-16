@@ -107,6 +107,15 @@ public class DidManagerTests
     }
 
     [Fact]
+    public async Task ResolveAsync_InvalidDid_ReturnsInvalidDid()
+    {
+        var result = await _manager.ResolveAsync("not-a-did");
+
+        result.DidDocument.Should().BeNull();
+        result.ResolutionMetadata.Error.Should().Be("invalidDid");
+    }
+
+    [Fact]
     public async Task UpdateAsync_RoutesToCorrectMethod()
     {
         var did = "did:key:z6MkTest";

@@ -38,7 +38,8 @@ public sealed class DidKeyMethod : DidMethodBase
                 throw new ArgumentException(
                     $"ExistingKey.KeyType ({keyOptions.ExistingKey.KeyType}) must match KeyType ({keyOptions.KeyType}).");
 
-            publicKey = keyOptions.ExistingKey.PublicKey.ToArray();
+            publicKey = keyOptions.KeyType.NormalizeToCompressed(
+                keyOptions.ExistingKey.PublicKey.ToArray());
         }
         else
         {
@@ -72,6 +73,12 @@ public sealed class DidKeyMethod : DidMethodBase
             var decoded = Multibase.Decode(methodSpecificId);
             var (codec, rawKey) = Multicodec.Decode(decoded);
             var keyType = KeyTypeExtensions.ToKeyType(codec);
+
+            if (!keyType.IsValidKeyLength(rawKey.Length))
+                return Task.FromResult(DidResolutionResult.InvalidDid(did));
+
+            if (!keyType.IsValidEcPoint(rawKey))
+                return Task.FromResult(DidResolutionResult.InvalidDid(did));
 
             var doc = BuildDocument(
                 did, keyType, rawKey, methodSpecificId,

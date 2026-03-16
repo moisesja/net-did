@@ -28,6 +28,12 @@ public sealed class CompositeDidResolver : IDidResolver
 
     public async Task<DidResolutionResult> ResolveAsync(string did, DidResolutionOptions? options = null, CancellationToken ct = default)
     {
+        if (!DidParser.IsValid(did))
+        {
+            _logger.LogWarning("Invalid DID syntax: {Did}", did);
+            return DidResolutionResult.InvalidDid(did);
+        }
+
         var method = DidParser.ExtractMethod(did);
         if (method is null || !_methods.TryGetValue(method, out var didMethod))
         {

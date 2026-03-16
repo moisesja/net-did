@@ -13,7 +13,7 @@ A specification-compliant .NET library for Decentralized Identifiers (DIDs). Net
 - **W3C DID Core 1.0** compliant DID Document model and serialization
 - **Dual content types**: `application/did+ld+json` (JSON-LD) and `application/did+json`
 - **Pluggable key storage**: Bring your own HSM, vault, or file-based key store via `IKeyStore`
-- **Resolver infrastructure**: Composite routing, caching, and W3C DID URL dereferencing
+- **Resolver infrastructure**: Composite routing, caching, and W3C DID URL dereferencing (fragment, service, serviceType, verificationRelationship)
 - **JWK conversion**: Round-trip between raw key bytes and JSON Web Keys
 - **DI integration**: `services.AddNetDid()` for Microsoft.Extensions.DependencyInjection, or use standalone with zero framework opinions
 - **Fluent document builder**: `new DidDocumentBuilder(did).AddVerificationMethod(...).Build()`
@@ -218,14 +218,13 @@ Uses a SHA-256 hash as the short form and encodes the full input document as the
 var peer4Key = keyGen.Generate(KeyType.Ed25519);
 var inputDoc = new DidDocument
 {
-    Id = new Did("did:peer:placeholder"),
+    // Per spec: input document MUST NOT include id — it's assigned during creation
     VerificationMethod =
     [
         new VerificationMethod
         {
             Id = "#key-0",
             Type = "Multikey",
-            Controller = new Did("did:peer:placeholder"),
             PublicKeyMultibase = peer4Key.MultibasePublicKey
         }
     ],
@@ -289,7 +288,7 @@ Console.WriteLine(result.Did);
 // Output: did:webvh:z6Rk8Rx...:example.com
 ```
 
-The result includes `Artifacts["did.jsonl"]` (the verifiable log) and `Artifacts["did.json"]` (did:web backwards-compatible document). Host these at `https://example.com/.well-known/did.jsonl` and `did.json`.
+The result includes `Artifacts["did.jsonl"]` (the verifiable log) and `Artifacts["did.json"]` (did:web backwards-compatible document). Host these at `https://example.com/.well-known/did.jsonl` and `did.json`. When `WitnessProofs` are provided, a `did-witness.json` artifact is also produced.
 
 ### Resolve a did:webvh
 
@@ -468,7 +467,7 @@ DID string
 
 ### DID URL Dereferencing
 
-`DefaultDidUrlDereferencer` implements the W3C DID Core section 7.2 algorithm: parse URL, resolve the base DID, then select resources by fragment, service query, or path.
+`DefaultDidUrlDereferencer` implements the W3C DID Core section 7.2 algorithm: parse URL, resolve the base DID, then select resources by fragment, service ID or type query, or path. Supports `verificationRelationship` filtering and `text/uri-list` redirect with RFC 3986 URL resolution.
 
 ## Project Structure
 
@@ -481,10 +480,10 @@ netdid/
 │   ├── NetDid.Method.WebVh/                 # did:webvh method (full CRUD)
 │   └── NetDid.Extensions.DependencyInjection/  # Microsoft DI integration
 ├── tests/
-│   ├── NetDid.Core.Tests/                   # 280 unit tests
-│   ├── NetDid.Method.Key.Tests/             # 22 tests
-│   ├── NetDid.Method.Peer.Tests/            # 25 tests
-│   ├── NetDid.Method.WebVh.Tests/           # 63 tests
+│   ├── NetDid.Core.Tests/                   # 292 unit tests
+│   ├── NetDid.Method.Key.Tests/             # 28 tests
+│   ├── NetDid.Method.Peer.Tests/            # 31 tests
+│   ├── NetDid.Method.WebVh.Tests/           # 70 tests
 │   ├── NetDid.Tests.W3CConformance/         # 173 W3C conformance tests
 │   └── NetDid.Extensions.DependencyInjection.Tests/  # 10 tests
 ├── samples/

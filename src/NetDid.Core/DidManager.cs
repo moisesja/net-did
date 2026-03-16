@@ -31,6 +31,8 @@ public sealed class DidManager : IDidManager, IDidResolver
 
     public Task<DidResolutionResult> ResolveAsync(string did, DidResolutionOptions? options = null, CancellationToken ct = default)
     {
+        if (!DidParser.IsValid(did))
+            return Task.FromResult(DidResolutionResult.InvalidDid(did));
         var method = DidParser.ExtractMethod(did);
         if (method is null || !_methods.TryGetValue(method, out var didMethod))
             return Task.FromResult(DidResolutionResult.MethodNotSupported(did));

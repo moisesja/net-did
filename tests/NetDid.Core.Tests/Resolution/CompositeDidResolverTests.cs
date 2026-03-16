@@ -79,7 +79,7 @@ public class CompositeDidResolverTests
     }
 
     [Fact]
-    public async Task ResolveAsync_InvalidDid_ReturnsMethodNotSupported()
+    public async Task ResolveAsync_InvalidDid_ReturnsInvalidDid()
     {
         var method = CreateMockMethod("key");
         var resolver = new CompositeDidResolver(new[] { method });
@@ -87,7 +87,7 @@ public class CompositeDidResolverTests
         var result = await resolver.ResolveAsync("not-a-did");
 
         result.DidDocument.Should().BeNull();
-        result.ResolutionMetadata.Error.Should().Be("methodNotSupported");
+        result.ResolutionMetadata.Error.Should().Be("invalidDid");
     }
 
     [Fact]

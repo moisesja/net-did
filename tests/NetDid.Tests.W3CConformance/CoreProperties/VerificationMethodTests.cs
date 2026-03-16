@@ -32,7 +32,7 @@ public class VerificationMethodTests
         var (_, doc) = await _factory.CreateDid(method);
 
         var allValid = doc.VerificationMethod?.All(vm =>
-            DidParser.ParseDidUrl(vm.Id) is not null) ?? true;
+            DidParser.IsValidDidReference(vm.Id)) ?? true;
         ConformanceReportSink.Record(method, "did-core-properties", "4", "4-7",
             "VM id conforms to DID URL syntax", allValid);
         allValid.Should().BeTrue();

@@ -1,3 +1,4 @@
+using System.Security.Cryptography;
 using Microsoft.IdentityModel.Tokens;
 using NetCid;
 using NetDid.Core.Crypto;
@@ -85,11 +86,11 @@ public static class JwkConverter
             };
             var x = Multibase.Decode("u" + jwk.X);
             var y = Multibase.Decode("u" + jwk.Y);
-            // Reconstruct uncompressed public key: 0x04 || x || y
-            var publicKey = new byte[1 + x.Length + y.Length];
-            publicKey[0] = 0x04;
+            // Reconstruct compressed SEC1 public key: 0x02/0x03 || x
+            var prefix = (y[^1] & 1) == 0 ? (byte)0x02 : (byte)0x03;
+            var publicKey = new byte[1 + x.Length];
+            publicKey[0] = prefix;
             x.CopyTo(publicKey, 1);
-            y.CopyTo(publicKey, 1 + x.Length);
             return (keyType, publicKey);
         }
 
@@ -108,22 +109,23 @@ public static class JwkConverter
 
     private static JsonWebKey CreateEcJwk(string crv, byte[] publicKey)
     {
-        // Public key should be in uncompressed format: 0x04 || x || y
-        // or raw x || y (without the 0x04 prefix)
         byte[] x, y;
 
-        if (publicKey.Length > 0 && publicKey[0] == 0x04)
+        if (publicKey.Length > 0 && (publicKey[0] == 0x02 || publicKey[0] == 0x03))
         {
+            // Compressed SEC1 point — decompress to get x, y coordinates
+            (x, y) = DecompressToCoordinates(crv, publicKey);
+        }
+        else if (publicKey.Length > 0 && publicKey[0] == 0x04)
+        {
+            // Uncompressed: 0x04 || x || y
             var coordLen = (publicKey.Length - 1) / 2;
             x = publicKey[1..(1 + coordLen)];
             y = publicKey[(1 + coordLen)..];
         }
         else
         {
-            // Assume raw x || y
-            var coordLen = publicKey.Length / 2;
-            x = publicKey[..coordLen];
-            y = publicKey[coordLen..];
+            throw new ArgumentException("Invalid EC public key format. Expected compressed (0x02/0x03) or uncompressed (0x04) SEC1 point.");
         }
 
         return new JsonWebKey
@@ -133,5 +135,20 @@ public static class JwkConverter
             X = Multibase.Encode(x, MultibaseEncoding.Base64Url, includePrefix: false),
             Y = Multibase.Encode(y, MultibaseEncoding.Base64Url, includePrefix: false)
         };
+    }
+
+    private static (byte[] X, byte[] Y) DecompressToCoordinates(string crv, byte[] compressedPoint)
+    {
+        if (crv == "secp256k1")
+            return DefaultCryptoProvider.DecompressSecp256k1Point(compressedPoint);
+
+        var curve = crv switch
+        {
+            "P-256" => ECCurve.NamedCurves.nistP256,
+            "P-384" => ECCurve.NamedCurves.nistP384,
+            _ => throw new ArgumentException($"Unsupported curve for decompression: {crv}")
+        };
+        var parameters = DefaultCryptoProvider.DecompressEcPoint(compressedPoint, curve);
+        return (parameters.Q.X!, parameters.Q.Y!);
     }
 }

@@ -28,7 +28,7 @@ internal sealed class Numalgo0Handler
             keyType = options.ExistingKey.KeyType;
             if (options.InceptionKeyType.HasValue && options.InceptionKeyType.Value != keyType)
                 throw new ArgumentException("ExistingKey.KeyType must match InceptionKeyType.");
-            publicKey = options.ExistingKey.PublicKey.ToArray();
+            publicKey = keyType.NormalizeToCompressed(options.ExistingKey.PublicKey.ToArray());
         }
         else
         {
@@ -48,13 +48,19 @@ internal sealed class Numalgo0Handler
         };
     }
 
-    public DidDocument Resolve(string did, string methodSpecificId)
+    public DidDocument? Resolve(string did, string methodSpecificId)
     {
         // methodSpecificId starts with '0', skip it to get the multibase portion
         var multibaseKey = methodSpecificId[1..];
         var decoded = Multibase.Decode(multibaseKey);
         var (codec, rawKey) = Multicodec.Decode(decoded);
         var keyType = KeyTypeExtensions.ToKeyType(codec);
+
+        if (!keyType.IsValidKeyLength(rawKey.Length))
+            return null;
+
+        if (!keyType.IsValidEcPoint(rawKey))
+            return null;
 
         return BuildDocument(did, keyType, rawKey, multibaseKey);
     }

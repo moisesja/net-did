@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.5.0] - Unreleased
+## [1.1.0] - 2026-03-15
 
 ### Added
 
@@ -13,11 +13,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`DidDocumentBuilder`**: Fluent API for constructing `DidDocument` instances with auto-set controller, verification methods, relationships, and services. Includes `VerificationMethodBuilder` and `ServiceBuilder`.
 - **`NetDid.Extensions.DependencyInjection`**: Microsoft DI integration package with `services.AddNetDid(builder => {...})` composition pattern. Supports `AddDidKey()`, `AddDidPeer()`, `AddDidWebVh()`, and `AddCaching()`.
 - **Logging support**: Optional `ILogger<T>` integration in `CompositeDidResolver`, `CachingDidResolver`, and `DidWebVhMethod` via `Microsoft.Extensions.Logging.Abstractions`.
+- **Witness artifact production** (#17): `DidWebVhCreateOptions`, `DidWebVhUpdateOptions`, and `DidWebVhDeactivateOptions` now accept `WitnessProofs` to emit `did-witness.json` artifacts during CRUD operations. Includes `WitnessValidator.SerializeWitnessFile` and `MergeWitnessProofs` for round-trip serialization and incremental merging.
+- **`serviceType` query parameter** (#29): `DefaultDidUrlDereferencer` supports `?serviceType=<type>` to filter services by type per W3C §7.2.
+- **`VerificationRelationship` dereferencing option** (#29): `DidUrlDereferencingOptions.VerificationRelationship` restricts fragment dereferencing to a specific relationship array (e.g., `authentication`, `assertionMethod`).
 
 ### Changed
 
 - **`IDidManager.CreateAsync`**: Method is now inferred from the options type via `DidCreateOptions.MethodName` instead of a separate `string method` parameter. Callers write `manager.CreateAsync(new DidKeyCreateOptions { ... })` instead of `manager.CreateAsync("key", new DidKeyCreateOptions { ... })`.
 - **Samples split into per-method projects**: `NetDid.Samples.DidKey`, `NetDid.Samples.DidPeer`, `NetDid.Samples.DidWebVh`, and `NetDid.Samples.DependencyInjection` replace the monolithic `NetDid.Samples` project.
+
+### Fixed
+
+- **Invalid DID misclassification** (#26): `DidManager` and `CompositeDidResolver` now return `invalidDid` for syntactically invalid DIDs instead of incorrectly returning `methodNotSupported`. Validation via `DidParser.IsValid` runs before method extraction.
+- **Service dereferencing algorithm** (#29): `DefaultDidUrlDereferencer` now returns a DID Document wrapper for service queries when `Accept` is not `text/uri-list` (previously returned the raw `Service` object). Service selection by `?service=` now matches both full DID URL IDs and fragment-only IDs. Endpoint sets (`ServiceEndpointValue.IsSet`) are handled for `text/uri-list` responses. URL construction uses `System.Uri` for RFC 3986 compliance.
+- **Witness validation spec compliance** (#15): Witness validation now checks all witnessed versions in the log chain, not just the final entry. Cumulative coverage rule implemented: a witness proof at version N satisfies all versions ≤ N, with deduplication by witness ID. Legacy single-object `did-witness.json` format is now rejected (only spec-compliant JSON array format accepted). Missing or malformed witness files correctly fail resolution when witness threshold > 0.
+- **did:peer:4 long-form encoding** (#25): Encoding now follows the current peer-DID spec — contextualizes the input document, prepends JSON multicodec, multibase-encodes the result, and computes the short-form hash from the encoded document.
+- **EC key encodings** (#27): `did:key` and `did:peer:0` now use compressed point encoding for P-256, P-384, and secp256k1 keys per the `did:key` specification. Malformed multicodec payloads are rejected during resolution instead of producing unusable verification methods.
+- **did:peer:2 identifiers** (#28): Verification methods now use spec-defined relative IDs (`#key-1`, `#key-2`) instead of absolute IDs. Service entries use the spec-defined `#service` / `#service-1` naming pattern. Explicit `service.id` values are preserved through round-trip.
 
 ### Removed
 
@@ -50,7 +62,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - **Entry hash chaining** (#14): Log entry hashes now include the previous entry's full `versionId` per the did:webvh spec, preventing history rewriting attacks.
-- **Witness validation security** (#15): Missing or malformed `did-witness.json` now correctly fails resolution when witness threshold > 0. Parser handles spec-compliant JSON array format and legacy single-object format.
+- **Witness validation security** (#15): Missing or malformed `did-witness.json` now correctly fails resolution when witness threshold > 0.
 - **DID binding during resolution** (#16): Resolver now verifies that the resolved document's `id` matches the requested DID, preventing wrong-SCID resolution attacks.
 - **Versioned resolution** (#20): Returns `notFound` when a requested `versionId` or `versionTime` doesn't match any entry (previously fell back to latest). Earlier valid versions can now be resolved even if later entries are corrupt via partial chain validation.
 - **Pre-rotation bypass** (#21): Updates under active pre-rotation now require `updateKeys` to be provided. Both the API and chain validator reject entries that omit key rotation when pre-rotation is enabled.

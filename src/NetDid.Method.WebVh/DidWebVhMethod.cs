@@ -110,6 +110,18 @@ public sealed class DidWebVhMethod : DidMethodBase
         var logContent = LogEntrySerializer.ToJsonLines([finalEntry]);
         var didJsonContent = DidWebCompatibility.GenerateDidJson(did, finalEntry.State);
 
+        var artifacts = new Dictionary<string, object>
+        {
+            ["did.jsonl"] = logContent,
+            ["did.json"] = didJsonContent
+        };
+
+        if (createOptions.WitnessProofs is { Count: > 0 })
+        {
+            var merged = WitnessValidator.MergeWitnessProofs(null, createOptions.WitnessProofs);
+            artifacts["did-witness.json"] = WitnessValidator.SerializeWitnessFile(merged);
+        }
+
         return new DidCreateResult
         {
             Did = didValue,
@@ -120,11 +132,7 @@ public sealed class DidWebVhMethod : DidMethodBase
                 VersionId = finalEntry.VersionId,
                 VersionTime = finalEntry.VersionTime
             },
-            Artifacts = new Dictionary<string, object>
-            {
-                ["did.jsonl"] = logContent,
-                ["did.json"] = didJsonContent
-            }
+            Artifacts = artifacts
         };
     }
 
@@ -154,7 +162,8 @@ public sealed class DidWebVhMethod : DidMethodBase
                 return DidResolutionResult.NotFound(did);
 
             // Validate the chain up to the target version
-            var effectiveParams = _chainValidator.ValidateChain(entries, targetIndex + 1);
+            var perEntryParams = _chainValidator.ValidateChainWithPerEntryParams(entries, targetIndex + 1);
+            var effectiveParams = perEntryParams[^1];
 
             var targetEntry = entries[targetIndex];
 
@@ -171,8 +180,9 @@ public sealed class DidWebVhMethod : DidMethodBase
                 };
             }
 
-            // Validate witnesses if configured
-            if (effectiveParams.Witness is { Threshold: > 0 })
+            // Validate witnesses for ALL entries that require it
+            bool anyEntryRequiresWitness = perEntryParams.Any(p => p.Witness is { Threshold: > 0 });
+            if (anyEntryRequiresWitness)
             {
                 var witnessUrl = DidUrlMapper.MapToWitnessUrl(did);
                 var witnessContent = await _httpClient.FetchWitnessFileAsync(witnessUrl, ct);
@@ -203,7 +213,7 @@ public sealed class DidWebVhMethod : DidMethodBase
                     };
                 }
 
-                if (!_witnessValidator.ValidateWitnesses(witnessFile, targetEntry, effectiveParams.Witness))
+                if (!_witnessValidator.ValidateAllWitnesses(witnessFile, entries, targetIndex, perEntryParams.ToList()))
                 {
                     return new DidResolutionResult
                     {
@@ -335,14 +345,25 @@ public sealed class DidWebVhMethod : DidMethodBase
         var allEntries = new List<LogEntry>(entries) { newEntry };
         var logContent = LogEntrySerializer.ToJsonLines(allEntries);
 
+        var updateArtifacts = new Dictionary<string, object>
+        {
+            ["did.jsonl"] = logContent,
+            ["did.json"] = DidWebCompatibility.GenerateDidJson(did, newDocument)
+        };
+
+        if (updateOptions.WitnessProofs is { Count: > 0 })
+        {
+            WitnessFile? existing = null;
+            if (updateOptions.CurrentWitnessContent is not null)
+                existing = WitnessValidator.ParseWitnessFile(updateOptions.CurrentWitnessContent);
+            var merged = WitnessValidator.MergeWitnessProofs(existing, updateOptions.WitnessProofs);
+            updateArtifacts["did-witness.json"] = WitnessValidator.SerializeWitnessFile(merged);
+        }
+
         return new DidUpdateResult
         {
             DidDocument = newDocument,
-            Artifacts = new Dictionary<string, object>
-            {
-                ["did.jsonl"] = logContent,
-                ["did.json"] = DidWebCompatibility.GenerateDidJson(did, newDocument)
-            }
+            Artifacts = updateArtifacts
         };
     }
 
@@ -413,13 +434,24 @@ public sealed class DidWebVhMethod : DidMethodBase
         var allEntries = new List<LogEntry>(entries) { deactivationEntry };
         var logContent = LogEntrySerializer.ToJsonLines(allEntries);
 
+        var deactivateArtifacts = new Dictionary<string, object>
+        {
+            ["did.jsonl"] = logContent
+        };
+
+        if (deactivateOptions.WitnessProofs is { Count: > 0 })
+        {
+            WitnessFile? existing = null;
+            if (deactivateOptions.CurrentWitnessContent is not null)
+                existing = WitnessValidator.ParseWitnessFile(deactivateOptions.CurrentWitnessContent);
+            var merged = WitnessValidator.MergeWitnessProofs(existing, deactivateOptions.WitnessProofs);
+            deactivateArtifacts["did-witness.json"] = WitnessValidator.SerializeWitnessFile(merged);
+        }
+
         return new DidDeactivateResult
         {
             Success = true,
-            Artifacts = new Dictionary<string, object>
-            {
-                ["did.jsonl"] = logContent
-            }
+            Artifacts = deactivateArtifacts
         };
     }
 
