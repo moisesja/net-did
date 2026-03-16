@@ -480,11 +480,11 @@ netdid/
 │   ├── NetDid.Method.WebVh/                 # did:webvh method (full CRUD)
 │   └── NetDid.Extensions.DependencyInjection/  # Microsoft DI integration
 ├── tests/
-│   ├── NetDid.Core.Tests/                   # 292 unit tests
+│   ├── NetDid.Core.Tests/                   # 305 unit tests
 │   ├── NetDid.Method.Key.Tests/             # 28 tests
 │   ├── NetDid.Method.Peer.Tests/            # 31 tests
 │   ├── NetDid.Method.WebVh.Tests/           # 70 tests
-│   ├── NetDid.Tests.W3CConformance/         # 173 W3C conformance tests
+│   ├── NetDid.Tests.W3CConformance/         # 175 W3C conformance tests
 │   └── NetDid.Extensions.DependencyInjection.Tests/  # 10 tests
 ├── samples/
 │   ├── NetDid.Samples.DidKey/               # did:key usage examples
@@ -525,6 +525,10 @@ NetDid is developed in four phases (see [NetDidPRD.md](NetDidPRD.md) for full de
 | **II** | `did:key` and `did:peer` method implementations | Complete |
 | **III** | `did:webvh` method implementation | Complete |
 | **IV** | `did:ethr` method implementation | Planned |
+
+## W3C Conformance
+
+See [w3c-conformance-report.md](w3c-conformance-report.md) for the full W3C DID Core conformance report across all implemented methods.
 
 ## Contributing
 

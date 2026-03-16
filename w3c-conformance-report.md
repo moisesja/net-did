@@ -1,14 +1,14 @@
 # W3C DID Core Conformance Report
 
-Generated: 2026-03-16T03:01:43Z
+Generated: 2026-03-16T03:41:30Z
 
 ## Summary
 
 | Method | Total | Passed | Failed |
 |--------|-------|--------|--------|
 | did:key | 57 | 57 | 0 |
-| did:peer | 66 | 66 | 0 |
-| did:webvh | 57 | 57 | 0 |
+| did:peer | 67 | 67 | 0 |
+| did:webvh | 58 | 58 | 0 |
 
 ## did-identifier (section 3.1)
 

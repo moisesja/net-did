@@ -441,6 +441,240 @@ public class DefaultDidUrlDereferencerTests
         result.DereferencingMetadata.Error.Should().Be("notFound");
     }
 
+    // --- Unsupported Accept returns representationNotSupported ---
+
+    [Theory]
+    [InlineData("text/plain")]
+    [InlineData("application/xml")]
+    [InlineData("text/html")]
+    public async Task DereferenceAsync_ServiceQuery_UnsupportedAccept_ReturnsRepresentationNotSupported(string accept)
+    {
+        var doc = CreateDocWithVmAndService();
+        SetupResolverSuccess(doc);
+
+        var result = await _dereferencer.DereferenceAsync(
+            "did:example:123?service=linked-domain",
+            new DidUrlDereferencingOptions { Accept = accept });
+
+        result.DereferencingMetadata.Error.Should().Be("representationNotSupported");
+    }
+
+    [Theory]
+    [InlineData("text/plain")]
+    [InlineData("application/xml")]
+    public async Task DereferenceAsync_ServiceTypeQuery_UnsupportedAccept_ReturnsRepresentationNotSupported(string accept)
+    {
+        var doc = CreateDocWithVmAndService();
+        SetupResolverSuccess(doc);
+
+        var result = await _dereferencer.DereferenceAsync(
+            "did:example:123?serviceType=LinkedDomains",
+            new DidUrlDereferencingOptions { Accept = accept });
+
+        result.DereferencingMetadata.Error.Should().Be("representationNotSupported");
+    }
+
+    [Theory]
+    [InlineData(DidContentTypes.JsonLd)]
+    [InlineData(DidContentTypes.Json)]
+    public async Task DereferenceAsync_ServiceQuery_DidDocumentAccept_Succeeds(string accept)
+    {
+        var doc = CreateDocWithVmAndService();
+        SetupResolverSuccess(doc);
+
+        var result = await _dereferencer.DereferenceAsync(
+            "did:example:123?service=linked-domain",
+            new DidUrlDereferencingOptions { Accept = accept });
+
+        result.DereferencingMetadata.Error.Should().BeNull();
+        result.ContentStream.Should().BeOfType<DidDocument>();
+    }
+
+    // --- Service ID normalization (relative ↔ absolute) ---
+
+    [Fact]
+    public async Task DereferenceAsync_ServiceQuery_RelativeServiceId_MatchesAbsoluteQuery()
+    {
+        // Service has relative ID "#svc", query uses absolute "did:example:123#svc"
+        var doc = new DidDocument
+        {
+            Id = new Did("did:example:123"),
+            Service =
+            [
+                new Service
+                {
+                    Id = "#svc",
+                    Type = "TestService",
+                    ServiceEndpoint = ServiceEndpointValue.FromUri("https://example.com")
+                }
+            ]
+        };
+        SetupResolverSuccess(doc);
+
+        var result = await _dereferencer.DereferenceAsync(
+            "did:example:123?service=did:example:123%23svc",
+            new DidUrlDereferencingOptions { Accept = "text/uri-list" });
+
+        result.DereferencingMetadata.ContentType.Should().Be("text/uri-list");
+        result.ContentStream.Should().BeOfType<string>();
+    }
+
+    [Fact]
+    public async Task DereferenceAsync_ServiceQuery_AbsoluteServiceId_MatchesRelativeQuery()
+    {
+        // Service has absolute ID, query uses fragment-only "svc"
+        var doc = new DidDocument
+        {
+            Id = new Did("did:example:123"),
+            Service =
+            [
+                new Service
+                {
+                    Id = "did:example:123#svc",
+                    Type = "TestService",
+                    ServiceEndpoint = ServiceEndpointValue.FromUri("https://example.com")
+                }
+            ]
+        };
+        SetupResolverSuccess(doc);
+
+        var result = await _dereferencer.DereferenceAsync(
+            "did:example:123?service=svc",
+            new DidUrlDereferencingOptions { Accept = "text/uri-list" });
+
+        result.DereferencingMetadata.ContentType.Should().Be("text/uri-list");
+        result.ContentStream.Should().BeOfType<string>();
+    }
+
+    [Fact]
+    public async Task DereferenceAsync_ServiceQuery_RelativeHashId_MatchesRelativeQuery()
+    {
+        // Service has relative ID "#svc", query uses fragment-only "svc"
+        var doc = new DidDocument
+        {
+            Id = new Did("did:example:123"),
+            Service =
+            [
+                new Service
+                {
+                    Id = "#svc",
+                    Type = "TestService",
+                    ServiceEndpoint = ServiceEndpointValue.FromUri("https://example.com")
+                }
+            ]
+        };
+        SetupResolverSuccess(doc);
+
+        var result = await _dereferencer.DereferenceAsync(
+            "did:example:123?service=svc",
+            new DidUrlDereferencingOptions { Accept = "text/uri-list" });
+
+        result.DereferencingMetadata.ContentType.Should().Be("text/uri-list");
+        result.ContentStream.Should().BeOfType<string>();
+    }
+
+    // --- serviceType + text/uri-list returns ALL matching services ---
+
+    [Fact]
+    public async Task DereferenceAsync_ServiceTypeQuery_UriList_ReturnsAllMatchingServiceUrls()
+    {
+        var doc = new DidDocument
+        {
+            Id = new Did("did:example:123"),
+            Service =
+            [
+                new Service
+                {
+                    Id = "did:example:123#svc-1",
+                    Type = "LinkedDomains",
+                    ServiceEndpoint = ServiceEndpointValue.FromUri("https://one.example.com")
+                },
+                new Service
+                {
+                    Id = "did:example:123#svc-2",
+                    Type = "LinkedDomains",
+                    ServiceEndpoint = ServiceEndpointValue.FromUri("https://two.example.com")
+                },
+                new Service
+                {
+                    Id = "did:example:123#other",
+                    Type = "OtherType",
+                    ServiceEndpoint = ServiceEndpointValue.FromUri("https://other.example.com")
+                }
+            ]
+        };
+        SetupResolverSuccess(doc);
+
+        var result = await _dereferencer.DereferenceAsync(
+            "did:example:123?serviceType=LinkedDomains",
+            new DidUrlDereferencingOptions { Accept = "text/uri-list" });
+
+        result.DereferencingMetadata.ContentType.Should().Be("text/uri-list");
+        var uriList = (string)result.ContentStream!;
+        uriList.Should().Contain("https://one.example.com/");
+        uriList.Should().Contain("https://two.example.com/");
+        uriList.Should().NotContain("https://other.example.com/");
+    }
+
+    // --- Fragment guard: endpoint URI with existing fragment ---
+
+    [Fact]
+    public async Task DereferenceAsync_ServiceQuery_EndpointWithFragment_DoesNotAppendDidFragment()
+    {
+        var doc = new DidDocument
+        {
+            Id = new Did("did:example:123"),
+            Service =
+            [
+                new Service
+                {
+                    Id = "did:example:123#svc",
+                    Type = "TestService",
+                    ServiceEndpoint = ServiceEndpointValue.FromUri("https://example.com/page#section")
+                }
+            ]
+        };
+        SetupResolverSuccess(doc);
+
+        // DID URL has fragment "extra", but endpoint already has "#section"
+        var result = await _dereferencer.DereferenceAsync(
+            "did:example:123?service=svc#extra",
+            new DidUrlDereferencingOptions { Accept = "text/uri-list" });
+
+        result.DereferencingMetadata.ContentType.Should().Be("text/uri-list");
+        var url = (string)result.ContentStream!;
+        // The endpoint's own fragment should be preserved, not replaced
+        url.Should().Contain("#section");
+        url.Should().NotContain("#extra");
+    }
+
+    [Fact]
+    public async Task DereferenceAsync_ServiceQuery_EndpointWithoutFragment_AppendsDidFragment()
+    {
+        var doc = new DidDocument
+        {
+            Id = new Did("did:example:123"),
+            Service =
+            [
+                new Service
+                {
+                    Id = "did:example:123#svc",
+                    Type = "TestService",
+                    ServiceEndpoint = ServiceEndpointValue.FromUri("https://example.com/page")
+                }
+            ]
+        };
+        SetupResolverSuccess(doc);
+
+        var result = await _dereferencer.DereferenceAsync(
+            "did:example:123?service=svc#extra",
+            new DidUrlDereferencingOptions { Accept = "text/uri-list" });
+
+        result.DereferencingMetadata.ContentType.Should().Be("text/uri-list");
+        var url = (string)result.ContentStream!;
+        url.Should().Contain("#extra");
+    }
+
     // --- Embedded verification method dereferencing ---
 
     [Fact]

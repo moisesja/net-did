@@ -55,15 +55,33 @@ public sealed class DefaultDidUrlDereferencer : IDidUrlDereferencer
             if (matchingServices.Count == 0)
                 return DidUrlDereferencingResult.Error("notFound");
 
-            // For text/uri-list, redirect to the first URI-type or set endpoint
+            // For text/uri-list, collect redirect URLs from ALL matching services
             if (accept == "text/uri-list")
             {
-                var redirectable = matchingServices.FirstOrDefault(s =>
-                    s.ServiceEndpoint.IsUri || s.ServiceEndpoint.IsSet);
-                if (redirectable is null)
+                var path = parsed.Path;
+                var relativeRef = queryParams.GetValueOrDefault("relativeRef");
+                var fragment = parsed.Fragment;
+                var allUris = new List<string>();
+
+                foreach (var svc in matchingServices)
+                {
+                    if (svc.ServiceEndpoint.IsUri)
+                        allUris.Add(ConstructServiceUrl(svc.ServiceEndpoint, path, relativeRef, fragment));
+                    else if (svc.ServiceEndpoint.IsSet)
+                        allUris.AddRange(svc.ServiceEndpoint.Set!
+                            .Where(ep => ep.IsUri)
+                            .Select(ep => ConstructServiceUrl(ep, path, relativeRef, fragment)));
+                }
+
+                if (allUris.Count == 0)
                     return DidUrlDereferencingResult.Error("notFound");
-                return BuildServiceResult(redirectable, doc, parsed, queryParams, accept);
+                return DidUrlDereferencingResult.ServiceEndpointRedirect(
+                    string.Join("\r\n", allUris));
             }
+
+            // Only DID document content types are valid for non-redirect results
+            if (!IsDidDocumentContentType(accept))
+                return DidUrlDereferencingResult.Error("representationNotSupported");
 
             // Return a DID Document containing the matched service(s)
             var filteredDoc = new DidDocument { Id = doc.Id, Service = matchingServices.ToList() };
@@ -123,7 +141,11 @@ public sealed class DefaultDidUrlDereferencer : IDidUrlDereferencer
             return DidUrlDereferencingResult.Error("notFound");
         }
 
-        // Default: return a DID Document containing the selected service
+        // Only DID document content types are valid for non-redirect results
+        if (!IsDidDocumentContentType(accept))
+            return DidUrlDereferencingResult.Error("representationNotSupported");
+
+        // Return a DID Document containing the selected service
         var filteredDoc = new DidDocument { Id = doc.Id, Service = [service] };
         return DidUrlDereferencingResult.Success(filteredDoc, accept);
     }
@@ -150,15 +172,31 @@ public sealed class DefaultDidUrlDereferencer : IDidUrlDereferencer
     {
         if (doc.Service is null) return null;
 
+        // Normalize the query value to an absolute URI using the document's id
+        var normalizedQuery = NormalizeServiceId(serviceId, doc.Id);
+
         return doc.Service.FirstOrDefault(s =>
         {
-            // Match against full service ID or fragment portion
-            if (s.Id == serviceId) return true;
-            var hashIndex = s.Id.IndexOf('#');
-            var fragment = hashIndex >= 0 ? s.Id[(hashIndex + 1)..] : s.Id;
-            return fragment == serviceId;
+            var normalizedSvcId = NormalizeServiceId(s.Id, doc.Id);
+            return normalizedSvcId == normalizedQuery;
         });
     }
+
+    /// <summary>
+    /// Resolves a service ID to an absolute URI. Relative references like "#svc"
+    /// are resolved against the DID base, producing "did:example:123#svc".
+    /// </summary>
+    private static string NormalizeServiceId(string id, string did)
+    {
+        if (id.StartsWith('#'))
+            return did + id;
+        if (!id.Contains(':'))
+            return did + "#" + id;
+        return id;
+    }
+
+    private static bool IsDidDocumentContentType(string accept)
+        => accept is DidContentTypes.JsonLd or DidContentTypes.Json;
 
     private static IReadOnlyList<Service> FindServicesByType(DidDocument doc, string serviceType)
     {
@@ -270,6 +308,8 @@ public sealed class DefaultDidUrlDereferencer : IDidUrlDereferencer
 
     /// <summary>
     /// Construct a service endpoint URL using RFC 3986 reference resolution.
+    /// If the service endpoint URI already contains a fragment, the DID URL
+    /// fragment is not appended (the endpoint's own fragment takes precedence).
     /// </summary>
     private static string ConstructServiceUrl(
         ServiceEndpointValue endpoint, string? path, string? relativeRef, string? fragment)
@@ -282,7 +322,9 @@ public sealed class DefaultDidUrlDereferencer : IDidUrlDereferencer
             relative += path;
         if (relativeRef is not null)
             relative += relativeRef;
-        if (fragment is not null)
+
+        // Only append the DID URL fragment if the base URI does not already have one
+        if (fragment is not null && string.IsNullOrEmpty(baseUri.Fragment))
             relative += "#" + fragment;
 
         if (string.IsNullOrEmpty(relative))
