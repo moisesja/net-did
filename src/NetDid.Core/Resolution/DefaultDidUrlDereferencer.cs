@@ -55,14 +55,28 @@ public sealed class DefaultDidUrlDereferencer : IDidUrlDereferencer
             if (matchingServices.Count == 0)
                 return DidUrlDereferencingResult.Error("notFound");
 
-            // For text/uri-list, redirect to the first URI-type or set endpoint
+            // For text/uri-list, collect redirect URLs from ALL matching services
             if (accept == "text/uri-list")
             {
-                var redirectable = matchingServices.FirstOrDefault(s =>
-                    s.ServiceEndpoint.IsUri || s.ServiceEndpoint.IsSet);
-                if (redirectable is null)
+                var path = parsed.Path;
+                var relativeRef = queryParams.GetValueOrDefault("relativeRef");
+                var fragment = parsed.Fragment;
+                var allUris = new List<string>();
+
+                foreach (var svc in matchingServices)
+                {
+                    if (svc.ServiceEndpoint.IsUri)
+                        allUris.Add(ConstructServiceUrl(svc.ServiceEndpoint, path, relativeRef, fragment));
+                    else if (svc.ServiceEndpoint.IsSet)
+                        allUris.AddRange(svc.ServiceEndpoint.Set!
+                            .Where(ep => ep.IsUri)
+                            .Select(ep => ConstructServiceUrl(ep, path, relativeRef, fragment)));
+                }
+
+                if (allUris.Count == 0)
                     return DidUrlDereferencingResult.Error("notFound");
-                return BuildServiceResult(redirectable, doc, parsed, queryParams, accept);
+                return DidUrlDereferencingResult.ServiceEndpointRedirect(
+                    string.Join("\r\n", allUris));
             }
 
             // Only DID document content types are valid for non-redirect results
@@ -294,6 +308,8 @@ public sealed class DefaultDidUrlDereferencer : IDidUrlDereferencer
 
     /// <summary>
     /// Construct a service endpoint URL using RFC 3986 reference resolution.
+    /// If the service endpoint URI already contains a fragment, the DID URL
+    /// fragment is not appended (the endpoint's own fragment takes precedence).
     /// </summary>
     private static string ConstructServiceUrl(
         ServiceEndpointValue endpoint, string? path, string? relativeRef, string? fragment)
@@ -306,7 +322,9 @@ public sealed class DefaultDidUrlDereferencer : IDidUrlDereferencer
             relative += path;
         if (relativeRef is not null)
             relative += relativeRef;
-        if (fragment is not null)
+
+        // Only append the DID URL fragment if the base URI does not already have one
+        if (fragment is not null && string.IsNullOrEmpty(baseUri.Fragment))
             relative += "#" + fragment;
 
         if (string.IsNullOrEmpty(relative))

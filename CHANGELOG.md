@@ -11,6 +11,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Service dereferencing: unsupported Accept** (#29): Unsupported `Accept` media types (e.g. `text/plain`) now return `representationNotSupported` instead of incorrectly returning a DID Document. Only `application/did+ld+json`, `application/did+json`, and `text/uri-list` are accepted.
 - **Service dereferencing: ID normalization** (#29): Service ID matching now normalizes relative and absolute URIs before comparison. A service with `id: "#svc"` correctly matches a query `?service=did:example:123%23svc`, and vice versa.
+- **Service dereferencing: serviceType URI list** (#29): `?serviceType=<type>` with `Accept: text/uri-list` now returns URLs from all matching services, not just the first one.
+- **Service dereferencing: fragment guard** (#29): `ConstructServiceUrl` no longer appends a DID URL fragment when the service endpoint URI already contains its own fragment.
 
 ## [1.1.0] - 2026-03-15
 

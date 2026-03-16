@@ -480,7 +480,7 @@ netdid/
 │   ├── NetDid.Method.WebVh/                 # did:webvh method (full CRUD)
 │   └── NetDid.Extensions.DependencyInjection/  # Microsoft DI integration
 ├── tests/
-│   ├── NetDid.Core.Tests/                   # 302 unit tests
+│   ├── NetDid.Core.Tests/                   # 305 unit tests
 │   ├── NetDid.Method.Key.Tests/             # 28 tests
 │   ├── NetDid.Method.Peer.Tests/            # 31 tests
 │   ├── NetDid.Method.WebVh.Tests/           # 70 tests

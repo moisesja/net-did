@@ -573,6 +573,108 @@ public class DefaultDidUrlDereferencerTests
         result.ContentStream.Should().BeOfType<string>();
     }
 
+    // --- serviceType + text/uri-list returns ALL matching services ---
+
+    [Fact]
+    public async Task DereferenceAsync_ServiceTypeQuery_UriList_ReturnsAllMatchingServiceUrls()
+    {
+        var doc = new DidDocument
+        {
+            Id = new Did("did:example:123"),
+            Service =
+            [
+                new Service
+                {
+                    Id = "did:example:123#svc-1",
+                    Type = "LinkedDomains",
+                    ServiceEndpoint = ServiceEndpointValue.FromUri("https://one.example.com")
+                },
+                new Service
+                {
+                    Id = "did:example:123#svc-2",
+                    Type = "LinkedDomains",
+                    ServiceEndpoint = ServiceEndpointValue.FromUri("https://two.example.com")
+                },
+                new Service
+                {
+                    Id = "did:example:123#other",
+                    Type = "OtherType",
+                    ServiceEndpoint = ServiceEndpointValue.FromUri("https://other.example.com")
+                }
+            ]
+        };
+        SetupResolverSuccess(doc);
+
+        var result = await _dereferencer.DereferenceAsync(
+            "did:example:123?serviceType=LinkedDomains",
+            new DidUrlDereferencingOptions { Accept = "text/uri-list" });
+
+        result.DereferencingMetadata.ContentType.Should().Be("text/uri-list");
+        var uriList = (string)result.ContentStream!;
+        uriList.Should().Contain("https://one.example.com/");
+        uriList.Should().Contain("https://two.example.com/");
+        uriList.Should().NotContain("https://other.example.com/");
+    }
+
+    // --- Fragment guard: endpoint URI with existing fragment ---
+
+    [Fact]
+    public async Task DereferenceAsync_ServiceQuery_EndpointWithFragment_DoesNotAppendDidFragment()
+    {
+        var doc = new DidDocument
+        {
+            Id = new Did("did:example:123"),
+            Service =
+            [
+                new Service
+                {
+                    Id = "did:example:123#svc",
+                    Type = "TestService",
+                    ServiceEndpoint = ServiceEndpointValue.FromUri("https://example.com/page#section")
+                }
+            ]
+        };
+        SetupResolverSuccess(doc);
+
+        // DID URL has fragment "extra", but endpoint already has "#section"
+        var result = await _dereferencer.DereferenceAsync(
+            "did:example:123?service=svc#extra",
+            new DidUrlDereferencingOptions { Accept = "text/uri-list" });
+
+        result.DereferencingMetadata.ContentType.Should().Be("text/uri-list");
+        var url = (string)result.ContentStream!;
+        // The endpoint's own fragment should be preserved, not replaced
+        url.Should().Contain("#section");
+        url.Should().NotContain("#extra");
+    }
+
+    [Fact]
+    public async Task DereferenceAsync_ServiceQuery_EndpointWithoutFragment_AppendsDidFragment()
+    {
+        var doc = new DidDocument
+        {
+            Id = new Did("did:example:123"),
+            Service =
+            [
+                new Service
+                {
+                    Id = "did:example:123#svc",
+                    Type = "TestService",
+                    ServiceEndpoint = ServiceEndpointValue.FromUri("https://example.com/page")
+                }
+            ]
+        };
+        SetupResolverSuccess(doc);
+
+        var result = await _dereferencer.DereferenceAsync(
+            "did:example:123?service=svc#extra",
+            new DidUrlDereferencingOptions { Accept = "text/uri-list" });
+
+        result.DereferencingMetadata.ContentType.Should().Be("text/uri-list");
+        var url = (string)result.ContentStream!;
+        url.Should().Contain("#extra");
+    }
+
     // --- Embedded verification method dereferencing ---
 
     [Fact]
