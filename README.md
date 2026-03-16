@@ -526,6 +526,10 @@ NetDid is developed in four phases (see [NetDidPRD.md](NetDidPRD.md) for full de
 | **III** | `did:webvh` method implementation | Complete |
 | **IV** | `did:ethr` method implementation | Planned |
 
+## W3C Conformance
+
+See [w3c-conformance-report.md](w3c-conformance-report.md) for the full W3C DID Core conformance report across all implemented methods.
+
 ## Contributing
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for setup instructions, code conventions, and how to add new DID methods or key types.
