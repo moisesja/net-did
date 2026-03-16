@@ -480,11 +480,11 @@ netdid/
 │   ├── NetDid.Method.WebVh/                 # did:webvh method (full CRUD)
 │   └── NetDid.Extensions.DependencyInjection/  # Microsoft DI integration
 ├── tests/
-│   ├── NetDid.Core.Tests/                   # 292 unit tests
+│   ├── NetDid.Core.Tests/                   # 302 unit tests
 │   ├── NetDid.Method.Key.Tests/             # 28 tests
 │   ├── NetDid.Method.Peer.Tests/            # 31 tests
 │   ├── NetDid.Method.WebVh.Tests/           # 70 tests
-│   ├── NetDid.Tests.W3CConformance/         # 173 W3C conformance tests
+│   ├── NetDid.Tests.W3CConformance/         # 175 W3C conformance tests
 │   └── NetDid.Extensions.DependencyInjection.Tests/  # 10 tests
 ├── samples/
 │   ├── NetDid.Samples.DidKey/               # did:key usage examples

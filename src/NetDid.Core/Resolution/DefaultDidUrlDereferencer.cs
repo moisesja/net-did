@@ -65,6 +65,10 @@ public sealed class DefaultDidUrlDereferencer : IDidUrlDereferencer
                 return BuildServiceResult(redirectable, doc, parsed, queryParams, accept);
             }
 
+            // Only DID document content types are valid for non-redirect results
+            if (!IsDidDocumentContentType(accept))
+                return DidUrlDereferencingResult.Error("representationNotSupported");
+
             // Return a DID Document containing the matched service(s)
             var filteredDoc = new DidDocument { Id = doc.Id, Service = matchingServices.ToList() };
             return DidUrlDereferencingResult.Success(filteredDoc, accept);
@@ -123,7 +127,11 @@ public sealed class DefaultDidUrlDereferencer : IDidUrlDereferencer
             return DidUrlDereferencingResult.Error("notFound");
         }
 
-        // Default: return a DID Document containing the selected service
+        // Only DID document content types are valid for non-redirect results
+        if (!IsDidDocumentContentType(accept))
+            return DidUrlDereferencingResult.Error("representationNotSupported");
+
+        // Return a DID Document containing the selected service
         var filteredDoc = new DidDocument { Id = doc.Id, Service = [service] };
         return DidUrlDereferencingResult.Success(filteredDoc, accept);
     }
@@ -150,15 +158,31 @@ public sealed class DefaultDidUrlDereferencer : IDidUrlDereferencer
     {
         if (doc.Service is null) return null;
 
+        // Normalize the query value to an absolute URI using the document's id
+        var normalizedQuery = NormalizeServiceId(serviceId, doc.Id);
+
         return doc.Service.FirstOrDefault(s =>
         {
-            // Match against full service ID or fragment portion
-            if (s.Id == serviceId) return true;
-            var hashIndex = s.Id.IndexOf('#');
-            var fragment = hashIndex >= 0 ? s.Id[(hashIndex + 1)..] : s.Id;
-            return fragment == serviceId;
+            var normalizedSvcId = NormalizeServiceId(s.Id, doc.Id);
+            return normalizedSvcId == normalizedQuery;
         });
     }
+
+    /// <summary>
+    /// Resolves a service ID to an absolute URI. Relative references like "#svc"
+    /// are resolved against the DID base, producing "did:example:123#svc".
+    /// </summary>
+    private static string NormalizeServiceId(string id, string did)
+    {
+        if (id.StartsWith('#'))
+            return did + id;
+        if (!id.Contains(':'))
+            return did + "#" + id;
+        return id;
+    }
+
+    private static bool IsDidDocumentContentType(string accept)
+        => accept is DidContentTypes.JsonLd or DidContentTypes.Json;
 
     private static IReadOnlyList<Service> FindServicesByType(DidDocument doc, string serviceType)
     {

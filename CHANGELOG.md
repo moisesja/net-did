@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.1] - 2026-03-15
+
+### Fixed
+
+- **Service dereferencing: unsupported Accept** (#29): Unsupported `Accept` media types (e.g. `text/plain`) now return `representationNotSupported` instead of incorrectly returning a DID Document. Only `application/did+ld+json`, `application/did+json`, and `text/uri-list` are accepted.
+- **Service dereferencing: ID normalization** (#29): Service ID matching now normalizes relative and absolute URIs before comparison. A service with `id: "#svc"` correctly matches a query `?service=did:example:123%23svc`, and vice versa.
+
 ## [1.1.0] - 2026-03-15
 
 ### Added
@@ -25,7 +32,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - **Invalid DID misclassification** (#26): `DidManager` and `CompositeDidResolver` now return `invalidDid` for syntactically invalid DIDs instead of incorrectly returning `methodNotSupported`. Validation via `DidParser.IsValid` runs before method extraction.
-- **Service dereferencing algorithm** (#29): `DefaultDidUrlDereferencer` now returns a DID Document wrapper for service queries when `Accept` is not `text/uri-list` (previously returned the raw `Service` object). Service selection by `?service=` now matches both full DID URL IDs and fragment-only IDs. Endpoint sets (`ServiceEndpointValue.IsSet`) are handled for `text/uri-list` responses. URL construction uses `System.Uri` for RFC 3986 compliance.
+- **Service dereferencing algorithm** (#29): `DefaultDidUrlDereferencer` now returns a DID Document wrapper for service queries when `Accept` is a DID document content type (previously returned the raw `Service` object). Unsupported `Accept` values return `representationNotSupported`. Service ID matching normalizes relative and absolute URIs before comparison (e.g. `#svc` matches `did:example:123#svc`). Endpoint sets (`ServiceEndpointValue.IsSet`) are handled for `text/uri-list` responses. URL construction uses `System.Uri` for RFC 3986 compliance.
 - **Witness validation spec compliance** (#15): Witness validation now checks all witnessed versions in the log chain, not just the final entry. Cumulative coverage rule implemented: a witness proof at version N satisfies all versions ≤ N, with deduplication by witness ID. Legacy single-object `did-witness.json` format is now rejected (only spec-compliant JSON array format accepted). Missing or malformed witness files correctly fail resolution when witness threshold > 0.
 - **did:peer:4 long-form encoding** (#25): Encoding now follows the current peer-DID spec — contextualizes the input document, prepends JSON multicodec, multibase-encodes the result, and computes the short-form hash from the encoded document.
 - **EC key encodings** (#27): `did:key` and `did:peer:0` now use compressed point encoding for P-256, P-384, and secp256k1 keys per the `did:key` specification. Malformed multicodec payloads are rejected during resolution instead of producing unusable verification methods.

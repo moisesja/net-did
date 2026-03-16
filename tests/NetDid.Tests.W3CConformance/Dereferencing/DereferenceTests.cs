@@ -155,6 +155,26 @@ public class DereferenceTests
 
     [Theory, MemberData(nameof(MethodsWithServices))]
     [Trait("W3CCategory", "did-url-dereferencing")]
+    public async Task ServiceQuery_UnsupportedAccept_ReturnsRepresentationNotSupported(string method)
+    {
+        var (did, doc) = await _factory.CreateDidWithServices(method);
+        var dereferencer = _factory.CreateDereferencer();
+
+        var svc = doc.Service![0];
+        var svcFragment = svc.Id.Contains('#') ? svc.Id[(svc.Id.IndexOf('#') + 1)..] : svc.Id;
+        var didUrl = $"{did}?service={svcFragment}";
+
+        var result = await dereferencer.DereferenceAsync(didUrl,
+            new DidUrlDereferencingOptions { Accept = "text/plain" });
+
+        var passed = result.DereferencingMetadata.Error == "representationNotSupported";
+        ConformanceReportSink.Record(method, "did-url-dereferencing", "7.2", "7.2-10",
+            "Unsupported Accept returns representationNotSupported", passed);
+        result.DereferencingMetadata.Error.Should().Be("representationNotSupported");
+    }
+
+    [Theory, MemberData(nameof(MethodsWithServices))]
+    [Trait("W3CCategory", "did-url-dereferencing")]
     public async Task ServiceFragment_ReturnsService(string method)
     {
         var (did, doc) = await _factory.CreateDidWithServices(method);
