@@ -71,7 +71,8 @@ internal sealed class WitnessValidator
 
     /// <summary>
     /// Validate witness proofs for all entries in the log chain up to the target index.
-    /// Each entry is validated against its effective witness config.
+    /// Per spec, a valid witness proof at version j satisfies the witness requirement
+    /// for all versions &lt;= j (cumulative coverage).
     /// </summary>
     public bool ValidateAllWitnesses(
         WitnessFile witnessFile,
@@ -85,11 +86,66 @@ internal sealed class WitnessValidator
             if (entryParams.Witness is not { Threshold: > 0 })
                 continue; // This entry does not require witnessing
 
-            if (!ValidateWitnesses(witnessFile, entries[i], entryParams.Witness))
+            if (!ValidateWitnessesWithCoverage(witnessFile, entries, i, upToIndex, entryParams.Witness))
                 return false;
         }
 
         return true;
+    }
+
+    /// <summary>
+    /// Validate witness coverage for a specific entry by checking proofs at this version
+    /// or any later version up to upToIndex. A later proof implies approval of all
+    /// prior entries. Each witness is counted only once (deduplication by witness ID).
+    /// </summary>
+    private bool ValidateWitnessesWithCoverage(
+        WitnessFile witnessFile,
+        IReadOnlyList<LogEntry> entries,
+        int entryIndex,
+        int upToIndex,
+        WitnessConfig witnessConfig)
+    {
+        if (witnessConfig.Threshold <= 0)
+            return true;
+
+        var totalWeight = 0;
+        var countedWitnessIds = new HashSet<string>();
+
+        // Check proofs from this version through the latest validated version
+        for (int j = entryIndex; j <= upToIndex; j++)
+        {
+            var proofEntry = witnessFile.Entries.FirstOrDefault(e => e.VersionId == entries[j].VersionId);
+            if (proofEntry is null)
+                continue;
+
+            // Verify proofs against the entry data they actually signed
+            var entryJson = LogEntrySerializer.SerializeWithoutProof(entries[j]);
+
+            foreach (var witnessProof in proofEntry.Proofs)
+            {
+                var witness = witnessConfig.Witnesses?.FirstOrDefault(w =>
+                    witnessProof.VerificationMethod.StartsWith(w.Id));
+
+                if (witness is null) continue;
+                if (!countedWitnessIds.Add(witness.Id)) continue; // Already counted
+
+                var proof = new DataIntegrityProof
+                {
+                    Cryptosuite = witnessProof.Cryptosuite,
+                    VerificationMethod = witnessProof.VerificationMethod,
+                    Created = DateTimeOffset.Parse(witnessProof.Created),
+                    ProofPurpose = witnessProof.ProofPurpose,
+                    ProofValue = witnessProof.ProofValue
+                };
+
+                if (_proofEngine.VerifyProof(entryJson, proof))
+                {
+                    totalWeight += witness.Weight;
+                }
+            }
+        }
+
+        return totalWeight >= witnessConfig.Threshold;
     }
 
     /// <summary>

@@ -835,6 +835,82 @@ public class DidWebVhMethodTests
         witnessFile.Should().BeNull();
     }
 
+    [Fact]
+    public async Task Issue15_LaterWitnessProofs_SatisfyEarlierVersions()
+    {
+        // Per spec: "for the current or any later published log entries"
+        // A witness proof at version 3 should satisfy the witness requirement
+        // for version 1, since witnessing version 3 implies approval of all prior entries.
+        var crypto = new DefaultCryptoProvider();
+        var proofEngine = new NetDid.Core.Crypto.DataIntegrity.DataIntegrityProofEngine(crypto);
+        var validator = new WitnessValidator(proofEngine);
+
+        // Create 3 log entries, all requiring witnessing
+        var witnessSigner = new KeyPairSigner(
+            new DefaultKeyGenerator().Generate(Core.Crypto.KeyType.Ed25519), crypto);
+        var witnessDidKey = $"did:key:{witnessSigner.MultibasePublicKey}";
+        var witnessVm = $"{witnessDidKey}#{witnessSigner.MultibasePublicKey}";
+
+        var witnessConfig = new WitnessConfig
+        {
+            Threshold = 1,
+            Witnesses = [new WitnessEntry { Id = witnessDidKey, Weight = 1 }]
+        };
+
+        // Simulate 3 log entries (only need data relevant to witness validation)
+        var entries = new List<LogEntry>();
+        var perEntryParams = new List<LogEntryParameters>();
+
+        for (int i = 0; i < 3; i++)
+        {
+            var entry = new LogEntry
+            {
+                VersionId = $"{i + 1}-zTestHash{i}",
+                VersionTime = DateTimeOffset.UtcNow.AddMinutes(i),
+                Parameters = new LogEntryParameters { Witness = witnessConfig },
+                State = new DidDocument { Id = new Did("did:example:test") }
+            };
+            entries.Add(entry);
+            perEntryParams.Add(new LogEntryParameters { Witness = witnessConfig });
+        }
+
+        // Create witness proofs ONLY for version 3
+        var entry3Json = LogEntrySerializer.SerializeWithoutProof(entries[2]);
+        var proof3 = await proofEngine.CreateProofAsync(
+            entry3Json, witnessSigner, "assertionMethod",
+            entries[2].VersionTime, CancellationToken.None);
+
+        var witnessFile = new WitnessFile
+        {
+            Entries =
+            [
+                new WitnessProofEntry
+                {
+                    VersionId = entries[2].VersionId, // Only version 3
+                    Proofs =
+                    [
+                        new DataIntegrityProofValue
+                        {
+                            Type = proof3.Type,
+                            Cryptosuite = proof3.Cryptosuite,
+                            VerificationMethod = proof3.VerificationMethod,
+                            Created = proof3.Created.ToString("yyyy-MM-ddTHH:mm:ssZ"),
+                            ProofPurpose = proof3.ProofPurpose,
+                            ProofValue = proof3.ProofValue
+                        }
+                    ]
+                }
+            ]
+        };
+
+        // Validate: version 1 and 2 require witnessing, only version 3 has proofs
+        // Per spec, version 3 proof covers versions 1, 2, and 3
+        var result = validator.ValidateAllWitnesses(
+            witnessFile, entries, upToIndex: 2, perEntryParams);
+
+        result.Should().BeTrue("later witness proofs should satisfy earlier version requirements");
+    }
+
     // ================================================================
     // ISSUE #16: DID BINDING DURING RESOLUTION
     // ================================================================
