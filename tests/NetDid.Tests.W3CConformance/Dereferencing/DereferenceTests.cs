@@ -62,7 +62,8 @@ public class DereferenceTests
         var svcFragment = svc.Id.Contains('#') ? svc.Id[(svc.Id.IndexOf('#') + 1)..] : svc.Id;
         var didUrl = $"{did}?service={svcFragment}";
 
-        var result = await dereferencer.DereferenceAsync(didUrl);
+        var uriListOptions = new DidUrlDereferencingOptions { Accept = "text/uri-list" };
+        var result = await dereferencer.DereferenceAsync(didUrl, uriListOptions);
 
         var passed = result.ContentStream is string;
         ConformanceReportSink.Record(method, "did-url-dereferencing", "7.2", "7.2-3",
@@ -81,7 +82,8 @@ public class DereferenceTests
         var svcFragment = svc.Id.Contains('#') ? svc.Id[(svc.Id.IndexOf('#') + 1)..] : svc.Id;
         var didUrl = $"{did}?service={svcFragment}&relativeRef=%2Fpath";
 
-        var result = await dereferencer.DereferenceAsync(didUrl);
+        var uriListOptions = new DidUrlDereferencingOptions { Accept = "text/uri-list" };
+        var result = await dereferencer.DereferenceAsync(didUrl, uriListOptions);
 
         var url = result.ContentStream as string;
         var passed = url is not null && url.Contains("/path");

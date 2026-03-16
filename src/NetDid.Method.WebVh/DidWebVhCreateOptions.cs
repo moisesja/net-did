@@ -1,5 +1,6 @@
 using NetDid.Core;
 using NetDid.Core.Model;
+using NetDid.Method.WebVh.Model;
 
 namespace NetDid.Method.WebVh;
 
@@ -37,4 +38,7 @@ public sealed record DidWebVhCreateOptions : DidCreateOptions
 
     /// <summary>Minimum total weight of witness proofs required.</summary>
     public int WitnessThreshold { get; init; } = 0;
+
+    /// <summary>Witness proofs to include in the did-witness.json artifact.</summary>
+    public IReadOnlyList<WitnessProofEntry>? WitnessProofs { get; init; }
 }

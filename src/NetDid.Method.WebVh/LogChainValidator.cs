@@ -33,16 +33,30 @@ internal sealed class LogChainValidator
     /// </summary>
     public LogEntryParameters ValidateChain(IReadOnlyList<LogEntry> entries, int upToCount)
     {
+        var perEntry = ValidateChainWithPerEntryParams(entries, upToCount);
+        return perEntry[^1];
+    }
+
+    /// <summary>
+    /// Validate the log chain and return the effective parameters at each entry.
+    /// Index 0 = genesis entry's effective params, etc.
+    /// Throws LogChainValidationException on failure.
+    /// </summary>
+    public IReadOnlyList<LogEntryParameters> ValidateChainWithPerEntryParams(
+        IReadOnlyList<LogEntry> entries, int upToCount)
+    {
         if (entries.Count == 0)
             throw new LogChainValidationException(0, "DID log is empty.");
 
         var count = Math.Min(upToCount, entries.Count);
+        var result = new List<LogEntryParameters>(count);
 
         // Validate genesis entry
         var genesis = entries[0];
         ValidateGenesisEntry(genesis);
 
         var effectiveParams = genesis.Parameters;
+        result.Add(effectiveParams);
 
         // Validate subsequent entries
         for (int i = 1; i < count; i++)
@@ -54,9 +68,10 @@ internal sealed class LogChainValidator
 
             // Merge parameters for the next iteration
             effectiveParams = current.Parameters.MergeWith(effectiveParams);
+            result.Add(effectiveParams);
         }
 
-        return effectiveParams;
+        return result;
     }
 
     private void ValidateGenesisEntry(LogEntry genesis)

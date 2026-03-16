@@ -36,20 +36,37 @@ public sealed class DefaultDidUrlDereferencer : IDidUrlDereferencer
         if (resolution.DidDocument is null)
             return DidUrlDereferencingResult.Error(resolution.ResolutionMetadata.Error ?? "notFound");
 
-        // Step 2: Service endpoint selection + URL construction (§7.2 service query)
+        // Step 2a: Service endpoint selection by service id (§7.2 service query)
         if (queryParams.TryGetValue("service", out var serviceId))
         {
             var service = FindServiceById(resolution.DidDocument, serviceId);
             if (service is null)
                 return DidUrlDereferencingResult.Error("notFound");
 
-            var serviceUrl = ConstructServiceUrl(
-                service.ServiceEndpoint,
-                parsed.Path,
-                queryParams.GetValueOrDefault("relativeRef"),
-                parsed.Fragment);
+            return BuildServiceResult(service, parsed, queryParams, accept);
+        }
 
-            return DidUrlDereferencingResult.ServiceEndpointRedirect(serviceUrl);
+        // Step 2b: Service endpoint selection by service type
+        if (queryParams.TryGetValue("serviceType", out var serviceType))
+        {
+            var matchingServices = FindServicesByType(resolution.DidDocument, serviceType);
+            if (matchingServices.Count == 0)
+                return DidUrlDereferencingResult.Error("notFound");
+
+            // For text/uri-list, redirect to the first URI-type endpoint
+            if (accept == "text/uri-list")
+            {
+                var uriService = matchingServices.FirstOrDefault(s => s.ServiceEndpoint.IsUri);
+                if (uriService is null)
+                    return DidUrlDereferencingResult.Error("notFound");
+                return BuildServiceResult(uriService, parsed, queryParams, accept);
+            }
+
+            // Otherwise return the matched service(s)
+            if (matchingServices.Count == 1)
+                return DidUrlDereferencingResult.Success(matchingServices[0], accept);
+
+            return DidUrlDereferencingResult.Success(matchingServices, accept);
         }
 
         // Step 3: Fragment-only → select resource from DID Document
@@ -69,6 +86,28 @@ public sealed class DefaultDidUrlDereferencer : IDidUrlDereferencer
         return DidUrlDereferencingResult.Success(
             resolution.DidDocument, accept,
             resolution.DocumentMetadata);
+    }
+
+    private static DidUrlDereferencingResult BuildServiceResult(
+        Service service, DidUrl parsed, Dictionary<string, string> queryParams, string accept)
+    {
+        // When Accept is text/uri-list and endpoint is a URI, return a redirect
+        if (accept == "text/uri-list")
+        {
+            if (!service.ServiceEndpoint.IsUri)
+                return DidUrlDereferencingResult.Error("notFound");
+
+            var serviceUrl = ConstructServiceUrl(
+                service.ServiceEndpoint,
+                parsed.Path,
+                queryParams.GetValueOrDefault("relativeRef"),
+                parsed.Fragment);
+
+            return DidUrlDereferencingResult.ServiceEndpointRedirect(serviceUrl);
+        }
+
+        // Default: return the service object itself
+        return DidUrlDereferencingResult.Success(service, accept);
     }
 
     private static Dictionary<string, string> ParseQueryString(string? query)
@@ -100,6 +139,12 @@ public sealed class DefaultDidUrlDereferencer : IDidUrlDereferencer
             var fragment = hashIndex >= 0 ? s.Id[(hashIndex + 1)..] : s.Id;
             return fragment == serviceId;
         });
+    }
+
+    private static IReadOnlyList<Service> FindServicesByType(DidDocument doc, string serviceType)
+    {
+        if (doc.Service is null) return [];
+        return doc.Service.Where(s => s.Type == serviceType).ToList();
     }
 
     private static object? FindByFragment(DidDocument doc, string fragment)
@@ -161,27 +206,28 @@ public sealed class DefaultDidUrlDereferencer : IDidUrlDereferencer
         return null;
     }
 
+    /// <summary>
+    /// Construct a service endpoint URL using RFC 3986 reference resolution.
+    /// </summary>
     private static string ConstructServiceUrl(
         ServiceEndpointValue endpoint, string? path, string? relativeRef, string? fragment)
     {
-        // Get the base service endpoint URI
-        var baseUrl = endpoint.IsUri ? endpoint.Uri! : throw new InvalidOperationException(
-            "Service endpoint must be a URI for URL construction.");
+        var baseUri = new Uri(endpoint.Uri!);
 
-        // Remove trailing slash from base URL for clean concatenation
-        baseUrl = baseUrl.TrimEnd('/');
-
-        var result = baseUrl;
-
+        // Build the relative reference from path, relativeRef, and fragment
+        var relative = string.Empty;
         if (path is not null)
-            result += path;
-
+            relative += path;
         if (relativeRef is not null)
-            result += relativeRef;
-
+            relative += relativeRef;
         if (fragment is not null)
-            result += "#" + fragment;
+            relative += "#" + fragment;
 
-        return result;
+        if (string.IsNullOrEmpty(relative))
+            return baseUri.ToString();
+
+        // Use System.Uri for RFC 3986 reference resolution
+        var resolved = new Uri(baseUri, relative);
+        return resolved.ToString();
     }
 }

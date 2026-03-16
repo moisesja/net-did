@@ -20,6 +20,12 @@ public sealed record DidWebVhUpdateOptions : DidUpdateOptions
 
     /// <summary>Parameter updates to apply. If null, parameters are unchanged.</summary>
     public DidWebVhParameterUpdates? ParameterUpdates { get; init; }
+
+    /// <summary>Witness proofs to include in the did-witness.json artifact.</summary>
+    public IReadOnlyList<WitnessProofEntry>? WitnessProofs { get; init; }
+
+    /// <summary>Existing did-witness.json content to merge with new proofs.</summary>
+    public byte[]? CurrentWitnessContent { get; init; }
 }
 
 /// <summary>

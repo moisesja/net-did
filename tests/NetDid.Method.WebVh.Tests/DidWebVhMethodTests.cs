@@ -810,9 +810,9 @@ public class DidWebVhMethodTests
     }
 
     [Fact]
-    public void Issue15_WitnessFileParser_HandlesLegacySingleObjectFormat()
+    public void Issue15_WitnessFileParser_RejectsLegacySingleObjectFormat()
     {
-        // Legacy format: single { versionId, proofs } object
+        // Legacy format: single { versionId, proofs } object — no longer accepted per spec
         var json = """
         {
             "versionId": "1-zTestScid",
@@ -832,9 +832,7 @@ public class DidWebVhMethodTests
         var witnessFile = WitnessValidator.ParseWitnessFile(
             System.Text.Encoding.UTF8.GetBytes(json));
 
-        witnessFile.Should().NotBeNull();
-        witnessFile!.Entries.Should().HaveCount(1);
-        witnessFile.Entries[0].VersionId.Should().Be("1-zTestScid");
+        witnessFile.Should().BeNull();
     }
 
     // ================================================================
@@ -1146,6 +1144,318 @@ public class DidWebVhMethodTests
         var resolveResult = await method.ResolveAsync(did);
         resolveResult.DidDocument.Should().NotBeNull();
         resolveResult.ResolutionMetadata.Error.Should().BeNull();
+    }
+
+    // ================================================================
+    // ISSUE #17: WITNESS ARTIFACT PRODUCTION
+    // ================================================================
+
+    [Fact]
+    public async Task Issue17_Create_WithWitnessProofs_ProducesWitnessArtifact()
+    {
+        var (method, _) = CreateMethod();
+        var signer = CreateEd25519Signer();
+
+        var witnessProofs = new List<WitnessProofEntry>
+        {
+            new()
+            {
+                VersionId = "1-zTestScid",
+                Proofs =
+                [
+                    new DataIntegrityProofValue
+                    {
+                        Type = "DataIntegrityProof",
+                        Cryptosuite = "eddsa-jcs-2022",
+                        VerificationMethod = "did:key:z6MkTest#z6MkTest",
+                        Created = "2026-01-01T00:00:00Z",
+                        ProofPurpose = "assertionMethod",
+                        ProofValue = "zTestProofValue"
+                    }
+                ]
+            }
+        };
+
+        var result = await method.CreateAsync(new DidWebVhCreateOptions
+        {
+            Domain = "example.com",
+            UpdateKey = signer,
+            WitnessDids = ["did:key:z6MkTest"],
+            WitnessThreshold = 1,
+            WitnessProofs = witnessProofs
+        });
+
+        result.Artifacts.Should().ContainKey("did-witness.json");
+        var witnessContent = (byte[])result.Artifacts!["did-witness.json"];
+        var witnessFile = WitnessValidator.ParseWitnessFile(witnessContent);
+        witnessFile.Should().NotBeNull();
+        witnessFile!.Entries.Should().HaveCount(1);
+        witnessFile.Entries[0].VersionId.Should().Be("1-zTestScid");
+        witnessFile.Entries[0].Proofs.Should().HaveCount(1);
+    }
+
+    [Fact]
+    public async Task Issue17_Create_WithoutWitnessProofs_OmitsWitnessArtifact()
+    {
+        var (method, _) = CreateMethod();
+        var signer = CreateEd25519Signer();
+
+        var result = await method.CreateAsync(new DidWebVhCreateOptions
+        {
+            Domain = "example.com",
+            UpdateKey = signer
+        });
+
+        result.Artifacts.Should().NotContainKey("did-witness.json");
+    }
+
+    [Fact]
+    public void Issue17_WitnessFile_SerializeRoundTrip()
+    {
+        var original = new WitnessFile
+        {
+            Entries =
+            [
+                new WitnessProofEntry
+                {
+                    VersionId = "1-zScid1",
+                    Proofs =
+                    [
+                        new DataIntegrityProofValue
+                        {
+                            Type = "DataIntegrityProof",
+                            Cryptosuite = "eddsa-jcs-2022",
+                            VerificationMethod = "did:key:z6MkA#z6MkA",
+                            Created = "2026-01-01T00:00:00Z",
+                            ProofPurpose = "assertionMethod",
+                            ProofValue = "zProof1"
+                        }
+                    ]
+                },
+                new WitnessProofEntry
+                {
+                    VersionId = "2-zHash2",
+                    Proofs =
+                    [
+                        new DataIntegrityProofValue
+                        {
+                            Type = "DataIntegrityProof",
+                            Cryptosuite = "eddsa-jcs-2022",
+                            VerificationMethod = "did:key:z6MkB#z6MkB",
+                            Created = "2026-02-01T00:00:00Z",
+                            ProofPurpose = "assertionMethod",
+                            ProofValue = "zProof2"
+                        }
+                    ]
+                }
+            ]
+        };
+
+        var serialized = WitnessValidator.SerializeWitnessFile(original);
+        var roundTripped = WitnessValidator.ParseWitnessFile(serialized);
+
+        roundTripped.Should().NotBeNull();
+        roundTripped!.Entries.Should().HaveCount(2);
+        roundTripped.Entries[0].VersionId.Should().Be("1-zScid1");
+        roundTripped.Entries[0].Proofs[0].ProofValue.Should().Be("zProof1");
+        roundTripped.Entries[1].VersionId.Should().Be("2-zHash2");
+        roundTripped.Entries[1].Proofs[0].ProofValue.Should().Be("zProof2");
+    }
+
+    [Fact]
+    public void Issue17_WitnessFile_MergeProofs()
+    {
+        var existing = new WitnessFile
+        {
+            Entries =
+            [
+                new WitnessProofEntry
+                {
+                    VersionId = "1-zScid1",
+                    Proofs =
+                    [
+                        new DataIntegrityProofValue
+                        {
+                            Type = "DataIntegrityProof",
+                            Cryptosuite = "eddsa-jcs-2022",
+                            VerificationMethod = "did:key:z6MkA#z6MkA",
+                            Created = "2026-01-01T00:00:00Z",
+                            ProofPurpose = "assertionMethod",
+                            ProofValue = "zOldProof"
+                        }
+                    ]
+                }
+            ]
+        };
+
+        var newEntries = new List<WitnessProofEntry>
+        {
+            // Replace existing entry for version 1
+            new()
+            {
+                VersionId = "1-zScid1",
+                Proofs =
+                [
+                    new DataIntegrityProofValue
+                    {
+                        Type = "DataIntegrityProof",
+                        Cryptosuite = "eddsa-jcs-2022",
+                        VerificationMethod = "did:key:z6MkA#z6MkA",
+                        Created = "2026-01-01T00:00:00Z",
+                        ProofPurpose = "assertionMethod",
+                        ProofValue = "zNewProof"
+                    }
+                ]
+            },
+            // Add new entry for version 2
+            new()
+            {
+                VersionId = "2-zHash2",
+                Proofs =
+                [
+                    new DataIntegrityProofValue
+                    {
+                        Type = "DataIntegrityProof",
+                        Cryptosuite = "eddsa-jcs-2022",
+                        VerificationMethod = "did:key:z6MkB#z6MkB",
+                        Created = "2026-02-01T00:00:00Z",
+                        ProofPurpose = "assertionMethod",
+                        ProofValue = "zProof2"
+                    }
+                ]
+            }
+        };
+
+        var merged = WitnessValidator.MergeWitnessProofs(existing, newEntries);
+
+        merged.Entries.Should().HaveCount(2);
+
+        // Version 1 should have the new proof (replaced)
+        var v1 = merged.Entries.First(e => e.VersionId == "1-zScid1");
+        v1.Proofs[0].ProofValue.Should().Be("zNewProof");
+
+        // Version 2 should be added
+        var v2 = merged.Entries.First(e => e.VersionId == "2-zHash2");
+        v2.Proofs[0].ProofValue.Should().Be("zProof2");
+    }
+
+    [Fact]
+    public async Task Issue17_Update_WithWitnessProofs_MergesWithExisting()
+    {
+        var (method, _) = CreateMethod();
+        var signer = CreateEd25519Signer();
+
+        // Create
+        var createResult = await method.CreateAsync(new DidWebVhCreateOptions
+        {
+            Domain = "example.com",
+            UpdateKey = signer,
+            WitnessDids = ["did:key:z6MkTest"],
+            WitnessThreshold = 1,
+            WitnessProofs =
+            [
+                new WitnessProofEntry
+                {
+                    VersionId = "1-zScid",
+                    Proofs =
+                    [
+                        new DataIntegrityProofValue
+                        {
+                            Type = "DataIntegrityProof",
+                            Cryptosuite = "eddsa-jcs-2022",
+                            VerificationMethod = "did:key:z6MkTest#z6MkTest",
+                            Created = "2026-01-01T00:00:00Z",
+                            ProofPurpose = "assertionMethod",
+                            ProofValue = "zCreateProof"
+                        }
+                    ]
+                }
+            ]
+        });
+
+        var logContent = (byte[])createResult.Artifacts!["did.jsonl"];
+        var existingWitness = (byte[])createResult.Artifacts["did-witness.json"];
+        var did = createResult.Did.Value;
+
+        // Update with new witness proofs, merging with existing
+        var updateResult = await method.UpdateAsync(did, new DidWebVhUpdateOptions
+        {
+            CurrentLogContent = logContent,
+            SigningKey = signer,
+            CurrentWitnessContent = existingWitness,
+            WitnessProofs =
+            [
+                new WitnessProofEntry
+                {
+                    VersionId = "2-zHash2",
+                    Proofs =
+                    [
+                        new DataIntegrityProofValue
+                        {
+                            Type = "DataIntegrityProof",
+                            Cryptosuite = "eddsa-jcs-2022",
+                            VerificationMethod = "did:key:z6MkTest#z6MkTest",
+                            Created = "2026-01-02T00:00:00Z",
+                            ProofPurpose = "assertionMethod",
+                            ProofValue = "zUpdateProof"
+                        }
+                    ]
+                }
+            ]
+        });
+
+        updateResult.Artifacts.Should().ContainKey("did-witness.json");
+        var mergedContent = (byte[])updateResult.Artifacts!["did-witness.json"];
+        var merged = WitnessValidator.ParseWitnessFile(mergedContent);
+        merged.Should().NotBeNull();
+        merged!.Entries.Should().HaveCount(2);
+    }
+
+    [Fact]
+    public async Task Issue17_Deactivate_WithWitnessProofs_ProducesWitnessArtifact()
+    {
+        var (method, _) = CreateMethod();
+        var signer = CreateEd25519Signer();
+
+        var createResult = await method.CreateAsync(new DidWebVhCreateOptions
+        {
+            Domain = "example.com",
+            UpdateKey = signer
+        });
+
+        var logContent = (byte[])createResult.Artifacts!["did.jsonl"];
+        var did = createResult.Did.Value;
+
+        var deactivateResult = await method.DeactivateAsync(did, new DidWebVhDeactivateOptions
+        {
+            CurrentLogContent = logContent,
+            SigningKey = signer,
+            WitnessProofs =
+            [
+                new WitnessProofEntry
+                {
+                    VersionId = "2-zDeactivate",
+                    Proofs =
+                    [
+                        new DataIntegrityProofValue
+                        {
+                            Type = "DataIntegrityProof",
+                            Cryptosuite = "eddsa-jcs-2022",
+                            VerificationMethod = "did:key:z6MkTest#z6MkTest",
+                            Created = "2026-03-01T00:00:00Z",
+                            ProofPurpose = "assertionMethod",
+                            ProofValue = "zDeactivateProof"
+                        }
+                    ]
+                }
+            ]
+        });
+
+        deactivateResult.Artifacts.Should().ContainKey("did-witness.json");
+        var witnessContent = (byte[])deactivateResult.Artifacts!["did-witness.json"];
+        var witnessFile = WitnessValidator.ParseWitnessFile(witnessContent);
+        witnessFile.Should().NotBeNull();
+        witnessFile!.Entries.Should().HaveCount(1);
     }
 
     [Fact]

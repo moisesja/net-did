@@ -1,3 +1,4 @@
+using System.Text.Json;
 using FluentAssertions;
 using NSubstitute;
 using NetDid.Core.Model;
@@ -105,15 +106,30 @@ public class DefaultDidUrlDereferencerTests
     }
 
     [Fact]
-    public async Task DereferenceAsync_ServiceQuery_ReturnsRedirect()
+    public async Task DereferenceAsync_ServiceQuery_WithUriListAccept_ReturnsRedirect()
+    {
+        var doc = CreateDocWithVmAndService();
+        SetupResolverSuccess(doc);
+
+        var result = await _dereferencer.DereferenceAsync(
+            "did:example:123?service=linked-domain",
+            new DidUrlDereferencingOptions { Accept = "text/uri-list" });
+
+        result.DereferencingMetadata.ContentType.Should().Be("text/uri-list");
+        result.ContentStream.Should().Be("https://example.com/");
+    }
+
+    [Fact]
+    public async Task DereferenceAsync_ServiceQuery_DefaultAccept_ReturnsServiceObject()
     {
         var doc = CreateDocWithVmAndService();
         SetupResolverSuccess(doc);
 
         var result = await _dereferencer.DereferenceAsync("did:example:123?service=linked-domain");
 
-        result.DereferencingMetadata.ContentType.Should().Be("text/uri-list");
-        result.ContentStream.Should().Be("https://example.com");
+        result.DereferencingMetadata.Error.Should().BeNull();
+        result.ContentStream.Should().BeOfType<Service>();
+        ((Service)result.ContentStream!).Type.Should().Be("LinkedDomains");
     }
 
     [Fact]
@@ -123,9 +139,112 @@ public class DefaultDidUrlDereferencerTests
         SetupResolverSuccess(doc);
 
         var result = await _dereferencer.DereferenceAsync(
-            "did:example:123?service=linked-domain&relativeRef=/path/to/resource");
+            "did:example:123?service=linked-domain&relativeRef=/path/to/resource",
+            new DidUrlDereferencingOptions { Accept = "text/uri-list" });
 
         result.ContentStream.Should().Be("https://example.com/path/to/resource");
+    }
+
+    [Fact]
+    public async Task DereferenceAsync_ServiceTypeQuery_ReturnsMatchingService()
+    {
+        var doc = CreateDocWithVmAndService();
+        SetupResolverSuccess(doc);
+
+        var result = await _dereferencer.DereferenceAsync("did:example:123?serviceType=LinkedDomains");
+
+        result.DereferencingMetadata.Error.Should().BeNull();
+        result.ContentStream.Should().BeOfType<Service>();
+        ((Service)result.ContentStream!).Type.Should().Be("LinkedDomains");
+    }
+
+    [Fact]
+    public async Task DereferenceAsync_ServiceTypeQuery_NotFound_ReturnsError()
+    {
+        var doc = CreateDocWithVmAndService();
+        SetupResolverSuccess(doc);
+
+        var result = await _dereferencer.DereferenceAsync("did:example:123?serviceType=NonExistentType");
+
+        result.DereferencingMetadata.Error.Should().Be("notFound");
+    }
+
+    [Fact]
+    public async Task DereferenceAsync_ServiceQuery_MapEndpoint_WhenUriListAccept_ReturnsError()
+    {
+        var doc = new DidDocument
+        {
+            Id = new Did("did:example:123"),
+            Service =
+            [
+                new Service
+                {
+                    Id = "did:example:123#map-svc",
+                    Type = "MapService",
+                    ServiceEndpoint = ServiceEndpointValue.FromMap(
+                        new Dictionary<string, JsonElement> { ["origin"] = JsonSerializer.SerializeToElement("https://example.com") })
+                }
+            ]
+        };
+        SetupResolverSuccess(doc);
+
+        var result = await _dereferencer.DereferenceAsync(
+            "did:example:123?service=map-svc",
+            new DidUrlDereferencingOptions { Accept = "text/uri-list" });
+
+        result.DereferencingMetadata.Error.Should().Be("notFound");
+    }
+
+    [Fact]
+    public async Task DereferenceAsync_ServiceQuery_MapEndpoint_DefaultAccept_ReturnsServiceObject()
+    {
+        var doc = new DidDocument
+        {
+            Id = new Did("did:example:123"),
+            Service =
+            [
+                new Service
+                {
+                    Id = "did:example:123#map-svc",
+                    Type = "MapService",
+                    ServiceEndpoint = ServiceEndpointValue.FromMap(
+                        new Dictionary<string, JsonElement> { ["origin"] = JsonSerializer.SerializeToElement("https://example.com") })
+                }
+            ]
+        };
+        SetupResolverSuccess(doc);
+
+        var result = await _dereferencer.DereferenceAsync("did:example:123?service=map-svc");
+
+        result.DereferencingMetadata.Error.Should().BeNull();
+        result.ContentStream.Should().BeOfType<Service>();
+    }
+
+    [Fact]
+    public async Task DereferenceAsync_ServiceQuery_RelativeRef_UsesRfc3986()
+    {
+        var doc = new DidDocument
+        {
+            Id = new Did("did:example:123"),
+            Service =
+            [
+                new Service
+                {
+                    Id = "did:example:123#svc",
+                    Type = "TestService",
+                    ServiceEndpoint = ServiceEndpointValue.FromUri("https://example.com/base/path/")
+                }
+            ]
+        };
+        SetupResolverSuccess(doc);
+
+        // RFC 3986: "../resource" relative to "https://example.com/base/path/" resolves to "https://example.com/base/resource"
+        var result = await _dereferencer.DereferenceAsync(
+            "did:example:123?service=svc&relativeRef=../resource",
+            new DidUrlDereferencingOptions { Accept = "text/uri-list" });
+
+        result.DereferencingMetadata.ContentType.Should().Be("text/uri-list");
+        result.ContentStream.Should().Be("https://example.com/base/resource");
     }
 
     [Fact]
