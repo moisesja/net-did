@@ -1,3 +1,4 @@
+using System.Text;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using NetDid.Core;
@@ -106,9 +107,9 @@ public sealed class DidWebVhMethod : DidMethodBase
         var did = didTemplate.Replace(ScidGenerator.SafePlaceholder, scid);
         var didValue = new Did(did);
 
-        // Generate artifacts
-        var logContent = LogEntrySerializer.ToJsonLines([finalEntry]);
-        var didJsonContent = DidWebCompatibility.GenerateDidJson(did, finalEntry.State);
+        // Generate artifacts (as UTF-8 strings for consumer convenience)
+        var logContent = Encoding.UTF8.GetString(LogEntrySerializer.ToJsonLines([finalEntry]));
+        var didJsonContent = Encoding.UTF8.GetString(DidWebCompatibility.GenerateDidJson(did, finalEntry.State));
 
         var artifacts = new Dictionary<string, object>
         {
@@ -119,7 +120,7 @@ public sealed class DidWebVhMethod : DidMethodBase
         if (createOptions.WitnessProofs is { Count: > 0 })
         {
             var merged = WitnessValidator.MergeWitnessProofs(null, createOptions.WitnessProofs);
-            artifacts["did-witness.json"] = WitnessValidator.SerializeWitnessFile(merged);
+            artifacts["did-witness.json"] = Encoding.UTF8.GetString(WitnessValidator.SerializeWitnessFile(merged));
         }
 
         return new DidCreateResult
@@ -341,14 +342,14 @@ public sealed class DidWebVhMethod : DidMethodBase
             }
         ];
 
-        // Build updated log
+        // Build updated log (as UTF-8 strings for consumer convenience)
         var allEntries = new List<LogEntry>(entries) { newEntry };
-        var logContent = LogEntrySerializer.ToJsonLines(allEntries);
+        var logContent = Encoding.UTF8.GetString(LogEntrySerializer.ToJsonLines(allEntries));
 
         var updateArtifacts = new Dictionary<string, object>
         {
             ["did.jsonl"] = logContent,
-            ["did.json"] = DidWebCompatibility.GenerateDidJson(did, newDocument)
+            ["did.json"] = Encoding.UTF8.GetString(DidWebCompatibility.GenerateDidJson(did, newDocument))
         };
 
         if (updateOptions.WitnessProofs is { Count: > 0 })
@@ -357,7 +358,7 @@ public sealed class DidWebVhMethod : DidMethodBase
             if (updateOptions.CurrentWitnessContent is not null)
                 existing = WitnessValidator.ParseWitnessFile(updateOptions.CurrentWitnessContent);
             var merged = WitnessValidator.MergeWitnessProofs(existing, updateOptions.WitnessProofs);
-            updateArtifacts["did-witness.json"] = WitnessValidator.SerializeWitnessFile(merged);
+            updateArtifacts["did-witness.json"] = Encoding.UTF8.GetString(WitnessValidator.SerializeWitnessFile(merged));
         }
 
         return new DidUpdateResult
@@ -430,9 +431,9 @@ public sealed class DidWebVhMethod : DidMethodBase
             }
         ];
 
-        // Build updated log
+        // Build updated log (as UTF-8 strings for consumer convenience)
         var allEntries = new List<LogEntry>(entries) { deactivationEntry };
-        var logContent = LogEntrySerializer.ToJsonLines(allEntries);
+        var logContent = Encoding.UTF8.GetString(LogEntrySerializer.ToJsonLines(allEntries));
 
         var deactivateArtifacts = new Dictionary<string, object>
         {
@@ -445,7 +446,7 @@ public sealed class DidWebVhMethod : DidMethodBase
             if (deactivateOptions.CurrentWitnessContent is not null)
                 existing = WitnessValidator.ParseWitnessFile(deactivateOptions.CurrentWitnessContent);
             var merged = WitnessValidator.MergeWitnessProofs(existing, deactivateOptions.WitnessProofs);
-            deactivateArtifacts["did-witness.json"] = WitnessValidator.SerializeWitnessFile(merged);
+            deactivateArtifacts["did-witness.json"] = Encoding.UTF8.GetString(WitnessValidator.SerializeWitnessFile(merged));
         }
 
         return new DidDeactivateResult

@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.2] - 2026-03-19
+
+### Fixed
+
+- **did:webvh artifact type mismatch** (#33): `DidWebVhMethod.CreateAsync`, `UpdateAsync`, and `DeactivateAsync` now return artifact values as `string` instead of `byte[]`. Consumers using `as string` or `(string)` casts on `Artifacts["did.jsonl"]` and `Artifacts["did.json"]` now receive the expected text content instead of `null`.
+
 ## [1.1.1] - 2026-03-15
 
 ### Fixed

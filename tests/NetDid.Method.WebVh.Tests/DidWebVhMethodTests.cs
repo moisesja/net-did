@@ -1,3 +1,4 @@
+using System.Text;
 using FluentAssertions;
 using NetDid.Core;
 using NetDid.Core.Crypto;
@@ -105,11 +106,11 @@ public class DidWebVhMethodTests
             UpdateKey = signer
         });
 
-        var logContent = (byte[])result.Artifacts!["did.jsonl"];
+        var logContent = (string)result.Artifacts!["did.jsonl"];
         logContent.Should().NotBeEmpty();
 
         // Parse the generated log
-        var entries = LogEntrySerializer.ParseJsonLines(logContent);
+        var entries = LogEntrySerializer.ParseJsonLines(Encoding.UTF8.GetBytes(logContent));
         entries.Should().HaveCount(1);
         entries[0].VersionNumber.Should().Be(1);
         entries[0].Parameters.Method.Should().Be("did:webvh:1.0");
@@ -148,8 +149,8 @@ public class DidWebVhMethodTests
             PreRotationCommitments = [commitment]
         });
 
-        var logContent = (byte[])result.Artifacts!["did.jsonl"];
-        var entries = LogEntrySerializer.ParseJsonLines(logContent);
+        var logContent = (string)result.Artifacts!["did.jsonl"];
+        var entries = LogEntrySerializer.ParseJsonLines(Encoding.UTF8.GetBytes(logContent));
         entries[0].Parameters.Prerotation.Should().BeTrue();
         entries[0].Parameters.NextKeyHashes.Should().Contain(commitment);
     }
@@ -172,9 +173,9 @@ public class DidWebVhMethodTests
         });
 
         // Set up mock HTTP response
-        var logContent = (byte[])createResult.Artifacts!["did.jsonl"];
+        var logContent = (string)createResult.Artifacts!["did.jsonl"];
         var logUrl = DidUrlMapper.MapToLogUrl(createResult.Did.Value);
-        httpClient.SetLogResponse(logUrl, logContent);
+        httpClient.SetLogResponse(logUrl, Encoding.UTF8.GetBytes(logContent));
 
         // Resolve
         var resolveResult = await method.ResolveAsync(createResult.Did.Value);
@@ -236,7 +237,7 @@ public class DidWebVhMethodTests
             UpdateKey = signer
         });
 
-        var logContent = (byte[])createResult.Artifacts!["did.jsonl"];
+        var logContent = (string)createResult.Artifacts!["did.jsonl"];
         var did = createResult.Did.Value;
 
         // Update — add a service
@@ -262,7 +263,7 @@ public class DidWebVhMethodTests
 
         var updateResult = await method.UpdateAsync(did, new DidWebVhUpdateOptions
         {
-            CurrentLogContent = logContent,
+            CurrentLogContent = Encoding.UTF8.GetBytes(logContent),
             SigningKey = signer,
             NewDocument = updatedDoc
         });
@@ -272,8 +273,8 @@ public class DidWebVhMethodTests
         updateResult.Artifacts.Should().ContainKey("did.jsonl");
 
         // Verify the updated log has 2 entries
-        var updatedLog = (byte[])updateResult.Artifacts!["did.jsonl"];
-        var entries = LogEntrySerializer.ParseJsonLines(updatedLog);
+        var updatedLog = (string)updateResult.Artifacts!["did.jsonl"];
+        var entries = LogEntrySerializer.ParseJsonLines(Encoding.UTF8.GetBytes(updatedLog));
         entries.Should().HaveCount(2);
         entries[1].VersionNumber.Should().Be(2);
     }
@@ -300,7 +301,7 @@ public class DidWebVhMethodTests
             ]
         });
 
-        var logContent = (byte[])createResult.Artifacts!["did.jsonl"];
+        var logContent = (string)createResult.Artifacts!["did.jsonl"];
         var did = createResult.Did.Value;
 
         // Update
@@ -319,16 +320,16 @@ public class DidWebVhMethodTests
 
         var updateResult = await method.UpdateAsync(did, new DidWebVhUpdateOptions
         {
-            CurrentLogContent = logContent,
+            CurrentLogContent = Encoding.UTF8.GetBytes(logContent),
             SigningKey = signer,
             NewDocument = updatedDoc
         });
 
-        var updatedLog = (byte[])updateResult.Artifacts!["did.jsonl"];
+        var updatedLog = (string)updateResult.Artifacts!["did.jsonl"];
 
         // Resolve
         var logUrl = DidUrlMapper.MapToLogUrl(did);
-        httpClient.SetLogResponse(logUrl, updatedLog);
+        httpClient.SetLogResponse(logUrl, Encoding.UTF8.GetBytes(updatedLog));
 
         var resolveResult = await method.ResolveAsync(did);
         resolveResult.DidDocument.Should().NotBeNull();
@@ -350,7 +351,7 @@ public class DidWebVhMethodTests
             UpdateKey = originalKey
         });
 
-        var logContent = (byte[])createResult.Artifacts!["did.jsonl"];
+        var logContent = (string)createResult.Artifacts!["did.jsonl"];
         var did = createResult.Did.Value;
 
         // Rotate to a new key
@@ -358,7 +359,7 @@ public class DidWebVhMethodTests
 
         var updateResult = await method.UpdateAsync(did, new DidWebVhUpdateOptions
         {
-            CurrentLogContent = logContent,
+            CurrentLogContent = Encoding.UTF8.GetBytes(logContent),
             SigningKey = originalKey,
             ParameterUpdates = new DidWebVhParameterUpdates
             {
@@ -366,8 +367,8 @@ public class DidWebVhMethodTests
             }
         });
 
-        var updatedLog = (byte[])updateResult.Artifacts!["did.jsonl"];
-        var entries = LogEntrySerializer.ParseJsonLines(updatedLog);
+        var updatedLog = (string)updateResult.Artifacts!["did.jsonl"];
+        var entries = LogEntrySerializer.ParseJsonLines(Encoding.UTF8.GetBytes(updatedLog));
 
         // The effective updateKeys should be the new key after the update
         entries[1].Parameters.UpdateKeys.Should().Contain(newKey.MultibasePublicKey);
@@ -386,12 +387,12 @@ public class DidWebVhMethodTests
             UpdateKey = authorizedKey
         });
 
-        var logContent = (byte[])createResult.Artifacts!["did.jsonl"];
+        var logContent = (string)createResult.Artifacts!["did.jsonl"];
         var did = createResult.Did.Value;
 
         var act = () => method.UpdateAsync(did, new DidWebVhUpdateOptions
         {
-            CurrentLogContent = logContent,
+            CurrentLogContent = Encoding.UTF8.GetBytes(logContent),
             SigningKey = unauthorizedKey
         });
 
@@ -415,13 +416,13 @@ public class DidWebVhMethodTests
             UpdateKey = signer
         });
 
-        var logContent = (byte[])createResult.Artifacts!["did.jsonl"];
+        var logContent = (string)createResult.Artifacts!["did.jsonl"];
         var did = createResult.Did.Value;
 
         // Deactivate
         var deactivateResult = await method.DeactivateAsync(did, new DidWebVhDeactivateOptions
         {
-            CurrentLogContent = logContent,
+            CurrentLogContent = Encoding.UTF8.GetBytes(logContent),
             SigningKey = signer
         });
 
@@ -429,9 +430,9 @@ public class DidWebVhMethodTests
         deactivateResult.Artifacts.Should().ContainKey("did.jsonl");
 
         // Resolve should show deactivated
-        var updatedLog = (byte[])deactivateResult.Artifacts!["did.jsonl"];
+        var updatedLog = (string)deactivateResult.Artifacts!["did.jsonl"];
         var logUrl = DidUrlMapper.MapToLogUrl(did);
-        httpClient.SetLogResponse(logUrl, updatedLog);
+        httpClient.SetLogResponse(logUrl, Encoding.UTF8.GetBytes(updatedLog));
 
         var resolveResult = await method.ResolveAsync(did);
         resolveResult.DidDocument.Should().NotBeNull();
@@ -451,12 +452,12 @@ public class DidWebVhMethodTests
             UpdateKey = authorizedKey
         });
 
-        var logContent = (byte[])createResult.Artifacts!["did.jsonl"];
+        var logContent = (string)createResult.Artifacts!["did.jsonl"];
         var did = createResult.Did.Value;
 
         var act = () => method.DeactivateAsync(did, new DidWebVhDeactivateOptions
         {
-            CurrentLogContent = logContent,
+            CurrentLogContent = Encoding.UTF8.GetBytes(logContent),
             SigningKey = unauthorizedKey
         });
 
@@ -484,7 +485,7 @@ public class DidWebVhMethodTests
             PreRotationCommitments = [commitment2]
         });
 
-        var logContent = (byte[])createResult.Artifacts!["did.jsonl"];
+        var logContent = (string)createResult.Artifacts!["did.jsonl"];
         var did = createResult.Did.Value;
 
         // Rotate to key2 — signed by key1 (the current authorized key),
@@ -494,7 +495,7 @@ public class DidWebVhMethodTests
 
         var updateResult = await method.UpdateAsync(did, new DidWebVhUpdateOptions
         {
-            CurrentLogContent = logContent,
+            CurrentLogContent = Encoding.UTF8.GetBytes(logContent),
             SigningKey = key1,
             ParameterUpdates = new DidWebVhParameterUpdates
             {
@@ -505,9 +506,9 @@ public class DidWebVhMethodTests
         });
 
         // Verify the update succeeded and is resolvable
-        var updatedLog = (byte[])updateResult.Artifacts!["did.jsonl"];
+        var updatedLog = (string)updateResult.Artifacts!["did.jsonl"];
         var logUrl = DidUrlMapper.MapToLogUrl(did);
-        httpClient.SetLogResponse(logUrl, updatedLog);
+        httpClient.SetLogResponse(logUrl, Encoding.UTF8.GetBytes(updatedLog));
 
         var resolveResult = await method.ResolveAsync(did);
         resolveResult.DidDocument.Should().NotBeNull();
@@ -567,40 +568,40 @@ public class DidWebVhMethodTests
             UpdateKey = signer
         });
 
-        var logContent = (byte[])createResult.Artifacts!["did.jsonl"];
+        var logContent = (string)createResult.Artifacts!["did.jsonl"];
         var did = createResult.Did.Value;
 
         // First update
         var update1 = await method.UpdateAsync(did, new DidWebVhUpdateOptions
         {
-            CurrentLogContent = logContent,
+            CurrentLogContent = Encoding.UTF8.GetBytes(logContent),
             SigningKey = signer
         });
-        logContent = (byte[])update1.Artifacts!["did.jsonl"];
+        logContent = (string)update1.Artifacts!["did.jsonl"];
 
         // Second update
         var update2 = await method.UpdateAsync(did, new DidWebVhUpdateOptions
         {
-            CurrentLogContent = logContent,
+            CurrentLogContent = Encoding.UTF8.GetBytes(logContent),
             SigningKey = signer
         });
-        logContent = (byte[])update2.Artifacts!["did.jsonl"];
+        logContent = (string)update2.Artifacts!["did.jsonl"];
 
         // Third update
         var update3 = await method.UpdateAsync(did, new DidWebVhUpdateOptions
         {
-            CurrentLogContent = logContent,
+            CurrentLogContent = Encoding.UTF8.GetBytes(logContent),
             SigningKey = signer
         });
-        logContent = (byte[])update3.Artifacts!["did.jsonl"];
+        logContent = (string)update3.Artifacts!["did.jsonl"];
 
         // Verify 4 entries total
-        var entries = LogEntrySerializer.ParseJsonLines(logContent);
+        var entries = LogEntrySerializer.ParseJsonLines(Encoding.UTF8.GetBytes(logContent));
         entries.Should().HaveCount(4);
 
         // Resolve should return the latest document
         var logUrl = DidUrlMapper.MapToLogUrl(did);
-        httpClient.SetLogResponse(logUrl, logContent);
+        httpClient.SetLogResponse(logUrl, Encoding.UTF8.GetBytes(logContent));
 
         var resolveResult = await method.ResolveAsync(did);
         resolveResult.DidDocument.Should().NotBeNull();
@@ -623,26 +624,26 @@ public class DidWebVhMethodTests
             UpdateKey = signer
         });
 
-        var logContent = (byte[])createResult.Artifacts!["did.jsonl"];
+        var logContent = (string)createResult.Artifacts!["did.jsonl"];
         var did = createResult.Did.Value;
 
         // First update
         var update1 = await method.UpdateAsync(did, new DidWebVhUpdateOptions
         {
-            CurrentLogContent = logContent,
+            CurrentLogContent = Encoding.UTF8.GetBytes(logContent),
             SigningKey = signer
         });
-        logContent = (byte[])update1.Artifacts!["did.jsonl"];
+        logContent = (string)update1.Artifacts!["did.jsonl"];
 
         // Second update
         var update2 = await method.UpdateAsync(did, new DidWebVhUpdateOptions
         {
-            CurrentLogContent = logContent,
+            CurrentLogContent = Encoding.UTF8.GetBytes(logContent),
             SigningKey = signer
         });
-        logContent = (byte[])update2.Artifacts!["did.jsonl"];
+        logContent = (string)update2.Artifacts!["did.jsonl"];
 
-        var entries = LogEntrySerializer.ParseJsonLines(logContent);
+        var entries = LogEntrySerializer.ParseJsonLines(Encoding.UTF8.GetBytes(logContent));
         entries.Should().HaveCount(3);
 
         // Verify each entry's hash is computed using the PREVIOUS entry's versionId
@@ -676,30 +677,29 @@ public class DidWebVhMethodTests
             Domain = "example.com",
             UpdateKey = signer
         });
-        var logContent = (byte[])createResult.Artifacts!["did.jsonl"];
+        var logContent = (string)createResult.Artifacts!["did.jsonl"];
         var did = createResult.Did.Value;
 
         var update1 = await method.UpdateAsync(did, new DidWebVhUpdateOptions
         {
-            CurrentLogContent = logContent,
+            CurrentLogContent = Encoding.UTF8.GetBytes(logContent),
             SigningKey = signer
         });
-        logContent = (byte[])update1.Artifacts!["did.jsonl"];
+        logContent = (string)update1.Artifacts!["did.jsonl"];
 
         var update2 = await method.UpdateAsync(did, new DidWebVhUpdateOptions
         {
-            CurrentLogContent = logContent,
+            CurrentLogContent = Encoding.UTF8.GetBytes(logContent),
             SigningKey = signer
         });
-        logContent = (byte[])update2.Artifacts!["did.jsonl"];
+        logContent = (string)update2.Artifacts!["did.jsonl"];
 
         // Tamper with version 2's versionId (simulate rewriting history)
-        var logText = System.Text.Encoding.UTF8.GetString(logContent);
-        var lines = logText.Split('\n', StringSplitOptions.RemoveEmptyEntries);
+        var lines = logContent.Split('\n', StringSplitOptions.RemoveEmptyEntries);
         lines.Should().HaveCount(3);
 
         // Parse entry 2 and change its entry hash
-        var entries = LogEntrySerializer.ParseJsonLines(logContent);
+        var entries = LogEntrySerializer.ParseJsonLines(Encoding.UTF8.GetBytes(logContent));
         var originalV2Hash = entries[1].EntryHash;
         var tamperedLine = lines[1].Replace(originalV2Hash, "zTamperedHash12345");
         lines[1] = tamperedLine;
@@ -732,10 +732,10 @@ public class DidWebVhMethodTests
             WitnessThreshold = 1
         });
 
-        var logContent = (byte[])createResult.Artifacts!["did.jsonl"];
+        var logContent = (string)createResult.Artifacts!["did.jsonl"];
         var did = createResult.Did.Value;
         var logUrl = DidUrlMapper.MapToLogUrl(did);
-        httpClient.SetLogResponse(logUrl, logContent);
+        httpClient.SetLogResponse(logUrl, Encoding.UTF8.GetBytes(logContent));
         // Intentionally NOT setting witness response
 
         var resolveResult = await method.ResolveAsync(did);
@@ -758,10 +758,10 @@ public class DidWebVhMethodTests
             WitnessThreshold = 1
         });
 
-        var logContent = (byte[])createResult.Artifacts!["did.jsonl"];
+        var logContent = (string)createResult.Artifacts!["did.jsonl"];
         var did = createResult.Did.Value;
         var logUrl = DidUrlMapper.MapToLogUrl(did);
-        httpClient.SetLogResponse(logUrl, logContent);
+        httpClient.SetLogResponse(logUrl, Encoding.UTF8.GetBytes(logContent));
 
         // Set malformed witness file
         var witnessUrl = DidUrlMapper.MapToWitnessUrl(did);
@@ -928,12 +928,12 @@ public class DidWebVhMethodTests
             UpdateKey = signer
         });
 
-        var logContent = (byte[])createResult.Artifacts!["did.jsonl"];
+        var logContent = (string)createResult.Artifacts!["did.jsonl"];
         var realDid = createResult.Did.Value;
 
         // Host the log at the correct URL
         var logUrl = DidUrlMapper.MapToLogUrl(realDid);
-        httpClient.SetLogResponse(logUrl, logContent);
+        httpClient.SetLogResponse(logUrl, Encoding.UTF8.GetBytes(logContent));
 
         // Resolve with a DIFFERENT SCID — same domain, wrong SCID
         // Both DIDs map to the same URL, but the document inside has the real DID
@@ -943,7 +943,7 @@ public class DidWebVhMethodTests
 
         // The wrong SCID maps to the same URL, so the HTTP client returns the same log
         var wrongLogUrl = DidUrlMapper.MapToLogUrl(wrongDid);
-        httpClient.SetLogResponse(wrongLogUrl, logContent);
+        httpClient.SetLogResponse(wrongLogUrl, Encoding.UTF8.GetBytes(logContent));
 
         var resolveResult = await method.ResolveAsync(wrongDid);
         resolveResult.DidDocument.Should().BeNull();
@@ -966,10 +966,10 @@ public class DidWebVhMethodTests
             UpdateKey = signer
         });
 
-        var logContent = (byte[])createResult.Artifacts!["did.jsonl"];
+        var logContent = (string)createResult.Artifacts!["did.jsonl"];
         var did = createResult.Did.Value;
         var logUrl = DidUrlMapper.MapToLogUrl(did);
-        httpClient.SetLogResponse(logUrl, logContent);
+        httpClient.SetLogResponse(logUrl, Encoding.UTF8.GetBytes(logContent));
 
         var resolveResult = await method.ResolveAsync(did);
 
@@ -1011,10 +1011,10 @@ public class DidWebVhMethodTests
             UpdateKey = signer
         });
 
-        var logContent = (byte[])createResult.Artifacts!["did.jsonl"];
+        var logContent = (string)createResult.Artifacts!["did.jsonl"];
         var did = createResult.Did.Value;
         var logUrl = DidUrlMapper.MapToLogUrl(did);
-        httpClient.SetLogResponse(logUrl, logContent);
+        httpClient.SetLogResponse(logUrl, Encoding.UTF8.GetBytes(logContent));
 
         var resolveResult = await method.ResolveAsync(did, new DidResolutionOptions
         {
@@ -1037,10 +1037,10 @@ public class DidWebVhMethodTests
             UpdateKey = signer
         });
 
-        var logContent = (byte[])createResult.Artifacts!["did.jsonl"];
+        var logContent = (string)createResult.Artifacts!["did.jsonl"];
         var did = createResult.Did.Value;
         var logUrl = DidUrlMapper.MapToLogUrl(did);
-        httpClient.SetLogResponse(logUrl, logContent);
+        httpClient.SetLogResponse(logUrl, Encoding.UTF8.GetBytes(logContent));
 
         // Request a time far in the past — no entry should exist
         var resolveResult = await method.ResolveAsync(did, new DidResolutionOptions
@@ -1064,21 +1064,21 @@ public class DidWebVhMethodTests
             Domain = "example.com",
             UpdateKey = signer
         });
-        var logContent = (byte[])createResult.Artifacts!["did.jsonl"];
+        var logContent = (string)createResult.Artifacts!["did.jsonl"];
         var did = createResult.Did.Value;
 
         var updateResult = await method.UpdateAsync(did, new DidWebVhUpdateOptions
         {
-            CurrentLogContent = logContent,
+            CurrentLogContent = Encoding.UTF8.GetBytes(logContent),
             SigningKey = signer
         });
-        logContent = (byte[])updateResult.Artifacts!["did.jsonl"];
+        logContent = (string)updateResult.Artifacts!["did.jsonl"];
 
-        var entries = LogEntrySerializer.ParseJsonLines(logContent);
+        var entries = LogEntrySerializer.ParseJsonLines(Encoding.UTF8.GetBytes(logContent));
         var v1VersionId = entries[0].VersionId;
 
         var logUrl = DidUrlMapper.MapToLogUrl(did);
-        httpClient.SetLogResponse(logUrl, logContent);
+        httpClient.SetLogResponse(logUrl, Encoding.UTF8.GetBytes(logContent));
 
         // Request version 1 specifically
         var resolveResult = await method.ResolveAsync(did, new DidResolutionOptions
@@ -1102,22 +1102,21 @@ public class DidWebVhMethodTests
             Domain = "example.com",
             UpdateKey = signer
         });
-        var logContent = (byte[])createResult.Artifacts!["did.jsonl"];
+        var logContent = (string)createResult.Artifacts!["did.jsonl"];
         var did = createResult.Did.Value;
 
         var updateResult = await method.UpdateAsync(did, new DidWebVhUpdateOptions
         {
-            CurrentLogContent = logContent,
+            CurrentLogContent = Encoding.UTF8.GetBytes(logContent),
             SigningKey = signer
         });
-        logContent = (byte[])updateResult.Artifacts!["did.jsonl"];
+        logContent = (string)updateResult.Artifacts!["did.jsonl"];
 
-        var entries = LogEntrySerializer.ParseJsonLines(logContent);
+        var entries = LogEntrySerializer.ParseJsonLines(Encoding.UTF8.GetBytes(logContent));
         var v1VersionId = entries[0].VersionId;
 
         // Corrupt version 2's entry hash
-        var logText = System.Text.Encoding.UTF8.GetString(logContent);
-        var lines = logText.Split('\n', StringSplitOptions.RemoveEmptyEntries);
+        var lines = logContent.Split('\n', StringSplitOptions.RemoveEmptyEntries);
         var v2Hash = entries[1].EntryHash;
         lines[1] = lines[1].Replace(v2Hash, "zCorruptedHashValue");
         var corruptedLog = System.Text.Encoding.UTF8.GetBytes(string.Join("\n", lines));
@@ -1156,13 +1155,13 @@ public class DidWebVhMethodTests
             PreRotationCommitments = [commitment2]
         });
 
-        var logContent = (byte[])createResult.Artifacts!["did.jsonl"];
+        var logContent = (string)createResult.Artifacts!["did.jsonl"];
         var did = createResult.Did.Value;
 
         // Try to update with TTL change only — no updateKeys
         var act = () => method.UpdateAsync(did, new DidWebVhUpdateOptions
         {
-            CurrentLogContent = logContent,
+            CurrentLogContent = Encoding.UTF8.GetBytes(logContent),
             SigningKey = key1,
             ParameterUpdates = new DidWebVhParameterUpdates
             {
@@ -1190,7 +1189,7 @@ public class DidWebVhMethodTests
             PreRotationCommitments = [commitment2]
         });
 
-        var logContent = (byte[])createResult.Artifacts!["did.jsonl"];
+        var logContent = (string)createResult.Artifacts!["did.jsonl"];
         var did = createResult.Did.Value;
 
         // Update with both TTL change and key rotation — should succeed
@@ -1199,7 +1198,7 @@ public class DidWebVhMethodTests
 
         var updateResult = await method.UpdateAsync(did, new DidWebVhUpdateOptions
         {
-            CurrentLogContent = logContent,
+            CurrentLogContent = Encoding.UTF8.GetBytes(logContent),
             SigningKey = key1,
             ParameterUpdates = new DidWebVhParameterUpdates
             {
@@ -1213,9 +1212,9 @@ public class DidWebVhMethodTests
         updateResult.DidDocument.Should().NotBeNull();
 
         // Verify it resolves
-        var updatedLog = (byte[])updateResult.Artifacts!["did.jsonl"];
+        var updatedLog = (string)updateResult.Artifacts!["did.jsonl"];
         var logUrl = DidUrlMapper.MapToLogUrl(did);
-        httpClient.SetLogResponse(logUrl, updatedLog);
+        httpClient.SetLogResponse(logUrl, Encoding.UTF8.GetBytes(updatedLog));
 
         var resolveResult = await method.ResolveAsync(did);
         resolveResult.DidDocument.Should().NotBeNull();
@@ -1262,8 +1261,8 @@ public class DidWebVhMethodTests
         });
 
         result.Artifacts.Should().ContainKey("did-witness.json");
-        var witnessContent = (byte[])result.Artifacts!["did-witness.json"];
-        var witnessFile = WitnessValidator.ParseWitnessFile(witnessContent);
+        var witnessContent = (string)result.Artifacts!["did-witness.json"];
+        var witnessFile = WitnessValidator.ParseWitnessFile(Encoding.UTF8.GetBytes(witnessContent));
         witnessFile.Should().NotBeNull();
         witnessFile!.Entries.Should().HaveCount(1);
         witnessFile.Entries[0].VersionId.Should().Be("1-zTestScid");
@@ -1449,16 +1448,16 @@ public class DidWebVhMethodTests
             ]
         });
 
-        var logContent = (byte[])createResult.Artifacts!["did.jsonl"];
-        var existingWitness = (byte[])createResult.Artifacts["did-witness.json"];
+        var logContent = (string)createResult.Artifacts!["did.jsonl"];
+        var existingWitness = (string)createResult.Artifacts["did-witness.json"];
         var did = createResult.Did.Value;
 
         // Update with new witness proofs, merging with existing
         var updateResult = await method.UpdateAsync(did, new DidWebVhUpdateOptions
         {
-            CurrentLogContent = logContent,
+            CurrentLogContent = Encoding.UTF8.GetBytes(logContent),
             SigningKey = signer,
-            CurrentWitnessContent = existingWitness,
+            CurrentWitnessContent = Encoding.UTF8.GetBytes(existingWitness),
             WitnessProofs =
             [
                 new WitnessProofEntry
@@ -1481,8 +1480,8 @@ public class DidWebVhMethodTests
         });
 
         updateResult.Artifacts.Should().ContainKey("did-witness.json");
-        var mergedContent = (byte[])updateResult.Artifacts!["did-witness.json"];
-        var merged = WitnessValidator.ParseWitnessFile(mergedContent);
+        var mergedContent = (string)updateResult.Artifacts!["did-witness.json"];
+        var merged = WitnessValidator.ParseWitnessFile(Encoding.UTF8.GetBytes(mergedContent));
         merged.Should().NotBeNull();
         merged!.Entries.Should().HaveCount(2);
     }
@@ -1499,12 +1498,12 @@ public class DidWebVhMethodTests
             UpdateKey = signer
         });
 
-        var logContent = (byte[])createResult.Artifacts!["did.jsonl"];
+        var logContent = (string)createResult.Artifacts!["did.jsonl"];
         var did = createResult.Did.Value;
 
         var deactivateResult = await method.DeactivateAsync(did, new DidWebVhDeactivateOptions
         {
-            CurrentLogContent = logContent,
+            CurrentLogContent = Encoding.UTF8.GetBytes(logContent),
             SigningKey = signer,
             WitnessProofs =
             [
@@ -1528,8 +1527,8 @@ public class DidWebVhMethodTests
         });
 
         deactivateResult.Artifacts.Should().ContainKey("did-witness.json");
-        var witnessContent = (byte[])deactivateResult.Artifacts!["did-witness.json"];
-        var witnessFile = WitnessValidator.ParseWitnessFile(witnessContent);
+        var witnessContent = (string)deactivateResult.Artifacts!["did-witness.json"];
+        var witnessFile = WitnessValidator.ParseWitnessFile(Encoding.UTF8.GetBytes(witnessContent));
         witnessFile.Should().NotBeNull();
         witnessFile!.Entries.Should().HaveCount(1);
     }
@@ -1550,7 +1549,7 @@ public class DidWebVhMethodTests
             PreRotationCommitments = [commitment2]
         });
 
-        var logContent = (byte[])createResult.Artifacts!["did.jsonl"];
+        var logContent = (string)createResult.Artifacts!["did.jsonl"];
         var did = createResult.Did.Value;
 
         // Manually construct an update entry WITHOUT updateKeys to bypass the API check
@@ -1561,7 +1560,7 @@ public class DidWebVhMethodTests
         // Proper update with key rotation
         var updateResult = await method.UpdateAsync(did, new DidWebVhUpdateOptions
         {
-            CurrentLogContent = logContent,
+            CurrentLogContent = Encoding.UTF8.GetBytes(logContent),
             SigningKey = key1,
             ParameterUpdates = new DidWebVhParameterUpdates
             {
@@ -1572,9 +1571,9 @@ public class DidWebVhMethodTests
         });
 
         // The update succeeds at the API level; verify the log resolves correctly
-        var updatedLog = (byte[])updateResult.Artifacts!["did.jsonl"];
+        var updatedLog = (string)updateResult.Artifacts!["did.jsonl"];
         var logUrl = DidUrlMapper.MapToLogUrl(did);
-        httpClient.SetLogResponse(logUrl, updatedLog);
+        httpClient.SetLogResponse(logUrl, Encoding.UTF8.GetBytes(updatedLog));
 
         var resolveResult = await method.ResolveAsync(did);
         resolveResult.DidDocument.Should().NotBeNull();

@@ -317,7 +317,7 @@ var updatedDoc = result.DidDocument with
 
 var updateResult = await didWebVh.UpdateAsync(result.Did.Value, new DidWebVhUpdateOptions
 {
-    CurrentLogContent = (byte[])result.Artifacts!["did.jsonl"],
+    CurrentLogContent = Encoding.UTF8.GetBytes((string)result.Artifacts!["did.jsonl"]),
     SigningKey = signer,
     NewDocument = updatedDoc
 });
