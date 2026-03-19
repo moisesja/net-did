@@ -50,16 +50,14 @@ Console.WriteLine();
 // -------------------------------------------------------
 Console.WriteLine("=== did:webvh — Artifacts ===");
 
-var logContent = (byte[])webVhResult.Artifacts!["did.jsonl"];
-var didJsonContent = (byte[])webVhResult.Artifacts["did.json"];
+var logContent = (string)webVhResult.Artifacts!["did.jsonl"];
+var didJsonContent = (string)webVhResult.Artifacts["did.json"];
 
-Console.WriteLine($"  did.jsonl ({logContent.Length} bytes):");
-var logText = Encoding.UTF8.GetString(logContent);
-Console.WriteLine($"    {logText[..Math.Min(logText.Length, 120)]}...");
+Console.WriteLine($"  did.jsonl ({logContent.Length} chars):");
+Console.WriteLine($"    {logContent[..Math.Min(logContent.Length, 120)]}...");
 
-Console.WriteLine($"  did.json ({didJsonContent.Length} bytes):");
-var didJsonText = Encoding.UTF8.GetString(didJsonContent);
-Console.WriteLine($"    {didJsonText[..Math.Min(didJsonText.Length, 120)]}...");
+Console.WriteLine($"  did.json ({didJsonContent.Length} chars):");
+Console.WriteLine($"    {didJsonContent[..Math.Min(didJsonContent.Length, 120)]}...");
 Console.WriteLine();
 
 // -------------------------------------------------------
@@ -69,7 +67,7 @@ Console.WriteLine("=== did:webvh — Resolve ===");
 
 // In production, did.jsonl is served via HTTPS. Here we mock it:
 var logUrl = DidUrlMapper.MapToLogUrl(webVhResult.Did.Value);
-webVhHttpClient.SetLogResponse(logUrl, logContent);
+webVhHttpClient.SetLogResponse(logUrl, Encoding.UTF8.GetBytes(logContent));
 
 var webVhResolved = await didWebVh.ResolveAsync(webVhResult.Did.Value);
 Console.WriteLine($"  Resolved: {webVhResolved.DidDocument!.Id}");
@@ -98,19 +96,19 @@ var updatedDoc = webVhResult.DidDocument with
 
 var updateResult = await didWebVh.UpdateAsync(webVhResult.Did.Value, new DidWebVhUpdateOptions
 {
-    CurrentLogContent = logContent,
+    CurrentLogContent = Encoding.UTF8.GetBytes(logContent),
     SigningKey = webVhSigner,
     NewDocument = updatedDoc
 });
 
-var updatedLog = (byte[])updateResult.Artifacts!["did.jsonl"];
-var entries = LogEntrySerializer.ParseJsonLines(updatedLog);
+var updatedLog = (string)updateResult.Artifacts!["did.jsonl"];
+var entries = LogEntrySerializer.ParseJsonLines(Encoding.UTF8.GetBytes(updatedLog));
 Console.WriteLine($"  Updated log: {entries.Count} entries");
 Console.WriteLine($"  Version 2:   {entries[1].VersionId}");
 Console.WriteLine($"  Services:    {updateResult.DidDocument.Service!.Count}");
 
 // Verify updated resolve
-webVhHttpClient.SetLogResponse(logUrl, updatedLog);
+webVhHttpClient.SetLogResponse(logUrl, Encoding.UTF8.GetBytes(updatedLog));
 var updatedResolved = await didWebVh.ResolveAsync(webVhResult.Did.Value);
 Console.WriteLine($"  Resolved v2: {updatedResolved.DocumentMetadata!.VersionId}");
 Console.WriteLine();
@@ -136,8 +134,8 @@ var preRotResult = await didWebVh.CreateAsync(new DidWebVhCreateOptions
 });
 
 Console.WriteLine($"  Created: {preRotResult.Did}");
-var preRotLog = (byte[])preRotResult.Artifacts!["did.jsonl"];
-var preRotEntries = LogEntrySerializer.ParseJsonLines(preRotLog);
+var preRotLog = (string)preRotResult.Artifacts!["did.jsonl"];
+var preRotEntries = LogEntrySerializer.ParseJsonLines(Encoding.UTF8.GetBytes(preRotLog));
 Console.WriteLine($"  Pre-rotation: {preRotEntries[0].Parameters.Prerotation}");
 Console.WriteLine($"  Committed next key hash: {preRotEntries[0].Parameters.NextKeyHashes![0][..20]}...");
 
@@ -147,7 +145,7 @@ var commitment3 = PreRotationManager.ComputeKeyCommitment(rotationKey3.Multibase
 
 var rotateResult = await didWebVh.UpdateAsync(preRotResult.Did.Value, new DidWebVhUpdateOptions
 {
-    CurrentLogContent = preRotLog,
+    CurrentLogContent = Encoding.UTF8.GetBytes(preRotLog),
     SigningKey = rotationSigner1,
     ParameterUpdates = new DidWebVhParameterUpdates
     {
@@ -157,8 +155,8 @@ var rotateResult = await didWebVh.UpdateAsync(preRotResult.Did.Value, new DidWeb
     }
 });
 
-var rotatedLog = (byte[])rotateResult.Artifacts!["did.jsonl"];
-var rotatedEntries = LogEntrySerializer.ParseJsonLines(rotatedLog);
+var rotatedLog = (string)rotateResult.Artifacts!["did.jsonl"];
+var rotatedEntries = LogEntrySerializer.ParseJsonLines(Encoding.UTF8.GetBytes(rotatedLog));
 Console.WriteLine($"  Rotated to key2 at version {rotatedEntries[1].VersionNumber}");
 Console.WriteLine($"  New update key: {rotatedEntries[1].Parameters.UpdateKeys![0][..20]}...");
 Console.WriteLine();
@@ -172,14 +170,14 @@ var deactivateResult = await didWebVh.DeactivateAsync(
     webVhResult.Did.Value,
     new DidWebVhDeactivateOptions
     {
-        CurrentLogContent = updatedLog,
+        CurrentLogContent = Encoding.UTF8.GetBytes(updatedLog),
         SigningKey = webVhSigner
     });
 
 Console.WriteLine($"  Deactivated: {deactivateResult.Success}");
 
-var deactivatedLog = (byte[])deactivateResult.Artifacts!["did.jsonl"];
-webVhHttpClient.SetLogResponse(logUrl, deactivatedLog);
+var deactivatedLog = (string)deactivateResult.Artifacts!["did.jsonl"];
+webVhHttpClient.SetLogResponse(logUrl, Encoding.UTF8.GetBytes(deactivatedLog));
 
 var deactivatedResolved = await didWebVh.ResolveAsync(webVhResult.Did.Value);
 Console.WriteLine($"  Resolved deactivated: {deactivatedResolved.DocumentMetadata!.Deactivated}");

@@ -1,3 +1,4 @@
+using System.Text;
 using NetDid.Core;
 using NetDid.Core.Crypto;
 using NetDid.Core.Model;
@@ -108,9 +109,9 @@ public sealed class TestDidFactory
         });
 
         // Set up mock HTTP so resolve works
-        var logContent = (byte[])result.Artifacts!["did.jsonl"];
+        var logContent = (string)result.Artifacts!["did.jsonl"];
         var logUrl = DidUrlMapper.MapToLogUrl(result.Did.Value);
-        _webVhHttpClient.SetLogResponse(logUrl, logContent);
+        _webVhHttpClient.SetLogResponse(logUrl, Encoding.UTF8.GetBytes(logContent));
 
         return (result.Did.Value, result.DidDocument);
     }
@@ -136,9 +137,9 @@ public sealed class TestDidFactory
         });
 
         // Set up mock HTTP so resolve works
-        var logContent = (byte[])result.Artifacts!["did.jsonl"];
+        var logContent = (string)result.Artifacts!["did.jsonl"];
         var logUrl = DidUrlMapper.MapToLogUrl(result.Did.Value);
-        _webVhHttpClient.SetLogResponse(logUrl, logContent);
+        _webVhHttpClient.SetLogResponse(logUrl, Encoding.UTF8.GetBytes(logContent));
 
         return (result.Did.Value, result.DidDocument);
     }

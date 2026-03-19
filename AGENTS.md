@@ -62,6 +62,7 @@ See [`NetDidPRD.md`](NetDidPRD.md) for requirements and architecture of the syst
 4. **Explain Changes**: High-level summary at each step
 5. **Document Results**: Add review section`to 'tasks/todo{timestamp}.md`
 6. **Capture Lessons**: Update 'tasks/lessons.md' after corrections
+7. **Update CHANGELOG.md**: After the successful validation of a task, update the CHANGELOG.md with sufficient details
 
 ## Core Principles
 

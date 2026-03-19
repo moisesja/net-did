@@ -238,8 +238,8 @@ var updateResult = await method.UpdateAsync(did, new DidWebVhUpdateOptions
 });
 
 // Write updated artifacts to the web server's file system
-File.WriteAllBytes("data/did.jsonl", (byte[])updateResult.Artifacts!["did.jsonl"]);
-File.WriteAllBytes("data/did.json", (byte[])updateResult.Artifacts["did.json"]);
+File.WriteAllText("data/did.jsonl", (string)updateResult.Artifacts!["did.jsonl"]);
+File.WriteAllText("data/did.json", (string)updateResult.Artifacts["did.json"]);
 ```
 
 ## Witness File (Optional)
