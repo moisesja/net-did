@@ -526,9 +526,31 @@ NetDid is developed in four phases (see [NetDidPRD.md](NetDidPRD.md) for full de
 | **III** | `did:webvh` method implementation | Complete |
 | **IV** | `did:ethr` method implementation | Planned |
 
+## Specifications
+
+NetDid targets the following specifications:
+
+| Specification | Version | Status | Reference |
+|---|---|---|---|
+| **W3C Decentralized Identifiers (DIDs)** | v1.0 | W3C Recommendation (2022-07-19) | [w3.org/TR/did-core](https://www.w3.org/TR/did-core/) |
+| **did:key** | Latest | W3C CCG Final | [w3c-ccg.github.io/did-method-key](https://w3c-ccg.github.io/did-method-key/) |
+| **did:peer** | 2.0 | DIF Spec | [identity.foundation/peer-did-method-spec](https://identity.foundation/peer-did-method-spec/) |
+| **did:webvh** | 1.0 | DIF Recommended | [identity.foundation/didwebvh](https://identity.foundation/didwebvh/) |
+| **Data Integrity (eddsa-jcs-2022)** | — | W3C Candidate Recommendation | [w3.org/TR/vc-di-eddsa](https://www.w3.org/TR/vc-di-eddsa/) |
+| **BBS Signatures** | draft-10 | IETF CFRG Draft | [draft-irtf-cfrg-bbs-signatures](https://datatracker.ietf.org/doc/draft-irtf-cfrg-bbs-signatures/) |
+| **JSON Canonicalization (JCS)** | RFC 8785 | IETF Proposed Standard | [rfc-editor.org/rfc/rfc8785](https://www.rfc-editor.org/rfc/rfc8785) |
+
 ## W3C Conformance
 
-See [w3c-conformance-report.md](w3c-conformance-report.md) for the full W3C DID Core conformance report across all implemented methods.
+NetDid is fully conformant with [W3C Decentralized Identifiers (DIDs) v1.0](https://www.w3.org/TR/did-core/) (W3C Recommendation, 2022-07-19). All 182 conformance tests pass across the three implemented methods:
+
+| Method | Tests |
+|---|---|
+| did:key | 57/57 |
+| did:peer | 67/67 |
+| did:webvh | 58/58 |
+
+See [w3c-conformance-report.md](w3c-conformance-report.md) for the full report.
 
 ## Contributing
 
