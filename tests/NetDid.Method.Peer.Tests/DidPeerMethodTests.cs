@@ -1,4 +1,5 @@
 using FluentAssertions;
+using NetCid;
 using NetDid.Core;
 using NetDid.Core.Crypto;
 using NetDid.Core.Model;
@@ -835,5 +836,103 @@ public class DidPeerMethodTests
     {
         _method.SupportsRecovery.Should().BeFalse();
         _method.RecoveryMaterialSpec.Should().BeNull();
+    }
+
+    // --- Issue #52: numalgo 2 key-segment validation ---
+
+    private static string EncodeMultikey(ulong codec, byte[] payload)
+        => Multibase.Encode(Multicodec.Prefix(codec, payload), MultibaseEncoding.Base58Btc);
+
+    [Fact]
+    public async Task Issue52_Numalgo2_InvalidMultibasePrefix_ReturnsInvalidDid()
+    {
+        // "not-a-real-multibase-key" — first char 'n' is not a known multibase prefix.
+        var result = await _method.ResolveAsync("did:peer:2.Vnot-a-real-multibase-key");
+
+        result.DidDocument.Should().BeNull();
+        result.ResolutionMetadata.Error.Should().Be("invalidDid");
+    }
+
+    [Fact]
+    public async Task Issue52_Numalgo2_UnknownMulticodec_ReturnsInvalidDid()
+    {
+        // Codec 0x55 ("raw") is not a registered key codec — ToKeyType throws.
+        var multikey = EncodeMultikey(0x55, new byte[32]);
+
+        var result = await _method.ResolveAsync($"did:peer:2.V{multikey}");
+
+        result.DidDocument.Should().BeNull();
+        result.ResolutionMetadata.Error.Should().Be("invalidDid");
+    }
+
+    [Fact]
+    public async Task Issue52_Numalgo2_Ed25519WrongLength_ReturnsInvalidDid()
+    {
+        // Ed25519 codec + 1-byte payload (expected: 32).
+        var multikey = EncodeMultikey(Multicodec.Ed25519Pub, new byte[] { 0x42 });
+
+        var result = await _method.ResolveAsync($"did:peer:2.V{multikey}");
+
+        result.DidDocument.Should().BeNull();
+        result.ResolutionMetadata.Error.Should().Be("invalidDid");
+    }
+
+    [Fact]
+    public async Task Issue52_Numalgo2_P256InvalidPoint_ReturnsInvalidDid()
+    {
+        // P-256 codec + 33 bytes of 0xFF: well-formed compressed point header
+        // (0xFF doesn't even look like 0x02/0x03), but the X coordinate is not on the curve.
+        var garbage = new byte[33];
+        Array.Fill<byte>(garbage, 0xFF);
+        var multikey = EncodeMultikey(Multicodec.P256Pub, garbage);
+
+        var result = await _method.ResolveAsync($"did:peer:2.V{multikey}");
+
+        result.DidDocument.Should().BeNull();
+        result.ResolutionMetadata.Error.Should().Be("invalidDid");
+    }
+
+    [Fact]
+    public async Task Issue52_Numalgo2_MalformedKeyAmongValidSegments_StillFails()
+    {
+        // Build a legitimate did:peer:2 with one good Ed25519 key, then append a bad V segment.
+        var goodKey = _keyGen.Generate(KeyType.Ed25519);
+        var goodSigner = new KeyPairSigner(goodKey, _crypto);
+        var good = await _method.CreateAsync(new DidPeerCreateOptions
+        {
+            Numalgo = PeerNumalgo.Two,
+            Keys = [new PeerKeyPurpose(goodSigner, PeerPurpose.Authentication)]
+        });
+
+        var tampered = good.Did.Value + ".Vnot-a-real-multibase-key";
+        var result = await _method.ResolveAsync(tampered);
+
+        result.DidDocument.Should().BeNull();
+        result.ResolutionMetadata.Error.Should().Be("invalidDid");
+    }
+
+    [Fact]
+    public async Task Issue52_Numalgo2_ValidEd25519AndP256_StillResolves()
+    {
+        // Spot-check the legitimate path: a multi-key numalgo 2 with Ed25519 + P-256
+        // continues to resolve after the validation change.
+        var edKey = _keyGen.Generate(KeyType.Ed25519);
+        var p256Key = _keyGen.Generate(KeyType.P256);
+
+        var created = await _method.CreateAsync(new DidPeerCreateOptions
+        {
+            Numalgo = PeerNumalgo.Two,
+            Keys =
+            [
+                new PeerKeyPurpose(new KeyPairSigner(edKey, _crypto), PeerPurpose.Authentication),
+                new PeerKeyPurpose(new KeyPairSigner(p256Key, _crypto), PeerPurpose.Assertion)
+            ]
+        });
+
+        var resolved = await _method.ResolveAsync(created.Did.Value);
+
+        resolved.DidDocument.Should().NotBeNull();
+        resolved.ResolutionMetadata.Error.Should().BeNull();
+        resolved.DidDocument!.VerificationMethod.Should().HaveCount(2);
     }
 }

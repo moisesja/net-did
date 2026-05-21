@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Security
+
+- **did:peer numalgo 2 accepts malformed key segments** (#52): `Numalgo2Handler.DecodeKeySegment` previously copied each `V`/`A`/`E`/`I`/`D` segment tail directly into `VerificationMethod.PublicKeyMultibase` with no decoding or validation, so a hostile `did:peer:2.V<garbage>` resolved into a DID Document containing impossible key material (invalid base58, unknown multicodec, wrong key length, off-curve EC point). Numalgo 2 now applies the same validation as `did:key` and numalgo 0 — decode multibase, decode multicodec, map to `KeyType`, length-check, and `IsValidEcPoint` — returning `invalidDid` on any failure.
+
 ## [1.2.0] - 2026-05-21
 
 ### Security
