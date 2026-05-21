@@ -175,17 +175,15 @@ internal sealed class LogChainValidator
             // Verify the signer is an authorized update key
             if (authorizedKeys is not null)
             {
-                var publicKey = DataIntegrityProofEngine.ExtractPublicKeyFromDidKey(proof.VerificationMethod);
-                if (publicKey is null) continue;
+                // Exact equality between the signer's multibase key and an entry
+                // in authorizedKeys. Substring matching would allow a proof with
+                // verificationMethod = "did:key:<attacker>#<authorized>" to be
+                // signed by the attacker yet authorized as the legitimate key.
+                var signerKey = DataIntegrityProofEngine.ExtractDidKeyMultibase(proof.VerificationMethod);
+                if (signerKey is null) continue;
 
-                // Check if the proof's key matches any authorized update key
-                foreach (var authorizedKey in authorizedKeys)
-                {
-                    // The verificationMethod is "did:key:{multibase}#{multibase}"
-                    // The authorizedKey is just the multibase portion
-                    if (proof.VerificationMethod.Contains(authorizedKey))
-                        return; // Valid proof from authorized key
-                }
+                if (authorizedKeys.Contains(signerKey, StringComparer.Ordinal))
+                    return; // Valid proof from authorized key
             }
             else
             {
