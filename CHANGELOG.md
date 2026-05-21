@@ -15,6 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `RecoveryMaterialSpec : RecoveryMaterialSpec?` — `(Kind, SchemaVersion, Encoding)` introspection shape; non-null iff `SupportsRecovery == true`.
 - **`NetDid.Core.Recovery.RecoveryMaterialSpec`**: New record describing the envelope shape of recovery material a method emits at bootstrap and consumes during recovery.
 - **`DidManager` registration invariant** (#36): Construction now fails fast with `InvalidOperationException` when any registered method declares `SupportsRecovery=true` without a non-null `RecoveryMaterialSpec`.
+- **Vulnerability and conformance audit report**: Added `tasks/vulnerability-conformance-audit-20260521.md` with NuGet, RustSec, full test-suite, W3C conformance, and manual security/conformance review results.
 
 ### Changed
 
