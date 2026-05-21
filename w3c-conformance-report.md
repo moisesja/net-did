@@ -1,6 +1,29 @@
 # W3C DID Core Conformance Report
 
-Generated: 2026-05-21T20:16:50Z
+Generated: 2026-05-21T21:37:16Z
+
+## Scope and limitations
+
+This report covers the **W3C DID Core 1.0** statements exercised by
+the in-tree harness in `tests/NetDid.Tests.W3CConformance`. It is
+**local coverage**, not an official method-conformance certification
+from the W3C, DIF, or any method registry.
+
+Method-specific hostile-input coverage lives in the per-method test
+projects, not in this suite. The audit findings recorded in
+`tasks/vulnerability-conformance-audit-20260521.md` have regression
+tests in these locations:
+
+| Audit finding | Regression tests |
+|---|---|
+| did:webvh proof authorization bypass (#50) | `tests/NetDid.Method.WebVh.Tests/LogChainValidatorAuthorizationTests.cs` |
+| did:webvh URL mapping unsafe encodings (#49) | `Issue49_*` in `tests/NetDid.Method.WebVh.Tests/DidUrlMapperTests.cs` + `DidWebVhMethodTests.cs` |
+| did:webvh HTTP fetches lack resource limits (#51) | `tests/NetDid.Method.WebVh.Tests/DefaultWebVhHttpClientTests.cs` |
+| did:peer numalgo 2 malformed key segments (#52) | `Issue52_*` in `tests/NetDid.Method.Peer.Tests/DidPeerMethodTests.cs` |
+
+If a future audit finds a DID Core statement gap, add it to this
+suite. If it finds a method-specific behaviour, add it to that
+method's test project and link it here.
 
 ## Summary
 
