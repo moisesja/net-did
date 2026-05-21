@@ -26,3 +26,22 @@ jobs:
 
       - name: Test
         run: dotnet test --no-build --configuration Release --verbosity normal --filter "Category!=NativeFFI"
+
+  rust-audit:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install cargo-audit
+        run: cargo install --locked cargo-audit
+
+      # Documented remaining warning is RUSTSEC-2026-0097 (rand 0.8.5).
+      # See native/zkryptium-ffi/README.md "Security audit" for reachability analysis.
+      # Other advisories must not be introduced.
+      - name: cargo audit (native FFI)
+        working-directory: native/zkryptium-ffi
+        run: cargo audit --ignore RUSTSEC-2026-0097
