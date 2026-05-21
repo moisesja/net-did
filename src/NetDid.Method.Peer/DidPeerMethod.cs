@@ -1,4 +1,5 @@
 using NetDid.Core;
+using NetDid.Core.Crypto;
 using NetDid.Core.Model;
 using NetDid.Core.Parsing;
 
@@ -23,6 +24,17 @@ public sealed class DidPeerMethod : DidMethodBase
 
     public override string MethodName => "peer";
     public override DidMethodCapabilities Capabilities => DidMethodCapabilities.Create | DidMethodCapabilities.Resolve;
+
+    public override IReadOnlyList<KeyType> SupportedKeyTypes { get; } =
+    [
+        KeyType.Ed25519,
+        KeyType.X25519,
+        KeyType.P256,
+        KeyType.P384,
+        KeyType.Secp256k1,
+        KeyType.Bls12381G1,
+        KeyType.Bls12381G2,
+    ];
 
     protected override Task<DidCreateResult> CreateCoreAsync(DidCreateOptions options, CancellationToken ct)
     {

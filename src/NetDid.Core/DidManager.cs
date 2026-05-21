@@ -14,7 +14,20 @@ public sealed class DidManager : IDidManager, IDidResolver
 
     public DidManager(IEnumerable<IDidMethod> methods)
     {
-        _methods = methods.ToDictionary(m => m.MethodName);
+        var registered = methods.ToDictionary(m => m.MethodName);
+
+        foreach (var method in registered.Values)
+        {
+            if (method.SupportsRecovery && method.RecoveryMaterialSpec is null)
+            {
+                throw new InvalidOperationException(
+                    $"DID method '{method.MethodName}' declares SupportsRecovery=true " +
+                    $"but RecoveryMaterialSpec is null. Drivers that opt into recovery " +
+                    $"MUST provide a non-null RecoveryMaterialSpec.");
+            }
+        }
+
+        _methods = registered;
     }
 
     public IReadOnlyList<string> RegisteredMethods => _methods.Keys.ToList();

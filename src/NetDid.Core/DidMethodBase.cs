@@ -1,6 +1,8 @@
+using NetDid.Core.Crypto;
 using NetDid.Core.Exceptions;
 using NetDid.Core.Model;
 using NetDid.Core.Parsing;
+using NetDid.Core.Recovery;
 
 namespace NetDid.Core;
 
@@ -12,6 +14,24 @@ public abstract class DidMethodBase : IDidMethod, IDidResolver
 {
     public abstract string MethodName { get; }
     public abstract DidMethodCapabilities Capabilities { get; }
+
+    /// <summary>
+    /// The set of <see cref="KeyType"/> values this method accepts as input keys
+    /// when creating a new DID. Concrete drivers MUST declare their accepted set.
+    /// </summary>
+    public abstract IReadOnlyList<KeyType> SupportedKeyTypes { get; }
+
+    /// <summary>
+    /// Whether this method exposes a recovery surface. Default: <c>false</c>.
+    /// When overridden to <c>true</c>, <see cref="RecoveryMaterialSpec"/> MUST be non-null.
+    /// </summary>
+    public virtual bool SupportsRecovery => false;
+
+    /// <summary>
+    /// Introspection shape for the recovery material this method emits and consumes.
+    /// Default: <c>null</c>. Required to be non-null when <see cref="SupportsRecovery"/> is <c>true</c>.
+    /// </summary>
+    public virtual RecoveryMaterialSpec? RecoveryMaterialSpec => null;
 
     public async Task<DidCreateResult> CreateAsync(DidCreateOptions options, CancellationToken ct = default)
     {
