@@ -87,4 +87,30 @@ Console.WriteLine($"  Method: {keyMethod!.MethodName}");
 Console.WriteLine($"  Capabilities: {keyMethod.Capabilities}");
 Console.WriteLine();
 
+// -------------------------------------------------------
+// 5. Discovery surface — what does each method accept? (issue #36)
+// -------------------------------------------------------
+// Wallets and tooling can interrogate IDidMethod without constructing options
+// or hardcoding a switch on MethodName.
+Console.WriteLine("=== Method Discovery Surface ===");
+
+foreach (var name in manager.RegisteredMethods)
+{
+    var method = manager.GetMethod(name)!;
+    Console.WriteLine($"  did:{method.MethodName}");
+    Console.WriteLine($"    SupportedKeyTypes:    [{string.Join(", ", method.SupportedKeyTypes)}]");
+    Console.WriteLine($"    SupportsRecovery:     {method.SupportsRecovery}");
+    Console.WriteLine($"    RecoveryMaterialSpec: {method.RecoveryMaterialSpec?.ToString() ?? "<null>"}");
+}
+Console.WriteLine();
+
+// Example: pick a method that accepts P-256 before constructing options
+var p256Capable = manager.RegisteredMethods
+    .Select(n => manager.GetMethod(n)!)
+    .Where(m => m.SupportedKeyTypes.Contains(KeyType.P256))
+    .Select(m => m.MethodName)
+    .ToList();
+Console.WriteLine($"  Methods that accept P-256: [{string.Join(", ", p256Capable)}]");
+Console.WriteLine();
+
 Console.WriteLine("Done! DI integration examples completed successfully.");

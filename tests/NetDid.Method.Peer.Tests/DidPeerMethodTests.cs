@@ -812,4 +812,28 @@ public class DidPeerMethodTests
     {
         _method.MethodName.Should().Be("peer");
     }
+
+    // --- Discovery surface (issue #36) ---
+
+    [Fact]
+    public void SupportedKeyTypes_ContainsAllKeyTypeEnumValues()
+    {
+        // did:peer numalgo 0/2 use the same multicodec encoding as did:key, and numalgo 4
+        // can carry arbitrary verification methods, so every KeyType is accepted.
+        var expected = Enum.GetValues<KeyType>();
+        _method.SupportedKeyTypes.Should().BeEquivalentTo(expected);
+    }
+
+    [Fact]
+    public void SupportedKeyTypes_ReturnsSameInstanceAcrossCalls()
+    {
+        _method.SupportedKeyTypes.Should().BeSameAs(_method.SupportedKeyTypes);
+    }
+
+    [Fact]
+    public void SupportsRecovery_IsFalse_UntilRecoveryApiLands()
+    {
+        _method.SupportsRecovery.Should().BeFalse();
+        _method.RecoveryMaterialSpec.Should().BeNull();
+    }
 }

@@ -1,4 +1,6 @@
+using NetDid.Core.Crypto;
 using NetDid.Core.Model;
+using NetDid.Core.Recovery;
 
 namespace NetDid.Core;
 
@@ -12,6 +14,28 @@ public interface IDidMethod
 
     /// <summary>Which CRUD operations this method supports.</summary>
     DidMethodCapabilities Capabilities { get; }
+
+    /// <summary>
+    /// The set of <see cref="KeyType"/> values this method accepts as input keys
+    /// when creating a new DID. Used by wallets and other tooling to discover, without
+    /// constructing options, which key types a registered method will accept.
+    /// Default: empty. Concrete drivers should populate this set.
+    /// </summary>
+    IReadOnlyList<KeyType> SupportedKeyTypes => Array.Empty<KeyType>();
+
+    /// <summary>
+    /// Whether this method exposes a recovery surface. When <c>true</c>,
+    /// <see cref="RecoveryMaterialSpec"/> MUST be non-null. The concrete recovery
+    /// API per category is defined separately (see ND-E9 / issue #44).
+    /// Default: <c>false</c>.
+    /// </summary>
+    bool SupportsRecovery => false;
+
+    /// <summary>
+    /// Introspection shape for the recovery material this method emits and consumes.
+    /// Non-null iff <see cref="SupportsRecovery"/> is <c>true</c>. Default: <c>null</c>.
+    /// </summary>
+    RecoveryMaterialSpec? RecoveryMaterialSpec => null;
 
     /// <summary>Create a new DID and return the DID Document + any artifacts.</summary>
     Task<DidCreateResult> CreateAsync(DidCreateOptions options, CancellationToken ct = default);

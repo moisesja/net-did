@@ -43,6 +43,13 @@ public sealed class DidWebVhMethod : DidMethodBase
         DidMethodCapabilities.Deactivate |
         DidMethodCapabilities.ServiceEndpoints;
 
+    /// <summary>
+    /// did:webvh requires an Ed25519 update key (see <see cref="DidWebVhCreateOptions.UpdateKey"/>).
+    /// Other key types may appear in the DID Document as additional verification methods,
+    /// but only Ed25519 is accepted as the controlling update key.
+    /// </summary>
+    public override IReadOnlyList<KeyType> SupportedKeyTypes { get; } = [KeyType.Ed25519];
+
     protected override async Task<DidCreateResult> CreateCoreAsync(
         DidCreateOptions options, CancellationToken ct)
     {

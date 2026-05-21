@@ -1,6 +1,8 @@
 using FluentAssertions;
+using NetDid.Core.Crypto;
 using NetDid.Core.Exceptions;
 using NetDid.Core.Model;
+using NetDid.Core.Recovery;
 using NSubstitute;
 
 namespace NetDid.Core.Tests;
@@ -187,5 +189,83 @@ public class DidManagerTests
     public void ImplementsIDidResolver()
     {
         _manager.Should().BeAssignableTo<IDidResolver>();
+    }
+
+    // --- Registration invariant: SupportsRecovery -> RecoveryMaterialSpec != null (issue #36) ---
+
+    [Fact]
+    public void Ctor_SupportsRecoveryWithoutSpec_Throws()
+    {
+        var broken = Substitute.For<IDidMethod>();
+        broken.MethodName.Returns("broken");
+        broken.SupportsRecovery.Returns(true);
+        broken.RecoveryMaterialSpec.Returns((RecoveryMaterialSpec?)null);
+
+        var act = () => new DidManager([broken]);
+
+        act.Should().Throw<InvalidOperationException>()
+            .WithMessage("*broken*SupportsRecovery*RecoveryMaterialSpec*");
+    }
+
+    [Fact]
+    public void Ctor_SupportsRecoveryWithSpec_Succeeds()
+    {
+        var ok = Substitute.For<IDidMethod>();
+        ok.MethodName.Returns("ok");
+        ok.SupportsRecovery.Returns(true);
+        ok.RecoveryMaterialSpec.Returns(new RecoveryMaterialSpec("test", 1, "application/json"));
+
+        var act = () => new DidManager([ok]);
+
+        act.Should().NotThrow();
+    }
+
+    [Fact]
+    public void Ctor_SupportsRecoveryFalseWithNullSpec_Succeeds()
+    {
+        // The invariant only fires when SupportsRecovery=true. Default state must remain valid.
+        var act = () => new DidManager([_keyMethod, _peerMethod]);
+        act.Should().NotThrow();
+    }
+}
+
+public class IDidMethodDefaultsTests
+{
+    /// <summary>Bare implementation that only fills the four required members,
+    /// to verify the C# default interface implementations on IDidMethod.</summary>
+    private sealed class BareMethod : IDidMethod
+    {
+        public string MethodName => "bare";
+        public DidMethodCapabilities Capabilities => DidMethodCapabilities.None;
+
+        public Task<DidCreateResult> CreateAsync(DidCreateOptions options, CancellationToken ct = default)
+            => throw new NotImplementedException();
+        public Task<DidResolutionResult> ResolveAsync(string did, DidResolutionOptions? options = null, CancellationToken ct = default)
+            => throw new NotImplementedException();
+        public Task<DidUpdateResult> UpdateAsync(string did, DidUpdateOptions options, CancellationToken ct = default)
+            => throw new NotImplementedException();
+        public Task<DidDeactivateResult> DeactivateAsync(string did, DidDeactivateOptions options, CancellationToken ct = default)
+            => throw new NotImplementedException();
+    }
+
+    [Fact]
+    public void SupportedKeyTypes_DefaultIsEmpty()
+    {
+        IDidMethod m = new BareMethod();
+        m.SupportedKeyTypes.Should().BeEmpty();
+    }
+
+    [Fact]
+    public void SupportsRecovery_DefaultIsFalse()
+    {
+        IDidMethod m = new BareMethod();
+        m.SupportsRecovery.Should().BeFalse();
+    }
+
+    [Fact]
+    public void RecoveryMaterialSpec_DefaultIsNull()
+    {
+        IDidMethod m = new BareMethod();
+        m.RecoveryMaterialSpec.Should().BeNull();
     }
 }

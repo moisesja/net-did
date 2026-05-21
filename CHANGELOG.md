@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **Method discovery surface on `IDidMethod`** (#36): Three additive, non-breaking properties let wallets and tooling introspect a registered method without constructing options:
+  - `SupportedKeyTypes : IReadOnlyList<KeyType>` — the `KeyType` values the method accepts as input keys (`did:key` and `did:peer` declare every enum member; `did:webvh` declares `[Ed25519]`).
+  - `SupportsRecovery : bool` — whether the method exposes a recovery surface. Defaults to `false`; concrete recovery API per category lands with ND-E9 (#44).
+  - `RecoveryMaterialSpec : RecoveryMaterialSpec?` — `(Kind, SchemaVersion, Encoding)` introspection shape; non-null iff `SupportsRecovery == true`.
+- **`NetDid.Core.Recovery.RecoveryMaterialSpec`**: New record describing the envelope shape of recovery material a method emits at bootstrap and consumes during recovery.
+- **`DidManager` registration invariant** (#36): Construction now fails fast with `InvalidOperationException` when any registered method declares `SupportsRecovery=true` without a non-null `RecoveryMaterialSpec`.
+
+### Changed
+
+- **`DidMethodBase.SupportedKeyTypes`** is **abstract** — every driver inheriting from `DidMethodBase` must declare its accepted set. The `IDidMethod` interface itself still defaults to an empty list via a default interface implementation, so out-of-tree implementers that bypass the base class are not broken.
+
 ## [1.1.2] - 2026-03-19
 
 ### Fixed

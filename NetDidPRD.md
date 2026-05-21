@@ -164,6 +164,21 @@ public interface IDidMethod
     /// Which CRUD operations this method supports.
     DidMethodCapabilities Capabilities { get; }
 
+    /// Discovery surface (ND-E1): which KeyType values this method accepts as input keys
+    /// when creating a new DID. Wallets and other tooling use this to pick a key type
+    /// without having to construct a DidCreateOptions first. Default: empty.
+    IReadOnlyList<KeyType> SupportedKeyTypes => Array.Empty<KeyType>();
+
+    /// Discovery surface (ND-E1): whether this method exposes a recovery surface.
+    /// When true, RecoveryMaterialSpec MUST be non-null (validated at DidManager
+    /// registration time). Default: false. The concrete recovery API per category
+    /// is co-designed with ND-E9.
+    bool SupportsRecovery => false;
+
+    /// Discovery surface (ND-E1): introspection shape for the recovery material this method
+    /// emits and consumes. Non-null iff SupportsRecovery is true. Default: null.
+    RecoveryMaterialSpec? RecoveryMaterialSpec => null;
+
     /// Create a new DID and return the DID Document + any artifacts (log entries, DNS packets, etc.)
     Task<DidCreateResult> CreateAsync(DidCreateOptions options, CancellationToken ct = default);
 
@@ -176,6 +191,11 @@ public interface IDidMethod
     /// Deactivate a DID (throws NotSupportedException for immutable methods).
     Task<DidDeactivateResult> DeactivateAsync(string did, DidDeactivateOptions options, CancellationToken ct = default);
 }
+
+/// Introspection shape for recovery material. Concrete payload schemas per method
+/// are defined by the recovery API (ND-E9). ND-E1 ships only this shape so consumers
+/// can interrogate registered methods without taking a dependency on per-method types.
+public sealed record RecoveryMaterialSpec(string Kind, int SchemaVersion, string Encoding);
 
 [Flags]
 public enum DidMethodCapabilities
@@ -364,6 +384,15 @@ public abstract class DidMethodBase : IDidMethod, IDidResolver
     public abstract string MethodName { get; }
     public abstract DidMethodCapabilities Capabilities { get; }
 
+    /// Each driver MUST declare the set of KeyType values it accepts as input keys.
+    /// Abstract (not defaulted) because silently advertising an empty supported set
+    /// would lead to wallets and tooling skipping a method that actually works.
+    public abstract IReadOnlyList<KeyType> SupportedKeyTypes { get; }
+
+    /// Default: false. Override and provide a non-null RecoveryMaterialSpec to opt in.
+    public virtual bool SupportsRecovery => false;
+    public virtual RecoveryMaterialSpec? RecoveryMaterialSpec => null;
+
     public async Task<DidCreateResult> CreateAsync(DidCreateOptions options, CancellationToken ct = default)
     {
         if (!Capabilities.HasFlag(DidMethodCapabilities.Create))
@@ -405,6 +434,39 @@ public abstract class DidMethodBase : IDidMethod, IDidResolver
         => throw new OperationNotSupportedException(MethodName, "Deactivate");
 }
 ```
+
+### 3.7 Method Discovery Surface (ND-E1, issue #36)
+
+`IDidMethod` exposes three properties that let wallets and other tooling interrogate a
+registered method without constructing options or hardcoding a `switch (methodName)`:
+
+| Property              | Type                          | Default | Purpose                                                                                |
+| --------------------- | ----------------------------- | ------- | -------------------------------------------------------------------------------------- |
+| `SupportedKeyTypes`   | `IReadOnlyList<KeyType>`      | `[]`    | The set of `KeyType` values the method accepts as input keys when creating a DID.      |
+| `SupportsRecovery`    | `bool`                        | `false` | Whether the method exposes a recovery surface (concrete API per ND-E9 / issue #44).    |
+| `RecoveryMaterialSpec`| `RecoveryMaterialSpec?`       | `null`  | Envelope shape (`Kind`, `SchemaVersion`, `Encoding`) of recovery material.             |
+
+**Default interface implementations** keep the additions non-breaking for any
+out-of-tree class that implements `IDidMethod` directly. **`DidMethodBase` overrides
+`SupportedKeyTypes` as abstract** so every driver in this repo must declare its
+accepted set explicitly — silently advertising an empty set would cause wallets to
+skip a method that actually works.
+
+**Registration invariant.** `DidManager` validates at construction time that any
+registered method with `SupportsRecovery == true` returns a non-null
+`RecoveryMaterialSpec`. The invariant fails fast with `InvalidOperationException`
+rather than letting a misconfigured driver be discovered at recovery time.
+
+**Per-method declared values:**
+
+| Method        | `SupportedKeyTypes`                                                                | `SupportsRecovery` | `RecoveryMaterialSpec` |
+| ------------- | ---------------------------------------------------------------------------------- | ------------------ | ---------------------- |
+| `did:key`     | All seven `KeyType` enum members (multicodec-driven)                               | `false` *          | `null` *               |
+| `did:peer`    | All seven `KeyType` enum members (numalgo 0/2 multicodec, numalgo 4 arbitrary VMs) | `false` *          | `null` *               |
+| `did:webvh`   | `[Ed25519]` (hardcoded update-key requirement)                                     | `false` *          | `null` *               |
+
+\* ND-E9 (issue #44) will define the concrete recovery category and material spec
+for each method.
 
 ---
 

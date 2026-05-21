@@ -391,6 +391,41 @@ public class DidKeyMethodTests
         _method.MethodName.Should().Be("key");
     }
 
+    // --- Discovery surface (issue #36) ---
+
+    [Fact]
+    public void SupportedKeyTypes_ContainsAllKeyTypeEnumValues()
+    {
+        var expected = Enum.GetValues<KeyType>();
+        _method.SupportedKeyTypes.Should().BeEquivalentTo(expected);
+    }
+
+    [Fact]
+    public void SupportedKeyTypes_ReturnsSameInstanceAcrossCalls()
+    {
+        _method.SupportedKeyTypes.Should().BeSameAs(_method.SupportedKeyTypes);
+    }
+
+    [Fact]
+    public async Task SupportedKeyTypes_EveryDeclaredTypeRoundTripsThroughCreate()
+    {
+        foreach (var keyType in _method.SupportedKeyTypes)
+        {
+            var result = await _method.CreateAsync(new DidKeyCreateOptions { KeyType = keyType });
+            result.Did.Value.Should().StartWith("did:key:z",
+                because: $"declared SupportedKeyTypes member {keyType} must actually be creatable");
+        }
+    }
+
+    [Fact]
+    public void SupportsRecovery_IsFalse_UntilRecoveryApiLands()
+    {
+        // ND-E9 (issue #44) will wire the seed-restoration recovery category for did:key.
+        // Until then, the introspection surface must report no recovery.
+        _method.SupportsRecovery.Should().BeFalse();
+        _method.RecoveryMaterialSpec.Should().BeNull();
+    }
+
     /// <summary>Test helper: ISigner that returns uncompressed EC public key bytes.</summary>
     private sealed class UncompressedKeySigner : ISigner
     {

@@ -544,6 +544,43 @@ public class DidWebVhMethodTests
         method.CanResolve("did:webvh:QmTest:example.com").Should().BeTrue();
     }
 
+    // --- Discovery surface (issue #36) ---
+
+    [Fact]
+    public void SupportedKeyTypes_IsEd25519Only()
+    {
+        // did:webvh requires Ed25519 update keys; this is hardcoded in CreateAsync.
+        var (method, _) = CreateMethod();
+        method.SupportedKeyTypes.Should().Equal(KeyType.Ed25519);
+    }
+
+    [Fact]
+    public async Task SupportedKeyTypes_NonEd25519UpdateKey_StillRejected()
+    {
+        // The discovery surface is a contract; CreateAsync must still reject non-Ed25519.
+        var (method, _) = CreateMethod();
+        var p256KeyPair = _keyGen.Generate(KeyType.P256);
+        var p256Signer = new KeyPairSigner(p256KeyPair, _crypto);
+
+        var act = () => method.CreateAsync(new DidWebVhCreateOptions
+        {
+            Domain = "example.com",
+            UpdateKey = p256Signer
+        });
+
+        await act.Should().ThrowAsync<ArgumentException>()
+            .WithMessage("*Ed25519*");
+    }
+
+    [Fact]
+    public void SupportsRecovery_IsFalse_UntilRecoveryApiLands()
+    {
+        // ND-E9 (issue #44) will wire the log/commitment recovery category for did:webvh.
+        var (method, _) = CreateMethod();
+        method.SupportsRecovery.Should().BeFalse();
+        method.RecoveryMaterialSpec.Should().BeNull();
+    }
+
     [Fact]
     public void CanResolve_DidKey_ReturnsFalse()
     {

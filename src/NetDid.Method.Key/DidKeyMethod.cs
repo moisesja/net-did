@@ -24,6 +24,17 @@ public sealed class DidKeyMethod : DidMethodBase
     public override string MethodName => "key";
     public override DidMethodCapabilities Capabilities => DidMethodCapabilities.Create | DidMethodCapabilities.Resolve;
 
+    public override IReadOnlyList<KeyType> SupportedKeyTypes { get; } =
+    [
+        KeyType.Ed25519,
+        KeyType.X25519,
+        KeyType.P256,
+        KeyType.P384,
+        KeyType.Secp256k1,
+        KeyType.Bls12381G1,
+        KeyType.Bls12381G2,
+    ];
+
     protected override Task<DidCreateResult> CreateCoreAsync(DidCreateOptions options, CancellationToken ct)
     {
         if (options is not DidKeyCreateOptions keyOptions)
