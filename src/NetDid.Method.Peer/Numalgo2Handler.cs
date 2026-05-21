@@ -140,6 +140,21 @@ internal sealed class Numalgo2Handler
 
     private static VerificationMethod DecodeKeySegment(string multibaseKey, Did controller, ref int keyIndex)
     {
+        // Validate the embedded Multikey the same way did:key and numalgo 0 do:
+        // decode multibase, decode multicodec, map to KeyType, length-check, EC point-check.
+        // Any failure throws and the outer DidPeerMethod.ResolveCoreAsync returns invalidDid.
+        var decoded = Multibase.Decode(multibaseKey);
+        var (codec, rawKey) = Multicodec.Decode(decoded);
+        var keyType = KeyTypeExtensions.ToKeyType(codec);
+
+        if (!keyType.IsValidKeyLength(rawKey.Length))
+            throw new ArgumentException(
+                $"Invalid key length {rawKey.Length} for {keyType} in numalgo 2 segment.");
+
+        if (!keyType.IsValidEcPoint(rawKey))
+            throw new ArgumentException(
+                $"Invalid EC point for {keyType} in numalgo 2 segment.");
+
         var vmId = $"#key-{keyIndex}";
         var vm = new VerificationMethod
         {
