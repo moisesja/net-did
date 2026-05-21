@@ -99,6 +99,19 @@ nm -gU target/release/libzkryptium_ffi.dylib | grep bbs
 nm -D target/release/libzkryptium_ffi.so | grep bbs
 ```
 
+## Security audit
+
+`cargo audit` runs in CI against `Cargo.lock`. The only currently-allowed
+advisory is:
+
+| ID | Crate | Status | Reachability |
+|---|---|---|---|
+| [RUSTSEC-2026-0097](https://rustsec.org/advisories/RUSTSEC-2026-0097) | `rand 0.8.5` | Unsound | **Not reachable.** The advisory describes unsound behavior "with a custom logger using `rand::rng()`". Neither this FFI shim nor `zkryptium 0.6.x` installs a custom logger or calls `rand::rng()` with one. `rand` is reached only via standard BBS+ key generation and signing, which do not exercise the unsound code path. |
+
+CI ignores this advisory via `cargo audit --ignore RUSTSEC-2026-0097`.
+Any other warning fails the job — keeping the dependency tree clean is
+intentional. Re-evaluate on every `zkryptium` upgrade.
+
 ## Troubleshooting
 
 ### Linux cross-compilation from macOS

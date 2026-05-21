@@ -7,7 +7,7 @@ edition = "2021"
 crate-type = ["cdylib"]
 
 [dependencies]
-zkryptium = "0.2"
+zkryptium = "0.6"
 
 [profile.release]
 lto = true
