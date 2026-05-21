@@ -1616,4 +1616,46 @@ public class DidWebVhMethodTests
         resolveResult.DidDocument.Should().NotBeNull();
         resolveResult.ResolutionMetadata.Error.Should().BeNull();
     }
+
+    // ================================================================
+    // ISSUE #49: CREATE-TIME REJECTION OF UNSAFE DOMAIN / PATH INPUTS
+    // ================================================================
+
+    [Theory]
+    [InlineData("evil@bank")]
+    [InlineData("example.com/attacker")]
+    [InlineData("example.com\\evil")]
+    [InlineData("")]
+    public async Task Issue49_Create_UnsafeDomain_Throws(string domain)
+    {
+        var (method, _) = CreateMethod();
+        var signer = CreateEd25519Signer();
+
+        var act = () => method.CreateAsync(new DidWebVhCreateOptions
+        {
+            Domain = domain,
+            UpdateKey = signer
+        });
+
+        await act.Should().ThrowAsync<ArgumentException>();
+    }
+
+    [Theory]
+    [InlineData("../etc")]
+    [InlineData("users/../admin")]
+    [InlineData(".")]
+    public async Task Issue49_Create_UnsafePath_Throws(string path)
+    {
+        var (method, _) = CreateMethod();
+        var signer = CreateEd25519Signer();
+
+        var act = () => method.CreateAsync(new DidWebVhCreateOptions
+        {
+            Domain = "example.com",
+            Path = path,
+            UpdateKey = signer
+        });
+
+        await act.Should().ThrowAsync<ArgumentException>();
+    }
 }

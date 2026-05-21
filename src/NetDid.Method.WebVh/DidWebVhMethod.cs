@@ -63,6 +63,12 @@ public sealed class DidWebVhMethod : DidMethodBase
         var didTemplate = BuildDidTemplate(createOptions.Domain, createOptions.Path,
             ScidGenerator.SafePlaceholder);
 
+        // Validate that the resulting template maps to a safe HTTPS URL. This rejects
+        // unsafe domain/path inputs (userinfo, separators, traversal segments, invalid
+        // ports) at create time, before any artifacts are produced. Reuses the same
+        // validators that resolution applies — see DidUrlMapper.
+        _ = DidUrlMapper.MapToLogUrl(didTemplate);
+
         // Step 2: Build the DID Document with safe placeholder
         var docTemplate = BuildDocumentTemplate(didTemplate, createOptions);
 
