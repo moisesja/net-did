@@ -52,6 +52,7 @@ public sealed class W3CReportFixture : IAsyncLifetime
         sb.AppendLine();
         sb.AppendLine($"Generated: {DateTime.UtcNow:yyyy-MM-ddTHH:mm:ssZ}");
         sb.AppendLine();
+        AppendScope(sb);
 
         var methods = results.Select(r => r.Method).Distinct().OrderBy(m => m).ToList();
         var categories = results.Select(r => (r.Category, r.Section))
@@ -141,6 +142,33 @@ public sealed class W3CReportFixture : IAsyncLifetime
         }
 
         return sb.ToString();
+    }
+
+    private static void AppendScope(StringBuilder sb)
+    {
+        sb.AppendLine("## Scope and limitations");
+        sb.AppendLine();
+        sb.AppendLine("This report covers the **W3C DID Core 1.0** statements exercised by");
+        sb.AppendLine("the in-tree harness in `tests/NetDid.Tests.W3CConformance`. It is");
+        sb.AppendLine("**local coverage**, not an official method-conformance certification");
+        sb.AppendLine("from the W3C, DIF, or any method registry.");
+        sb.AppendLine();
+        sb.AppendLine("Method-specific hostile-input coverage lives in the per-method test");
+        sb.AppendLine("projects, not in this suite. The audit findings recorded in");
+        sb.AppendLine("`tasks/vulnerability-conformance-audit-20260521.md` have regression");
+        sb.AppendLine("tests in these locations:");
+        sb.AppendLine();
+        sb.AppendLine("| Audit finding | Regression tests |");
+        sb.AppendLine("|---|---|");
+        sb.AppendLine("| did:webvh proof authorization bypass (#50) | `tests/NetDid.Method.WebVh.Tests/LogChainValidatorAuthorizationTests.cs` |");
+        sb.AppendLine("| did:webvh URL mapping unsafe encodings (#49) | `Issue49_*` in `tests/NetDid.Method.WebVh.Tests/DidUrlMapperTests.cs` + `DidWebVhMethodTests.cs` |");
+        sb.AppendLine("| did:webvh HTTP fetches lack resource limits (#51) | `tests/NetDid.Method.WebVh.Tests/DefaultWebVhHttpClientTests.cs` |");
+        sb.AppendLine("| did:peer numalgo 2 malformed key segments (#52) | `Issue52_*` in `tests/NetDid.Method.Peer.Tests/DidPeerMethodTests.cs` |");
+        sb.AppendLine();
+        sb.AppendLine("If a future audit finds a DID Core statement gap, add it to this");
+        sb.AppendLine("suite. If it finds a method-specific behaviour, add it to that");
+        sb.AppendLine("method's test project and link it here.");
+        sb.AppendLine();
     }
 }
 
