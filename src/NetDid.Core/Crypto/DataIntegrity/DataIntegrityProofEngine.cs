@@ -93,24 +93,61 @@ public sealed class DataIntegrityProofEngine
     }
 
     /// <summary>
+    /// Extract the signer's multibase key from a did:key verification method URL.
+    /// Accepts "did:key:z6Mkf...#z6Mkf..." (DID and fragment MUST match) and
+    /// "did:key:z6Mkf..." (no fragment). Returns null on any malformed input or
+    /// DID/fragment mismatch. Per did:key spec, the fragment is the method-specific id.
+    /// </summary>
+    public static string? ExtractDidKeyMultibase(string verificationMethod)
+    {
+        if (string.IsNullOrEmpty(verificationMethod))
+            return null;
+
+        // Reject anything beyond the optional fragment (path, query, params).
+        if (verificationMethod.IndexOfAny(['?', '/']) >= 0)
+            return null;
+
+        string didPart;
+        string? fragment;
+        var hashIndex = verificationMethod.IndexOf('#');
+        if (hashIndex >= 0)
+        {
+            didPart = verificationMethod[..hashIndex];
+            fragment = verificationMethod[(hashIndex + 1)..];
+        }
+        else
+        {
+            didPart = verificationMethod;
+            fragment = null;
+        }
+
+        if (!didPart.StartsWith("did:key:"))
+            return null;
+
+        var multibaseKey = didPart["did:key:".Length..];
+        if (string.IsNullOrEmpty(multibaseKey))
+            return null;
+
+        // If a fragment is present, it must equal the DID method-specific id.
+        if (fragment is not null && !string.Equals(fragment, multibaseKey, StringComparison.Ordinal))
+            return null;
+
+        return multibaseKey;
+    }
+
+    /// <summary>
     /// Extract the raw Ed25519 public key bytes from a did:key verification method URL.
-    /// Accepts both "did:key:z6Mkf...#z6Mkf..." and "did:key:z6Mkf..." formats.
+    /// Accepts both "did:key:z6Mkf...#z6Mkf..." (DID and fragment MUST match) and
+    /// "did:key:z6Mkf..." formats. Returns null on DID/fragment mismatch.
     /// </summary>
     public static byte[]? ExtractPublicKeyFromDidKey(string verificationMethod)
     {
+        var multibaseKey = ExtractDidKeyMultibase(verificationMethod);
+        if (multibaseKey is null)
+            return null;
+
         try
         {
-            // Strip fragment if present: "did:key:z6Mkf...#z6Mkf..." -> "did:key:z6Mkf..."
-            var didPart = verificationMethod.Contains('#')
-                ? verificationMethod[..verificationMethod.IndexOf('#')]
-                : verificationMethod;
-
-            // Extract method-specific-id: "did:key:z6Mkf..." -> "z6Mkf..."
-            if (!didPart.StartsWith("did:key:"))
-                return null;
-
-            var multibaseKey = didPart["did:key:".Length..];
-
             // Decode multibase -> multicodec-prefixed bytes -> raw key
             var decoded = Multibase.Decode(multibaseKey);
             var (codec, rawKey) = Multicodec.Decode(decoded);

@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- **did:webvh proof authorization bypass** (#50): `LogChainValidator.ValidateProof` previously authorized proofs using `proof.VerificationMethod.Contains(authorizedKey)` (substring match) while verifying signatures against the key extracted from the DID part only. An attacker could craft `verificationMethod = did:key:<attacker>#<authorized>`, sign with their own key, and have the proof accepted as authorized — allowing unauthorized log updates or deactivation. Authorization now requires exact equality between the signer's multibase key and an entry in `updateKeys`. A new `DataIntegrityProofEngine.ExtractDidKeyMultibase` helper parses `did:key` verification methods and rejects DID/fragment mismatches, path segments, and query strings before authorization is considered.
+
 ### Added
 
 - **Method discovery surface on `IDidMethod`** (#36): Three additive, non-breaking properties let wallets and tooling introspect a registered method without constructing options:
