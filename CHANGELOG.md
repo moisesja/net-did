@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [1.2.0] - 2026-05-21
 
 ### Security
 
@@ -22,8 +22,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **did:webvh URL mapping accepts unsafe host/path encodings** (#49): `DidUrlMapper.MapToLogUrl` / `MapToWitnessUrl` previously percent-decoded the domain chunk with `Uri.UnescapeDataString` and string-interpolated it into an HTTPS URL via `new Uri($"https://{host}/...")`. A crafted DID could therefore smuggle `%40` (`@`, userinfo/host pivot — e.g. `trusted.example%40evil.example` fetches `evil.example`), `%2F` / `%5C` (path injection), control characters, or path-traversal segments (`..`, `%2E%2E`) through resolution. The mapper now validates the decoded authority (no `@`, `/`, `\`, `?`, `#`, control chars; `Uri.CheckHostName` must succeed; port in [1, 65535]), validates each path segment (rejects `.`, `..`, encoded equivalents, and separator characters), and builds the URI with `UriBuilder` instead of string interpolation. `DidWebVhMethod.CreateAsync` applies the same validation, so unsafe `Domain`/`Path` inputs are rejected before any artifact is produced.
 - **did:peer numalgo 2 accepts malformed key segments** (#52): `Numalgo2Handler.DecodeKeySegment` previously copied each `V`/`A`/`E`/`I`/`D` segment tail directly into `VerificationMethod.PublicKeyMultibase` with no decoding or validation, so a hostile `did:peer:2.V<garbage>` resolved into a DID Document containing impossible key material (invalid base58, unknown multicodec, wrong key length, off-curve EC point). Numalgo 2 now applies the same validation as `did:key` and numalgo 0 — decode multibase, decode multicodec, map to `KeyType`, length-check, and `IsValidEcPoint` — returning `invalidDid` on any failure.
 
-## [1.2.0] - 2026-05-21
-
 ### Security
 
 - **did:webvh proof authorization bypass** (#50): `LogChainValidator.ValidateProof` previously authorized proofs using `proof.VerificationMethod.Contains(authorizedKey)` (substring match) while verifying signatures against the key extracted from the DID part only. An attacker could craft `verificationMethod = did:key:<attacker>#<authorized>`, sign with their own key, and have the proof accepted as authorized — allowing unauthorized log updates or deactivation. Authorization now requires exact equality between the signer's multibase key and an entry in `updateKeys`. A new `DataIntegrityProofEngine.ExtractDidKeyMultibase` helper parses `did:key` verification methods and rejects DID/fragment mismatches, path segments, and query strings before authorization is considered.
@@ -31,9 +29,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - **Method discovery surface on `IDidMethod`** (#36): Three additive, non-breaking properties let wallets and tooling introspect a registered method without constructing options:
-  - `SupportedKeyTypes : IReadOnlyList<KeyType>` — the `KeyType` values the method accepts as input keys (`did:key` and `did:peer` declare every enum member; `did:webvh` declares `[Ed25519]`).
-  - `SupportsRecovery : bool` — whether the method exposes a recovery surface. Defaults to `false`; concrete recovery API per category lands with ND-E9 (#44).
-  - `RecoveryMaterialSpec : RecoveryMaterialSpec?` — `(Kind, SchemaVersion, Encoding)` introspection shape; non-null iff `SupportsRecovery == true`.
+    - `SupportedKeyTypes : IReadOnlyList<KeyType>` — the `KeyType` values the method accepts as input keys (`did:key` and `did:peer` declare every enum member; `did:webvh` declares `[Ed25519]`).
+    - `SupportsRecovery : bool` — whether the method exposes a recovery surface. Defaults to `false`; concrete recovery API per category lands with ND-E9 (#44).
+    - `RecoveryMaterialSpec : RecoveryMaterialSpec?` — `(Kind, SchemaVersion, Encoding)` introspection shape; non-null iff `SupportsRecovery == true`.
 - **`NetDid.Core.Recovery.RecoveryMaterialSpec`**: New record describing the envelope shape of recovery material a method emits at bootstrap and consumes during recovery.
 - **`DidManager` registration invariant** (#36): Construction now fails fast with `InvalidOperationException` when any registered method declares `SupportsRecovery=true` without a non-null `RecoveryMaterialSpec`.
 - **Vulnerability and conformance audit report**: Added `tasks/vulnerability-conformance-audit-20260521.md` with NuGet, RustSec, full test-suite, W3C conformance, and manual security/conformance review results.
@@ -92,14 +90,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - **did:webvh method** (`NetDid.Method.WebVh`): Full CRUD implementation of the DIF did:webvh v1.0 specification (did:web + Verifiable History). Supports:
-  - **Create**: Genesis log entry generation with SCID (Self-Certifying Identifier) via two-pass algorithm (JCS → SHA-256 → multihash → base58btc multibase)
-  - **Resolve**: Fetch `did.jsonl`, validate hash chain and Data Integrity Proofs, return DID Document
-  - **Update**: Append log entries with cryptographic chaining to previous entry's `versionId`
-  - **Deactivate**: Append deactivation entry with minimal document
-  - **Pre-rotation**: Commit to future update keys via SHA-256 hash commitments (`nextKeyHashes`). Every update under pre-rotation must rotate keys.
-  - **Witness validation**: Configurable witness threshold with weighted witness proofs via `did-witness.json`
-  - **did:web backwards compatibility**: Automatic `did.json` generation alongside `did.jsonl`
-  - **Versioned resolution**: Resolve by `versionId` or `versionTime` with partial chain validation
+    - **Create**: Genesis log entry generation with SCID (Self-Certifying Identifier) via two-pass algorithm (JCS → SHA-256 → multihash → base58btc multibase)
+    - **Resolve**: Fetch `did.jsonl`, validate hash chain and Data Integrity Proofs, return DID Document
+    - **Update**: Append log entries with cryptographic chaining to previous entry's `versionId`
+    - **Deactivate**: Append deactivation entry with minimal document
+    - **Pre-rotation**: Commit to future update keys via SHA-256 hash commitments (`nextKeyHashes`). Every update under pre-rotation must rotate keys.
+    - **Witness validation**: Configurable witness threshold with weighted witness proofs via `did-witness.json`
+    - **did:web backwards compatibility**: Automatic `did.json` generation alongside `did.jsonl`
+    - **Versioned resolution**: Resolve by `versionId` or `versionTime` with partial chain validation
 - **Data Integrity Proof engine** (`eddsa-jcs-2022`): JCS canonicalization → Ed25519 signing → multibase encoding. Reusable across DID methods.
 - **`IWebVhHttpClient`** interface with `MockWebVhHttpClient` for testing
 - **`DidUrlMapper`**: Maps `did:webvh:<SCID>:<domain>` → `https://<domain>/.well-known/did.jsonl`
@@ -142,9 +140,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **did:key method** (`NetDid.Method.Key`): Deterministic, self-certifying DID method. Create and resolve for all 7 key types. Ed25519 auto-derives X25519 key agreement key. Supports `Multikey` and `JsonWebKey2020` verification method representations. BLS12-381 keys use assertion-only relationships.
 - **did:peer method** (`NetDid.Method.Peer`): Peer-to-peer DID method with three numalgo variants:
-  - Numalgo 0: Inception key (functionally identical to did:key)
-  - Numalgo 2: Inline keys and services with DIF spec purpose codes and service abbreviation encoding
-  - Numalgo 4: Hash-based short/long form with SHA-256 integrity verification
+    - Numalgo 0: Inception key (functionally identical to did:key)
+    - Numalgo 2: Inline keys and services with DIF spec purpose codes and service abbreviation encoding
+    - Numalgo 4: Hash-based short/long form with SHA-256 integrity verification
 - **Ed25519 to X25519 public key derivation**: Birational map for resolve-path public-key-only conversion (`IKeyGenerator.DeriveX25519PublicKeyFromEd25519`)
 - **JWK from raw bytes**: `JwkConverter.ToPublicJwk(KeyType, byte[])` overload for resolve-path usage
 - **Samples**: Console app demonstrating did:key and did:peer usage across all variants
@@ -156,14 +154,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **DID Document Model**: Full W3C DID Core 1.0 compliant data model including `DidDocument`, `VerificationMethod`, `Service`, `ServiceEndpointValue` (URI/map/set), and `VerificationRelationshipEntry` (reference/embedded)
 - **DID Parsing**: W3C DID syntax validation, method extraction, and DID URL parsing (path, query, fragment)
 - **Cryptographic Primitives**:
-  - Key generation for Ed25519, X25519, P-256, P-384, secp256k1, BLS12-381 G1, and BLS12-381 G2
-  - Sign/verify for Ed25519, P-256, P-384, secp256k1, BLS12-381 G1, and BLS12-381 G2
-  - X25519 key agreement (ECDH)
-  - Ed25519 to X25519 key derivation
+    - Key generation for Ed25519, X25519, P-256, P-384, secp256k1, BLS12-381 G1, and BLS12-381 G2
+    - Sign/verify for Ed25519, P-256, P-384, secp256k1, BLS12-381 G1, and BLS12-381 G2
+    - X25519 key agreement (ECDH)
+    - Ed25519 to X25519 key derivation
 - **BBS+ Signatures** (IETF draft-irtf-cfrg-bbs-signatures-10, BLS12-381-SHA-256 ciphersuite):
-  - Multi-message signing and verification
-  - Selective disclosure proof generation and verification
-  - Native implementation via Rust FFI shim wrapping [zkryptium](https://github.com/Cybersecurity-LINKS/zkryptium)
+    - Multi-message signing and verification
+    - Selective disclosure proof generation and verification
+    - Native implementation via Rust FFI shim wrapping [zkryptium](https://github.com/Cybersecurity-LINKS/zkryptium)
 - **Encoding Utilities**: Multibase (Base58Btc, Base64Url, Base32Lower), multicodec (7 key types), Base58Btc, Base64Url-no-padding
 - **JWK Conversion**: Round-trip between raw key bytes and JSON Web Keys for all supported key types
 - **Serialization**: DID Document serializer supporting both `application/did+ld+json` (JSON-LD with auto-computed `@context`) and `application/did+json` (plain JSON)
