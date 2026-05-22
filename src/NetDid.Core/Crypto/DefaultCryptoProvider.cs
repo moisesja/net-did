@@ -15,13 +15,17 @@ namespace NetDid.Core.Crypto;
 public sealed class DefaultCryptoProvider : ICryptoProvider
 {
     public byte[] Sign(KeyType keyType, ReadOnlySpan<byte> privateKey, ReadOnlySpan<byte> data)
+        => Sign(keyType, privateKey, data, EcdsaSignatureFormat.Der);
+
+    public byte[] Sign(KeyType keyType, ReadOnlySpan<byte> privateKey, ReadOnlySpan<byte> data, EcdsaSignatureFormat format)
     {
+        var ecFormat = ToDsaFormat(format);
         return keyType switch
         {
             KeyType.Ed25519 => SignEd25519(privateKey, data),
-            KeyType.P256 => SignEcDsa(privateKey, data, ECCurve.NamedCurves.nistP256, HashAlgorithmName.SHA256),
-            KeyType.P384 => SignEcDsa(privateKey, data, ECCurve.NamedCurves.nistP384, HashAlgorithmName.SHA384),
-            KeyType.P521 => SignEcDsa(privateKey, data, ECCurve.NamedCurves.nistP521, HashAlgorithmName.SHA512),
+            KeyType.P256 => SignEcDsa(privateKey, data, ECCurve.NamedCurves.nistP256, HashAlgorithmName.SHA256, ecFormat),
+            KeyType.P384 => SignEcDsa(privateKey, data, ECCurve.NamedCurves.nistP384, HashAlgorithmName.SHA384, ecFormat),
+            KeyType.P521 => SignEcDsa(privateKey, data, ECCurve.NamedCurves.nistP521, HashAlgorithmName.SHA512, ecFormat),
             KeyType.Secp256k1 => SignSecp256k1(privateKey, data),
             KeyType.X25519 => throw new ArgumentException("X25519 is a key agreement algorithm, not a signing algorithm."),
             KeyType.Bls12381G1 or KeyType.Bls12381G2 => SignBls(keyType, privateKey, data),
@@ -30,19 +34,30 @@ public sealed class DefaultCryptoProvider : ICryptoProvider
     }
 
     public bool Verify(KeyType keyType, ReadOnlySpan<byte> publicKey, ReadOnlySpan<byte> data, ReadOnlySpan<byte> signature)
+        => Verify(keyType, publicKey, data, signature, EcdsaSignatureFormat.Der);
+
+    public bool Verify(KeyType keyType, ReadOnlySpan<byte> publicKey, ReadOnlySpan<byte> data, ReadOnlySpan<byte> signature, EcdsaSignatureFormat format)
     {
+        var ecFormat = ToDsaFormat(format);
         return keyType switch
         {
             KeyType.Ed25519 => VerifyEd25519(publicKey, data, signature),
-            KeyType.P256 => VerifyEcDsa(publicKey, data, signature, ECCurve.NamedCurves.nistP256, HashAlgorithmName.SHA256),
-            KeyType.P384 => VerifyEcDsa(publicKey, data, signature, ECCurve.NamedCurves.nistP384, HashAlgorithmName.SHA384),
-            KeyType.P521 => VerifyEcDsa(publicKey, data, signature, ECCurve.NamedCurves.nistP521, HashAlgorithmName.SHA512),
+            KeyType.P256 => VerifyEcDsa(publicKey, data, signature, ECCurve.NamedCurves.nistP256, HashAlgorithmName.SHA256, ecFormat),
+            KeyType.P384 => VerifyEcDsa(publicKey, data, signature, ECCurve.NamedCurves.nistP384, HashAlgorithmName.SHA384, ecFormat),
+            KeyType.P521 => VerifyEcDsa(publicKey, data, signature, ECCurve.NamedCurves.nistP521, HashAlgorithmName.SHA512, ecFormat),
             KeyType.Secp256k1 => VerifySecp256k1(publicKey, data, signature),
             KeyType.X25519 => throw new ArgumentException("X25519 is a key agreement algorithm, not a verification algorithm."),
             KeyType.Bls12381G1 or KeyType.Bls12381G2 => VerifyBls(keyType, publicKey, data, signature),
             _ => throw new ArgumentException($"Unsupported key type for verification: {keyType}")
         };
     }
+
+    private static DSASignatureFormat ToDsaFormat(EcdsaSignatureFormat format) => format switch
+    {
+        EcdsaSignatureFormat.Der => DSASignatureFormat.Rfc3279DerSequence,
+        EcdsaSignatureFormat.IeeeP1363 => DSASignatureFormat.IeeeP1363FixedFieldConcatenation,
+        _ => throw new ArgumentException($"Unknown ECDSA signature format: {format}", nameof(format))
+    };
 
     public byte[] KeyAgreement(ReadOnlySpan<byte> privateKey, ReadOnlySpan<byte> publicKey)
     {
@@ -122,21 +137,32 @@ public sealed class DefaultCryptoProvider : ICryptoProvider
     // --- P-256 / P-384 (System.Security.Cryptography.ECDsa) ---
 
     private static byte[] SignEcDsa(ReadOnlySpan<byte> privateKey, ReadOnlySpan<byte> data,
-        ECCurve curve, HashAlgorithmName hashAlgorithm)
+        ECCurve curve, HashAlgorithmName hashAlgorithm, DSASignatureFormat format)
     {
         using var ecdsa = ECDsa.Create();
         var parameters = ImportEcPrivateKey(privateKey, curve);
         ecdsa.ImportParameters(parameters);
-        return ecdsa.SignData(data.ToArray(), hashAlgorithm);
+        return ecdsa.SignData(data, hashAlgorithm, format);
     }
 
     private static bool VerifyEcDsa(ReadOnlySpan<byte> publicKey, ReadOnlySpan<byte> data,
-        ReadOnlySpan<byte> signature, ECCurve curve, HashAlgorithmName hashAlgorithm)
+        ReadOnlySpan<byte> signature, ECCurve curve, HashAlgorithmName hashAlgorithm, DSASignatureFormat format)
     {
         using var ecdsa = ECDsa.Create();
         var parameters = ImportEcPublicKey(publicKey, curve);
         ecdsa.ImportParameters(parameters);
-        return ecdsa.VerifyData(data.ToArray(), signature.ToArray(), hashAlgorithm);
+        try
+        {
+            return ecdsa.VerifyData(data, signature, hashAlgorithm, format);
+        }
+        catch (CryptographicException)
+        {
+            // A wrong-format/malformed signature is normalized to a verification failure (JOSE
+            // convention — JWS verifiers expect false, not an exception). The backends disagree:
+            // Windows CNG throws CryptographicException on a wrong wire format, OpenSSL returns
+            // false directly. Catching here makes both platforms behave the same.
+            return false;
+        }
     }
 
     internal static ECParameters ImportEcPrivateKey(ReadOnlySpan<byte> privateKey, ECCurve curve)

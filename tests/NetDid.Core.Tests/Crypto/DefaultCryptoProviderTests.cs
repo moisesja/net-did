@@ -124,6 +124,152 @@ public class DefaultCryptoProviderTests
         aliceShared.Should().Equal(bobShared);
     }
 
+    // --- ECDSA signature format: DER vs IEEE P1363 — Issue #62 ---
+
+    [Theory]
+    [InlineData(KeyType.P256, 64)]   // 2 × 32 bytes
+    [InlineData(KeyType.P384, 96)]   // 2 × 48 bytes
+    [InlineData(KeyType.P521, 132)]  // 2 × 66 bytes
+    public void Sign_NistEcDsa_IeeeP1363_HasExpectedFixedLength(KeyType keyType, int expectedLength)
+    {
+        var keyPair = _keyGen.Generate(keyType);
+        var data = "JOSE ES256/ES384/ES512 wire format"u8.ToArray();
+
+        var sig = _crypto.Sign(keyType, keyPair.PrivateKey, data, EcdsaSignatureFormat.IeeeP1363);
+
+        sig.Should().HaveCount(expectedLength);
+    }
+
+    [Theory]
+    [InlineData(KeyType.P256)]
+    [InlineData(KeyType.P384)]
+    [InlineData(KeyType.P521)]
+    public void SignVerify_IeeeP1363_RoundTrip(KeyType keyType)
+    {
+        var keyPair = _keyGen.Generate(keyType);
+        var data = "P1363 round trip"u8.ToArray();
+
+        var sig = _crypto.Sign(keyType, keyPair.PrivateKey, data, EcdsaSignatureFormat.IeeeP1363);
+        var ok = _crypto.Verify(keyType, keyPair.PublicKey, data, sig, EcdsaSignatureFormat.IeeeP1363);
+
+        ok.Should().BeTrue();
+    }
+
+    [Theory]
+    [InlineData(KeyType.P256)]
+    [InlineData(KeyType.P384)]
+    [InlineData(KeyType.P521)]
+    public void SignVerify_Der_Default_StillWorks(KeyType keyType)
+    {
+        // The 3-arg legacy Sign/Verify keep DER for back-compat.
+        var keyPair = _keyGen.Generate(keyType);
+        var data = "DER round trip"u8.ToArray();
+
+        var sig = _crypto.Sign(keyType, keyPair.PrivateKey, data);
+        var ok = _crypto.Verify(keyType, keyPair.PublicKey, data, sig);
+
+        ok.Should().BeTrue();
+        // DER signature is variable-length and longer than the corresponding P1363 form,
+        // because of ASN.1 SEQUENCE / INTEGER tag + length overhead.
+        sig.Length.Should().BeGreaterThan(keyType switch
+        {
+            KeyType.P256 => 64,
+            KeyType.P384 => 96,
+            KeyType.P521 => 132,
+            _ => throw new InvalidOperationException()
+        });
+    }
+
+    [Theory]
+    [InlineData(KeyType.P256)]
+    [InlineData(KeyType.P384)]
+    [InlineData(KeyType.P521)]
+    public void Verify_MismatchedFormat_ReturnsFalseNotThrow(KeyType keyType)
+    {
+        var keyPair = _keyGen.Generate(keyType);
+        var data = "Mismatched format"u8.ToArray();
+
+        // Sign as DER but verify as P1363.
+        var derSig = _crypto.Sign(keyType, keyPair.PrivateKey, data, EcdsaSignatureFormat.Der);
+        var act1 = () => _crypto.Verify(keyType, keyPair.PublicKey, data, derSig, EcdsaSignatureFormat.IeeeP1363);
+        act1.Should().NotThrow();
+        _crypto.Verify(keyType, keyPair.PublicKey, data, derSig, EcdsaSignatureFormat.IeeeP1363).Should().BeFalse();
+
+        // Sign as P1363 but verify as DER.
+        var p1363Sig = _crypto.Sign(keyType, keyPair.PrivateKey, data, EcdsaSignatureFormat.IeeeP1363);
+        var act2 = () => _crypto.Verify(keyType, keyPair.PublicKey, data, p1363Sig, EcdsaSignatureFormat.Der);
+        act2.Should().NotThrow();
+        _crypto.Verify(keyType, keyPair.PublicKey, data, p1363Sig, EcdsaSignatureFormat.Der).Should().BeFalse();
+    }
+
+    [Theory]
+    [InlineData(KeyType.P256)]
+    [InlineData(KeyType.P384)]
+    [InlineData(KeyType.P521)]
+    public void Verify_MalformedP1363Signature_ReturnsFalseNotThrow(KeyType keyType)
+    {
+        // Backend-independent contract: a malformed P1363 signature — wrong length, or
+        // correct length but garbage — verifies as false and never throws, regardless of
+        // whether the platform backend (Windows CNG vs OpenSSL) throws or returns false.
+        var keyPair = _keyGen.Generate(keyType);
+        var data = "malformed p1363"u8.ToArray();
+        var valid = _crypto.Sign(keyType, keyPair.PrivateKey, data, EcdsaSignatureFormat.IeeeP1363);
+
+        var truncated = valid[..^1];
+        var garbageSameLength = new byte[valid.Length];
+
+        var verifyTruncated = () => _crypto.Verify(keyType, keyPair.PublicKey, data, truncated, EcdsaSignatureFormat.IeeeP1363);
+        verifyTruncated.Should().NotThrow();
+        verifyTruncated().Should().BeFalse();
+
+        var verifyGarbage = () => _crypto.Verify(keyType, keyPair.PublicKey, data, garbageSameLength, EcdsaSignatureFormat.IeeeP1363);
+        verifyGarbage.Should().NotThrow();
+        verifyGarbage().Should().BeFalse();
+    }
+
+    [Fact]
+    public void Verify_CrossCurveKey_ReturnsFalseNotThrow()
+    {
+        // A P-256 signature verified against a P-384 key must be a clean false, not an
+        // exception — the field sizes don't even match.
+        var data = "cross curve"u8.ToArray();
+        var p256 = _keyGen.Generate(KeyType.P256);
+        var p384 = _keyGen.Generate(KeyType.P384);
+        var p256Sig = _crypto.Sign(KeyType.P256, p256.PrivateKey, data, EcdsaSignatureFormat.IeeeP1363);
+
+        var act = () => _crypto.Verify(KeyType.P384, p384.PublicKey, data, p256Sig, EcdsaSignatureFormat.IeeeP1363);
+        act.Should().NotThrow();
+        act().Should().BeFalse();
+    }
+
+    [Fact]
+    public void Sign_Ed25519_IgnoresFormatParameter()
+    {
+        var keyPair = _keyGen.Generate(KeyType.Ed25519);
+        var data = "EdDSA wire format is fixed"u8.ToArray();
+
+        var derCall = _crypto.Sign(KeyType.Ed25519, keyPair.PrivateKey, data, EcdsaSignatureFormat.Der);
+        var p1363Call = _crypto.Sign(KeyType.Ed25519, keyPair.PrivateKey, data, EcdsaSignatureFormat.IeeeP1363);
+
+        // Both produce a 64-byte EdDSA signature; the format param has no effect.
+        derCall.Should().HaveCount(64);
+        p1363Call.Should().HaveCount(64);
+        _crypto.Verify(KeyType.Ed25519, keyPair.PublicKey, data, derCall, EcdsaSignatureFormat.IeeeP1363).Should().BeTrue();
+    }
+
+    [Fact]
+    public void Sign_Secp256k1_IsAlreadyP1363Format()
+    {
+        // NBitcoin returns 64-byte compact (R‖S) which is structurally identical to P1363.
+        var keyPair = _keyGen.Generate(KeyType.Secp256k1);
+        var data = "secp256k1 compact"u8.ToArray();
+
+        var sig = _crypto.Sign(KeyType.Secp256k1, keyPair.PrivateKey, data, EcdsaSignatureFormat.IeeeP1363);
+
+        sig.Should().HaveCount(64);
+        _crypto.Verify(KeyType.Secp256k1, keyPair.PublicKey, data, sig).Should().BeTrue();
+    }
+
     [Fact]
     public void SignVerify_Secp256k1_RoundTrip()
     {
