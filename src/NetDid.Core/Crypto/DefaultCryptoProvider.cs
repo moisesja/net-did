@@ -10,7 +10,7 @@ namespace NetDid.Core.Crypto;
 
 /// <summary>
 /// Default implementation of <see cref="ICryptoProvider"/> supporting Ed25519, X25519,
-/// P-256, P-384, secp256k1, and BLS12-381 G1/G2.
+/// P-256, P-384, P-521, secp256k1, and BLS12-381 G1/G2.
 /// </summary>
 public sealed class DefaultCryptoProvider : ICryptoProvider
 {
@@ -21,6 +21,7 @@ public sealed class DefaultCryptoProvider : ICryptoProvider
             KeyType.Ed25519 => SignEd25519(privateKey, data),
             KeyType.P256 => SignEcDsa(privateKey, data, ECCurve.NamedCurves.nistP256, HashAlgorithmName.SHA256),
             KeyType.P384 => SignEcDsa(privateKey, data, ECCurve.NamedCurves.nistP384, HashAlgorithmName.SHA384),
+            KeyType.P521 => SignEcDsa(privateKey, data, ECCurve.NamedCurves.nistP521, HashAlgorithmName.SHA512),
             KeyType.Secp256k1 => SignSecp256k1(privateKey, data),
             KeyType.X25519 => throw new ArgumentException("X25519 is a key agreement algorithm, not a signing algorithm."),
             KeyType.Bls12381G1 or KeyType.Bls12381G2 => SignBls(keyType, privateKey, data),
@@ -35,6 +36,7 @@ public sealed class DefaultCryptoProvider : ICryptoProvider
             KeyType.Ed25519 => VerifyEd25519(publicKey, data, signature),
             KeyType.P256 => VerifyEcDsa(publicKey, data, signature, ECCurve.NamedCurves.nistP256, HashAlgorithmName.SHA256),
             KeyType.P384 => VerifyEcDsa(publicKey, data, signature, ECCurve.NamedCurves.nistP384, HashAlgorithmName.SHA384),
+            KeyType.P521 => VerifyEcDsa(publicKey, data, signature, ECCurve.NamedCurves.nistP521, HashAlgorithmName.SHA512),
             KeyType.Secp256k1 => VerifySecp256k1(publicKey, data, signature),
             KeyType.X25519 => throw new ArgumentException("X25519 is a key agreement algorithm, not a verification algorithm."),
             KeyType.Bls12381G1 or KeyType.Bls12381G2 => VerifyBls(keyType, publicKey, data, signature),
@@ -67,7 +69,8 @@ public sealed class DefaultCryptoProvider : ICryptoProvider
             KeyType.X25519 => DeriveX25519SharedSecret(privateKey, publicKey),
             KeyType.P256 => DeriveNistSharedSecret(privateKey, publicKey, ECCurve.NamedCurves.nistP256),
             KeyType.P384 => DeriveNistSharedSecret(privateKey, publicKey, ECCurve.NamedCurves.nistP384),
-            _ => throw new ArgumentException($"Key type {keyType} is not ECDH-capable. Supported: X25519, P-256, P-384.", nameof(keyType))
+            KeyType.P521 => DeriveNistSharedSecret(privateKey, publicKey, ECCurve.NamedCurves.nistP521),
+            _ => throw new ArgumentException($"Key type {keyType} is not ECDH-capable. Supported: X25519, P-256, P-384, P-521.", nameof(keyType))
         };
     }
 
@@ -179,9 +182,16 @@ public sealed class DefaultCryptoProvider : ICryptoProvider
     private static readonly BigInteger P384Prime = BigInteger.Parse("0FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEFFFFFFFF0000000000000000FFFFFFFF", NumberStyles.HexNumber);
     private static readonly BigInteger P384B = BigInteger.Parse("0B3312FA7E23EE7E4988E056BE3F82D19181D9C6EFE8141120314088F5013875AC656398D8A2ED19D2A85C8EDD3EC2AEF", NumberStyles.HexNumber);
 
+    // NIST P-521 curve parameters for point decompression.
+    // p = 2^521 − 1 (a Mersenne prime, p ≡ 3 mod 4 so the standard sqrt path works).
+    private static readonly BigInteger P521Prime = (BigInteger.One << 521) - 1;
+    private static readonly BigInteger P521B = BigInteger.Parse(
+        "0051953EB9618E1C9A1F929A21A0B68540EEA2DA725B99B315F3B8B489918EF109E156193951EC7E937B1652C0BD3BB1BF073573DF883D2C34F1EF451FD46B503F00",
+        NumberStyles.HexNumber);
+
     /// <summary>
     /// Decompress a compressed SEC1 EC point using the curve equation y² = x³ - 3x + b (mod p).
-    /// Works for NIST P-256 and P-384 where p ≡ 3 (mod 4).
+    /// Works for NIST P-256, P-384, and P-521 (all have p ≡ 3 mod 4).
     /// </summary>
     internal static ECParameters DecompressEcPoint(ReadOnlySpan<byte> compressedPoint, ECCurve curve)
     {
@@ -238,6 +248,7 @@ public sealed class DefaultCryptoProvider : ICryptoProvider
         var oidValue = curve.Oid?.Value;
         if (oidValue == "1.2.840.10045.3.1.7") return (P256Prime, P256B);
         if (oidValue == "1.3.132.0.34") return (P384Prime, P384B);
+        if (oidValue == "1.3.132.0.35") return (P521Prime, P521B);
         throw new ArgumentException("Unsupported curve for EC point decompression.");
     }
 

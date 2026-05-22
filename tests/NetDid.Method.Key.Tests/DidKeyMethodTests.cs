@@ -25,6 +25,7 @@ public class DidKeyMethodTests
     [InlineData(KeyType.X25519)]
     [InlineData(KeyType.P256)]
     [InlineData(KeyType.P384)]
+    [InlineData(KeyType.P521)]
     [InlineData(KeyType.Secp256k1)]
     [InlineData(KeyType.Bls12381G1)]
     [InlineData(KeyType.Bls12381G2)]

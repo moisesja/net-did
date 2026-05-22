@@ -72,6 +72,59 @@ public class DefaultCryptoProviderTests
     }
 
     [Fact]
+    public void SignVerify_P521_RoundTrip()
+    {
+        var keyPair = _keyGen.Generate(KeyType.P521);
+        var data = "Hello, P-521!"u8.ToArray();
+
+        var signature = _crypto.Sign(KeyType.P521, keyPair.PrivateKey, data);
+        var valid = _crypto.Verify(KeyType.P521, keyPair.PublicKey, data, signature);
+
+        valid.Should().BeTrue();
+        keyPair.PublicKey.Length.Should().Be(67); // 1 prefix byte + 66 coordinate bytes
+    }
+
+    [Fact]
+    public void SignVerify_P521_WrongKey_ReturnsFalse()
+    {
+        var keyPair = _keyGen.Generate(KeyType.P521);
+        var otherKey = _keyGen.Generate(KeyType.P521);
+        var data = "Hello, P-521!"u8.ToArray();
+
+        var signature = _crypto.Sign(KeyType.P521, keyPair.PrivateKey, data);
+        var valid = _crypto.Verify(KeyType.P521, otherKey.PublicKey, data, signature);
+
+        valid.Should().BeFalse();
+    }
+
+    [Fact]
+    public void SignVerify_P521_RestoredKey_Works()
+    {
+        var keyPair = _keyGen.Generate(KeyType.P521);
+        var restored = _keyGen.FromPrivateKey(KeyType.P521, keyPair.PrivateKey);
+        var data = "Restored P-521 key"u8.ToArray();
+
+        var signature = _crypto.Sign(KeyType.P521, restored.PrivateKey, data);
+        var valid = _crypto.Verify(KeyType.P521, restored.PublicKey, data, signature);
+
+        valid.Should().BeTrue();
+        restored.PublicKey.Should().Equal(keyPair.PublicKey);
+    }
+
+    [Fact]
+    public void DeriveSharedSecret_P521_AliceBobAgree()
+    {
+        var alice = _keyGen.Generate(KeyType.P521);
+        var bob = _keyGen.Generate(KeyType.P521);
+
+        var aliceShared = _crypto.DeriveSharedSecret(KeyType.P521, alice.PrivateKey, bob.PublicKey);
+        var bobShared = _crypto.DeriveSharedSecret(KeyType.P521, bob.PrivateKey, alice.PublicKey);
+
+        aliceShared.Should().HaveCount(66);
+        aliceShared.Should().Equal(bobShared);
+    }
+
+    [Fact]
     public void SignVerify_Secp256k1_RoundTrip()
     {
         var keyPair = _keyGen.Generate(KeyType.Secp256k1);

@@ -8,7 +8,7 @@ A specification-compliant .NET library for Decentralized Identifiers (DIDs). Net
 ## Features
 
 - **DID methods**: `did:key`, `did:peer`, and `did:webvh` (implemented), `did:ethr` (planned)
-- **Seven key types**: Ed25519, X25519, P-256, P-384, secp256k1, BLS12-381 G1/G2
+- **Eight key types**: Ed25519, X25519, P-256, P-384, P-521, secp256k1, BLS12-381 G1/G2
 - **BBS+ signatures**: Multi-message signing with selective disclosure proofs (IETF draft-10)
 - **W3C DID Core 1.0** compliant DID Document model and serialization
 - **Dual content types**: `application/did+ld+json` (JSON-LD) and `application/did+json`

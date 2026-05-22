@@ -51,7 +51,7 @@ The library generates cryptographic keys using well-tested elliptic curve algori
 | ------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | **Spec Compliance**             | 100% compliant with W3C DID Core 1.0 and each method's published specification. No shortcuts, no partial implementations.                                                                                          |
 | **W3C Test Suite Pass** _(planned)_ | Every DID method implementation should pass the W3C DID Test Suite conformance categories. Not yet integrated — tracked as a future milestone.                                                                   |
-| **Key Generation, Not Storage** | Generate and restore keys across Ed25519, secp256k1, P-256, P-384, X25519, and BLS12-381 (G1/G2). Storage is the caller's responsibility via `IKeyStore`.                                                          |
+| **Key Generation, Not Storage** | Generate and restore keys across Ed25519, secp256k1, P-256, P-384, P-521, X25519, and BLS12-381 (G1/G2). Storage is the caller's responsibility via `IKeyStore`.                                                  |
 | **Pluggable Everything**        | Key stores, HTTP clients, Ethereum RPC providers — all injectable.                                                                                                                                                 |
 | **Zero Opinions on Frameworks** | No dependency on ASP.NET, no DI container requirement. Pure library with optional DI extensions.                                                                                                                   |
 | **Test-Driven**                 | Every public API surface covered by unit tests. Integration tests against real networks (testnets) planned for `did:webvh` and `did:ethr`.                                                                        |
@@ -72,7 +72,7 @@ The library generates cryptographic keys using well-tested elliptic curve algori
 
 | Method        | Status          | Spec Status            | Create | Resolve | Update         | Deactivate     | Service Endpoints | Key Types                                              |
 | ------------- | --------------- | ---------------------- | ------ | ------- | -------------- | -------------- | ----------------- | ------------------------------------------------------ |
-| **did:key**   | ✅ Implemented  | W3C CCG Final          | ✅     | ✅      | ❌ (immutable) | ❌ (immutable) | ❌                | Ed25519, P-256, P-384, secp256k1, X25519, BLS12-381 G2 |
+| **did:key**   | ✅ Implemented  | W3C CCG Final          | ✅     | ✅      | ❌ (immutable) | ❌ (immutable) | ❌                | Ed25519, P-256, P-384, P-521, secp256k1, X25519, BLS12-381 G2 |
 | **did:peer**  | ✅ Implemented  | DIF v2 (numalgo 0,2,4) | ✅     | ✅      | ❌ (static)    | ❌             | ✅ (numalgo 2,4)  | Ed25519, X25519                                        |
 | **did:webvh** | ✅ Implemented | DIF v1.0               | ✅     | ✅      | ✅             | ✅             | ✅                | Ed25519 (required), P-256 (optional)                   |
 | **did:ethr**  | 🔲 Planned     | ERC-1056 / DIF         | ✅     | ✅      | ✅             | ✅             | ✅                | secp256k1 (primary), Ed25519 (delegate)                |
@@ -120,7 +120,7 @@ Each method implements the standard DID CRUD lifecycle, but the mechanics differ
 │                                                              │
 │  ┌─────────────────────────────────────────────────────────┐  │
 │  │              Cryptographic Primitives                    │  │
-│  │  Ed25519, X25519, P-256, P-384, secp256k1, BLS12-381   │  │
+│  │  Ed25519, X25519, P-256, P-384, P-521, secp256k1, BLS  │  │
 │  │  BBS+ Signatures, Multicodec, Multibase                 │  │
 │  └─────────────────────────────────────────────────────────┘  │
 │                                                              │
@@ -480,6 +480,7 @@ for each method.
 | **X25519**       | ECDH           | `0xec` (public)                     | Key agreement only. Used in did:peer and did:key.                                              |
 | **P-256**        | ECDSA (ES256)  | `0x8024` (public)                   | Signing, verification. Optional in did:webvh, supported in did:key.                            |
 | **P-384**        | ECDSA (ES384)  | `0x8124` (public)                   | Signing, verification. Supported in did:key. Common in government/enterprise contexts.         |
+| **P-521**        | ECDSA (ES512)  | `0x1202` (public)                   | Signing, verification, ECDH. Supported in did:key. Hashes with SHA-512; coord length 66 bytes. |
 | **secp256k1**    | ECDSA (ES256K) | `0xe7` (public)                     | Signing, verification. Required by did:ethr.                                                   |
 | **BLS12-381 G1** | BBS (BLS)      | `0xea` (public)                     | BBS+ signature verification (short signatures). Used in did:key.                               |
 | **BLS12-381 G2** | BBS (BLS)      | `0xeb` (public)                     | BBS+ signing, selective disclosure, ZKPs. Primary curve for BBS+ credentials. Used in did:key. |
@@ -544,7 +545,7 @@ public interface ICryptoProvider
     // --- Key Agreement (X25519 ECDH + HKDF-SHA256, convenience wrapper) ---
     byte[] KeyAgreement(ReadOnlySpan<byte> privateKey, ReadOnlySpan<byte> publicKey);
 
-    // --- Raw ECDH (X25519, P-256, P-384): returns the unprocessed shared secret "Z" ---
+    // --- Raw ECDH (X25519, P-256, P-384, P-521): returns the unprocessed shared secret "Z" ---
     // The caller is responsible for applying its own KDF (Concat KDF, HKDF, KMAC). Use this
     // when building JOSE ECDH-ES / ECDH-1PU, DIDComm encryption, or any other protocol that
     // mandates its own derivation policy.

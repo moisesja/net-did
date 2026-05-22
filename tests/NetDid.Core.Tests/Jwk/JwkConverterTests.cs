@@ -57,6 +57,18 @@ public class JwkConverterTests
     }
 
     [Fact]
+    public void ToPublicJwk_P521_ProducesCorrectFormat()
+    {
+        var keyPair = _keyGen.Generate(KeyType.P521);
+        var jwk = JwkConverter.ToPublicJwk(keyPair);
+
+        jwk.Kty.Should().Be("EC");
+        jwk.Crv.Should().Be("P-521"); // RFC 7518 §6.2.1.1 — exact case-sensitive name
+        jwk.X.Should().NotBeNullOrEmpty();
+        jwk.Y.Should().NotBeNullOrEmpty();
+    }
+
+    [Fact]
     public void ToPublicJwk_Secp256k1_ProducesCorrectFormat()
     {
         var keyPair = _keyGen.Generate(KeyType.Secp256k1);
@@ -127,6 +139,18 @@ public class JwkConverterTests
     }
 
     [Fact]
+    public void ExtractPublicKey_P521_RoundTrips()
+    {
+        var keyPair = _keyGen.Generate(KeyType.P521);
+        var jwk = JwkConverter.ToPublicJwk(keyPair);
+
+        var (keyType, publicKey) = JwkConverter.ExtractPublicKey(jwk);
+
+        keyType.Should().Be(KeyType.P521);
+        publicKey.Should().Equal(keyPair.PublicKey);
+    }
+
+    [Fact]
     public void ExtractPublicKey_Secp256k1_RoundTrips()
     {
         var keyPair = _keyGen.Generate(KeyType.Secp256k1);
@@ -159,7 +183,8 @@ public class JwkConverterTests
     [Fact]
     public void ExtractPublicKey_UnsupportedEcCrv_Throws()
     {
-        var jwk = new Microsoft.IdentityModel.Tokens.JsonWebKey { Kty = "EC", Crv = "P-521" };
+        // brainpoolP256r1 is a defined IANA EC curve but not supported by this library.
+        var jwk = new Microsoft.IdentityModel.Tokens.JsonWebKey { Kty = "EC", Crv = "brainpoolP256r1" };
 
         var act = () => JwkConverter.ExtractPublicKey(jwk);
         act.Should().Throw<ArgumentException>();

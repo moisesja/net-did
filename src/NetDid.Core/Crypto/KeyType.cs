@@ -8,5 +8,6 @@ public enum KeyType
     P384,
     Secp256k1,
     Bls12381G1,
-    Bls12381G2
+    Bls12381G2,
+    P521
 }

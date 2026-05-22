@@ -75,7 +75,24 @@ Console.WriteLine($"  JWK kty: {jwkVm.PublicKeyJwk!.Kty}, crv: {jwkVm.PublicKeyJ
 Console.WriteLine();
 
 // -------------------------------------------------------
-// 5. BLS12-381 G2 (for selective disclosure)
+// 5. P-521 (ES512) — high-strength NIST curve
+// -------------------------------------------------------
+Console.WriteLine("=== did:key — P-521 (ES512) ===");
+
+var p521Result = await didKey.CreateAsync(new DidKeyCreateOptions
+{
+    KeyType = KeyType.P521
+});
+
+var p521Vm = p521Result.DidDocument.VerificationMethod![0];
+Console.WriteLine($"  Created: {p521Result.Did}");
+Console.WriteLine($"  VM type: {p521Vm.Type}");
+Console.WriteLine($"  PubKey:  compressed SEC1 (1 prefix + 66 X coord = 67 bytes)");
+Console.WriteLine($"  Signs with SHA-512 (JOSE alg \"ES512\")");
+Console.WriteLine();
+
+// -------------------------------------------------------
+// 6. BLS12-381 G2 (for selective disclosure)
 // -------------------------------------------------------
 Console.WriteLine("=== did:key — BLS12-381 G2 ===");
 
@@ -90,7 +107,7 @@ Console.WriteLine($"  Assert:  {blsResult.DidDocument.AssertionMethod?.Count ?? 
 Console.WriteLine();
 
 // -------------------------------------------------------
-// 6. Serialize to JSON-LD
+// 7. Serialize to JSON-LD
 // -------------------------------------------------------
 Console.WriteLine("=== Serialization ===");
 
