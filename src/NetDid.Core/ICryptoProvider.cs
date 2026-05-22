@@ -1,3 +1,4 @@
+using System.Security.Cryptography;
 using NetDid.Core.Crypto;
 
 namespace NetDid.Core;
@@ -9,7 +10,36 @@ public interface ICryptoProvider
 {
     byte[] Sign(KeyType keyType, ReadOnlySpan<byte> privateKey, ReadOnlySpan<byte> data);
     bool Verify(KeyType keyType, ReadOnlySpan<byte> publicKey, ReadOnlySpan<byte> data, ReadOnlySpan<byte> signature);
+
+    /// <summary>
+    /// Performs X25519 key agreement and returns an HKDF-SHA256-derived 32-byte key. Convenience wrapper
+    /// for the common DIDComm/did:peer use case. Prefer <see cref="DeriveSharedSecret"/> when the caller
+    /// needs to apply its own KDF (Concat KDF, HKDF with custom info, KMAC, etc.) or when working with
+    /// the NIST P-curves.
+    /// </summary>
     byte[] KeyAgreement(ReadOnlySpan<byte> privateKey, ReadOnlySpan<byte> publicKey);
+
+    /// <summary>
+    /// Compute the raw ECDH shared secret "Z" between a local private key and a remote public key
+    /// on the same curve. No KDF, no truncation, no normalization is applied. Callers are responsible
+    /// for applying their own key-derivation function (Concat KDF, HKDF, KMAC, etc.) to the returned
+    /// bytes before using them as keying material.
+    /// </summary>
+    /// <param name="keyType">
+    /// One of: <see cref="KeyType.X25519"/>, <see cref="KeyType.P256"/>, <see cref="KeyType.P384"/>.
+    /// (P-521 added in issue #61.) Other key types throw <see cref="ArgumentException"/>.
+    /// </param>
+    /// <param name="privateKey">Raw private key bytes for <paramref name="keyType"/>.</param>
+    /// <param name="publicKey">Remote public key in the canonical encoding for <paramref name="keyType"/>:
+    /// raw 32 bytes for X25519; SEC1 compressed (0x02/0x03 || X) or uncompressed (0x04 || X || Y) for NIST curves.</param>
+    /// <returns>The raw ECDH shared secret "Z": 32 bytes for X25519 and P-256; 48 bytes for P-384 (X-coordinate of the shared point).</returns>
+    /// <exception cref="ArgumentException">If <paramref name="keyType"/> is not an ECDH-capable curve.</exception>
+    /// <exception cref="CryptographicException">If key agreement fails (e.g. invalid point, mismatched curve).</exception>
+    /// <remarks>
+    /// This is a low-level primitive. Apply a NIST SP 800-56A-conformant KDF (Concat KDF, HKDF, KMAC)
+    /// before using the output as keying material. See RFC 7518 §4.6 for the JOSE ECDH-ES binding.
+    /// </remarks>
+    byte[] DeriveSharedSecret(KeyType keyType, ReadOnlySpan<byte> privateKey, ReadOnlySpan<byte> publicKey);
 }
 
 /// <summary>

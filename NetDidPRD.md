@@ -541,12 +541,20 @@ public interface ICryptoProvider
     // --- Verification (public-key-only operations) ---
     bool Verify(KeyType keyType, ReadOnlySpan<byte> publicKey, ReadOnlySpan<byte> data, ReadOnlySpan<byte> signature);
 
-    // --- Key Agreement (X25519 ECDH) ---
+    // --- Key Agreement (X25519 ECDH + HKDF-SHA256, convenience wrapper) ---
     byte[] KeyAgreement(ReadOnlySpan<byte> privateKey, ReadOnlySpan<byte> publicKey);
+
+    // --- Raw ECDH (X25519, P-256, P-384): returns the unprocessed shared secret "Z" ---
+    // The caller is responsible for applying its own KDF (Concat KDF, HKDF, KMAC). Use this
+    // when building JOSE ECDH-ES / ECDH-1PU, DIDComm encryption, or any other protocol that
+    // mandates its own derivation policy.
+    byte[] DeriveSharedSecret(KeyType keyType, ReadOnlySpan<byte> privateKey, ReadOnlySpan<byte> publicKey);
 }
 ```
 
 > **Note**: `ICryptoProvider.Sign` is a low-level primitive used internally by `KeyPairSigner`. Application code and DID method implementations should use `ISigner.SignAsync()` instead, which works with both in-memory keys and HSM-backed keys.
+
+> **Note on `DeriveSharedSecret`**: Returns the raw ECDH shared secret with no derivation applied — 32 bytes for X25519 and P-256, 48 bytes for P-384. JOSE / DIDComm consumers MUST run the result through a NIST SP 800-56A-conformant KDF (e.g. Concat KDF per RFC 7518 §4.6) before using it as a content encryption key. Non-ECDH key types (Ed25519, secp256k1, BLS12-381) throw `ArgumentException`.
 
 ### 4.3.1 ISigner — The Operational Signing Interface
 

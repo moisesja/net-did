@@ -60,6 +60,42 @@ public sealed class DefaultCryptoProvider : ICryptoProvider
         return derivedKey.Export(KeyBlobFormat.RawSymmetricKey);
     }
 
+    public byte[] DeriveSharedSecret(KeyType keyType, ReadOnlySpan<byte> privateKey, ReadOnlySpan<byte> publicKey)
+    {
+        return keyType switch
+        {
+            KeyType.X25519 => DeriveX25519SharedSecret(privateKey, publicKey),
+            KeyType.P256 => DeriveNistSharedSecret(privateKey, publicKey, ECCurve.NamedCurves.nistP256),
+            KeyType.P384 => DeriveNistSharedSecret(privateKey, publicKey, ECCurve.NamedCurves.nistP384),
+            _ => throw new ArgumentException($"Key type {keyType} is not ECDH-capable. Supported: X25519, P-256, P-384.", nameof(keyType))
+        };
+    }
+
+    private static byte[] DeriveX25519SharedSecret(ReadOnlySpan<byte> privateKey, ReadOnlySpan<byte> publicKey)
+    {
+        var algorithm = NSec.Cryptography.KeyAgreementAlgorithm.X25519;
+
+        using var key = Key.Import(algorithm, privateKey, KeyBlobFormat.RawPrivateKey);
+        var pubKey = NSec.Cryptography.PublicKey.Import(algorithm, publicKey, KeyBlobFormat.RawPublicKey);
+
+        using var sharedSecret = algorithm.Agree(key, pubKey,
+            new SharedSecretCreationParameters { ExportPolicy = KeyExportPolicies.AllowPlaintextExport })
+            ?? throw new CryptographicException("X25519 key agreement failed.");
+
+        return sharedSecret.Export(SharedSecretBlobFormat.RawSharedSecret);
+    }
+
+    private static byte[] DeriveNistSharedSecret(ReadOnlySpan<byte> privateKey, ReadOnlySpan<byte> publicKey, ECCurve curve)
+    {
+        using var localEcdh = ECDiffieHellman.Create();
+        localEcdh.ImportParameters(ImportEcPrivateKey(privateKey, curve));
+
+        using var remoteEcdh = ECDiffieHellman.Create();
+        remoteEcdh.ImportParameters(ImportEcPublicKey(publicKey, curve));
+
+        return localEcdh.DeriveRawSecretAgreement(remoteEcdh.PublicKey);
+    }
+
     // --- Ed25519 (NSec.Cryptography) ---
 
     private static byte[] SignEd25519(ReadOnlySpan<byte> privateKey, ReadOnlySpan<byte> data)

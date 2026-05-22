@@ -108,4 +108,26 @@ var peer4Resolved = await didPeer.ResolveAsync(peer4.Did.Value);
 Console.WriteLine($"  Resolved VMs: {peer4Resolved.DidDocument!.VerificationMethod!.Count}");
 Console.WriteLine();
 
+// -------------------------------------------------------
+// 4. Raw ECDH key agreement — for DIDComm / JOSE consumers
+//    DeriveSharedSecret returns the unprocessed shared secret "Z" (no KDF).
+//    Apply a Concat KDF, HKDF, or KMAC before using as keying material.
+// -------------------------------------------------------
+Console.WriteLine("=== Raw ECDH — DeriveSharedSecret ===");
+
+var aliceX = keyGen.Generate(KeyType.X25519);
+var bobX = keyGen.Generate(KeyType.X25519);
+
+var aliceZ = crypto.DeriveSharedSecret(KeyType.X25519, aliceX.PrivateKey, bobX.PublicKey);
+var bobZ = crypto.DeriveSharedSecret(KeyType.X25519, bobX.PrivateKey, aliceX.PublicKey);
+
+Console.WriteLine($"  X25519  Z length: {aliceZ.Length} bytes (raw, no KDF)");
+Console.WriteLine($"  X25519  Z match:  {aliceZ.AsSpan().SequenceEqual(bobZ)}");
+
+var aliceP = keyGen.Generate(KeyType.P256);
+var bobP = keyGen.Generate(KeyType.P256);
+var pZ = crypto.DeriveSharedSecret(KeyType.P256, aliceP.PrivateKey, bobP.PublicKey);
+Console.WriteLine($"  P-256   Z length: {pZ.Length} bytes (X-coordinate of shared point)");
+Console.WriteLine();
+
 Console.WriteLine("Done! All did:peer examples completed successfully.");
