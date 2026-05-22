@@ -15,6 +15,7 @@ public static class KeyTypeExtensions
         [KeyType.X25519] = Multicodec.X25519Pub,
         [KeyType.P256] = Multicodec.P256Pub,
         [KeyType.P384] = Multicodec.P384Pub,
+        [KeyType.P521] = Multicodec.P521Pub,
         [KeyType.Secp256k1] = Multicodec.Secp256k1Pub,
         [KeyType.Bls12381G1] = Multicodec.Bls12381G1Pub,
         [KeyType.Bls12381G2] = Multicodec.Bls12381G2Pub,
@@ -45,6 +46,7 @@ public static class KeyTypeExtensions
         KeyType.X25519 => length == 32,
         KeyType.P256 => length == 33,       // compressed SEC1 point
         KeyType.P384 => length == 49,       // compressed SEC1 point
+        KeyType.P521 => length == 67,       // compressed SEC1 point (1 + 66, ceil(521/8) = 66)
         KeyType.Secp256k1 => length == 33,  // compressed SEC1 point
         KeyType.Bls12381G1 => length == 48,
         KeyType.Bls12381G2 => length == 96,
@@ -65,6 +67,9 @@ public static class KeyTypeExtensions
 
             case KeyType.P384 when publicKey.Length == 97 && publicKey[0] == 0x04:
                 return CompressNistPoint(publicKey, 48);
+
+            case KeyType.P521 when publicKey.Length == 133 && publicKey[0] == 0x04:
+                return CompressNistPoint(publicKey, 66);
 
             case KeyType.Secp256k1 when publicKey.Length == 65 && publicKey[0] == 0x04:
             {
@@ -94,6 +99,8 @@ public static class KeyTypeExtensions
                     return ValidateNistPoint(rawKey, ECCurve.NamedCurves.nistP256);
                 case KeyType.P384:
                     return ValidateNistPoint(rawKey, ECCurve.NamedCurves.nistP384);
+                case KeyType.P521:
+                    return ValidateNistPoint(rawKey, ECCurve.NamedCurves.nistP521);
                 case KeyType.Secp256k1:
                     return ECPubKey.TryCreate(rawKey, null, out _, out _);
                 default:
@@ -127,7 +134,7 @@ public static class KeyTypeExtensions
         // This is necessary because DecompressEcPoint computes a candidate Y for any X,
         // but that Y is only valid if x³ + ax + b is a quadratic residue mod p.
         var (p, b) = DefaultCryptoProvider.GetCurveParams(curve);
-        var a = p - 3; // a = -3 for both P-256 and P-384
+        var a = p - 3; // a = -3 for P-256, P-384, and P-521
 
         var xInt = new System.Numerics.BigInteger(x, isUnsigned: true, isBigEndian: true);
         var yInt = new System.Numerics.BigInteger(y, isUnsigned: true, isBigEndian: true);

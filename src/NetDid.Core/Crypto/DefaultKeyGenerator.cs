@@ -18,6 +18,7 @@ public sealed class DefaultKeyGenerator : IKeyGenerator
             KeyType.X25519 => GenerateX25519(),
             KeyType.P256 => GenerateEcDsa(ECCurve.NamedCurves.nistP256, KeyType.P256),
             KeyType.P384 => GenerateEcDsa(ECCurve.NamedCurves.nistP384, KeyType.P384),
+            KeyType.P521 => GenerateEcDsa(ECCurve.NamedCurves.nistP521, KeyType.P521),
             KeyType.Secp256k1 => GenerateSecp256k1(),
             KeyType.Bls12381G1 or KeyType.Bls12381G2 => GenerateBls(keyType),
             _ => throw new ArgumentException($"Unsupported key type: {keyType}")
@@ -32,6 +33,7 @@ public sealed class DefaultKeyGenerator : IKeyGenerator
             KeyType.X25519 => RestoreX25519(privateKey),
             KeyType.P256 => RestoreEcDsa(privateKey, ECCurve.NamedCurves.nistP256, KeyType.P256),
             KeyType.P384 => RestoreEcDsa(privateKey, ECCurve.NamedCurves.nistP384, KeyType.P384),
+            KeyType.P521 => RestoreEcDsa(privateKey, ECCurve.NamedCurves.nistP521, KeyType.P521),
             KeyType.Secp256k1 => RestoreSecp256k1(privateKey),
             KeyType.Bls12381G1 or KeyType.Bls12381G2 => RestoreBls(keyType, privateKey),
             _ => throw new ArgumentException($"Unsupported key type: {keyType}")

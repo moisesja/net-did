@@ -20,6 +20,7 @@ public static class JwkConverter
             KeyType.X25519 => CreateOkpJwk("X25519", publicKey),
             KeyType.P256 => CreateEcJwk("P-256", publicKey),
             KeyType.P384 => CreateEcJwk("P-384", publicKey),
+            KeyType.P521 => CreateEcJwk("P-521", publicKey),
             KeyType.Secp256k1 => CreateEcJwk("secp256k1", publicKey),
             KeyType.Bls12381G1 => CreateOkpJwk("BLS12381G1", publicKey),
             KeyType.Bls12381G2 => CreateOkpJwk("BLS12381G2", publicKey),
@@ -37,6 +38,7 @@ public static class JwkConverter
             KeyType.X25519 => CreateOkpJwk("X25519", keyPair.PublicKey),
             KeyType.P256 => CreateEcJwk("P-256", keyPair.PublicKey),
             KeyType.P384 => CreateEcJwk("P-384", keyPair.PublicKey),
+            KeyType.P521 => CreateEcJwk("P-521", keyPair.PublicKey),
             KeyType.Secp256k1 => CreateEcJwk("secp256k1", keyPair.PublicKey),
             KeyType.Bls12381G1 => CreateOkpJwk("BLS12381G1", keyPair.PublicKey),
             KeyType.Bls12381G2 => CreateOkpJwk("BLS12381G2", keyPair.PublicKey),
@@ -81,6 +83,7 @@ public static class JwkConverter
             {
                 "P-256" => KeyType.P256,
                 "P-384" => KeyType.P384,
+                "P-521" => KeyType.P521,
                 "secp256k1" => KeyType.Secp256k1,
                 _ => throw new ArgumentException($"Unsupported EC curve: {jwk.Crv}")
             };
@@ -146,6 +149,7 @@ public static class JwkConverter
         {
             "P-256" => ECCurve.NamedCurves.nistP256,
             "P-384" => ECCurve.NamedCurves.nistP384,
+            "P-521" => ECCurve.NamedCurves.nistP521,
             _ => throw new ArgumentException($"Unsupported curve for decompression: {crv}")
         };
         var parameters = DefaultCryptoProvider.DecompressEcPoint(compressedPoint, curve);

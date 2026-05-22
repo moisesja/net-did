@@ -31,6 +31,7 @@ public sealed class DidPeerMethod : DidMethodBase
         KeyType.X25519,
         KeyType.P256,
         KeyType.P384,
+        KeyType.P521,
         KeyType.Secp256k1,
         KeyType.Bls12381G1,
         KeyType.Bls12381G2,
