@@ -1,3 +1,4 @@
+using NetCid;
 using NetDid.Core;
 using NetDid.Core.Crypto;
 using NetDid.Core.Model;
@@ -109,25 +110,81 @@ Console.WriteLine($"  Resolved VMs: {peer4Resolved.DidDocument!.VerificationMeth
 Console.WriteLine();
 
 // -------------------------------------------------------
-// 4. Raw ECDH key agreement — for DIDComm / JOSE consumers
-//    DeriveSharedSecret returns the unprocessed shared secret "Z" (no KDF).
-//    Apply a Concat KDF, HKDF, or KMAC before using as keying material.
+// 4. End-to-end ECDH between two did:peer:2 identities
+//    Each side publishes a did:peer:2 with an X25519 key marked
+//    KeyAgreement (purpose 'E'). To establish a shared secret —
+//    e.g. as the base "Z" for a DIDComm anoncrypt JWE — each side
+//    resolves the other's DID, extracts the X25519 key from the
+//    resolved Document, and pairs it with its own private key
+//    via DeriveSharedSecret. No HKDF / Concat KDF is applied; the
+//    caller is responsible for running Z through the JOSE KDF
+//    appropriate to its envelope.
 // -------------------------------------------------------
-Console.WriteLine("=== Raw ECDH — DeriveSharedSecret ===");
+Console.WriteLine("=== did:peer — ECDH between two peers (DIDComm setup) ===");
 
-var aliceX = keyGen.Generate(KeyType.X25519);
-var bobX = keyGen.Generate(KeyType.X25519);
+// Alice's identity. She holds the X25519 private key locally; only the
+// public key is published via her did:peer DID Document.
+var aliceX25519 = keyGen.Generate(KeyType.X25519);
+var aliceAuth = keyGen.Generate(KeyType.Ed25519);
+var alicePeer = await didPeer.CreateAsync(new DidPeerCreateOptions
+{
+    Numalgo = PeerNumalgo.Two,
+    Keys =
+    [
+        new PeerKeyPurpose(new KeyPairSigner(aliceAuth, crypto), PeerPurpose.Authentication),
+        new PeerKeyPurpose(new KeyPairSigner(aliceX25519, crypto), PeerPurpose.KeyAgreement)
+    ]
+});
 
-var aliceZ = crypto.DeriveSharedSecret(KeyType.X25519, aliceX.PrivateKey, bobX.PublicKey);
-var bobZ = crypto.DeriveSharedSecret(KeyType.X25519, bobX.PrivateKey, aliceX.PublicKey);
+// Bob's identity, same shape.
+var bobX25519 = keyGen.Generate(KeyType.X25519);
+var bobAuth = keyGen.Generate(KeyType.Ed25519);
+var bobPeer = await didPeer.CreateAsync(new DidPeerCreateOptions
+{
+    Numalgo = PeerNumalgo.Two,
+    Keys =
+    [
+        new PeerKeyPurpose(new KeyPairSigner(bobAuth, crypto), PeerPurpose.Authentication),
+        new PeerKeyPurpose(new KeyPairSigner(bobX25519, crypto), PeerPurpose.KeyAgreement)
+    ]
+});
 
-Console.WriteLine($"  X25519  Z length: {aliceZ.Length} bytes (raw, no KDF)");
-Console.WriteLine($"  X25519  Z match:  {aliceZ.AsSpan().SequenceEqual(bobZ)}");
+Console.WriteLine($"  Alice DID: {alicePeer.Did.Value[..40]}…");
+Console.WriteLine($"  Bob   DID: {bobPeer.Did.Value[..40]}…");
 
-var aliceP = keyGen.Generate(KeyType.P256);
-var bobP = keyGen.Generate(KeyType.P256);
-var pZ = crypto.DeriveSharedSecret(KeyType.P256, aliceP.PrivateKey, bobP.PublicKey);
-Console.WriteLine($"  P-256   Z length: {pZ.Length} bytes (X-coordinate of shared point)");
+// Bob's side: resolve Alice's DID, pull the X25519 keyAgreement key
+// out of the resolved Document, and use his own X25519 private key
+// to derive Z = ECDH(bobPriv, alicePub).
+var aliceResolved = await didPeer.ResolveAsync(alicePeer.Did.Value);
+var aliceKeyAgreementPubKey = ExtractX25519PublicKey(aliceResolved.DidDocument!);
+var bobSideZ = crypto.DeriveSharedSecret(
+    KeyType.X25519, bobX25519.PrivateKey, aliceKeyAgreementPubKey);
+
+// Alice's side: symmetric — resolve Bob's DID and derive against his
+// published X25519 key. Both parties must compute the same Z.
+var bobResolved = await didPeer.ResolveAsync(bobPeer.Did.Value);
+var bobKeyAgreementPubKey = ExtractX25519PublicKey(bobResolved.DidDocument!);
+var aliceSideZ = crypto.DeriveSharedSecret(
+    KeyType.X25519, aliceX25519.PrivateKey, bobKeyAgreementPubKey);
+
+Console.WriteLine($"  Shared Z length:  {aliceSideZ.Length} bytes (raw — feed to JOSE Concat KDF)");
+Console.WriteLine($"  Both sides agree: {aliceSideZ.AsSpan().SequenceEqual(bobSideZ)}");
 Console.WriteLine();
 
 Console.WriteLine("Done! All did:peer examples completed successfully.");
+
+// Pulls the first KeyAgreement verification method out of a resolved
+// DID Document and decodes its publicKeyMultibase back to raw X25519
+// bytes. Real DIDComm code would also assert keyType == X25519 and
+// handle the case of multiple keyAgreement entries.
+static byte[] ExtractX25519PublicKey(DidDocument doc)
+{
+    var kaRef = doc.KeyAgreement![0];
+    var kaVm = kaRef.IsReference
+        ? doc.VerificationMethod!.Single(v => v.Id == kaRef.Reference)
+        : kaRef.EmbeddedMethod!;
+
+    var multicodecPrefixed = Multibase.Decode(kaVm.PublicKeyMultibase!);
+    var (_, rawKey) = Multicodec.Decode(multicodecPrefixed);
+    return rawKey;
+}
