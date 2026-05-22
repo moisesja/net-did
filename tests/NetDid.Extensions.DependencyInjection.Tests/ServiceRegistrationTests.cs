@@ -1,3 +1,4 @@
+using System.Net;
 using FluentAssertions;
 using Microsoft.Extensions.DependencyInjection;
 using NetDid.Core;
@@ -6,11 +7,42 @@ using NetDid.Core.Model;
 using NetDid.Core.Resolution;
 using NetDid.Extensions.DependencyInjection;
 using NetDid.Method.Key;
+using NetDid.Method.WebVh;
 
 namespace NetDid.Extensions.DependencyInjection.Tests;
 
 public class ServiceRegistrationTests
 {
+    [Fact]
+    public async Task AddDidWebVh_FlowsCustomOptionsIntoClient()
+    {
+        // A 16-byte body must be rejected by a client built with a 4-byte
+        // limit, proving the options passed to AddDidWebVh reach the typed
+        // client through the IHttpClientFactory.
+        var services = new ServiceCollection();
+        services.AddNetDid(builder =>
+            builder.AddDidWebVh(new WebVhHttpClientOptions { MaxDidLogBytes = 4 }));
+        services.AddHttpClient<DefaultWebVhHttpClient>()
+            .ConfigurePrimaryHttpMessageHandler(() => new FixedBodyHandler(new byte[16]));
+        var provider = services.BuildServiceProvider();
+
+        var client = provider.GetRequiredService<IWebVhHttpClient>();
+        var result = await client.FetchDidLogAsync(
+            new Uri("https://example.com/.well-known/did.jsonl"));
+
+        result.Should().BeNull();
+    }
+
+    private sealed class FixedBodyHandler(byte[] body) : HttpMessageHandler
+    {
+        protected override Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request, CancellationToken cancellationToken)
+            => Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new ByteArrayContent(body)
+            });
+    }
+
     [Fact]
     public void AddNetDid_RegistersSharedInfrastructure()
     {

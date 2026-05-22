@@ -76,6 +76,21 @@ public class DefaultWebVhHttpClientTests
     }
 
     [Fact]
+    public async Task FetchDidLog_OneByteOverLimitWithNoContentLength_ReturnsNull()
+    {
+        // Pins the exact streaming boundary: maxBytes is accepted, maxBytes + 1
+        // is not, even when the server hides the size by omitting Content-Length.
+        var options = new WebVhHttpClientOptions { MaxDidLogBytes = 1024 };
+        var oversized = new byte[options.MaxDidLogBytes + 1];
+        var handler = new StubHttpHandler(oversized, declaredContentLength: null);
+        var client = BuildClient(handler, options);
+
+        var result = await client.FetchDidLogAsync(LogUrl);
+
+        result.Should().BeNull();
+    }
+
+    [Fact]
     public async Task FetchDidLog_ExactlyAtLimit_ReturnsBytes()
     {
         var options = new WebVhHttpClientOptions { MaxDidLogBytes = 1024 };
