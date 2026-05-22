@@ -9,17 +9,13 @@ namespace NetDid.Core.Crypto;
 /// </summary>
 public static class KeyTypeExtensions
 {
-    // Multicodec value for compressed P-521 public key per the multicodec registry
-    // (https://github.com/multiformats/multicodec). NetCid does not yet expose this constant.
-    private const ulong P521PubMulticodec = 0x1202;
-
     private static readonly Dictionary<KeyType, ulong> CodeByKeyType = new()
     {
         [KeyType.Ed25519] = Multicodec.Ed25519Pub,
         [KeyType.X25519] = Multicodec.X25519Pub,
         [KeyType.P256] = Multicodec.P256Pub,
         [KeyType.P384] = Multicodec.P384Pub,
-        [KeyType.P521] = P521PubMulticodec,
+        [KeyType.P521] = Multicodec.P521Pub,
         [KeyType.Secp256k1] = Multicodec.Secp256k1Pub,
         [KeyType.Bls12381G1] = Multicodec.Bls12381G1Pub,
         [KeyType.Bls12381G2] = Multicodec.Bls12381G2Pub,
