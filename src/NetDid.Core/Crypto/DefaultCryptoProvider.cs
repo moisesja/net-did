@@ -195,18 +195,34 @@ public sealed class DefaultCryptoProvider : ICryptoProvider
         {
             // Uncompressed: 0x04 || x || y
             var coordLen = (publicKey.Length - 1) / 2;
+            var x = publicKey.Slice(1, coordLen).ToArray();
+            var y = publicKey.Slice(1 + coordLen, coordLen).ToArray();
+
+            // Defense against the invalid-curve attack: reject off-curve (x, y) before
+            // exposing them to ECDH / ECDSA via ECParameters.
+            EcPointValidator.EnsureOnCurve(CurveToKeyType(curve), x, y);
+
             return new ECParameters
             {
                 Curve = curve,
-                Q = new ECPoint
-                {
-                    X = publicKey.Slice(1, coordLen).ToArray(),
-                    Y = publicKey.Slice(1 + coordLen, coordLen).ToArray()
-                }
+                Q = new ECPoint { X = x, Y = y }
             };
         }
 
         throw new ArgumentException("Invalid EC public key format. Expected compressed (0x02/0x03) or uncompressed (0x04) SEC1 point.");
+    }
+
+    private static KeyType CurveToKeyType(ECCurve curve)
+    {
+        var oid = curve.Oid?.Value;
+        return oid switch
+        {
+            "1.2.840.10045.3.1.7" => KeyType.P256,
+            "1.3.132.0.34" => KeyType.P384,
+            "1.3.132.0.35" => KeyType.P521,
+            "1.3.132.0.10" => KeyType.Secp256k1,
+            _ => throw new ArgumentException($"Unsupported EC curve OID: {oid}", nameof(curve))
+        };
     }
 
     // NIST P-256 curve parameters for point decompression
@@ -258,6 +274,11 @@ public sealed class DefaultCryptoProvider : ICryptoProvider
             yBytes.CopyTo(padded, coordLen - yBytes.Length);
             yBytes = padded;
         }
+
+        // Defense-in-depth: even after our own modular sqrt, validate the resulting (x, y)
+        // satisfies the curve equation. A bug in BigInteger / curve params would otherwise
+        // silently produce an off-curve key that imports into ECDsa without error.
+        EcPointValidator.EnsureOnCurve(CurveToKeyType(curve), xBytes, yBytes);
 
         return new ECParameters
         {
