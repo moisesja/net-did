@@ -533,21 +533,30 @@ Console.WriteLine(DidDocumentSerializer.Serialize(resolved.DidDocument!));
 
 ## Implementation order
 
-- [ ] 1. Add `acryptohashnet` to `Directory.Packages.props`; scaffold three sln entries: `src\NetDid.Method.Ethr`, `tests\NetDid.Method.Ethr.Tests`, `samples\NetDid.Samples.DidEthr`
-- [ ] 2. `Crypto/EthereumAddress.cs` + `EthereumAddressTests.cs`
-- [ ] 3. `Abi/AbiEncoder.cs` + `Abi/AbiDecoder.cs` + `AbiDecoderTests.cs`
-- [ ] 4. `Erc1056/Erc1056Topics.cs` + `Erc1056Events.cs` + `Erc1056Calls.cs` + `Erc1056EventParser.cs` + `Erc1056EventParserTests.cs`
-- [ ] 5. `Crypto/EthereumIdentifier.cs`
-- [ ] 6. `Rpc/IEthereumRpcClient.cs` + `DefaultEthereumRpcClient.cs` + supporting models
-- [ ] 7. `Resolution/EthrDocumentBuilder.cs` + `EthrDocumentBuilderTests.cs`
-- [ ] 8. `DidEthrMethod.cs` + options types + `DidEthrMethodTests.cs`
-- [ ] 9. `NetDidBuilder.AddDidEthr(...)` + DI project reference
-- [ ] 10. Sample project
-- [ ] 11. `CHANGELOG.md` update
-- [ ] 12. Full `dotnet test` green; `dotnet build` clean
+- [x] 1. Add `acryptohashnet` to `Directory.Packages.props`; scaffold three sln entries: `src\NetDid.Method.Ethr`, `tests\NetDid.Method.Ethr.Tests`, `samples\NetDid.Samples.DidEthr`
+- [x] 2. `Crypto/EthereumAddress.cs` + `EthereumAddressTests.cs`
+- [x] 3. `Abi/AbiEncoder.cs` + `Abi/AbiDecoder.cs` + `AbiDecoderTests.cs`
+- [x] 4. `Erc1056/Erc1056Topics.cs` + `Erc1056Events.cs` + `Erc1056Calls.cs` + `Erc1056EventParser.cs` + `Erc1056EventParserTests.cs`
+- [x] 5. `Crypto/EthereumIdentifier.cs`
+- [x] 6. `Rpc/IEthereumRpcClient.cs` + `DefaultEthereumRpcClient.cs` + supporting models
+- [x] 7. `Resolution/EthrDocumentBuilder.cs` + `EthrDocumentBuilderTests.cs`
+- [x] 8. `DidEthrMethod.cs` + options types + `DidEthrMethodTests.cs`
+- [x] 9. `NetDidBuilder.AddDidEthr(...)` + DI project reference
+- [x] 10. Sample project
+- [x] 11. `CHANGELOG.md` update
+- [x] 12. Full `dotnet test` green; `dotnet build` clean
 
 ---
 
 ## Review
 
-_To be filled after implementation._
+### Result: ✅ Complete — all 657 tests green, 0 warnings
+
+**Delivered (Phase 1):**
+- `NetDid.Method.Ethr` package: Create + Resolve for `did:ethr` with full ERC-1056 event chain walking
+- 39 new tests covering Keccak-256 / EIP-55, ABI encode/decode, event parsing, document building, and method-level Create/Resolve/Version scenarios
+- `VerificationMethod.AdditionalProperties` added to Core for `publicKeyHex` extension property
+- `NetDidBuilder.AddDidEthr(networks)` DI extension
+- `NetDid.Samples.DidEthr` sample
+- Branch: `feat/did-ethr-resolver`
+- CHANGELOG updated under `[Unreleased]`

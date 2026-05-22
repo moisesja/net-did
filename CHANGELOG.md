@@ -5,6 +5,24 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **`NetDid.Method.Ethr`** — Phase 1 implementation of the `did:ethr` DID method.
+  - **`DidEthrMethod`**: Implements `Create` and `Resolve` capabilities (advertises `Create | Resolve | ServiceEndpoints`). `Update` and `Deactivate` stubs throw `OperationNotSupportedException` (Phase 2).
+  - **`EthereumAddress`**: Derives EIP-55 checksummed Ethereum addresses from compressed secp256k1 public keys using Keccak-256 (`acryptohashnet`).
+  - **`EthrIdentifier`**: Parses method-specific identifiers supporting named networks (`mainnet`, `sepolia`, `goerli`, `polygon`), hex chain IDs (`0x…`), plain 20-byte addresses, and full 33-byte compressed public keys.
+  - **`AbiEncoder` / `AbiDecoder`**: Minimal Ethereum ABI codec for the two read-only ERC-1056 call signatures (`changed`, `identityOwner`) and all three event data layouts (`DIDOwnerChanged`, `DIDDelegateChanged`, `DIDAttributeChanged`).
+  - **`Erc1056EventParser`**: Parses raw `eth_getLogs` entries into typed events by dispatching on Keccak-256 topic hashes.
+  - **`EthrDocumentBuilder`**: Replays ERC-1056 event history (oldest-first) to construct a W3C DID Document including `#controller` + optional `#controllerKey` verification methods, delegate and attribute VMs (Secp256k1, Ed25519, X25519, Multikey), service entries, and dynamic `@context` assembly.
+  - **`DefaultEthereumRpcClient`**: JSON-RPC 2.0 HTTP client over `HttpClient`. Phase 2 write methods declared but throw `NotImplementedException`.
+  - Supports `VersionId` (resolve at a specific block number) and `VersionTime` (resolve at an ISO-8601 wall-clock time) resolution options.
+  - Detects deactivation when the last `DIDOwnerChanged` event transfers ownership to `0x000…000`.
+- **`NetDidBuilder.AddDidEthr(networks)`** — DI extension method in `NetDid.Extensions.DependencyInjection`.
+- **`VerificationMethod.AdditionalProperties`** — Added `IReadOnlyDictionary<string, JsonElement>?` to `VerificationMethod` (in `NetDid.Core`) to support `publicKeyHex` for unknown key types per the did:ethr spec.
+- New sample: `NetDid.Samples.DidEthr`.
+
 ## [1.3.0] - 2026-05-22
 
 ### Security

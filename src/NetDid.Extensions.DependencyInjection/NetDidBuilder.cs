@@ -1,8 +1,11 @@
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
+using Microsoft.Extensions.Logging;
 using NetDid.Core;
 using NetDid.Core.Crypto;
 using NetDid.Core.Resolution;
+using NetDid.Method.Ethr;
+using NetDid.Method.Ethr.Rpc;
 using NetDid.Method.Key;
 using NetDid.Method.Peer;
 using NetDid.Method.WebVh;
@@ -62,6 +65,25 @@ public sealed class NetDidBuilder
     {
         CachingEnabled = true;
         CacheTtl = ttl;
+        return this;
+    }
+
+    /// <summary>
+    /// Register the did:ethr method.
+    /// Uses IHttpClientFactory for RPC HTTP requests.
+    /// </summary>
+    public NetDidBuilder AddDidEthr(IEnumerable<EthereumNetworkConfig> networks)
+    {
+        var networkList = networks.ToList();
+        Services.AddHttpClient<DefaultEthereumRpcClient>();
+        Services.AddSingleton<IEthereumRpcClient>(
+            sp => sp.GetRequiredService<DefaultEthereumRpcClient>());
+        Services.AddSingleton<IDidMethod>(sp =>
+            new DidEthrMethod(
+                sp.GetRequiredService<IEthereumRpcClient>(),
+                networkList,
+                sp.GetRequiredService<IKeyGenerator>(),
+                sp.GetService<ILogger<DidEthrMethod>>()));
         return this;
     }
 }
