@@ -6,15 +6,17 @@ namespace NetDid.Method.WebVh;
 /// bounded by <see cref="WebVhHttpClientOptions"/> so a hostile did:webvh host
 /// cannot exhaust the resolver's memory with an oversized response.
 /// </summary>
-public sealed class DefaultWebVhHttpClient : IWebVhHttpClient
+public sealed class DefaultWebVhHttpClient : IWebVhHttpClient, IDisposable
 {
     private readonly HttpClient _httpClient;
+    private readonly bool _ownsHttpClient;
     private readonly WebVhHttpClientOptions _options;
 
     public DefaultWebVhHttpClient(
         HttpClient? httpClient = null,
         WebVhHttpClientOptions? options = null)
     {
+        _ownsHttpClient = httpClient is null;
         _httpClient = httpClient ?? new HttpClient();
         _options = options ?? new WebVhHttpClientOptions();
     }
@@ -54,8 +56,9 @@ public sealed class DefaultWebVhHttpClient : IWebVhHttpClient
     private static async Task<byte[]?> ReadAtMostAsync(
         Stream stream, long maxBytes, CancellationToken ct)
     {
-        // Cap buffer growth at maxBytes. Use a small read buffer so a hostile
-        // body that slow-trickles past the limit still terminates promptly.
+        // Count bytes as they arrive instead of buffering the whole body up
+        // front: a hostile host can omit or understate Content-Length, so the
+        // cap has to be enforced on bytes actually read.
         using var ms = new MemoryStream();
         var buffer = new byte[8192];
         long total = 0;
@@ -73,5 +76,11 @@ public sealed class DefaultWebVhHttpClient : IWebVhHttpClient
         }
 
         return ms.ToArray();
+    }
+
+    public void Dispose()
+    {
+        if (_ownsHttpClient)
+            _httpClient.Dispose();
     }
 }

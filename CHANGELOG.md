@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **Raw ECDH key agreement** (#60): New `ICryptoProvider.DeriveSharedSecret(KeyType, privateKey, publicKey)` method returns the unprocessed shared secret "Z" for X25519, P-256, and P-384, with no KDF, no truncation, and no normalization applied. The 32-byte (X25519, P-256) or 48-byte (P-384) output is the canonical input to JOSE ECDH-ES Concat KDF (RFC 7518 §4.6), ECDH-1PU `Z = Ze ‖ Zs`, and other protocol-specific derivation flows. The existing `KeyAgreement(privateKey, publicKey)` method retains its X25519+HKDF-SHA256 behavior for back-compat. NIST P-curve agreement uses the cross-platform `ECDiffieHellman.DeriveRawSecretAgreement` API; X25519 uses NSec's `SharedSecretBlobFormat.RawSharedSecret` export. Non-ECDH key types (Ed25519, secp256k1, BLS12-381) throw `ArgumentException`. Validated against the RFC 7748 §6.1 X25519 and RFC 5903 §8.1/§8.2 P-256/P-384 ECDH known-answer test vectors.
+
 ## [1.2.0] - 2026-05-21
 
 ### Security

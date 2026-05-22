@@ -5,7 +5,7 @@ namespace NetDid.Method.WebVh;
 /// did:webvh artifacts. Limits guard a resolver of untrusted DIDs against
 /// memory exhaustion from oversized responses.
 /// </summary>
-public sealed class WebVhHttpClientOptions
+public sealed record WebVhHttpClientOptions
 {
     /// <summary>
     /// Maximum bytes accepted for <c>did.jsonl</c>. Default: 5 MiB.

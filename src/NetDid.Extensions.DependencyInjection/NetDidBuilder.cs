@@ -44,8 +44,9 @@ public sealed class NetDidBuilder
     }
 
     /// <summary>Register the did:webvh method. Uses IHttpClientFactory for HTTP requests.</summary>
-    public NetDidBuilder AddDidWebVh()
+    public NetDidBuilder AddDidWebVh(WebVhHttpClientOptions? httpClientOptions = null)
     {
+        Services.AddSingleton(httpClientOptions ?? new WebVhHttpClientOptions());
         Services.AddHttpClient<DefaultWebVhHttpClient>();
         Services.AddSingleton<IWebVhHttpClient>(sp =>
             sp.GetRequiredService<DefaultWebVhHttpClient>());
