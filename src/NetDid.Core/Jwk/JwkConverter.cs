@@ -89,6 +89,12 @@ public static class JwkConverter
             };
             var x = Multibase.Decode("u" + jwk.X);
             var y = Multibase.Decode("u" + jwk.Y);
+
+            // Invalid-curve defense (RFC 7518 §6.2.2): reject any (x, y) that is not actually
+            // on the stated curve, BEFORE the caller can use these bytes for ECDH. Failing here
+            // protects every downstream consumer that does ExtractPublicKey → DeriveSharedSecret.
+            EcPointValidator.EnsureOnCurve(keyType, x, y);
+
             // Reconstruct compressed SEC1 public key: 0x02/0x03 || x
             var prefix = (y[^1] & 1) == 0 ? (byte)0x02 : (byte)0x03;
             var publicKey = new byte[1 + x.Length];

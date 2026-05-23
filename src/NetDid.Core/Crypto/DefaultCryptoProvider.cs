@@ -195,14 +195,17 @@ public sealed class DefaultCryptoProvider : ICryptoProvider
         {
             // Uncompressed: 0x04 || x || y
             var coordLen = (publicKey.Length - 1) / 2;
+            var x = publicKey.Slice(1, coordLen).ToArray();
+            var y = publicKey.Slice(1 + coordLen, coordLen).ToArray();
+
+            // Defense against the invalid-curve attack: reject off-curve (x, y) before
+            // exposing them to ECDH / ECDSA via ECParameters.
+            EcPointValidator.EnsureOnNistCurve(curve, x, y);
+
             return new ECParameters
             {
                 Curve = curve,
-                Q = new ECPoint
-                {
-                    X = publicKey.Slice(1, coordLen).ToArray(),
-                    Y = publicKey.Slice(1 + coordLen, coordLen).ToArray()
-                }
+                Q = new ECPoint { X = x, Y = y }
             };
         }
 
@@ -241,8 +244,7 @@ public sealed class DefaultCryptoProvider : ICryptoProvider
 
         // y² = x³ + ax + b (mod p)
         var x3 = BigInteger.ModPow(x, 3, p);
-        var rhs = (x3 + a * x % p + b) % p;
-        if (rhs < 0) rhs += p;
+        var rhs = (x3 + (a * x) % p + b) % p;
 
         // y = rhs^((p+1)/4) mod p (valid since p ≡ 3 mod 4)
         var y = BigInteger.ModPow(rhs, (p + 1) / 4, p);
@@ -258,6 +260,11 @@ public sealed class DefaultCryptoProvider : ICryptoProvider
             yBytes.CopyTo(padded, coordLen - yBytes.Length);
             yBytes = padded;
         }
+
+        // Defense-in-depth: even after our own modular sqrt, validate the resulting point
+        // satisfies the curve equation (reusing the rhs we just computed). A bug in BigInteger /
+        // curve params would otherwise silently produce an off-curve key that imports without error.
+        EcPointValidator.EnsureMatchesRhs(x, y, rhs, p);
 
         return new ECParameters
         {
