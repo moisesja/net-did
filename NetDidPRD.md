@@ -536,11 +536,15 @@ public enum KeyType
 ```csharp
 public interface ICryptoProvider
 {
-    // --- Signing (used internally by KeyPairSigner; callers should use ISigner) ---
+    // --- Signing — DER-encoded NIST ECDSA, back-compat default ---
     byte[] Sign(KeyType keyType, ReadOnlySpan<byte> privateKey, ReadOnlySpan<byte> data);
 
-    // --- Verification (public-key-only operations) ---
+    // --- Verification of the back-compat DER format ---
     bool Verify(KeyType keyType, ReadOnlySpan<byte> publicKey, ReadOnlySpan<byte> data, ReadOnlySpan<byte> signature);
+
+    // --- Format-aware ECDSA sign/verify: DER for X.509/CMS, IeeeP1363 for JOSE/JWS/COSE/WebAuthn ---
+    byte[] Sign(KeyType keyType, ReadOnlySpan<byte> privateKey, ReadOnlySpan<byte> data, EcdsaSignatureFormat format);
+    bool Verify(KeyType keyType, ReadOnlySpan<byte> publicKey, ReadOnlySpan<byte> data, ReadOnlySpan<byte> signature, EcdsaSignatureFormat format);
 
     // --- Key Agreement (X25519 ECDH + HKDF-SHA256, convenience wrapper) ---
     byte[] KeyAgreement(ReadOnlySpan<byte> privateKey, ReadOnlySpan<byte> publicKey);
@@ -552,6 +556,8 @@ public interface ICryptoProvider
     byte[] DeriveSharedSecret(KeyType keyType, ReadOnlySpan<byte> privateKey, ReadOnlySpan<byte> publicKey);
 }
 ```
+
+**ECDSA signature format**: NIST-curve ECDSA (P-256, P-384, P-521) signatures default to ASN.1 / DER — the format expected by X.509, CMS, and generic DID proofs. JOSE / JWS / JWE / COSE / WebAuthn consumers should pass `EcdsaSignatureFormat.IeeeP1363` to get a fixed-width R‖S concatenation (64, 96, or 132 bytes). secp256k1 signatures are always 64-byte compact (already P1363); EdDSA and BLS ignore the format parameter.
 
 > **Note**: `ICryptoProvider.Sign` is a low-level primitive used internally by `KeyPairSigner`. Application code and DID method implementations should use `ISigner.SignAsync()` instead, which works with both in-memory keys and HSM-backed keys.
 

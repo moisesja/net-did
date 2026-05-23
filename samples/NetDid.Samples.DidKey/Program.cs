@@ -107,7 +107,26 @@ Console.WriteLine($"  Assert:  {blsResult.DidDocument.AssertionMethod?.Count ?? 
 Console.WriteLine();
 
 // -------------------------------------------------------
-// 7. Serialize to JSON-LD
+// 7. ECDSA signature format — DER (default) vs IEEE P1363 (JOSE)
+//    The same key produces a 70-72 byte DER signature or a fixed
+//    64/96/132 byte P1363 (R‖S) signature, on demand.
+// -------------------------------------------------------
+Console.WriteLine("=== Signature format — DER vs IEEE P1363 ===");
+
+var ecKey = keyGen.Generate(KeyType.P256);
+var msg = "JOSE wire format"u8.ToArray();
+
+var derSig = crypto.Sign(KeyType.P256, ecKey.PrivateKey, msg, EcdsaSignatureFormat.Der);
+var p1363Sig = crypto.Sign(KeyType.P256, ecKey.PrivateKey, msg, EcdsaSignatureFormat.IeeeP1363);
+
+Console.WriteLine($"  P-256 DER       length: {derSig.Length} bytes (variable, ASN.1)");
+Console.WriteLine($"  P-256 IEEE P1363 length: {p1363Sig.Length} bytes (fixed 64 = 2 * field byte length)");
+Console.WriteLine($"  Both verify with matching format: {crypto.Verify(KeyType.P256, ecKey.PublicKey, msg, p1363Sig, EcdsaSignatureFormat.IeeeP1363)}");
+Console.WriteLine($"  Mismatched format returns false  : {crypto.Verify(KeyType.P256, ecKey.PublicKey, msg, p1363Sig, EcdsaSignatureFormat.Der)}");
+Console.WriteLine();
+
+// -------------------------------------------------------
+// 8. Serialize to JSON-LD
 // -------------------------------------------------------
 Console.WriteLine("=== Serialization ===");
 

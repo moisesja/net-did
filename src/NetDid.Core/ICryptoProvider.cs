@@ -8,8 +8,36 @@ namespace NetDid.Core;
 /// </summary>
 public interface ICryptoProvider
 {
+    /// <summary>
+    /// Sign data with the algorithm bound to <paramref name="keyType"/>. NIST-curve ECDSA
+    /// (P-256, P-384, P-521) signatures are returned in DER form for back-compat. Callers
+    /// that need IEEE P1363 (JOSE / COSE / WebAuthn) should use the
+    /// <see cref="Sign(KeyType, ReadOnlySpan{byte}, ReadOnlySpan{byte}, EcdsaSignatureFormat)"/>
+    /// overload.
+    /// </summary>
     byte[] Sign(KeyType keyType, ReadOnlySpan<byte> privateKey, ReadOnlySpan<byte> data);
+
+    /// <summary>
+    /// Verify a DER-encoded ECDSA signature (or the algorithm-native format for non-ECDSA
+    /// key types). Use the <see cref="Verify(KeyType, ReadOnlySpan{byte}, ReadOnlySpan{byte}, ReadOnlySpan{byte}, EcdsaSignatureFormat)"/>
+    /// overload to verify IEEE P1363 signatures.
+    /// </summary>
     bool Verify(KeyType keyType, ReadOnlySpan<byte> publicKey, ReadOnlySpan<byte> data, ReadOnlySpan<byte> signature);
+
+    /// <summary>
+    /// Sign data with an explicit NIST-curve ECDSA signature format. Non-ECDSA key types
+    /// (Ed25519, secp256k1, BLS12-381) ignore <paramref name="format"/> and return their
+    /// algorithm-native wire format — secp256k1 already returns 64-byte compact (R‖S),
+    /// which matches <see cref="EcdsaSignatureFormat.IeeeP1363"/>.
+    /// </summary>
+    byte[] Sign(KeyType keyType, ReadOnlySpan<byte> privateKey, ReadOnlySpan<byte> data, EcdsaSignatureFormat format);
+
+    /// <summary>
+    /// Verify a NIST-curve ECDSA signature in the specified format. A DER signature passed
+    /// with <see cref="EcdsaSignatureFormat.IeeeP1363"/> (or vice versa) returns
+    /// <c>false</c> — not an exception. Non-ECDSA key types ignore <paramref name="format"/>.
+    /// </summary>
+    bool Verify(KeyType keyType, ReadOnlySpan<byte> publicKey, ReadOnlySpan<byte> data, ReadOnlySpan<byte> signature, EcdsaSignatureFormat format);
 
     /// <summary>
     /// Performs X25519 key agreement and returns an HKDF-SHA256-derived 32-byte key. Convenience wrapper
