@@ -151,16 +151,25 @@ public sealed class DefaultCryptoProvider : ICryptoProvider
         using var ecdsa = ECDsa.Create();
         var parameters = ImportEcPublicKey(publicKey, curve);
         ecdsa.ImportParameters(parameters);
+
+        // P1363 is fixed-width (R‖S, each padded to the field byte length), so a signature of the
+        // wrong length is definitively malformed. Reject it explicitly rather than depending on
+        // backend exception semantics (Windows CNG throws, OpenSSL returns false).
+        if (format == DSASignatureFormat.IeeeP1363FixedFieldConcatenation
+            && signature.Length != 2 * ((ecdsa.KeySize + 7) / 8))
+        {
+            return false;
+        }
+
         try
         {
             return ecdsa.VerifyData(data, signature, hashAlgorithm, format);
         }
         catch (CryptographicException)
         {
-            // A wrong-format/malformed signature is normalized to a verification failure (JOSE
-            // convention — JWS verifiers expect false, not an exception). The backends disagree:
-            // Windows CNG throws CryptographicException on a wrong wire format, OpenSSL returns
-            // false directly. Catching here makes both platforms behave the same.
+            // A malformed signature is a verification failure, not an exception (JOSE convention —
+            // JWS verifiers expect false). Still needed for DER: Windows CNG throws on malformed
+            // ASN.1 where OpenSSL returns false. Catching normalizes both platforms to false.
             return false;
         }
     }
