@@ -1,6 +1,8 @@
+using System.Text;
 using NetCid;
 using NetDid.Core;
 using NetDid.Core.Crypto;
+using NetDid.Core.Crypto.Kdf;
 using NetDid.Core.Model;
 using NetDid.Method.Peer;
 
@@ -169,6 +171,28 @@ var aliceSideZ = crypto.DeriveSharedSecret(
 
 Console.WriteLine($"  Shared Z length:  {aliceSideZ.Length} bytes (raw — feed to JOSE Concat KDF)");
 Console.WriteLine($"  Both sides agree: {aliceSideZ.AsSpan().SequenceEqual(bobSideZ)}");
+Console.WriteLine();
+
+// -------------------------------------------------------
+// 5. Concat KDF (RFC 7518 §4.6 / NIST SP 800-56A §5.8.1)
+//    Pair DeriveSharedSecret (raw Z) with ConcatKdf to derive a JOSE-compatible
+//    content encryption key. This is the canonical ECDH-ES key-derivation pipeline.
+// -------------------------------------------------------
+Console.WriteLine("=== ECDH-ES key derivation (raw Z + Concat KDF) ===");
+
+// Reuse the raw Z both parties derived above via the did:peer ECDH flow.
+var z = aliceSideZ;
+var contentEncryptionKey = ConcatKdf.DeriveKey(
+    sharedSecret: z,
+    algorithmId: Encoding.UTF8.GetBytes("A128GCM"),
+    partyUInfo: Encoding.UTF8.GetBytes("Alice"),
+    partyVInfo: Encoding.UTF8.GetBytes("Bob"),
+    suppPubInfo: [0x00, 0x00, 0x00, 0x80],   // 128 bits as 32-bit BE
+    suppPrivInfo: ReadOnlySpan<byte>.Empty,
+    keyDataLen: 16);
+
+Console.WriteLine($"  Z (raw ECDH):        {z.Length} bytes");
+Console.WriteLine($"  CEK (Concat KDF):    {contentEncryptionKey.Length} bytes — feed to AES-GCM");
 Console.WriteLine();
 
 Console.WriteLine("Done! All did:peer examples completed successfully.");
