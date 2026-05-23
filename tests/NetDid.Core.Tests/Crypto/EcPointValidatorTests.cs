@@ -78,6 +78,33 @@ public class EcPointValidatorTests
     }
 
     [Fact]
+    public void EnsureOnCurve_YCoordinateOutOfRange_Throws()
+    {
+        // The y >= p half of the range check (only x = p is covered above).
+        var pHex = "FFFFFFFF00000001000000000000000000000000FFFFFFFFFFFFFFFFFFFFFFFF";
+        var xOne = new byte[32];
+        xOne[^1] = 1;
+        var yAtP = Convert.FromHexString(pHex);
+
+        var act = () => EcPointValidator.EnsureOnCurve(KeyType.P256, xOne, yAtP);
+        act.Should().Throw<CryptographicException>().WithMessage("*out of range*");
+    }
+
+    [Fact]
+    public void EnsureOnCurve_ArbitraryOffCurvePoint_Throws()
+    {
+        // A small, deterministic (x, y) = (2, 3) that is not derived from any real point and does
+        // not satisfy the P-256 curve equation — the genuine invalid-curve case, not a bit-flip.
+        var x = new byte[32];
+        x[^1] = 2;
+        var y = new byte[32];
+        y[^1] = 3;
+
+        var act = () => EcPointValidator.EnsureOnCurve(KeyType.P256, x, y);
+        act.Should().Throw<CryptographicException>().WithMessage("*not on the stated curve*");
+    }
+
+    [Fact]
     public void EnsureOnCurve_NonEcKeyType_IsNoop()
     {
         // Ed25519 / X25519 / BLS aren't NIST curves; the validator silently returns.
