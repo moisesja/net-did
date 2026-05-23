@@ -1,3 +1,5 @@
+using System.Buffers.Binary;
+using System.Security.Cryptography;
 using FluentAssertions;
 using NetDid.Core.Crypto.Kdf;
 
@@ -71,13 +73,15 @@ public class ConcatKdfTests
     {
         var z = new byte[32];
         var alg = Utf8.UTF8.GetBytes("A256GCM");
+        var suppPubInfo = new byte[4];
+        BinaryPrimitives.WriteUInt32BigEndian(suppPubInfo, (uint)(keyDataLen * 8)); // keydatalen in bits, BE
 
         var derived = ConcatKdf.DeriveKey(
             sharedSecret: z,
             algorithmId: alg,
             partyUInfo: ReadOnlySpan<byte>.Empty,
             partyVInfo: ReadOnlySpan<byte>.Empty,
-            suppPubInfo: BitConverter.GetBytes(keyDataLen * 8),
+            suppPubInfo: suppPubInfo,
             suppPrivInfo: ReadOnlySpan<byte>.Empty,
             keyDataLen: keyDataLen);
 
@@ -170,5 +174,80 @@ public class ConcatKdfTests
             keyDataLen: 0);
 
         act.Should().Throw<ArgumentOutOfRangeException>();
+    }
+
+    [Fact]
+    public void DeriveKey_DifferentApv_ChangesOutput()
+    {
+        // Domain separation: apv changes must change the derived key (symmetric to apu).
+        var z = Convert.FromHexString("9E56D91D817135D372834283BF84269CFB316EA3DA806A48F6DAA7798CFE90C4");
+        var alg = Utf8.UTF8.GetBytes("A128GCM");
+        var supp = new byte[] { 0x00, 0x00, 0x00, 0x80 };
+
+        var k1 = ConcatKdf.DeriveKey(z, alg, Utf8.UTF8.GetBytes("Alice"), Utf8.UTF8.GetBytes("Bob"), supp, default, 16);
+        var k2 = ConcatKdf.DeriveKey(z, alg, Utf8.UTF8.GetBytes("Alice"), Utf8.UTF8.GetBytes("Carol"), supp, default, 16);
+
+        k1.Should().NotEqual(k2);
+    }
+
+    [Fact]
+    public void DeriveKey_NonEmptySuppPrivInfo_ChangesOutput()
+    {
+        // SuppPrivInfo is appended verbatim and must influence the output (previously unexercised).
+        var z = Convert.FromHexString("9E56D91D817135D372834283BF84269CFB316EA3DA806A48F6DAA7798CFE90C4");
+        var alg = Utf8.UTF8.GetBytes("A128GCM");
+        var supp = new byte[] { 0x00, 0x00, 0x00, 0x80 };
+
+        var without = ConcatKdf.DeriveKey(z, alg, default, default, supp, default, 16);
+        var with = ConcatKdf.DeriveKey(z, alg, default, default, supp, Utf8.UTF8.GetBytes("priv"), 16);
+
+        with.Should().NotEqual(without);
+    }
+
+    [Fact]
+    public void DeriveKey_TwoBlocks_MatchIndependentReference()
+    {
+        // Validate counter mode against an INDEPENDENT construction (one-shot SHA-256 over a
+        // contiguous buffer, vs the library's IncrementalHash streaming). A wrong counter start
+        // value or byte order would diverge here — the "two blocks differ" test cannot catch that.
+        var z = Convert.FromHexString("9E56D91D817135D372834283BF84269CFB316EA3DA806A48F6DAA7798CFE90C4");
+        var alg = Utf8.UTF8.GetBytes("A256CBC-HS512");
+        var apu = Utf8.UTF8.GetBytes("Alice");
+        var apv = Utf8.UTF8.GetBytes("Bob");
+        var supp = new byte[] { 0x00, 0x00, 0x02, 0x00 }; // 512 bits
+
+        var expected = ReferenceConcatKdf(z, alg, apu, apv, supp, Array.Empty<byte>(), 64);
+        var derived = ConcatKdf.DeriveKey(z, alg, apu, apv, supp, ReadOnlySpan<byte>.Empty, 64);
+
+        derived.Should().Equal(expected);
+    }
+
+    // Deliberately independent reference: builds counter ‖ Z ‖ OtherInfo contiguously and hashes
+    // each block one-shot, so it cross-checks the production streaming implementation.
+    private static byte[] ReferenceConcatKdf(
+        byte[] z, byte[] alg, byte[] apu, byte[] apv, byte[] suppPub, byte[] suppPriv, int keyDataLen)
+    {
+        static byte[] Be(int v) => [(byte)(v >> 24), (byte)(v >> 16), (byte)(v >> 8), (byte)v];
+
+        var otherInfo = new List<byte>();
+        foreach (var part in new[] { alg, apu, apv })
+        {
+            otherInfo.AddRange(Be(part.Length));
+            otherInfo.AddRange(part);
+        }
+        otherInfo.AddRange(suppPub);
+        otherInfo.AddRange(suppPriv);
+
+        var n = (keyDataLen + 31) / 32;
+        var output = new byte[n * 32];
+        for (var i = 1; i <= n; i++)
+        {
+            var input = new List<byte>();
+            input.AddRange(Be(i));
+            input.AddRange(z);
+            input.AddRange(otherInfo);
+            SHA256.HashData(input.ToArray()).CopyTo(output, (i - 1) * 32);
+        }
+        return output[..keyDataLen];
     }
 }
