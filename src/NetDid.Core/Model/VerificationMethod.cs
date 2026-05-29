@@ -1,3 +1,4 @@
+using System.Text.Json;
 using Microsoft.IdentityModel.Tokens;
 
 namespace NetDid.Core.Model;
@@ -25,4 +26,7 @@ public sealed class VerificationMethod
 
     /// <summary>For did:ethr (CAIP-10 format).</summary>
     public string? BlockchainAccountId { get; init; }
+
+    /// <summary>Extension properties not defined in DID Core (e.g., publicKeyHex).</summary>
+    public IReadOnlyDictionary<string, JsonElement>? AdditionalProperties { get; init; }
 }

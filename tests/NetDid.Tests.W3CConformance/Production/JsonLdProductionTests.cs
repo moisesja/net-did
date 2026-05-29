@@ -10,7 +10,7 @@ public class JsonLdProductionTests
 {
     private readonly TestDidFactory _factory = new();
 
-    public static TheoryData<string> AllMethods => new() { "did:key", "did:peer", "did:webvh" };
+    public static TheoryData<string> AllMethods => new() { "did:key", "did:peer", "did:webvh", "did:ethr" };
 
     [Theory, MemberData(nameof(AllMethods))]
     [Trait("W3CCategory", "did-production")]
@@ -59,13 +59,13 @@ public class JsonLdProductionTests
         using var parsed = JsonDocument.Parse(json);
 
         var context = parsed.RootElement.GetProperty("@context");
-        var contextValues = context.EnumerateArray().Select(e => e.GetString()).ToList();
-
-        // Default VMs are Multikey, so multikey context should be present
-        var hasMultikey = contextValues.Contains("https://w3id.org/security/multikey/v1");
+        var contextEntries = context.EnumerateArray().ToList();
+        // Every method must include at least one method-specific context entry beyond did/v1
+        // (e.g. Multikey for did:key/peer/webvh; secp256k1recovery for did:ethr)
+        var hasMethodSpecific = contextEntries.Count > 1;
         ConformanceReportSink.Record(method, "did-production", "6", "6-9",
-            "Context includes method-specific entries (Multikey)", hasMultikey);
-        hasMultikey.Should().BeTrue();
+            "Context includes method-specific entries beyond https://www.w3.org/ns/did/v1", hasMethodSpecific);
+        hasMethodSpecific.Should().BeTrue();
     }
 
     [Theory, MemberData(nameof(AllMethods))]
@@ -104,6 +104,10 @@ public class JsonLdProductionTests
             "Missing @context rejected on JSON-LD consumption", passed);
         ConformanceReportSink.Record("did:peer", "did-production", "6", "6-11",
             "Missing @context rejected on JSON-LD consumption", passed);
+        ConformanceReportSink.Record("did:ethr", "did-production", "6", "6-11",
+            "Missing @context rejected on JSON-LD consumption", passed);
+        ConformanceReportSink.Record("did:webvh", "did-production", "6", "6-11",
+            "Missing @context rejected on JSON-LD consumption", passed);
         passed.Should().BeTrue();
     }
 
@@ -126,6 +130,10 @@ public class JsonLdProductionTests
         ConformanceReportSink.Record("did:key", "did-production", "6", "6-12",
             "Wrong first @context rejected on JSON-LD consumption", passed);
         ConformanceReportSink.Record("did:peer", "did-production", "6", "6-12",
+            "Wrong first @context rejected on JSON-LD consumption", passed);
+        ConformanceReportSink.Record("did:ethr", "did-production", "6", "6-12",
+            "Wrong first @context rejected on JSON-LD consumption", passed);
+        ConformanceReportSink.Record("did:webvh", "did-production", "6", "6-12",
             "Wrong first @context rejected on JSON-LD consumption", passed);
         passed.Should().BeTrue();
     }

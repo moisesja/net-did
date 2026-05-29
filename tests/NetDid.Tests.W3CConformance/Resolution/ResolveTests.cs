@@ -9,7 +9,7 @@ public class ResolveTests
 {
     private readonly TestDidFactory _factory = new();
 
-    public static TheoryData<string> AllMethods => new() { "did:key", "did:peer", "did:webvh" };
+    public static TheoryData<string> AllMethods => new() { "did:key", "did:peer", "did:webvh", "did:ethr" };
 
     [Theory, MemberData(nameof(AllMethods))]
     [Trait("W3CCategory", "did-resolution")]
@@ -95,6 +95,10 @@ public class ResolveTests
             "Unknown method returns methodNotSupported error", passed);
         ConformanceReportSink.Record("did:peer", "did-resolution", "7.1", "7.1-6",
             "Unknown method returns methodNotSupported error", passed);
+        ConformanceReportSink.Record("did:ethr", "did-resolution", "7.1", "7.1-6",
+            "Unknown method returns methodNotSupported error", passed);
+        ConformanceReportSink.Record("did:webvh", "did-resolution", "7.1", "7.1-6",
+            "Unknown method returns methodNotSupported error", passed);
         result.ResolutionMetadata.Error.Should().Be("methodNotSupported");
     }
 
@@ -106,9 +110,11 @@ public class ResolveTests
         // Syntactically valid but nonexistent DID for each method
         var fakeDid = method switch
         {
-            "did:key" => "did:key:z6MkinvalidNotARealKeyButValidSyntax",
-            "did:peer" => "did:peer:3invalidnumalgo",
+            "did:key"   => "did:key:z6MkinvalidNotARealKeyButValidSyntax",
+            "did:peer"  => "did:peer:3invalidnumalgo",
             "did:webvh" => "did:webvh:zNotExist:example.com",
+            // did:ethr: valid syntax but network not registered in test fixture
+            "did:ethr"  => "did:ethr:unknownnet:0x001d3f1ef827552ae1114027bd3ecf1f086ba0f9",
             _ => throw new ArgumentException()
         };
 

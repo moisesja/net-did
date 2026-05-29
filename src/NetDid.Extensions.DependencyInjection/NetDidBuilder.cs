@@ -1,8 +1,11 @@
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
+using Microsoft.Extensions.Logging;
 using NetDid.Core;
 using NetDid.Core.Crypto;
 using NetDid.Core.Resolution;
+using NetDid.Method.Ethr;
+using NetDid.Method.Ethr.Rpc;
 using NetDid.Method.Key;
 using NetDid.Method.Peer;
 using NetDid.Method.WebVh;
@@ -63,5 +66,54 @@ public sealed class NetDidBuilder
         CachingEnabled = true;
         CacheTtl = ttl;
         return this;
+    }
+
+    /// <summary>
+    /// Register the did:ethr method.
+    /// Uses IHttpClientFactory for RPC HTTP requests.
+    /// </summary>
+    public NetDidBuilder AddDidEthr(IEnumerable<EthereumNetworkConfig> networks)
+    {
+        var networkList = networks.ToList();
+
+        // Register a named HttpClient for each network, pre-configured with its RPC URL.
+        // DefaultEthereumRpcClientFactory resolves "ethr-{name}" to get the right endpoint.
+        foreach (var n in networkList)
+            Services.AddHttpClient($"ethr-{n.Name}",
+                c => c.BaseAddress = new Uri(n.RpcUrl));
+
+        Services.AddSingleton<IEthereumRpcClientFactory, DefaultEthereumRpcClientFactory>();
+        Services.AddSingleton<IDidMethod>(sp =>
+            new DidEthrMethod(
+                sp.GetRequiredService<IEthereumRpcClientFactory>(),
+                networkList,
+                sp.GetRequiredService<IKeyGenerator>(),
+                sp.GetService<ILogger<DidEthrMethod>>()));
+        return this;
+    }
+
+    /// <summary>
+    /// Register the did:ethr method using well-known network metadata from <see cref="KnownNetworks"/>.
+    /// The caller supplies only RPC URLs; registry addresses and chain IDs are looked up automatically.
+    /// <code>
+    /// builder.AddDidEthr(new Dictionary&lt;string, string&gt;
+    /// {
+    ///     ["mainnet"] = "https://mainnet.gateway.tenderly.co",
+    ///     ["sepolia"] = "https://sepolia.drpc.org",
+    /// });
+    /// </code>
+    /// Throws <see cref="InvalidOperationException"/> if a name is not found in <see cref="KnownNetworks.All"/>.
+    /// </summary>
+    public NetDidBuilder AddDidEthr(IReadOnlyDictionary<string, string> networkRpcUrls)
+    {
+        var configs = networkRpcUrls.Select(kv =>
+        {
+            var known = KnownNetworks.Find(kv.Key)
+                ?? throw new InvalidOperationException(
+                    $"Unknown did:ethr network '{kv.Key}'. " +
+                    $"Use AddDidEthr(IEnumerable<EthereumNetworkConfig>) to supply a custom config.");
+            return known with { RpcUrl = kv.Value };
+        });
+        return AddDidEthr(configs);
     }
 }

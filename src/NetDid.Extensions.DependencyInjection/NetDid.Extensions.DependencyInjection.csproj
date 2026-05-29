@@ -11,6 +11,7 @@
     <ProjectReference Include="../NetDid.Method.Key/NetDid.Method.Key.csproj" />
     <ProjectReference Include="../NetDid.Method.Peer/NetDid.Method.Peer.csproj" />
     <ProjectReference Include="../NetDid.Method.WebVh/NetDid.Method.WebVh.csproj" />
+    <ProjectReference Include="../NetDid.Method.Ethr/NetDid.Method.Ethr.csproj" />
   </ItemGroup>
 
   <ItemGroup>

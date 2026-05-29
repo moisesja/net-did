@@ -5,6 +5,7 @@
   <ItemGroup>
     <!-- Cryptography -->
     <PackageVersion Include="NSec.Cryptography" Version="24.4.0" />
+    <PackageVersion Include="acryptohashnet" Version="3.1.0" />
     <PackageVersion Include="NBitcoin.Secp256k1" Version="3.1.5" />
     <PackageVersion Include="Nethermind.Crypto.Bls" Version="1.0.5" />
     <!-- Encoding -->

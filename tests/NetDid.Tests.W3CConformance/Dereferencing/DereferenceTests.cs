@@ -9,8 +9,8 @@ public class DereferenceTests
 {
     private readonly TestDidFactory _factory = new();
 
-    public static TheoryData<string> AllMethods => new() { "did:key", "did:peer", "did:webvh" };
-    public static TheoryData<string> MethodsWithServices => new() { "did:peer", "did:webvh" };
+    public static TheoryData<string> AllMethods => new() { "did:key", "did:peer", "did:webvh", "did:ethr" };
+    public static TheoryData<string> MethodsWithServices => new() { "did:peer", "did:webvh", "did:ethr" };
 
     [Theory, MemberData(nameof(AllMethods))]
     [Trait("W3CCategory", "did-url-dereferencing")]
@@ -149,6 +149,10 @@ public class DereferenceTests
         ConformanceReportSink.Record("did:key", "did-url-dereferencing", "7.2", "7.2-8",
             "Invalid DID URL returns invalidDidUrl error", passed);
         ConformanceReportSink.Record("did:peer", "did-url-dereferencing", "7.2", "7.2-8",
+            "Invalid DID URL returns invalidDidUrl error", passed);
+        ConformanceReportSink.Record("did:ethr", "did-url-dereferencing", "7.2", "7.2-8",
+            "Invalid DID URL returns invalidDidUrl error", passed);
+        ConformanceReportSink.Record("did:webvh", "did-url-dereferencing", "7.2", "7.2-8",
             "Invalid DID URL returns invalidDidUrl error", passed);
         result.DereferencingMetadata.Error.Should().Be("invalidDidUrl");
     }

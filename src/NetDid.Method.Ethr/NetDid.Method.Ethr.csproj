@@ -1,0 +1,27 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <PackageId>NetDid.Method.Ethr</PackageId>
+    <Version>$(NetDidVersion)</Version>
+    <Description>did:ethr method implementation for the NetDid multi-method DID library.</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="NetDid.Method.Ethr.Tests" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="../NetDid.Core/NetDid.Core.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="acryptohashnet" />
+    <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" />
+    <PackageReference Include="Microsoft.Extensions.Http" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Include="../../README.md" Pack="true" PackagePath="/" />
+  </ItemGroup>
+
+</Project>

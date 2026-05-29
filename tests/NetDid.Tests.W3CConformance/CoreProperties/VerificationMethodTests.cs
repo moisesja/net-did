@@ -10,7 +10,7 @@ public class VerificationMethodTests
 {
     private readonly TestDidFactory _factory = new();
 
-    public static TheoryData<string> AllMethods => new() { "did:key", "did:peer", "did:webvh" };
+    public static TheoryData<string> AllMethods => new() { "did:key", "did:peer", "did:webvh", "did:ethr" };
 
     [Theory, MemberData(nameof(AllMethods))]
     [Trait("W3CCategory", "did-core-properties")]
@@ -101,14 +101,22 @@ public class VerificationMethodTests
     [Trait("W3CCategory", "did-core-properties")]
     public async Task JwkDoesNotContainPrivateKeyMaterial()
     {
-        var (_, doc) = await _factory.CreateDidKey(
+        // did:key — JWK representation
+        var (_, keyDoc) = await _factory.CreateDidKey(
             repr: VerificationMethodRepresentation.JsonWebKey2020);
-
-        var json = DidDocumentSerializer.Serialize(doc, DidContentTypes.Json);
-        var noPrivateKey = !json.Contains("\"d\":");
+        var keyJson = DidDocumentSerializer.Serialize(keyDoc, DidContentTypes.Json);
+        var keyNoPrivate = !keyJson.Contains("\"d\":");
         ConformanceReportSink.Record("did:key", "did-core-properties", "4", "4-12",
-            "JWK does not contain private key material", noPrivateKey);
-        noPrivateKey.Should().BeTrue();
+            "JWK does not contain private key material", keyNoPrivate);
+        keyNoPrivate.Should().BeTrue();
+
+        // did:ethr — pubkey DID produces #controllerKey VM with publicKeyJwk
+        var (_, ethrDoc) = await _factory.CreateDidEthrWithPubkey();
+        var ethrJson = DidDocumentSerializer.Serialize(ethrDoc, DidContentTypes.Json);
+        var ethrNoPrivate = !ethrJson.Contains("\"d\":");
+        ConformanceReportSink.Record("did:ethr", "did-core-properties", "4", "4-12",
+            "JWK does not contain private key material", ethrNoPrivate);
+        ethrNoPrivate.Should().BeTrue();
     }
 
     [Theory, MemberData(nameof(AllMethods))]
