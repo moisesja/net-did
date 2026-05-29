@@ -17,18 +17,18 @@ namespace NetDid.Method.Ethr;
 /// </summary>
 public sealed class DidEthrMethod : DidMethodBase
 {
-    private readonly IEthereumRpcClient _rpc;
+    private readonly IEthereumRpcClientFactory _rpcFactory;
     private readonly IReadOnlyList<EthereumNetworkConfig> _networks;
     private readonly IKeyGenerator _keyGenerator;
     private readonly ILogger<DidEthrMethod> _logger;
 
     public DidEthrMethod(
-        IEthereumRpcClient rpc,
+        IEthereumRpcClientFactory rpcFactory,
         IEnumerable<EthereumNetworkConfig> networks,
         IKeyGenerator keyGenerator,
         ILogger<DidEthrMethod>? logger = null)
     {
-        _rpc          = rpc ?? throw new ArgumentNullException(nameof(rpc));
+        _rpcFactory   = rpcFactory ?? throw new ArgumentNullException(nameof(rpcFactory));
         _networks     = networks?.ToList() ?? throw new ArgumentNullException(nameof(networks));
         _keyGenerator = keyGenerator ?? throw new ArgumentNullException(nameof(keyGenerator));
         _logger       = logger ?? NullLogger<DidEthrMethod>.Instance;
@@ -69,7 +69,8 @@ public sealed class DidEthrMethod : DidMethodBase
 
         var address = EthereumAddress.FromCompressedPublicKey(publicKey).ToLowerInvariant();
         var network = FindNetwork(ethrOptions.Network);
-        var chainId = await ResolveChainId(network, ct);
+        var rpc     = _rpcFactory.GetOrCreate(network);
+        var chainId = await ResolveChainId(network, rpc, ct);
         var did     = $"did:ethr:{ethrOptions.Network.ToLowerInvariant()}:{address}";
         var identifier = new EthrIdentifier(ethrOptions.Network.ToLowerInvariant(), address, false, null);
 
@@ -96,7 +97,8 @@ public sealed class DidEthrMethod : DidMethodBase
         }
 
         var network = FindNetwork(identifier.Network);
-        var chainId = await ResolveChainId(network, ct);
+        var rpc     = _rpcFactory.GetOrCreate(network);
+        var chainId = await ResolveChainId(network, rpc, ct);
 
         // Determine version / block ceiling
         ulong? versionBlockNumber = null;
@@ -104,8 +106,8 @@ public sealed class DidEthrMethod : DidMethodBase
             versionBlockNumber = vb;
 
         // changed(identity) → first block that has a relevant event
-        var changedHex  = Erc1056Calls.Changed(identifier.IdentityAddress);
-        var changedResult = await _rpc.CallAsync(network.RegistryAddress, changedHex, ct);
+        var changedHex    = Erc1056Calls.Changed(identifier.IdentityAddress);
+        var changedResult = await rpc.CallAsync(network.RegistryAddress, changedHex, ct);
         var latestChange  = ParseHexUlong(changedResult);
 
         // Collect events walking backwards from min(latestChange, versionBlock)
@@ -116,7 +118,7 @@ public sealed class DidEthrMethod : DidMethodBase
         var collectedEvents = new List<Erc1056Event>();
         if (ceiling > 0)
             await WalkEventChainAsync(
-                network.RegistryAddress, identifier.IdentityAddress,
+                rpc, network.RegistryAddress, identifier.IdentityAddress,
                 ceiling, collectedEvents, ct);
 
         // Oldest-first
@@ -128,7 +130,7 @@ public sealed class DidEthrMethod : DidMethodBase
 
         if (versionBlockNumber.HasValue)
         {
-            var ts = await _rpc.GetBlockTimestampAsync(versionBlockNumber.Value, ct);
+            var ts = await rpc.GetBlockTimestampAsync(versionBlockNumber.Value, ct);
             referenceTime = DateTimeOffset.FromUnixTimeSeconds((long)ts);
 
             // Peek at the next change block after versionBlockNumber for metadata
@@ -146,7 +148,7 @@ public sealed class DidEthrMethod : DidMethodBase
             {
                 if (!blockTsCache.TryGetValue(ev.BlockNumber, out var bts))
                 {
-                    bts = await _rpc.GetBlockTimestampAsync(ev.BlockNumber, ct);
+                    bts = await rpc.GetBlockTimestampAsync(ev.BlockNumber, ct);
                     blockTsCache[ev.BlockNumber] = bts;
                 }
                 if (DateTimeOffset.FromUnixTimeSeconds((long)bts) <= referenceTime)
@@ -191,6 +193,7 @@ public sealed class DidEthrMethod : DidMethodBase
     // ── Event chain walker ────────────────────────────────────────────────────
 
     private async Task WalkEventChainAsync(
+        IEthereumRpcClient rpc,
         string registryAddress, string identityAddress,
         ulong fromBlock, List<Erc1056Event> accumulator, CancellationToken ct)
     {
@@ -209,7 +212,7 @@ public sealed class DidEthrMethod : DidMethodBase
                 ]],
             };
 
-            var logs = await _rpc.GetLogsAsync(filter, ct);
+            var logs = await rpc.GetLogsAsync(filter, ct);
             ulong previousChange = 0;
 
             foreach (var log in logs)
@@ -249,7 +252,7 @@ public sealed class DidEthrMethod : DidMethodBase
         return match;
     }
 
-    private async Task<string> ResolveChainId(EthereumNetworkConfig network, CancellationToken ct)
+    private async Task<string> ResolveChainId(EthereumNetworkConfig network, IEthereumRpcClient rpc, CancellationToken ct)
     {
         if (network.ChainId is not null)
         {
@@ -257,7 +260,7 @@ public sealed class DidEthrMethod : DidMethodBase
                 ? network.ChainId[2..] : network.ChainId;
             return Convert.ToUInt64(hex, 16).ToString();
         }
-        var chainId = await _rpc.GetChainIdAsync(ct);
+        var chainId = await rpc.GetChainIdAsync(ct);
         return chainId.ToString();
     }
 

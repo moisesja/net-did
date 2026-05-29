@@ -8,9 +8,8 @@ using NetDid.Method.Ethr.Rpc;
 
 var config = KnownNetworks.Sepolia with { RpcUrl = "https://sepolia.drpc.org" };
 
-var http   = new HttpClient { BaseAddress = new Uri(config.RpcUrl) };
-var rpc    = new DefaultEthereumRpcClient(http);
-var method = new DidEthrMethod(rpc, [config], new DefaultKeyGenerator());
+var factory = DefaultEthereumRpcClientFactory.CreateDirect([config]);
+var method  = new DidEthrMethod(factory, [config], new DefaultKeyGenerator());
 
 var resolver     = new CompositeDidResolver([method]);
 var dereferencer = new DefaultDidUrlDereferencer(resolver);

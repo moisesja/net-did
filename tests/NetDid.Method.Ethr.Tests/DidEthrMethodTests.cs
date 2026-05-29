@@ -24,7 +24,13 @@ public class DidEthrMethodTests
     };
 
     private static DidEthrMethod MakeMethod(IEthereumRpcClient rpc)
-        => new(rpc, [SepoliaConfig], new DefaultKeyGenerator());
+    {
+        // Wrap the single mock in a factory so all network lookups return it.
+        // Tests that care about per-network routing construct the factory themselves.
+        var factory = Substitute.For<IEthereumRpcClientFactory>();
+        factory.GetOrCreate(Arg.Any<EthereumNetworkConfig>()).Returns(rpc);
+        return new DidEthrMethod(factory, [SepoliaConfig], new DefaultKeyGenerator());
+    }
 
     private static ISigner MakeSigner(KeyPair keyPair)
         => new KeyPairSigner(keyPair, new DefaultCryptoProvider());
@@ -236,6 +242,50 @@ public class DidEthrMethodTests
         var act = () => method.DeactivateAsync("did:ethr:sepolia:0x001d3f1ef827552ae1114027bd3ecf1f086ba0f9",
             new DidEthrDeactivateOptions { ControllerKey = signer });
         await act.Should().ThrowAsync<Core.Exceptions.OperationNotSupportedException>();
+    }
+
+    // ── Multi-network routing ─────────────────────────────────────────────────
+
+    [Fact]
+    public async Task ResolveAsync_MultipleNetworks_RoutesRpcCallsToCorrectEndpoint()
+    {
+        // Two networks, each backed by a distinct RPC mock.
+        const string mainnetIdentity = "0x001d3f1ef827552ae1114027bd3ecf1f086ba0f9";
+        const string sepoliaIdentity = "0xdbf03b407c01e7cd3cbea99509d93f8dddc8c6fb";
+
+        var mainnetConfig = new EthereumNetworkConfig
+        {
+            Name            = "mainnet",
+            RpcUrl          = "https://mainnet.example",
+            ChainId         = "0x1",
+            RegistryAddress = "0xdCa7EF03e98e0DC2B855bE647C39ABe984fcF21B",
+        };
+
+        var mainnetRpc = Substitute.For<IEthereumRpcClient>();
+        var sepoliaRpc = Substitute.For<IEthereumRpcClient>();
+
+        // Both return "no events" so resolution completes without further RPC calls.
+        var zero = "0x" + new string('0', 64);
+        mainnetRpc.CallAsync(default!, default!, default).ReturnsForAnyArgs(zero);
+        sepoliaRpc.CallAsync(default!, default!, default).ReturnsForAnyArgs(zero);
+
+        var factory = Substitute.For<IEthereumRpcClientFactory>();
+        factory.GetOrCreate(Arg.Is<EthereumNetworkConfig>(n => n.Name == "mainnet")).Returns(mainnetRpc);
+        factory.GetOrCreate(Arg.Is<EthereumNetworkConfig>(n => n.Name == "sepolia")).Returns(sepoliaRpc);
+
+        var method = new DidEthrMethod(factory, [mainnetConfig, SepoliaConfig], new DefaultKeyGenerator());
+
+        // Resolve a mainnet DID — only mainnet RPC should be called.
+        await method.ResolveAsync($"did:ethr:mainnet:{mainnetIdentity}");
+        await mainnetRpc.Received().CallAsync(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<CancellationToken>());
+        await sepoliaRpc.DidNotReceive().CallAsync(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<CancellationToken>());
+
+        // Resolve a sepolia DID — only sepolia RPC should be called.
+        sepoliaRpc.ClearReceivedCalls();
+        mainnetRpc.ClearReceivedCalls();
+        await method.ResolveAsync($"did:ethr:sepolia:{sepoliaIdentity}");
+        await sepoliaRpc.Received().CallAsync(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<CancellationToken>());
+        await mainnetRpc.DidNotReceive().CallAsync(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<CancellationToken>());
     }
 
     // ── Helpers ───────────────────────────────────────────────────────────────

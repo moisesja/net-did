@@ -75,12 +75,17 @@ public sealed class NetDidBuilder
     public NetDidBuilder AddDidEthr(IEnumerable<EthereumNetworkConfig> networks)
     {
         var networkList = networks.ToList();
-        Services.AddHttpClient<DefaultEthereumRpcClient>();
-        Services.AddSingleton<IEthereumRpcClient>(
-            sp => sp.GetRequiredService<DefaultEthereumRpcClient>());
+
+        // Register a named HttpClient for each network, pre-configured with its RPC URL.
+        // DefaultEthereumRpcClientFactory resolves "ethr-{name}" to get the right endpoint.
+        foreach (var n in networkList)
+            Services.AddHttpClient($"ethr-{n.Name}",
+                c => c.BaseAddress = new Uri(n.RpcUrl));
+
+        Services.AddSingleton<IEthereumRpcClientFactory, DefaultEthereumRpcClientFactory>();
         Services.AddSingleton<IDidMethod>(sp =>
             new DidEthrMethod(
-                sp.GetRequiredService<IEthereumRpcClient>(),
+                sp.GetRequiredService<IEthereumRpcClientFactory>(),
                 networkList,
                 sp.GetRequiredService<IKeyGenerator>(),
                 sp.GetService<ILogger<DidEthrMethod>>()));

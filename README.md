@@ -7,7 +7,7 @@ A specification-compliant .NET library for Decentralized Identifiers (DIDs). Net
 
 ## Features
 
-- **DID methods**: `did:key`, `did:peer`, `did:webvh`, and `did:ethr`
+- **DID methods**: `did:key`, `did:peer`, `did:webvh` (implemented), and `did:ethr` (Create+Resolve)
 - **Eight key types**: Ed25519, X25519, P-256, P-384, P-521, secp256k1, BLS12-381 G1/G2
 - **BBS+ signatures**: Multi-message signing with selective disclosure proofs (IETF draft-10)
 - **W3C DID Core 1.0** compliant DID Document model and serialization
@@ -623,20 +623,20 @@ NetDid is developed in four phases (see [NetDidPRD.md](NetDidPRD.md) for full de
 | **I** | Core Foundation — DID Document model, crypto primitives, encoding, serialization, resolver infrastructure | Complete |
 | **II** | `did:key` and `did:peer` method implementations | Complete |
 | **III** | `did:webvh` method implementation | Complete |
-| **IV** | `did:ethr` method implementation — Phase 1 (Create + Resolve) | Complete |
+| **IV** | `did:ethr` method implementation | Create + Resolve |
 
 ## Specifications
 
 NetDid targets the following specifications:
 
-| Specification | Version | Status | Reference |
-|---|---|---|---|
-| **W3C Decentralized Identifiers (DIDs)** | v1.0 | W3C Recommendation (2022-07-19) | [w3.org/TR/did-core](https://www.w3.org/TR/did-core/) |
-| **did:key** | Latest | W3C CCG Final | [w3c-ccg.github.io/did-method-key](https://w3c-ccg.github.io/did-method-key/) |
-| **did:peer** | 2.0 | DIF Spec | [identity.foundation/peer-did-method-spec](https://identity.foundation/peer-did-method-spec/) |
-| **did:webvh** | 1.0 | DIF Recommended | [identity.foundation/didwebvh](https://identity.foundation/didwebvh/) |
-| **did:ethr** | Latest | DIF Spec | [github.com/decentralized-identity/ethr-did-resolver](https://github.com/decentralized-identity/ethr-did-resolver/blob/master/doc/did-method-spec.md) |
-| **Data Integrity (eddsa-jcs-2022)** | — | W3C Candidate Recommendation | [w3.org/TR/vc-di-eddsa](https://www.w3.org/TR/vc-di-eddsa/) |
+| Specification | Version  | Status | Reference |
+|---|----------|---|---|
+| **W3C Decentralized Identifiers (DIDs)** | v1.0     | W3C Recommendation (2022-07-19) | [w3.org/TR/did-core](https://www.w3.org/TR/did-core/) |
+| **did:key** | Latest   | W3C CCG Final | [w3c-ccg.github.io/did-method-key](https://w3c-ccg.github.io/did-method-key/) |
+| **did:peer** | 2.0      | DIF Spec | [identity.foundation/peer-did-method-spec](https://identity.foundation/peer-did-method-spec/) |
+| **did:webvh** | 1.0      | DIF Recommended | [identity.foundation/didwebvh](https://identity.foundation/didwebvh/) |
+| **did:ethr** | 13.0.0   | DIF Spec | [github.com/decentralized-identity/ethr-did-resolver](https://github.com/decentralized-identity/ethr-did-resolver/blob/master/doc/did-method-spec.md) |
+| **Data Integrity (eddsa-jcs-2022)** | —        | W3C Candidate Recommendation | [w3.org/TR/vc-di-eddsa](https://www.w3.org/TR/vc-di-eddsa/) |
 | **BBS Signatures** | draft-10 | IETF CFRG Draft | [draft-irtf-cfrg-bbs-signatures](https://datatracker.ietf.org/doc/draft-irtf-cfrg-bbs-signatures/) |
 | **JSON Canonicalization (JCS)** | RFC 8785 | IETF Proposed Standard | [rfc-editor.org/rfc/rfc8785](https://www.rfc-editor.org/rfc/rfc8785) |
 

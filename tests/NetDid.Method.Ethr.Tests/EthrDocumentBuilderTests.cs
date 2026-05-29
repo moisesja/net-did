@@ -211,7 +211,7 @@ public class EthrDocumentBuilderTests
 
         doc.VerificationMethod.Should().HaveCount(2);
         doc.VerificationMethod!.Should().Contain(v => v.Id.EndsWith("#controllerKey"));
-        var ckVm = doc.VerificationMethod.Single(v => v.Id.EndsWith("#controllerKey"));
+        var ckVm = doc.VerificationMethod!.Single(v => v.Id.EndsWith("#controllerKey"));
         ckVm.Type.Should().Be("EcdsaSecp256k1VerificationKey2019");
         ckVm.PublicKeyJwk.Should().NotBeNull();
     }
