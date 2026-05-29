@@ -262,9 +262,9 @@ using NetDid.Core.Crypto;
 using NetDid.Method.Ethr;
 using NetDid.Method.Ethr.Rpc;
 
-var config = KnownNetworks.Sepolia with { RpcUrl = "https://sepolia.drpc.org" };
-var rpc    = new DefaultEthereumRpcClient(new HttpClient { BaseAddress = new Uri(config.RpcUrl) });
-var method = new DidEthrMethod(rpc, [config], new DefaultKeyGenerator());
+var config  = KnownNetworks.Sepolia with { RpcUrl = "https://sepolia.drpc.org" };
+var factory = DefaultEthereumRpcClientFactory.CreateDirect([config]);
+var method  = new DidEthrMethod(factory, [config], new DefaultKeyGenerator());
 
 var result = await method.CreateAsync(new DidEthrCreateOptions { Network = "sepolia" });
 
