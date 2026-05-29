@@ -62,27 +62,28 @@ public sealed record EthrIdentifier(
         string network;
         string addressOrKey;
 
-        // Check for optional network prefix: either a named network or a hex chain ID
-        // followed by ":"
-        var colonIdx = methodSpecificId.IndexOf(':');
-        if (colonIdx > 0 && !methodSpecificId.StartsWith("0x", StringComparison.OrdinalIgnoreCase))
+        // Strategy: find the last occurrence of ":0x" — everything before it is the
+        // network name (which may itself contain colons, e.g. "artis:sigma1"),
+        // everything from the "0x" onward is the address or compressed public key.
+        //
+        // Cases:
+        //   "0x..."                   → no prefix, mainnet
+        //   "sepolia:0x..."           → network="sepolia"
+        //   "0xaa36a7:0x..."          → network="0xaa36a7"
+        //   "artis:sigma1:0x..."      → network="artis:sigma1"
+        //   "a:b:c:0x..."             → network="a:b:c"
+        var lastColon0x = methodSpecificId.LastIndexOf(":0x", StringComparison.OrdinalIgnoreCase);
+
+        if (lastColon0x < 0)
         {
-            // Named network: e.g. "sepolia:0x..."
-            network      = methodSpecificId[..colonIdx].ToLowerInvariant();
-            addressOrKey = methodSpecificId[(colonIdx + 1)..];
-        }
-        else if (colonIdx > 0 && methodSpecificId.StartsWith("0x", StringComparison.OrdinalIgnoreCase))
-        {
-            // Hex chain ID: e.g. "0xaa36a7:0x..."
-            // The chain-ID hex ends at the first colon that follows "0x<hexdigits>:"
-            network      = methodSpecificId[..colonIdx].ToLowerInvariant();
-            addressOrKey = methodSpecificId[(colonIdx + 1)..];
+            // No ":0x" separator — the whole string must itself start with 0x (bare address/key, mainnet)
+            network      = "mainnet";
+            addressOrKey = methodSpecificId;
         }
         else
         {
-            // No network prefix — default to mainnet
-            network      = "mainnet";
-            addressOrKey = methodSpecificId;
+            network      = methodSpecificId[..lastColon0x].ToLowerInvariant();
+            addressOrKey = methodSpecificId[(lastColon0x + 1)..];
         }
 
         if (!addressOrKey.StartsWith("0x", StringComparison.OrdinalIgnoreCase))
