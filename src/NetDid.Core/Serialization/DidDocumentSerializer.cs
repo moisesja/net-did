@@ -112,7 +112,10 @@ public static class DidDocumentSerializer
             contexts.Add("https://w3id.org/security/multikey/v1");
         if (vmTypes.Contains("JsonWebKey2020"))
             contexts.Add("https://w3id.org/security/suites/jws-2020/v1");
-        if (vmTypes.Any(t => t.StartsWith("EcdsaSecp256k1")))
+        // Add secp256k1-2019/v1 only when security/v2 is not already provided by the document
+        // (did:ethr uses security/v2 per the reference JS resolver; did:key/did:peer use secp256k1-2019/v1)
+        var docHasSecurityV2 = doc.Context?.Any(c => c is string s && s == "https://w3id.org/security/v2") == true;
+        if (!docHasSecurityV2 && vmTypes.Any(t => t.StartsWith("EcdsaSecp256k1")))
             contexts.Add("https://w3id.org/security/suites/secp256k1-2019/v1");
 
         // Append any additional context entries (strings or JSON objects) from the document
