@@ -161,7 +161,7 @@ public static class EthrDocumentBuilder
             });
             var rel = VerificationRelationshipEntry.FromReference(vmId);
             if (d.DelegateType == "sigAuth") auths.Add(rel);
-            else asserts.Add(rel); // veriKey and unknown → assertionMethod
+            asserts.Add(rel); // veriKey and sigAuth both → assertionMethod
         }
 
         // Attribute-based key VMs (#delegate-N)
@@ -241,9 +241,9 @@ public static class EthrDocumentBuilder
             if (vm is null) continue;
             vms.Add(vm);
             var rel = VerificationRelationshipEntry.FromReference(vmId);
-            if (purpose == "enc")       keyAgree.Add(rel);
-            else if (purpose == "sigAuth") auths.Add(rel);
-            else                        asserts.Add(rel); // veriKey default
+            if (purpose == "enc")        keyAgree.Add(rel);
+            else if (purpose == "sigAuth") { auths.Add(rel); asserts.Add(rel); }
+            else                            asserts.Add(rel); // veriKey default
         }
 
         // Services

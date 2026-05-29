@@ -97,7 +97,7 @@ public class EthrDocumentBuilderTests
     // ── sigAuth delegate ──────────────────────────────────────────────────────
 
     [Fact]
-    public void Build_SigAuthDelegate_AppearsInAuthentication()
+    public void Build_SigAuthDelegate_AppearsInAuthenticationAndAssertionMethod()
     {
         var delegate20 = "0x5aaeb6053f3e94c9b9a09f33669435e7ef1beaed";
         var future = (ulong)(Now.ToUnixTimeSeconds() + 3600);
@@ -108,8 +108,9 @@ public class EthrDocumentBuilderTests
 
         var doc = EthrDocumentBuilder.Build(Did, MakeIdentifier(), ChainId, events, Now, false);
 
+        // sigAuth -> both authentication AND assertionMethod (matches JS resolver fall-through)
         doc.Authentication.Should().Contain(e => e.Reference != null && e.Reference.Contains("#delegate-1"));
-        doc.AssertionMethod.Should().NotContain(e => e.Reference != null && e.Reference.Contains("#delegate-1"));
+        doc.AssertionMethod.Should().Contain(e => e.Reference != null && e.Reference.Contains("#delegate-1"));
     }
 
     // ── Expired delegate excluded ─────────────────────────────────────────────
