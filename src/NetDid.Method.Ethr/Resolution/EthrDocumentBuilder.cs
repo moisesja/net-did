@@ -194,7 +194,7 @@ public static class EthrDocumentBuilder
                         Id                   = vmId,
                         Type                 = "Ed25519VerificationKey2020",
                         Controller           = new Did(did),
-                        PublicKeyMultibase   = EncodeMultibase(a.Value, 0xed01),
+                        PublicKeyMultibase   = EncodeMultibase(a.Value, KeyType.Ed25519),
                     };
                     break;
 
@@ -205,7 +205,7 @@ public static class EthrDocumentBuilder
                         Id                   = vmId,
                         Type                 = "X25519KeyAgreementKey2020",
                         Controller           = new Did(did),
-                        PublicKeyMultibase   = EncodeMultibase(a.Value, 0xec01),
+                        PublicKeyMultibase   = EncodeMultibase(a.Value, KeyType.X25519),
                     };
                     break;
 
@@ -299,13 +299,15 @@ public static class EthrDocumentBuilder
     // ── Multibase helpers ─────────────────────────────────────────────────────
 
     /// <summary>
-    /// Prepends a varint-encoded multicodec prefix then base58btc-encodes (multibase 'z').
-    /// Used for Ed25519 (0xed01) and X25519 (0xec01) keys.
+    /// Prepends the varint multicodec prefix for <paramref name="keyType"/> then
+    /// base58btc-encodes the result (multibase 'z' prefix).
+    /// Uses <see cref="KeyTypeExtensions.GetMulticodec"/> so the prefix is always
+    /// in sync with the rest of the codebase — no hand-rolled magic numbers.
     /// </summary>
-    private static string EncodeMultibase(byte[] keyBytes, int multicodecPrefix)
+    private static string EncodeMultibase(byte[] keyBytes, KeyType keyType)
     {
-        // Varint-encode the 2-byte prefix (both Ed25519/X25519 prefixes need 2 bytes)
-        var prefixBytes = EncodeVarint(multicodecPrefix);
+        var code        = keyType.GetMulticodec();          // e.g. 0xed for Ed25519
+        var prefixBytes = EncodeVarint(code);
         var combined    = new byte[prefixBytes.Length + keyBytes.Length];
         prefixBytes.CopyTo(combined, 0);
         keyBytes.CopyTo(combined, prefixBytes.Length);
@@ -316,7 +318,7 @@ public static class EthrDocumentBuilder
     private static string EncodeMultibaseRaw(byte[] bytes)
         => Multibase.Encode(bytes, MultibaseEncoding.Base58Btc);
 
-    private static byte[] EncodeVarint(int value)
+    private static byte[] EncodeVarint(ulong value)
     {
         var result = new List<byte>();
         while (value > 0x7F)
