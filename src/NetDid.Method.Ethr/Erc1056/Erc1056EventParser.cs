@@ -1,4 +1,3 @@
-using System.Buffers.Binary;
 using NetDid.Method.Ethr.Abi;
 using NetDid.Method.Ethr.Rpc;
 
