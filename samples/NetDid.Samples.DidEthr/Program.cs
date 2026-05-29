@@ -4,20 +4,15 @@ using NetDid.Core.Serialization;
 using NetDid.Method.Ethr;
 using NetDid.Method.Ethr.Rpc;
 
-var networks = new[]
-{
-    new EthereumNetworkConfig
-    {
-        Name            = "sepolia",
-        RpcUrl          = "https://sepolia.drpc.org",
-        ChainId         = "0xaa36a7",
-        RegistryAddress = "0x03d5003bf0e79c5f5223588f347eba39afbc3818",
-    }
-};
+// ── Option A: use KnownNetworks with record `with` (recommended) ──────────────
+var config = KnownNetworks.Sepolia with { RpcUrl = "https://sepolia.drpc.org" };
 
-var http   = new HttpClient { BaseAddress = new Uri("https://sepolia.drpc.org") };
+var http   = new HttpClient { BaseAddress = new Uri(config.RpcUrl) };
 var rpc    = new DefaultEthereumRpcClient(http);
-var method = new DidEthrMethod(rpc, networks, new DefaultKeyGenerator());
+var method = new DidEthrMethod(rpc, [config], new DefaultKeyGenerator());
+
+// ── Option B (DI): builder.AddDidEthr(new Dictionary<string,string> { ["sepolia"] = "..." })
+// See NetDidBuilder.AddDidEthr overloads.
 
 var did    = "did:ethr:sepolia:0xf61c81096c96f97e95ac52a570966195ad6c90dd";
 Console.WriteLine($"Resolving: {did}");
@@ -43,6 +38,5 @@ var meta = result.DocumentMetadata;
 if (meta != null)
 {
     if (meta.VersionId   != null) Console.WriteLine($"  versionId  : {meta.VersionId}");
-    if (meta.Updated     != null) Console.WriteLine($"  updated    : {meta.Updated}");
     if (meta.Deactivated == true) Console.WriteLine($"  deactivated: true");
 }

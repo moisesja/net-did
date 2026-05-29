@@ -86,4 +86,29 @@ public sealed class NetDidBuilder
                 sp.GetService<ILogger<DidEthrMethod>>()));
         return this;
     }
+
+    /// <summary>
+    /// Register the did:ethr method using well-known network metadata from <see cref="KnownNetworks"/>.
+    /// The caller supplies only RPC URLs; registry addresses and chain IDs are looked up automatically.
+    /// <code>
+    /// builder.AddDidEthr(new Dictionary&lt;string, string&gt;
+    /// {
+    ///     ["mainnet"] = "https://mainnet.infura.io/v3/YOUR_KEY",
+    ///     ["sepolia"] = "https://sepolia.drpc.org",
+    /// });
+    /// </code>
+    /// Throws <see cref="InvalidOperationException"/> if a name is not found in <see cref="KnownNetworks.All"/>.
+    /// </summary>
+    public NetDidBuilder AddDidEthr(IReadOnlyDictionary<string, string> networkRpcUrls)
+    {
+        var configs = networkRpcUrls.Select(kv =>
+        {
+            var known = KnownNetworks.Find(kv.Key)
+                ?? throw new InvalidOperationException(
+                    $"Unknown did:ethr network '{kv.Key}'. " +
+                    $"Use AddDidEthr(IEnumerable<EthereumNetworkConfig>) to supply a custom config.");
+            return known with { RpcUrl = kv.Value };
+        });
+        return AddDidEthr(configs);
+    }
 }
