@@ -160,6 +160,20 @@ public sealed class TestDidFactory
         return (result.Did.Value, result.DidDocument);
     }
 
+    /// <summary>
+    /// Creates a did:ethr DID whose method-specific ID is a compressed secp256k1 public key.
+    /// The resolved document includes a #controllerKey VM with publicKeyJwk (no private material).
+    /// </summary>
+    public async Task<(string Did, DidDocument Doc)> CreateDidEthrWithPubkey()
+    {
+        var keyPair   = _keyGen.Generate(KeyType.Secp256k1);
+        var pubkeyHex = Convert.ToHexString(keyPair.PublicKey).ToLowerInvariant();
+        var did       = $"did:ethr:mainnet:0x{pubkeyHex}";
+        // changed() returns 0 → no events → #controller + #controllerKey
+        var result = await _ethrMethod.ResolveAsync(did);
+        return (did, result.DidDocument!);
+    }
+
     public async Task<(string Did, DidDocument Doc)> CreateDidEthrWithService()
     {
         // 1. Create DID (random key → deterministic address for this run)

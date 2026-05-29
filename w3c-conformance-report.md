@@ -1,6 +1,6 @@
 # W3C DID Core Conformance Report
 
-Generated: 2026-05-29T15:18:37Z
+Generated: 2026-05-29T15:21:40Z
 
 ## Scope and limitations
 
@@ -29,7 +29,7 @@ method's test project and link it here.
 
 | Method | Total | Passed | Failed |
 |--------|-------|--------|--------|
-| did:ethr | 65 | 65 | 0 |
+| did:ethr | 66 | 66 | 0 |
 | did:key | 57 | 57 | 0 |
 | did:peer | 67 | 67 | 0 |
 | did:webvh | 65 | 65 | 0 |
@@ -56,7 +56,7 @@ method's test project and link it here.
 | 4-1 | Document id is present and non-empty | PASS | PASS | PASS | PASS |
 | 4-10 | VM has exactly one key representation | PASS | PASS | PASS | PASS |
 | 4-11 | Multibase key is non-empty and starts with 'z' | PASS | PASS | PASS | PASS |
-| 4-12 | JWK does not contain private key material | N/A | PASS | N/A | N/A |
+| 4-12 | JWK does not contain private key material | PASS | PASS | N/A | N/A |
 | 4-13 | Verification method IDs are unique | PASS | PASS | PASS | PASS |
 | 4-14 | authentication entries are valid references or embedded VMs | PASS | PASS | PASS | PASS |
 | 4-15 | assertionMethod entries are valid references or embedded VMs | PASS | PASS | PASS | PASS |
