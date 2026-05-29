@@ -1,42 +1,63 @@
 using System.Text.Json;
 using NetDid.Core.Crypto;
+using NetDid.Core.Model;
+using NetDid.Core.Resolution;
 using NetDid.Core.Serialization;
 using NetDid.Method.Ethr;
 using NetDid.Method.Ethr.Rpc;
 
-// ── Option A: use KnownNetworks with record `with` (recommended) ──────────────
 var config = KnownNetworks.Sepolia with { RpcUrl = "https://sepolia.drpc.org" };
 
 var http   = new HttpClient { BaseAddress = new Uri(config.RpcUrl) };
 var rpc    = new DefaultEthereumRpcClient(http);
 var method = new DidEthrMethod(rpc, [config], new DefaultKeyGenerator());
 
-// ── Option B (DI): builder.AddDidEthr(new Dictionary<string,string> { ["sepolia"] = "..." })
-// See NetDidBuilder.AddDidEthr overloads.
+var resolver     = new CompositeDidResolver([method]);
+var dereferencer = new DefaultDidUrlDereferencer(resolver);
 
-var did    = "did:ethr:sepolia:0xf61c81096c96f97e95ac52a570966195ad6c90dd";
-Console.WriteLine($"Resolving: {did}");
-Console.WriteLine();
+const string did = "did:ethr:sepolia:0xf61c81096c96f97e95ac52a570966195ad6c90dd";
 
-var result = await method.ResolveAsync(did);
+// ── 1. Current document ───────────────────────────────────────────────────────
+Console.WriteLine("=== Current document ===");
+await PrintDereferencedDoc(dereferencer, did);
 
-if (result.ResolutionMetadata.Error is string err)
+// ── 2. Genesis document (state before any events, via ?versionId=0) ───────────
+Console.WriteLine("=== Genesis document (?versionId=0) ===");
+await PrintDereferencedDoc(dereferencer, $"{did}?versionId=0");
+
+// ── helpers ───────────────────────────────────────────────────────────────────
+
+static async Task PrintDereferencedDoc(DefaultDidUrlDereferencer dereferencer, string url)
 {
-    Console.Error.WriteLine($"Resolution error: {err}");
-    return;
-}
+    Console.WriteLine($"Dereferencing: {url}");
 
-var json = DidDocumentSerializer.Serialize(result.DidDocument!);
-Console.WriteLine("=== DID Document ===");
-Console.WriteLine(JsonSerializer.Serialize(
-    JsonSerializer.Deserialize<JsonElement>(json),
-    new JsonSerializerOptions { WriteIndented = true }));
+    var result = await dereferencer.DereferenceAsync(url);
 
-Console.WriteLine();
-Console.WriteLine("=== Document Metadata ===");
-var meta = result.DocumentMetadata;
-if (meta != null)
-{
-    if (meta.VersionId   != null) Console.WriteLine($"  versionId  : {meta.VersionId}");
-    if (meta.Deactivated == true) Console.WriteLine($"  deactivated: true");
+    if (result.DereferencingMetadata.Error is string err)
+    {
+        Console.Error.WriteLine($"  Error: {err}");
+        Console.WriteLine();
+        return;
+    }
+
+    if (result.ContentStream is not DidDocument doc)
+    {
+        Console.Error.WriteLine($"  Unexpected content type: {result.ContentStream?.GetType().Name}");
+        Console.WriteLine();
+        return;
+    }
+
+    var json = DidDocumentSerializer.Serialize(doc);
+    Console.WriteLine(JsonSerializer.Serialize(
+        JsonSerializer.Deserialize<JsonElement>(json),
+        new JsonSerializerOptions { WriteIndented = true }));
+
+    if (result.ContentMetadata is { Count: > 0 } meta)
+    {
+        Console.WriteLine("Metadata:");
+        foreach (var (k, v) in meta)
+            Console.WriteLine($"  {k}: {v}");
+    }
+
+    Console.WriteLine();
 }
