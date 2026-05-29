@@ -213,7 +213,14 @@ public sealed class DidEthrMethod : DidMethodBase
             };
 
             var logs = await rpc.GetLogsAsync(filter, ct);
-            ulong previousChange = 0;
+
+            // nextBlock = the highest previousChange value that is STRICTLY less than
+            // currentBlock.  Later transactions in the same block emit
+            // previousChange == currentBlock (because changed[identity] was already
+            // updated by an earlier tx in the block); following those values would
+            // revisit the same block and loop forever.  Only values < currentBlock
+            // represent a genuinely earlier block in the chain.
+            ulong nextBlock = 0;
 
             foreach (var log in logs)
             {
@@ -224,8 +231,9 @@ public sealed class DidEthrMethod : DidMethodBase
                             StringComparison.OrdinalIgnoreCase))
                         continue;
                     accumulator.Add(ev);
-                    if (ev.PreviousChange > previousChange)
-                        previousChange = ev.PreviousChange;
+                    // Advance only when previousChange points to a strictly earlier block.
+                    if (ev.PreviousChange < currentBlock && ev.PreviousChange > nextBlock)
+                        nextBlock = ev.PreviousChange;
                 }
                 catch (ArgumentException ex)
                 {
@@ -233,7 +241,7 @@ public sealed class DidEthrMethod : DidMethodBase
                 }
             }
 
-            currentBlock = previousChange;
+            currentBlock = nextBlock;
         }
     }
 

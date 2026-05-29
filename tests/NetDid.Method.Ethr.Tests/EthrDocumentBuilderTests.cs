@@ -227,4 +227,99 @@ public class EthrDocumentBuilderTests
         doc.Context.Should().Contain(c =>
             c.ToString()!.Contains("secp256k1recovery"));
     }
+
+    // ── Same-block event ordering (PR feedback regression cases) ─────────────
+
+    /// <summary>
+    /// A delegate added and revoked within the same block must not appear in
+    /// the resulting document.  The revocation event's counter still consumes
+    /// slot 2, so any subsequent delegates pick up from slot 3.
+    /// </summary>
+    [Fact]
+    public void Build_DelegateAddedAndRevokedInSameBlock_NotInDocument()
+    {
+        const string keyA = "0x5aaeb6053f3e94c9b9a09f33669435e7ef1beaed";
+        var future = (ulong)(Now.ToUnixTimeSeconds() + 3600);
+
+        var events = new List<Erc1056Event>
+        {
+            // Tx 0: add keyA  (prevChange = 0  — no prior history)
+            new DelegateChangedEvent(Address, "veriKey", keyA, future, 0UL,  50UL),
+            // Tx 1: revoke keyA  (prevChange = 50 — same-block back-reference)
+            new DelegateChangedEvent(Address, "veriKey", keyA, 1UL,    50UL, 50UL),
+        };
+
+        var doc = EthrDocumentBuilder.Build(Did, MakeIdentifier(), ChainId, events, Now, false);
+
+        doc.VerificationMethod.Should().HaveCount(1, "only #controller; keyA was revoked");
+        doc.AssertionMethod.Should().HaveCount(1,    "only #controller reference");
+    }
+
+    /// <summary>
+    /// Add keyA (#delegate-1), add keyB (#delegate-2), revoke keyA (#delegate-3 counter
+    /// consumed), all in block 10.  Then add keyC in block 11 (#delegate-4).
+    /// keyB must be #delegate-2 and keyC must be #delegate-4.
+    /// </summary>
+    [Fact]
+    public void Build_AddTwoDelegatesRevokeOneInSameBlock_ThenAddThird_IndicesAreStable()
+    {
+        const string keyA = "0x5aaeb6053f3e94c9b9a09f33669435e7ef1beaed";
+        const string keyB = "0xdbf03b407c01e7cd3cbea99509d93f8dddc8c6fb";
+        const string keyC = "0xd1220a0cf47c7b9be7a2e6ba89f429762e7b9adb";
+        var future = (ulong)(Now.ToUnixTimeSeconds() + 3600);
+
+        var events = new List<Erc1056Event>
+        {
+            // block 10, tx 0: add keyA  → counter 1
+            new DelegateChangedEvent(Address, "veriKey", keyA, future, 0UL,  10UL),
+            // block 10, tx 1: add keyB  → counter 2
+            new DelegateChangedEvent(Address, "veriKey", keyB, future, 10UL, 10UL),
+            // block 10, tx 2: revoke keyA → counter 3 consumed (entry removed)
+            new DelegateChangedEvent(Address, "veriKey", keyA, 1UL,   10UL, 10UL),
+            // block 11, tx 0: add keyC  → counter 4
+            new DelegateChangedEvent(Address, "veriKey", keyC, future, 10UL, 11UL),
+        };
+
+        var doc = EthrDocumentBuilder.Build(Did, MakeIdentifier(), ChainId, events, Now, false);
+
+        doc.VerificationMethod.Should().HaveCount(3, "#controller + keyB + keyC");
+        doc.VerificationMethod!.Should()
+            .Contain(v => v.Id == $"{Did}#delegate-2", "keyB must keep its original counter");
+        doc.VerificationMethod.Should()
+            .Contain(v => v.Id == $"{Did}#delegate-4", "keyC receives counter 4, not 3");
+        doc.VerificationMethod.Should()
+            .NotContain(v => v.Id.Contains("#delegate-1"), "keyA was revoked");
+        doc.VerificationMethod.Should()
+            .NotContain(v => v.Id.Contains("#delegate-3"), "counter 3 consumed by revocation");
+    }
+
+    /// <summary>
+    /// Revoking a key that was never previously registered (counter 1 consumed by the
+    /// revocation), then adding it in the same block (counter 2) — the key must appear
+    /// as #delegate-2, not #delegate-1.
+    /// </summary>
+    [Fact]
+    public void Build_RevokeBeforeAddInSameBlock_KeyAppearsAtAddCounter()
+    {
+        const string keyA = "0x5aaeb6053f3e94c9b9a09f33669435e7ef1beaed";
+        var future = (ulong)(Now.ToUnixTimeSeconds() + 3600);
+
+        var events = new List<Erc1056Event>
+        {
+            // Tx 0: revoke keyA (never registered) → counter 1 consumed, entry absent
+            new DelegateChangedEvent(Address, "veriKey", keyA, 1UL,    0UL,  50UL),
+            // Tx 1: add keyA → counter 2
+            new DelegateChangedEvent(Address, "veriKey", keyA, future, 50UL, 50UL),
+        };
+
+        var doc = EthrDocumentBuilder.Build(Did, MakeIdentifier(), ChainId, events, Now, false);
+
+        doc.VerificationMethod.Should().HaveCount(2, "#controller + keyA");
+        doc.VerificationMethod!.Should()
+            .Contain(v => v.Id == $"{Did}#delegate-2",
+                "keyA must be at counter 2, not counter 1");
+        doc.VerificationMethod.Should()
+            .NotContain(v => v.Id.Contains("#delegate-1"),
+                "counter 1 was consumed by the revocation-before-registration");
+    }
 }

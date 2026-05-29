@@ -328,6 +328,71 @@ public class DidEthrMethodTests
         }];
     }
 
+    private static EthereumLogEntry SingleDelegateLog(
+        string identity, string delegate20, string delegateType,
+        ulong validTo, ulong prev, ulong block)
+        => BuildDelegateLog(identity, delegate20, delegateType, validTo, prev, block)[0];
+
+    // ── Walker non-termination regression ───────────────────────────────────────
+
+    /// <summary>
+    /// When a block contains multiple events for the same identity, later transactions
+    /// in that block emit previousChange == block.number (the value that changed[identity]
+    /// was set to by an earlier transaction in the same block).  The old walker took
+    /// max(previousChange), which equalled the current block and looped forever.
+    ///
+    /// This test detects the regression by throwing on the second visit to the same block,
+    /// so a buggy walker fails fast instead of hanging the test runner.
+    /// </summary>
+    [Fact]
+    public async Task ResolveAsync_TwoEventsInSameBlock_WalkerTerminatesAndCollectsBothDelegates()
+    {
+        const string identity   = "0x001d3f1ef827552ae1114027bd3ecf1f086ba0f9";
+        const string keyA       = "0x5aaeb6053f3e94c9b9a09f33669435e7ef1beaed";
+        const string keyB       = "0xdbf03b407c01e7cd3cbea99509d93f8dddc8c6fb";
+        const ulong  eventBlock = 50UL;
+        var future = (ulong)(DateTimeOffset.UtcNow.ToUnixTimeSeconds() + 3600);
+
+        var rpc = Substitute.For<IEthereumRpcClient>();
+
+        // changed() returns block 50
+        rpc.CallAsync(default!, default!, default)
+           .ReturnsForAnyArgs("0x" + eventBlock.ToString("x64"));
+
+        // Guard: throw if any block is fetched more than once (detects the old infinite loop)
+        var fetchCounts = new Dictionary<ulong, int>();
+        rpc.GetLogsAsync(Arg.Any<EthereumLogFilter>(), Arg.Any<CancellationToken>())
+           .Returns(call =>
+           {
+               var filter = call.Arg<EthereumLogFilter>();
+               fetchCounts.TryGetValue(filter.FromBlock, out var n);
+               if (n >= 1)
+                   throw new InvalidOperationException(
+                       $"Block {filter.FromBlock} was fetched {n + 1} times — walker did not terminate.");
+               fetchCounts[filter.FromBlock] = n + 1;
+
+               if (filter.FromBlock != eventBlock)
+                   return Task.FromResult<IReadOnlyList<EthereumLogEntry>>([]);
+
+               // Block 50 has two delegate events:
+               //   Tx 0 — prevChange = 0          (first event ever for this identity)
+               //   Tx 1 — prevChange = eventBlock  (same-block back-reference, the problematic case)
+               return Task.FromResult<IReadOnlyList<EthereumLogEntry>>(
+               [
+                   SingleDelegateLog(identity, keyA, "veriKey", future, 0UL,         eventBlock),
+                   SingleDelegateLog(identity, keyB, "veriKey", future, eventBlock,  eventBlock),
+               ]);
+           });
+
+        var result = await MakeMethod(rpc).ResolveAsync($"did:ethr:sepolia:{identity}");
+
+        result.ResolutionMetadata.Error.Should().BeNull();
+        result.DidDocument!.VerificationMethod.Should().HaveCount(3,
+            "#controller + keyA (#delegate-1) + keyB (#delegate-2)");
+        // Block 50 must have been fetched exactly once
+        fetchCounts[eventBlock].Should().Be(1);
+    }
+
     private static string PadAddress(string addr)
     {
         var hex = addr.StartsWith("0x") ? addr[2..] : addr;
