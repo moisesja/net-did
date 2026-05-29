@@ -1,6 +1,6 @@
 # W3C DID Core Conformance Report
 
-Generated: 2026-05-29T15:07:08Z
+Generated: 2026-05-29T15:14:25Z
 
 ## Scope and limitations
 
@@ -29,25 +29,25 @@ method's test project and link it here.
 
 | Method | Total | Passed | Failed |
 |--------|-------|--------|--------|
-| did:ethr | 42 | 42 | 0 |
+| did:ethr | 65 | 65 | 0 |
 | did:key | 57 | 57 | 0 |
 | did:peer | 67 | 67 | 0 |
-| did:webvh | 58 | 58 | 0 |
+| did:webvh | 65 | 65 | 0 |
 
 ## did-identifier (section 3.1)
 
 | Statement | Description | did:ethr | did:key | did:peer | did:webvh |
 |-----------|-------------|----------|----------|----------|----------|
 | 3.1-1 | DID conforms to ABNF syntax | PASS | PASS | PASS | PASS |
-| 3.1-10 | FullUrl reconstructs correctly | N/A | PASS | PASS | PASS |
+| 3.1-10 | FullUrl reconstructs correctly | PASS | PASS | PASS | PASS |
 | 3.1-2 | Method name is lowercase alphanumeric | PASS | PASS | PASS | PASS |
 | 3.1-3 | Method-specific-id contains only valid characters | PASS | PASS | PASS | PASS |
-| 3.1-4 | Invalid DID syntax is rejected | N/A | PASS | PASS | N/A |
-| 3.1-5 | DID URL with fragment parses correctly | N/A | PASS | PASS | PASS |
-| 3.1-6 | DID URL with query parses correctly | N/A | PASS | PASS | PASS |
-| 3.1-7 | DID URL with path parses correctly | N/A | PASS | PASS | PASS |
-| 3.1-8 | DID URL with parameters parses correctly | N/A | PASS | PASS | PASS |
-| 3.1-9 | Invalid DID URL is rejected | N/A | PASS | PASS | N/A |
+| 3.1-4 | Invalid DID syntax is rejected | PASS | PASS | PASS | PASS |
+| 3.1-5 | DID URL with fragment parses correctly | PASS | PASS | PASS | PASS |
+| 3.1-6 | DID URL with query parses correctly | PASS | PASS | PASS | PASS |
+| 3.1-7 | DID URL with path parses correctly | PASS | PASS | PASS | PASS |
+| 3.1-8 | DID URL with parameters parses correctly | PASS | PASS | PASS | PASS |
+| 3.1-9 | Invalid DID URL is rejected | PASS | PASS | PASS | PASS |
 
 ## did-core-properties (section 4)
 
@@ -83,8 +83,8 @@ method's test project and link it here.
 |-----------|-------------|----------|----------|----------|----------|
 | 6-1 | JSON production produces valid JSON | PASS | PASS | PASS | PASS |
 | 6-10 | JSON-LD round-trips via deserialization | PASS | PASS | PASS | PASS |
-| 6-11 | Missing @context rejected on JSON-LD consumption | N/A | PASS | PASS | N/A |
-| 6-12 | Wrong first @context rejected on JSON-LD consumption | N/A | PASS | PASS | N/A |
+| 6-11 | Missing @context rejected on JSON-LD consumption | PASS | PASS | PASS | PASS |
+| 6-12 | Wrong first @context rejected on JSON-LD consumption | PASS | PASS | PASS | PASS |
 | 6-2 | JSON production omits @context | PASS | PASS | PASS | PASS |
 | 6-3 | id serialized as string | PASS | PASS | PASS | PASS |
 | 6-4 | verificationMethod serialized as array | PASS | PASS | PASS | PASS |
@@ -104,7 +104,7 @@ method's test project and link it here.
 | 7.1-3 | Resolution metadata contentType is set | PASS | PASS | PASS | PASS |
 | 7.1-4 | Resolved document id matches requested DID | PASS | PASS | PASS | PASS |
 | 7.1-5 | Invalid DID returns invalidDid error | PASS | PASS | PASS | PASS |
-| 7.1-6 | Unknown method returns methodNotSupported error | N/A | PASS | PASS | N/A |
+| 7.1-6 | Unknown method returns methodNotSupported error | PASS | PASS | PASS | PASS |
 | 7.1-7 | Nonexistent DID returns error with null document | PASS | PASS | PASS | PASS |
 | 7.1-8 | ContentType is a valid media type | PASS | PASS | PASS | PASS |
 | 7.1-9 | Error is null on successful resolution | PASS | PASS | PASS | PASS |
@@ -113,16 +113,16 @@ method's test project and link it here.
 
 | Statement | Description | did:ethr | did:key | did:peer | did:webvh |
 |-----------|-------------|----------|----------|----------|----------|
-| 7.2-1 | Fragment dereferencing returns VerificationMethod | N/A | PASS | PASS | PASS |
-| 7.2-10 | ContentType is set on successful dereference | N/A | PASS | PASS | PASS |
-| 7.2-11 | Error is null on successful dereference | N/A | PASS | PASS | PASS |
-| 7.2-12 | Error is set on failed dereference | N/A | PASS | PASS | N/A |
-| 7.2-2 | Returned VM id contains the requested fragment | N/A | PASS | PASS | PASS |
-| 7.2-3 | Service query returns redirect URL | N/A | N/A | PASS | PASS |
-| 7.2-4 | Service query with relativeRef constructs correct URL | N/A | N/A | PASS | PASS |
-| 7.2-5 | Bare DID dereference returns full document | N/A | PASS | PASS | PASS |
-| 7.2-6 | Nonexistent fragment returns notFound error | N/A | PASS | PASS | PASS |
-| 7.2-7 | Nonexistent service returns notFound error | N/A | N/A | PASS | PASS |
-| 7.2-8 | Invalid DID URL returns invalidDidUrl error | N/A | PASS | PASS | N/A |
-| 7.2-9 | Service fragment returns Service object | N/A | N/A | PASS | PASS |
+| 7.2-1 | Fragment dereferencing returns VerificationMethod | PASS | PASS | PASS | PASS |
+| 7.2-10 | ContentType is set on successful dereference | PASS | PASS | PASS | PASS |
+| 7.2-11 | Error is null on successful dereference | PASS | PASS | PASS | PASS |
+| 7.2-12 | Error is set on failed dereference | PASS | PASS | PASS | PASS |
+| 7.2-2 | Returned VM id contains the requested fragment | PASS | PASS | PASS | PASS |
+| 7.2-3 | Service query returns redirect URL | PASS | N/A | PASS | PASS |
+| 7.2-4 | Service query with relativeRef constructs correct URL | PASS | N/A | PASS | PASS |
+| 7.2-5 | Bare DID dereference returns full document | PASS | PASS | PASS | PASS |
+| 7.2-6 | Nonexistent fragment returns notFound error | PASS | PASS | PASS | PASS |
+| 7.2-7 | Nonexistent service returns notFound error | PASS | N/A | PASS | PASS |
+| 7.2-8 | Invalid DID URL returns invalidDidUrl error | PASS | PASS | PASS | PASS |
+| 7.2-9 | Service fragment returns Service object | PASS | N/A | PASS | PASS |
 

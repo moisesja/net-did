@@ -104,6 +104,10 @@ public class JsonLdProductionTests
             "Missing @context rejected on JSON-LD consumption", passed);
         ConformanceReportSink.Record("did:peer", "did-production", "6", "6-11",
             "Missing @context rejected on JSON-LD consumption", passed);
+        ConformanceReportSink.Record("did:ethr", "did-production", "6", "6-11",
+            "Missing @context rejected on JSON-LD consumption", passed);
+        ConformanceReportSink.Record("did:webvh", "did-production", "6", "6-11",
+            "Missing @context rejected on JSON-LD consumption", passed);
         passed.Should().BeTrue();
     }
 
@@ -126,6 +130,10 @@ public class JsonLdProductionTests
         ConformanceReportSink.Record("did:key", "did-production", "6", "6-12",
             "Wrong first @context rejected on JSON-LD consumption", passed);
         ConformanceReportSink.Record("did:peer", "did-production", "6", "6-12",
+            "Wrong first @context rejected on JSON-LD consumption", passed);
+        ConformanceReportSink.Record("did:ethr", "did-production", "6", "6-12",
+            "Wrong first @context rejected on JSON-LD consumption", passed);
+        ConformanceReportSink.Record("did:webvh", "did-production", "6", "6-12",
             "Wrong first @context rejected on JSON-LD consumption", passed);
         passed.Should().BeTrue();
     }

@@ -95,6 +95,10 @@ public class ResolveTests
             "Unknown method returns methodNotSupported error", passed);
         ConformanceReportSink.Record("did:peer", "did-resolution", "7.1", "7.1-6",
             "Unknown method returns methodNotSupported error", passed);
+        ConformanceReportSink.Record("did:ethr", "did-resolution", "7.1", "7.1-6",
+            "Unknown method returns methodNotSupported error", passed);
+        ConformanceReportSink.Record("did:webvh", "did-resolution", "7.1", "7.1-6",
+            "Unknown method returns methodNotSupported error", passed);
         result.ResolutionMetadata.Error.Should().Be("methodNotSupported");
     }
 

@@ -78,6 +78,10 @@ public class DidSyntaxTests
             "Invalid DID syntax is rejected", allRejected);
         ConformanceReportSink.Record("did:peer", "did-identifier", "3.1", "3.1-4",
             "Invalid DID syntax is rejected", allRejected);
+        ConformanceReportSink.Record("did:ethr", "did-identifier", "3.1", "3.1-4",
+            "Invalid DID syntax is rejected", allRejected);
+        ConformanceReportSink.Record("did:webvh", "did-identifier", "3.1", "3.1-4",
+            "Invalid DID syntax is rejected", allRejected);
         allRejected.Should().BeTrue();
     }
 }
