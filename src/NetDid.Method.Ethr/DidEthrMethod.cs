@@ -200,16 +200,24 @@ public sealed class DidEthrMethod : DidMethodBase
         var currentBlock = fromBlock;
         while (currentBlock > 0)
         {
+            var paddedIdentity = "0x" + identityAddress[2..].PadLeft(64, '0').ToLowerInvariant();
             var filter = new EthereumLogFilter
             {
                 Address   = registryAddress,
                 FromBlock = currentBlock,
                 ToBlock   = currentBlock,
-                Topics    = [[
-                    Erc1056Topics.DIDOwnerChanged,
-                    Erc1056Topics.DIDDelegateChanged,
-                    Erc1056Topics.DIDAttributeChanged,
-                ]],
+                // topics[0]: event signature OR-list
+                // topics[1]: indexed identity address — server-side filter eliminates
+                //            events for other identities, cutting RPC payload on busy networks.
+                Topics    =
+                [
+                    [
+                        Erc1056Topics.DIDOwnerChanged,
+                        Erc1056Topics.DIDDelegateChanged,
+                        Erc1056Topics.DIDAttributeChanged,
+                    ],
+                    [paddedIdentity],
+                ],
             };
 
             var logs = await rpc.GetLogsAsync(filter, ct);

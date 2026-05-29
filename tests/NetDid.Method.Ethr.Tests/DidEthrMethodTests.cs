@@ -333,6 +333,50 @@ public class DidEthrMethodTests
         ulong validTo, ulong prev, ulong block)
         => BuildDelegateLog(identity, delegate20, delegateType, validTo, prev, block)[0];
 
+    // ── topics[1] identity filter ───────────────────────────────────────────────
+
+    /// <summary>
+    /// eth_getLogs MUST constrain topics[1] to the specific identity address so we
+    /// don't pull every event emitted by the registry for other identities at the
+    /// same block.  This is essential on busy networks where many DIDs change in
+    /// the same block.
+    /// </summary>
+    [Fact]
+    public async Task ResolveAsync_EventChainWalking_FiltersLogsByIdentityAddressAtTopicsPosition1()
+    {
+        const string identity = "0x001d3f1ef827552ae1114027bd3ecf1f086ba0f9";
+        const ulong  eventBlock = 7;
+
+        EthereumLogFilter? capturedFilter = null;
+        var rpc = Substitute.For<IEthereumRpcClient>();
+
+        // changed() returns block 7 — triggers one trip through the walker
+        rpc.CallAsync(default!, default!, default)
+           .ReturnsForAnyArgs("0x" + eventBlock.ToString("x64"));
+
+        rpc.GetLogsAsync(Arg.Any<EthereumLogFilter>(), Arg.Any<CancellationToken>())
+           .Returns(call =>
+           {
+               capturedFilter = call.Arg<EthereumLogFilter>();
+               return Task.FromResult<IReadOnlyList<EthereumLogEntry>>([]);
+           });
+
+        await MakeMethod(rpc).ResolveAsync($"did:ethr:sepolia:{identity}");
+
+        capturedFilter.Should().NotBeNull("GetLogsAsync must have been called");
+
+        // topics[0] = event signature OR-list
+        capturedFilter!.Topics.Should().NotBeNull();
+        capturedFilter.Topics!.Count.Should().BeGreaterThanOrEqualTo(2,
+            "filter must specify at least topics[0] (signatures) and topics[1] (identity)");
+
+        // topics[1] must be exactly the 32-byte padded identity address
+        var expectedTopic1 = "0x" + identity[2..].PadLeft(64, '0');
+        capturedFilter.Topics[1].Should().ContainSingle()
+            .Which.Should().Be(expectedTopic1,
+                "filtering on topics[1] avoids fetching events for unrelated identities");
+    }
+
     // ── Walker non-termination regression ───────────────────────────────────────
 
     /// <summary>
