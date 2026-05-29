@@ -40,6 +40,9 @@ public sealed class DidEthrMethod : DidMethodBase
         DidMethodCapabilities.Resolve |
         DidMethodCapabilities.ServiceEndpoints;
 
+    /// <summary>did:ethr only accepts secp256k1 keys for DID creation.</summary>
+    public override IReadOnlyList<KeyType> SupportedKeyTypes { get; } = [KeyType.Secp256k1];
+
     // ── Create ────────────────────────────────────────────────────────────────
 
     protected override async Task<DidCreateResult> CreateCoreAsync(
