@@ -288,6 +288,73 @@ public class DidEthrMethodTests
         await mainnetRpc.DidNotReceive().CallAsync(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<CancellationToken>());
     }
 
+    // ── Resolve — public-key DID ─────────────────────────────────────────────
+
+    // Known compressed secp256k1 public key (Mastering Ethereum test vector)
+    private static readonly byte[] KnownPubKey =
+        Convert.FromHexString("026e145ccef1033dea239875dd00dfb4fee6e3348b84985c92f103444683bae07b");
+
+    [Fact]
+    public async Task ResolveAsync_PubkeyDid_NoEvents_AddsControllerKeyVm()
+    {
+        var rpc = Substitute.For<IEthereumRpcClient>();
+        // changed() = 0  →  no event history
+        rpc.CallAsync(default!, default!, default)
+           .ReturnsForAnyArgs("0x" + new string('0', 64));
+
+        var method = MakeMethod(rpc);
+        var pubkeyHex = Convert.ToHexString(KnownPubKey).ToLowerInvariant();
+        var did = $"did:ethr:sepolia:0x{pubkeyHex}";
+
+        var result = await method.ResolveAsync(did);
+
+        result.ResolutionMetadata.Error.Should().BeNull();
+        var vms = result.DidDocument!.VerificationMethod!;
+        vms.Should().HaveCount(2, "#controller + #controllerKey");
+        var ckVm = vms.SingleOrDefault(v => v.Id.EndsWith("#controllerKey"));
+        ckVm.Should().NotBeNull();
+        ckVm!.Type.Should().Be("EcdsaSecp256k1VerificationKey2019");
+        ckVm.PublicKeyJwk.Should().NotBeNull();
+        // Both relationships must reference #controllerKey
+        result.DidDocument.Authentication!.Should().Contain(e => e.Reference!.EndsWith("#controllerKey"));
+        result.DidDocument.AssertionMethod!.Should().Contain(e => e.Reference!.EndsWith("#controllerKey"));
+    }
+
+    [Fact]
+    public async Task ResolveAsync_PubkeyDid_OwnerChanged_ControllerKeyAbsent()
+    {
+        // When the owner transfers the identity to a different address the
+        // #controllerKey VM must disappear — the pubkey no longer controls the DID.
+        var derivedAddress = NetDid.Method.Ethr.Crypto.EthereumAddress
+            .FromCompressedPublicKey(KnownPubKey).ToLowerInvariant();
+        const string newOwner  = "0xdbf03b407c01e7cd3cbea99509d93f8dddc8c6fb";
+        const ulong  eventBlock = 77;
+
+        var rpc = Substitute.For<IEthereumRpcClient>();
+        rpc.CallAsync(default!, default!, default)
+           .ReturnsForAnyArgs("0x" + eventBlock.ToString("x64"));
+        rpc.GetLogsAsync(default!, default).ReturnsForAnyArgs(call =>
+        {
+            var filter = call.Arg<EthereumLogFilter>();
+            return Task.FromResult(filter.FromBlock == eventBlock
+                ? BuildOwnerChangedLog(derivedAddress, newOwner, eventBlock)
+                : (IReadOnlyList<EthereumLogEntry>)[]);
+        });
+
+        var method    = MakeMethod(rpc);
+        var pubkeyHex = Convert.ToHexString(KnownPubKey).ToLowerInvariant();
+        var did       = $"did:ethr:sepolia:0x{pubkeyHex}";
+
+        var result = await method.ResolveAsync(did);
+
+        result.ResolutionMetadata.Error.Should().BeNull();
+        var vms = result.DidDocument!.VerificationMethod!;
+        vms.Should().HaveCount(1, "only #controller — owner changed away from derived address");
+        vms.Should().NotContain(v => v.Id.EndsWith("#controllerKey"));
+        // #controller must reflect the new owner (case-insensitive — address is EIP-55 checksummed)
+        vms[0].BlockchainAccountId!.ToLowerInvariant().Should().Contain(newOwner.ToLowerInvariant());
+    }
+
     // ── Helpers ───────────────────────────────────────────────────────────────
 
     private static IReadOnlyList<EthereumLogEntry> BuildOwnerChangedLog(
