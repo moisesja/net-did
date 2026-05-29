@@ -96,7 +96,13 @@ public sealed class DidEthrMethod : DidMethodBase
             return DidResolutionResult.InvalidDid(did);
         }
 
-        var network = FindNetwork(identifier.Network);
+        EthereumNetworkConfig network;
+        try { network = FindNetwork(identifier.Network); }
+        catch (InvalidOperationException ex)
+        {
+            _logger.LogWarning(ex, "Network not configured for did:ethr: {Did}", did);
+            return DidResolutionResult.NotFound(did);
+        }
         var rpc     = _rpcFactory.GetOrCreate(network);
         var chainId = await ResolveChainId(network, rpc, ct);
 
@@ -184,9 +190,9 @@ public sealed class DidEthrMethod : DidMethodBase
 
         return new DidResolutionResult
         {
-            DidDocument      = doc,
-            ResolutionMetadata = new DidResolutionMetadata(),
-            DocumentMetadata = meta,
+            DidDocument        = doc,
+            ResolutionMetadata = new DidResolutionMetadata { ContentType = DidContentTypes.JsonLd },
+            DocumentMetadata   = meta,
         };
     }
 
