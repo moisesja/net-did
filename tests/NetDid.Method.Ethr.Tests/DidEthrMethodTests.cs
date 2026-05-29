@@ -116,7 +116,8 @@ public class DidEthrMethodTests
     public async Task ResolveAsync_WithOwnerChangedEvent_ReflectsNewOwner()
     {
         const string identity  = "0x001d3f1ef827552ae1114027bd3ecf1f086ba0f9";
-        const string newOwner  = "0xdbf03b407c01e7cd3cbea99509d93f8dddc8c6fb";
+        const string newOwner         = "0xdbf03b407c01e7cd3cbea99509d93f8dddc8c6fb";
+        const string newOwnerChecksum  = "0xdbF03B407c01E7cD3CBea99509d93f8DDDC8C6FB";
         const ulong  eventBlock = 42;
 
         var rpc = Substitute.For<IEthereumRpcClient>();
@@ -140,7 +141,7 @@ public class DidEthrMethodTests
         result.ResolutionMetadata.Error.Should().BeNull();
         var controller = result.DidDocument!.VerificationMethod!
             .Single(v => v.Id.EndsWith("#controller"));
-        controller.BlockchainAccountId.Should().Contain(newOwner);
+        controller.BlockchainAccountId.Should().Contain(newOwnerChecksum);
     }
 
     // ── Resolve — deactivated ─────────────────────────────────────────────────

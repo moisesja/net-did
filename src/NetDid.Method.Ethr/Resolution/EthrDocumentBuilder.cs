@@ -4,6 +4,7 @@ using NetDid.Core.Jwk;
 using NetDid.Core.Model;
 using NetDid.Method.Ethr.Crypto;
 using NetDid.Method.Ethr.Erc1056;
+using static NetDid.Method.Ethr.Crypto.EthereumAddress;
 
 namespace NetDid.Method.Ethr.Resolution;
 
@@ -125,7 +126,7 @@ public static class EthrDocumentBuilder
             Id                 = controllerVmId,
             Type               = "EcdsaSecp256k1RecoveryMethod2020",
             Controller         = new Did(did),
-            BlockchainAccountId = $"eip155:{chainId}:{currentOwner}",
+            BlockchainAccountId = $"eip155:{chainId}:{Checksum(currentOwner)}",
         });
         auths.Add(VerificationRelationshipEntry.FromReference(controllerVmId));
         asserts.Add(VerificationRelationshipEntry.FromReference(controllerVmId));
@@ -156,7 +157,7 @@ public static class EthrDocumentBuilder
                 Id                  = vmId,
                 Type                = "EcdsaSecp256k1RecoveryMethod2020",
                 Controller          = new Did(did),
-                BlockchainAccountId = $"eip155:{chainId}:{d.DelegateAddress}",
+                BlockchainAccountId = $"eip155:{chainId}:{Checksum(d.DelegateAddress)}",
             });
             var rel = VerificationRelationshipEntry.FromReference(vmId);
             if (d.DelegateType == "sigAuth") auths.Add(rel);
@@ -332,4 +333,12 @@ public static class EthrDocumentBuilder
     private record DelegateEntry(string DelegateType, string DelegateAddress, ulong ValidTo);
     private record AttributeEntry(string Name, byte[] Value, ulong ValidTo);
     private record ServiceEntry(string ServiceName, string Endpoint, ulong ValidTo);
+
+    /// <summary>Converts a 0x-prefixed lowercase hex address to EIP-55 checksummed form.</summary>
+    private static string Checksum(string hexAddress)
+    {
+        var hex = hexAddress.StartsWith("0x", StringComparison.OrdinalIgnoreCase)
+            ? hexAddress[2..] : hexAddress;
+        return ToChecksumAddress(Convert.FromHexString(hex));
+    }
 }

@@ -32,7 +32,7 @@ public class EthrDocumentBuilderTests
         doc.VerificationMethod![0].Id.Should().Be($"{Did}#controller");
         doc.VerificationMethod[0].Type.Should().Be("EcdsaSecp256k1RecoveryMethod2020");
         doc.VerificationMethod[0].BlockchainAccountId.Should()
-            .Be($"eip155:{ChainId}:{Address}");
+            .Be($"eip155:{ChainId}:0x001d3F1ef827552Ae1114027BD3ECF1f086bA0F9");
         doc.Authentication.Should().ContainSingle()
             .Which.Reference.Should().Be($"{Did}#controller");
         doc.AssertionMethod.Should().ContainSingle()
@@ -45,7 +45,8 @@ public class EthrDocumentBuilderTests
     [Fact]
     public void Build_OwnerChanged_ControllerVmReflectsNewOwner()
     {
-        var newOwner = "0xdbf03b407c01e7cd3cbea99509d93f8dddc8c6fb";
+        var newOwner         = "0xdbf03b407c01e7cd3cbea99509d93f8dddc8c6fb";
+        var newOwnerChecksum  = "0xdbF03B407c01E7cD3CBea99509d93f8DDDC8C6FB";
         var events = new List<Erc1056Event>
         {
             new OwnerChangedEvent(Address, newOwner, 0, 100)
@@ -55,7 +56,7 @@ public class EthrDocumentBuilderTests
 
         doc.VerificationMethod!
             .Single(v => v.Id.EndsWith("#controller"))
-            .BlockchainAccountId.Should().Contain(newOwner);
+            .BlockchainAccountId.Should().Contain(newOwnerChecksum);
     }
 
     // ── Deactivated ───────────────────────────────────────────────────────────
