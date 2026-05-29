@@ -48,13 +48,49 @@ public static class AbiDecoder
     /// Decodes a dynamic ABI bytes value. The data span must start at offset 0 of the
     /// full event data, and <paramref name="offsetInData"/> gives the byte position of the
     /// ABI offset word that points to the length-prefixed payload.
+    ///
+    /// All bounds and overflow conditions are validated before any slice or allocation;
+    /// malformed payloads from untrusted RPC endpoints throw <see cref="ArgumentException"/>.
     /// </summary>
     public static byte[] DecodeDynamicBytes(ReadOnlySpan<byte> data, int offsetInData)
     {
-        // The word at offsetInData is the ABI offset pointer (uint256) relative to the
-        // start of the data blob.  For event data decoded here the offset is absolute.
-        var pointer = (int)BinaryPrimitives.ReadUInt64BigEndian(data[(offsetInData + 24)..][..8]);
-        var length  = (int)BinaryPrimitives.ReadUInt64BigEndian(data[(pointer + 24)..][..8]);
+        // 1. Validate offsetInData: we need 32 bytes for the ABI offset word.
+        if (offsetInData < 0 || offsetInData + 32 > data.Length)
+            throw new ArgumentException(
+                $"offset {offsetInData} is out of range: need offset+32={offsetInData + 32} bytes " +
+                $"but data is only {data.Length} bytes.",
+                nameof(offsetInData));
+
+        // 2. Read the pointer as ulong; reject values that overflow int or exceed the buffer.
+        var pointerRaw = BinaryPrimitives.ReadUInt64BigEndian(data[(offsetInData + 24)..][..8]);
+        if (pointerRaw > (ulong)int.MaxValue)
+            throw new ArgumentException(
+                $"ABI pointer value {pointerRaw} overflows int.MaxValue. Payload is malformed.",
+                nameof(data));
+        var pointer = (int)pointerRaw;
+
+        // 3. Validate pointer: need pointer + 32 bytes for the length word.
+        if (pointer + 32 > data.Length)
+            throw new ArgumentException(
+                $"ABI pointer {pointer} is out of range: need pointer+32={pointer + 32} bytes " +
+                $"but data is only {data.Length} bytes.",
+                nameof(data));
+
+        // 4. Read the length as ulong; reject values that overflow int.
+        var lengthRaw = BinaryPrimitives.ReadUInt64BigEndian(data[(pointer + 24)..][..8]);
+        if (lengthRaw > (ulong)int.MaxValue)
+            throw new ArgumentException(
+                $"ABI length value {lengthRaw} overflows int.MaxValue. Payload is malformed.",
+                nameof(data));
+        var length = (int)lengthRaw;
+
+        // 5. Validate the payload slice fits within the buffer.
+        if (pointer + 32 + length > data.Length)
+            throw new ArgumentException(
+                $"ABI length {length} at pointer {pointer} exceeds data bounds: " +
+                $"need {pointer + 32 + length} bytes but data is only {data.Length} bytes.",
+                nameof(data));
+
         return data[(pointer + 32)..(pointer + 32 + length)].ToArray();
     }
 

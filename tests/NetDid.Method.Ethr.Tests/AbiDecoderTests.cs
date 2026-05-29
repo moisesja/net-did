@@ -127,4 +127,78 @@ public class AbiDecoderTests
         validTo.Should().Be(1UL);
         prev.Should().Be(0UL);
     }
+
+    // ── DecodeDynamicBytes — bounds / overflow guards (PR review) ─────────────
+
+    [Fact]
+    public void DecodeDynamicBytes_OffsetInDataBeyondSpan_ThrowsArgumentException()
+    {
+        // offsetInData points past the end of the data blob entirely
+        var data = new byte[64];
+        var act = () => AbiDecoder.DecodeDynamicBytes(data, offsetInData: 40);
+        // offsetInData + 32 = 72 > 64 — must fail with controlled ArgumentException
+        act.Should().Throw<ArgumentException>()
+           .WithMessage("*offset*");
+    }
+
+    [Fact]
+    public void DecodeDynamicBytes_PointerBeyondSpan_ThrowsArgumentException()
+    {
+        // The offset word itself is in-range, but the pointer VALUE it encodes
+        // points beyond the data buffer.
+        var data = new byte[64];
+        // Encode pointer = 500 (well beyond data.Length=64) in word at offsetInData=0
+        data[31] = 0xF4; // 244 … no: 500 = 0x01F4
+        data[30] = 0x01;
+        data[31] = 0xF4;
+        var act = () => AbiDecoder.DecodeDynamicBytes(data, offsetInData: 0);
+        act.Should().Throw<ArgumentException>()
+           .WithMessage("*pointer*");
+    }
+
+    [Fact]
+    public void DecodeDynamicBytes_LengthBeyondSpan_ThrowsArgumentException()
+    {
+        // Pointer is valid, but the length word encodes a value that would make
+        // pointer + 32 + length exceed data.Length.
+        // Layout: [offset-word(32)] [length-word(32)] [no payload bytes]
+        var data = new byte[64];
+        // pointer = 32 (offset word says "payload starts at byte 32")
+        data[31] = 32;
+        // length = 100 (way beyond the remaining data)
+        data[32 + 31] = 100;
+        var act = () => AbiDecoder.DecodeDynamicBytes(data, offsetInData: 0);
+        act.Should().Throw<ArgumentException>()
+           .WithMessage("*length*");
+    }
+
+    [Fact]
+    public void DecodeDynamicBytes_PointerOverflowsInt_ThrowsArgumentException()
+    {
+        // The ulong encoded in the offset word is larger than int.MaxValue.
+        // Without a checked cast this silently wraps / produces a negative index.
+        // 0x80000000 = 2147483648 = int.MaxValue + 1
+        // Big-endian layout for bytes[24..32]: the 5th byte (index 28) carries the
+        // value's most-significant non-zero octet (0x80), all others zero.
+        var data = new byte[64];
+        data[28] = 0x80; // encodes ulong = 0x0000_0000_8000_0000 = 2147483648
+        var act = () => AbiDecoder.DecodeDynamicBytes(data, offsetInData: 0);
+        act.Should().Throw<ArgumentException>()
+           .WithMessage("*pointer*");
+    }
+
+    [Fact]
+    public void DecodeDynamicBytes_LengthOverflowsInt_ThrowsArgumentException()
+    {
+        // Pointer is valid (points to byte 32), but the length word encodes
+        // a value > int.MaxValue.
+        // Length word lives at bytes[56..64]; its 5th byte (index 60) carries 0x80
+        // → ulong = 0x0000_0000_8000_0000 = 2147483648 = int.MaxValue + 1
+        var data = new byte[64];
+        data[31] = 32;   // pointer = 32 (LSB of bytes[24..32])
+        data[60] = 0x80; // encodes length ulong = 2147483648
+        var act = () => AbiDecoder.DecodeDynamicBytes(data, offsetInData: 0);
+        act.Should().Throw<ArgumentException>()
+           .WithMessage("*length*");
+    }
 }
