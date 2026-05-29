@@ -247,22 +247,23 @@ public static class EthrDocumentBuilder
         if (secp256k1Key)
         {
             ctx.Add(SecurityV2);
-            ctx.Add(new Dictionary<string, object>
+            ctx.Add(System.Text.Json.JsonSerializer.SerializeToElement(new Dictionary<string, object>
             {
                 ["publicKeyJwk"] = new Dictionary<string, string>
                 {
                     ["@id"]   = "https://w3id.org/security#publicKeyJwk",
                     ["@type"] = "@json"
                 }
-            });
+            }));
         }
         if (ed25519)   ctx.Add(Ed25519_2020);
         if (x25519)    ctx.Add(X25519_2020);
         if (multikey)  ctx.Add(MultikeyCtx);
-        if (hex)       ctx.Add(new Dictionary<string, string>
-        {
-            ["publicKeyHex"] = "https://w3id.org/security#publicKeyHex"
-        });
+        if (hex)       ctx.Add(System.Text.Json.JsonSerializer.SerializeToElement(
+            new Dictionary<string, string>
+            {
+                ["publicKeyHex"] = "https://w3id.org/security#publicKeyHex"
+            }));
         return ctx;
     }
 

@@ -327,6 +327,13 @@ public static class DidDocumentSerializer
             if (value.BlockchainAccountId is not null)
                 writer.WriteString("blockchainAccountId", value.BlockchainAccountId);
 
+            if (value.AdditionalProperties is not null)
+                foreach (var (key, val) in value.AdditionalProperties)
+                {
+                    writer.WritePropertyName(key);
+                    val.WriteTo(writer);
+                }
+
             writer.WriteEndObject();
         }
 
