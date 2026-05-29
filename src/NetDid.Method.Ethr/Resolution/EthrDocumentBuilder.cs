@@ -33,16 +33,23 @@ public static class EthrDocumentBuilder
     {
         var refUnix = (ulong)referenceTime.ToUnixTimeSeconds();
 
-        // ── Replay events ─────────────────────────────────────────────────────
+        // ── Replay events (JS-compatible: last-event-wins per logical key) ─────
+        //
+        // The JS ethr-did-resolver keys entries by (eventName, name/delegateType, value/delegate)
+        // and ALWAYS increments the delegate/service counter — even for expired events.
+        // Expired events DELETE any previously-added entry for the same key, so a later
+        // revocation removes an earlier valid entry and a re-registration gets a new ID.
         string currentOwner = identifier.IdentityAddress;
-        var delegates  = new SortedDictionary<int, DelegateEntry>();
-        var attributes = new SortedDictionary<int, AttributeEntry>();
-        var services   = new SortedDictionary<int, ServiceEntry>();
-        int counter    = 0;
+        int delegateCount = 0;
+        int serviceCount  = 0;
+
+        // Key: eventIndex string → (counter, entry).  Keyed by (eventName-name-value).
+        var delegates  = new Dictionary<string, (int Counter, DelegateEntry Entry)>();
+        var attributes = new Dictionary<string, (int Counter, AttributeEntry Entry)>();
+        var services   = new Dictionary<string, (int Counter, ServiceEntry Entry)>();
 
         foreach (var ev in events)
         {
-            counter++;
             switch (ev)
             {
                 case OwnerChangedEvent oc:
@@ -50,18 +57,39 @@ public static class EthrDocumentBuilder
                     break;
 
                 case DelegateChangedEvent dc:
-                    delegates[counter] = new DelegateEntry(dc.DelegateType, dc.Delegate, dc.ValidTo);
+                {
+                    delegateCount++;
+                    var key = $"DIDDelegateChanged-{dc.DelegateType}-{dc.Delegate}";
+                    if (dc.ValidTo >= refUnix)
+                        delegates[key] = (delegateCount, new DelegateEntry(dc.DelegateType, dc.Delegate, dc.ValidTo));
+                    else
+                        delegates.Remove(key);
                     break;
+                }
 
                 case AttributeChangedEvent ac when ac.Name.StartsWith("did/pub/"):
-                    attributes[counter] = new AttributeEntry(ac.Name, ac.Value, ac.ValidTo);
+                {
+                    delegateCount++;
+                    var key = $"DIDAttributeChanged-{ac.Name}-{Convert.ToHexString(ac.Value)}";
+                    if (ac.ValidTo >= refUnix)
+                        attributes[key] = (delegateCount, new AttributeEntry(ac.Name, ac.Value, ac.ValidTo));
+                    else
+                        attributes.Remove(key);
                     break;
+                }
 
                 case AttributeChangedEvent ac when ac.Name.StartsWith("did/svc/"):
+                {
+                    serviceCount++;
+                    var key = $"DIDAttributeChanged-{ac.Name}-{Convert.ToHexString(ac.Value)}";
                     var svcName = ac.Name["did/svc/".Length..];
                     var svcEndpoint = System.Text.Encoding.UTF8.GetString(ac.Value);
-                    services[counter] = new ServiceEntry(svcName, svcEndpoint, ac.ValidTo);
+                    if (ac.ValidTo >= refUnix)
+                        services[key] = (serviceCount, new ServiceEntry(svcName, svcEndpoint, ac.ValidTo));
+                    else
+                        services.Remove(key);
                     break;
+                }
             }
         }
 
@@ -75,10 +103,10 @@ public static class EthrDocumentBuilder
             };
         }
 
-        // ── Filter expired entries ────────────────────────────────────────────
-        var validDelegates  = delegates.Where(kv => kv.Value.ValidTo >= refUnix).ToList();
-        var validAttributes = attributes.Where(kv => kv.Value.ValidTo >= refUnix).ToList();
-        var validServices   = services.Where(kv => kv.Value.ValidTo >= refUnix).ToList();
+        // Entries are already filtered (expired ones were deleted during replay).
+        var validDelegates  = delegates.Values.OrderBy(x => x.Counter).ToList();
+        var validAttributes = attributes.Values.OrderBy(x => x.Counter).ToList();
+        var validServices   = services.Values.OrderBy(x => x.Counter).ToList();
 
         // ── Build verification methods ────────────────────────────────────────
         var vms      = new List<VerificationMethod>();
@@ -120,9 +148,9 @@ public static class EthrDocumentBuilder
         }
 
         // Delegate-based VMs (#delegate-N)
-        foreach (var (idx, d) in validDelegates)
+        foreach (var (counter, d) in validDelegates)
         {
-            var vmId = $"{did}#delegate-{idx}";
+            var vmId = $"{did}#delegate-{counter}";
             vms.Add(new VerificationMethod
             {
                 Id                  = vmId,
@@ -136,13 +164,13 @@ public static class EthrDocumentBuilder
         }
 
         // Attribute-based key VMs (#delegate-N)
-        foreach (var (idx, a) in validAttributes)
+        foreach (var (counter, a) in validAttributes)
         {
             // Parse: did/pub/{algorithm}/{purpose}/{encoding?}
             var parts    = a.Name.Split('/');
             var algorithm = parts.Length > 2 ? parts[2] : "unknown";
             var purpose   = parts.Length > 3 ? parts[3] : "veriKey";
-            var vmId      = $"{did}#delegate-{idx}";
+            var vmId      = $"{did}#delegate-{counter}";
 
             VerificationMethod? vm = null;
             switch (algorithm)
@@ -218,11 +246,11 @@ public static class EthrDocumentBuilder
         }
 
         // Services
-        var svcList = validServices.Select((kv, i) => new Service
+        var svcList = validServices.Select(kv => new Service
         {
-            Id              = $"{did}#service-{kv.Key}",
-            Type            = kv.Value.ServiceName,
-            ServiceEndpoint = ServiceEndpointValue.FromUri(kv.Value.Endpoint),
+            Id              = $"{did}#service-{kv.Counter}",
+            Type            = kv.Entry.ServiceName,
+            ServiceEndpoint = ServiceEndpointValue.FromUri(kv.Entry.Endpoint),
         }).ToList();
 
         return new DidDocument
