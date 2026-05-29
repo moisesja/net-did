@@ -93,7 +93,7 @@ public sealed class NetDidBuilder
     /// <code>
     /// builder.AddDidEthr(new Dictionary&lt;string, string&gt;
     /// {
-    ///     ["mainnet"] = "https://mainnet.infura.io/v3/YOUR_KEY",
+    ///     ["mainnet"] = "https://mainnet.gateway.tenderly.co",
     ///     ["sepolia"] = "https://sepolia.drpc.org",
     /// });
     /// </code>
