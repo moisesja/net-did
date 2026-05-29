@@ -1,6 +1,6 @@
 # W3C DID Core Conformance Report
 
-Generated: 2026-05-29T14:29:26Z
+Generated: 2026-05-29T14:32:43Z
 
 ## Scope and limitations
 

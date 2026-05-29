@@ -56,6 +56,29 @@ public class AbiDecoderTests
     }
 
     [Fact]
+    public void DecodeUint256_UpperBytesNonZero_ThrowsArgumentException()
+    {
+        // A value larger than ulong.MaxValue — upper 24 bytes contain a non-zero byte.
+        // Silently truncating this would yield a wrong block number / validTo, which
+        // could cause an expired delegate to appear valid (security issue).
+        var word = new byte[32];
+        word[0] = 0x01;  // byte 0 (most-significant) is non-zero → value > ulong.MaxValue
+        word[31] = 0x64; // low bytes have a value too — ensures we're not just hitting 0
+        var act = () => AbiDecoder.DecodeUint256(word);
+        act.Should().Throw<ArgumentException>()
+           .WithMessage("*uint256*");
+    }
+
+    [Fact]
+    public void DecodeUint256_MaxUlong_ReturnsCorrectValue()
+    {
+        // ulong.MaxValue = 0xFFFF_FFFF_FFFF_FFFF — upper 24 bytes all zero, low 8 all 0xFF.
+        var word = new byte[32];
+        for (int i = 24; i < 32; i++) word[i] = 0xFF; // ulong.MaxValue in last 8 bytes
+        AbiDecoder.DecodeUint256(word).Should().Be(ulong.MaxValue);
+    }
+
+    [Fact]
     public void DecodeBytes32_TrimsTrailingNulls()
     {
         // "veriKey\0\0..." → "veriKey"

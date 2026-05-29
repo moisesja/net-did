@@ -580,7 +580,7 @@ netdid/
 │   ├── NetDid.Method.Key.Tests/             # 33 tests
 │   ├── NetDid.Method.Peer.Tests/            # 40 tests
 │   ├── NetDid.Method.WebVh.Tests/           # 124 tests
-│   ├── NetDid.Method.Ethr.Tests/            # 61 tests
+│   ├── NetDid.Method.Ethr.Tests/            # 63 tests
 │   ├── NetDid.Tests.W3CConformance/         # 175 W3C conformance tests
 │   └── NetDid.Extensions.DependencyInjection.Tests/  # 11 tests
 ├── samples/

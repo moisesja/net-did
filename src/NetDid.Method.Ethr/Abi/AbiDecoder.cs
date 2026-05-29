@@ -8,7 +8,7 @@ namespace NetDid.Method.Ethr.Abi;
 ///
 /// Supported types:
 ///   address  — 32-byte word, take last 20 bytes
-///   uint256  — 32-byte big-endian, returned as ulong (upper bits ignored if > ulong.MaxValue)
+///   uint256  — 32-byte big-endian, returned as ulong; throws if upper 24 bytes are non-zero
 ///   bytes32  — 32-byte word, trailing null bytes trimmed for string interpretation
 ///   bytes    — dynamic: follows offset pointer, reads length prefix, then raw bytes
 ///
@@ -29,10 +29,28 @@ public static class AbiDecoder
         return word32[12..].ToArray();
     }
 
-    /// <summary>Decodes a big-endian uint256 word as a ulong (upper 24 bytes must be zero for safety).</summary>
+    /// <summary>
+    /// Decodes a big-endian uint256 word as a <see cref="ulong"/>.
+    /// Throws <see cref="ArgumentException"/> if the upper 24 bytes are non-zero,
+    /// which would indicate a value larger than <see cref="ulong.MaxValue"/>.
+    /// All uint256 fields used by ERC-1056 (block numbers, validTo timestamps,
+    /// previousChange pointers) fit comfortably within ulong range in practice;
+    /// a non-zero upper word signals a malformed or adversarial RPC response.
+    /// </summary>
     public static ulong DecodeUint256(ReadOnlySpan<byte> word32)
     {
         EnsureLength(word32, 32, nameof(word32));
+        // Guard: if any of the upper 24 bytes are non-zero the value exceeds ulong.MaxValue.
+        // Silently truncating could cause an expired validTo to appear valid (security risk).
+        for (int i = 0; i < 24; i++)
+        {
+            if (word32[i] != 0)
+                throw new ArgumentException(
+                    $"uint256 value at byte {i} has a non-zero upper byte (0x{word32[i]:X2}). " +
+                    "The value exceeds ulong.MaxValue — this indicates a malformed or " +
+                    "adversarial RPC response.",
+                    nameof(word32));
+        }
         return BinaryPrimitives.ReadUInt64BigEndian(word32[24..]);
     }
 
