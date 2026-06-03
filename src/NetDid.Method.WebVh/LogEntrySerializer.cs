@@ -31,7 +31,7 @@ public static class LogEntrySerializer
             entries.Add(DeserializeEntry(line));
         }
 
-        return entries;
+        return entries.AsReadOnly();
     }
 
     /// <summary>Serialize a single log entry to JSON string.</summary>

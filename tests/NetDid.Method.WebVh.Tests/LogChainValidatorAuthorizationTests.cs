@@ -51,7 +51,7 @@ public class LogChainValidatorAuthorizationTests
             UpdateKey = authorizedSigner
         });
 
-        var jsonl = (string)result.Artifacts!["did.jsonl"];
+        var jsonl = (string)result.Artifacts![DidWebVhArtifacts.DidJsonl];
         var entries = LogEntrySerializer.ParseJsonLines(Encoding.UTF8.GetBytes(jsonl)).ToList();
         return (result.Did.Value, entries);
     }

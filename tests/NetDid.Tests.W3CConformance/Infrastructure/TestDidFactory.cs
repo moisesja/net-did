@@ -109,7 +109,7 @@ public sealed class TestDidFactory
         });
 
         // Set up mock HTTP so resolve works
-        var logContent = (string)result.Artifacts!["did.jsonl"];
+        var logContent = (string)result.Artifacts![DidWebVhArtifacts.DidJsonl];
         var logUrl = DidUrlMapper.MapToLogUrl(result.Did.Value);
         _webVhHttpClient.SetLogResponse(logUrl, Encoding.UTF8.GetBytes(logContent));
 
@@ -137,7 +137,7 @@ public sealed class TestDidFactory
         });
 
         // Set up mock HTTP so resolve works
-        var logContent = (string)result.Artifacts!["did.jsonl"];
+        var logContent = (string)result.Artifacts![DidWebVhArtifacts.DidJsonl];
         var logUrl = DidUrlMapper.MapToLogUrl(result.Did.Value);
         _webVhHttpClient.SetLogResponse(logUrl, Encoding.UTF8.GetBytes(logContent));
 

@@ -130,14 +130,14 @@ public sealed class DidWebVhMethod : DidMethodBase
 
         var artifacts = new Dictionary<string, object>
         {
-            ["did.jsonl"] = logContent,
-            ["did.json"] = didJsonContent
+            [DidWebVhArtifacts.DidJsonl] = logContent,
+            [DidWebVhArtifacts.DidJson] = didJsonContent
         };
 
         if (createOptions.WitnessProofs is { Count: > 0 })
         {
             var merged = WitnessValidator.MergeWitnessProofs(null, createOptions.WitnessProofs);
-            artifacts["did-witness.json"] = Encoding.UTF8.GetString(WitnessValidator.SerializeWitnessFile(merged));
+            artifacts[DidWebVhArtifacts.DidWitnessJson] = Encoding.UTF8.GetString(WitnessValidator.SerializeWitnessFile(merged));
         }
 
         return new DidCreateResult
@@ -252,8 +252,8 @@ public sealed class DidWebVhMethod : DidMethodBase
             {
                 artifacts = new Dictionary<string, object>
                 {
-                    ["did.jsonl"] = Encoding.UTF8.GetString(logContent),
-                    ["log.entries"] = (IReadOnlyList<LogEntry>)entries
+                    [DidWebVhArtifacts.DidJsonl] = Encoding.UTF8.GetString(logContent),
+                    [DidWebVhArtifacts.LogEntries] = entries
                 };
             }
 
@@ -379,8 +379,8 @@ public sealed class DidWebVhMethod : DidMethodBase
 
         var updateArtifacts = new Dictionary<string, object>
         {
-            ["did.jsonl"] = logContent,
-            ["did.json"] = Encoding.UTF8.GetString(DidWebCompatibility.GenerateDidJson(did, newDocument))
+            [DidWebVhArtifacts.DidJsonl] = logContent,
+            [DidWebVhArtifacts.DidJson] = Encoding.UTF8.GetString(DidWebCompatibility.GenerateDidJson(did, newDocument))
         };
 
         if (updateOptions.WitnessProofs is { Count: > 0 })
@@ -389,7 +389,7 @@ public sealed class DidWebVhMethod : DidMethodBase
             if (updateOptions.CurrentWitnessContent is not null)
                 existing = WitnessValidator.ParseWitnessFile(updateOptions.CurrentWitnessContent);
             var merged = WitnessValidator.MergeWitnessProofs(existing, updateOptions.WitnessProofs);
-            updateArtifacts["did-witness.json"] = Encoding.UTF8.GetString(WitnessValidator.SerializeWitnessFile(merged));
+            updateArtifacts[DidWebVhArtifacts.DidWitnessJson] = Encoding.UTF8.GetString(WitnessValidator.SerializeWitnessFile(merged));
         }
 
         return new DidUpdateResult
@@ -471,7 +471,7 @@ public sealed class DidWebVhMethod : DidMethodBase
 
         var deactivateArtifacts = new Dictionary<string, object>
         {
-            ["did.jsonl"] = logContent
+            [DidWebVhArtifacts.DidJsonl] = logContent
         };
 
         if (deactivateOptions.WitnessProofs is { Count: > 0 })
@@ -480,7 +480,7 @@ public sealed class DidWebVhMethod : DidMethodBase
             if (deactivateOptions.CurrentWitnessContent is not null)
                 existing = WitnessValidator.ParseWitnessFile(deactivateOptions.CurrentWitnessContent);
             var merged = WitnessValidator.MergeWitnessProofs(existing, deactivateOptions.WitnessProofs);
-            deactivateArtifacts["did-witness.json"] = Encoding.UTF8.GetString(WitnessValidator.SerializeWitnessFile(merged));
+            deactivateArtifacts[DidWebVhArtifacts.DidWitnessJson] = Encoding.UTF8.GetString(WitnessValidator.SerializeWitnessFile(merged));
         }
 
         return new DidDeactivateResult
