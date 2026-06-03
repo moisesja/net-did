@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- **NuGet dependency refresh**: Updated all centrally managed package versions to the latest stable releases on nuget.org. Crypto: `NSec.Cryptography` 24.4.0 → 26.4.0, `NBitcoin.Secp256k1` 3.1.5 → 4.0.0. Microsoft.Extensions.* (`Caching.Memory`, `Logging.Abstractions`, `DependencyInjection`, `DependencyInjection.Abstractions`, `Http`) moved off the 10.0.0-preview channel onto stable `10.0.8`. `Microsoft.IdentityModel.Tokens` 8.3.0 → 8.19.1, `Microsoft.SourceLink.GitHub` 8.0.0 → 10.0.300. Testing: `Microsoft.NET.Test.Sdk` 17.12.0 → 18.6.0, `xunit.runner.visualstudio` 2.8.2 → 3.1.5 (still compatible with xunit v2), `coverlet.collector` 6.0.3 → 10.0.1. `FluentAssertions` intentionally held at 7.0.0 — v8 introduced a paid commercial license (Xceed) that is unsuitable for this open-source library. `Nethermind.Crypto.Bls`, `NetCid`, `xunit`, and `NSubstitute` were already on the latest stable versions and were not changed. All 775 tests across the 6 test projects pass on the new dependency set with no build warnings.
+
 ## [1.3.0] - 2026-05-22
 
 ### Security
