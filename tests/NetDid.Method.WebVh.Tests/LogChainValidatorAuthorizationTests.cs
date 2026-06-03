@@ -58,10 +58,10 @@ public class LogChainValidatorAuthorizationTests
 
     /// <summary>
     /// Re-sign the genesis entry over its canonicalized form (without proof) using
-    /// <paramref name="signerKeyPair"/>'s private key, and overwrite the proof's
-    /// <c>verificationMethod</c> with <paramref name="verificationMethod"/>.
+    /// <paramref name="signerKeyPair"/>'s private key, and return a copy whose proof's
+    /// <c>verificationMethod</c> is <paramref name="verificationMethod"/>.
     /// </summary>
-    private void TamperGenesisProof(
+    private LogEntry TamperGenesisProof(
         LogEntry genesis, KeyPair signerKeyPair, string verificationMethod)
     {
         var entryJsonWithoutProof = LogEntrySerializer.SerializeWithoutProof(genesis);
@@ -70,18 +70,21 @@ public class LogChainValidatorAuthorizationTests
         var proofValue = Multibase.Encode(signature, MultibaseEncoding.Base58Btc);
 
         var original = genesis.Proof![0];
-        genesis.Proof =
-        [
-            new DataIntegrityProofValue
-            {
-                Type = original.Type,
-                Cryptosuite = original.Cryptosuite,
-                VerificationMethod = verificationMethod,
-                Created = original.Created,
-                ProofPurpose = original.ProofPurpose,
-                ProofValue = proofValue
-            }
-        ];
+        return genesis with
+        {
+            Proof =
+            [
+                new DataIntegrityProofValue
+                {
+                    Type = original.Type,
+                    Cryptosuite = original.Cryptosuite,
+                    VerificationMethod = verificationMethod,
+                    Created = original.Created,
+                    ProofPurpose = original.ProofPurpose,
+                    ProofValue = proofValue
+                }
+            ]
+        };
     }
 
     private static byte[] SerializeLog(IEnumerable<LogEntry> entries)
@@ -104,7 +107,7 @@ public class LogChainValidatorAuthorizationTests
 
         // Sign the entry with the attacker's private key so the signature verifies
         // against the key extracted from the DID part (the attacker's key).
-        TamperGenesisProof(entries[0], attackerKp, verificationMethod);
+        entries[0] = TamperGenesisProof(entries[0], attackerKp, verificationMethod);
 
         var (method, httpClient) = CreateMethod();
         httpClient.SetLogResponse(
@@ -153,18 +156,21 @@ public class LogChainValidatorAuthorizationTests
         // points at the same authorized multibase key.
         var stripped = $"did:key:{authorizedKp.MultibasePublicKey}";
         var original = entries[0].Proof![0];
-        entries[0].Proof =
-        [
-            new DataIntegrityProofValue
-            {
-                Type = original.Type,
-                Cryptosuite = original.Cryptosuite,
-                VerificationMethod = stripped,
-                Created = original.Created,
-                ProofPurpose = original.ProofPurpose,
-                ProofValue = original.ProofValue
-            }
-        ];
+        entries[0] = entries[0] with
+        {
+            Proof =
+            [
+                new DataIntegrityProofValue
+                {
+                    Type = original.Type,
+                    Cryptosuite = original.Cryptosuite,
+                    VerificationMethod = stripped,
+                    Created = original.Created,
+                    ProofPurpose = original.ProofPurpose,
+                    ProofValue = original.ProofValue
+                }
+            ]
+        };
 
         var (method, httpClient) = CreateMethod();
         httpClient.SetLogResponse(
@@ -192,7 +198,7 @@ public class LogChainValidatorAuthorizationTests
         // Signature is signed by authorized key (so it WOULD verify), but
         // the DID/fragment mismatch must cause authorization to reject the proof.
         var verificationMethod = $"did:key:{authorizedKp.MultibasePublicKey}#{attackerKp.MultibasePublicKey}";
-        TamperGenesisProof(entries[0], authorizedKp, verificationMethod);
+        entries[0] = TamperGenesisProof(entries[0], authorizedKp, verificationMethod);
 
         var (method, httpClient) = CreateMethod();
         httpClient.SetLogResponse(
@@ -218,7 +224,7 @@ public class LogChainValidatorAuthorizationTests
         // Place the authorized key in a path segment. The pre-fix substring match
         // would have accepted this; the new parser must reject any '/' or '?'.
         var verificationMethod = $"did:key:{attackerKp.MultibasePublicKey}/{authorizedKp.MultibasePublicKey}";
-        TamperGenesisProof(entries[0], attackerKp, verificationMethod);
+        entries[0] = TamperGenesisProof(entries[0], attackerKp, verificationMethod);
 
         var (method, httpClient) = CreateMethod();
         httpClient.SetLogResponse(

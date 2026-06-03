@@ -691,11 +691,9 @@ public class DidWebVhMethodTests
             var previous = entries[i - 1];
             var version = i + 1;
 
-            var savedVersionId = current.VersionId;
-            current.VersionId = $"{version}-{previous.VersionId}";
-            var json = LogEntrySerializer.SerializeWithoutProof(current);
+            var entryForHashing = current with { VersionId = $"{version}-{previous.VersionId}" };
+            var json = LogEntrySerializer.SerializeWithoutProof(entryForHashing);
             var computedHash = ScidGenerator.ComputeEntryHash(json);
-            current.VersionId = savedVersionId;
 
             current.EntryHash.Should().Be(computedHash,
                 $"version {version} entry hash should chain to previous versionId");
@@ -1657,5 +1655,152 @@ public class DidWebVhMethodTests
         });
 
         await act.Should().ThrowAsync<ArgumentException>();
+    }
+
+    // ================================================================
+    // Issue #37: IncludeLog — expose parsed log on DidResolutionResult
+    // ================================================================
+
+    [Fact]
+    public async Task Issue37_Resolve_WithoutIncludeLog_ArtifactsIsNull()
+    {
+        var (method, httpClient) = CreateMethod();
+        var signer = CreateEd25519Signer();
+
+        var createResult = await method.CreateAsync(new DidWebVhCreateOptions
+        {
+            Domain = "example.com",
+            UpdateKey = signer
+        });
+        var logContent = (string)createResult.Artifacts!["did.jsonl"];
+        httpClient.SetLogResponse(
+            DidUrlMapper.MapToLogUrl(createResult.Did.Value),
+            Encoding.UTF8.GetBytes(logContent));
+
+        var resolveResult = await method.ResolveAsync(createResult.Did.Value);
+
+        resolveResult.Artifacts.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task Issue37_Resolve_WithIncludeLog_ReturnsParsedEntries()
+    {
+        var (method, httpClient) = CreateMethod();
+        var signer = CreateEd25519Signer();
+
+        var createResult = await method.CreateAsync(new DidWebVhCreateOptions
+        {
+            Domain = "example.com",
+            UpdateKey = signer
+        });
+        var logContent = (string)createResult.Artifacts!["did.jsonl"];
+        httpClient.SetLogResponse(
+            DidUrlMapper.MapToLogUrl(createResult.Did.Value),
+            Encoding.UTF8.GetBytes(logContent));
+
+        var resolveResult = await method.ResolveAsync(
+            createResult.Did.Value,
+            new DidResolutionOptions { IncludeLog = true });
+
+        resolveResult.Artifacts.Should().NotBeNull();
+        resolveResult.Artifacts!.Should().ContainKey("log.entries");
+        var entries = (IReadOnlyList<LogEntry>)resolveResult.Artifacts!["log.entries"];
+        entries.Should().HaveCount(1);
+        entries[0].VersionNumber.Should().Be(1);
+        entries[0].State.Id.Value.Should().Be(createResult.Did.Value);
+    }
+
+    [Fact]
+    public async Task Issue37_Resolve_WithIncludeLog_ReturnsRawJsonl()
+    {
+        var (method, httpClient) = CreateMethod();
+        var signer = CreateEd25519Signer();
+
+        var createResult = await method.CreateAsync(new DidWebVhCreateOptions
+        {
+            Domain = "example.com",
+            UpdateKey = signer
+        });
+        var createdLog = (string)createResult.Artifacts!["did.jsonl"];
+        httpClient.SetLogResponse(
+            DidUrlMapper.MapToLogUrl(createResult.Did.Value),
+            Encoding.UTF8.GetBytes(createdLog));
+
+        var resolveResult = await method.ResolveAsync(
+            createResult.Did.Value,
+            new DidResolutionOptions { IncludeLog = true });
+
+        resolveResult.Artifacts.Should().ContainKey("did.jsonl");
+        var resolvedLog = (string)resolveResult.Artifacts!["did.jsonl"];
+        resolvedLog.Should().Be(createdLog);
+    }
+
+    [Fact]
+    public async Task Issue37_Resolve_AfterUpdate_LogContainsAllEntries()
+    {
+        var (method, httpClient) = CreateMethod();
+        var signer = CreateEd25519Signer();
+
+        var createResult = await method.CreateAsync(new DidWebVhCreateOptions
+        {
+            Domain = "example.com",
+            UpdateKey = signer
+        });
+        var did = createResult.Did.Value;
+
+        // Update once
+        var updatedDoc = new DidDocument
+        {
+            Id = createResult.Did,
+            VerificationMethod = createResult.DidDocument.VerificationMethod,
+            Authentication = createResult.DidDocument.Authentication,
+            AssertionMethod = createResult.DidDocument.AssertionMethod,
+            CapabilityInvocation = createResult.DidDocument.CapabilityInvocation,
+            CapabilityDelegation = createResult.DidDocument.CapabilityDelegation,
+            AlsoKnownAs = createResult.DidDocument.AlsoKnownAs,
+            Service =
+            [
+                new Service
+                {
+                    Id = $"{did}#pds",
+                    Type = "TurtleShellPds",
+                    ServiceEndpoint = ServiceEndpointValue.FromUri("https://example.com/pds")
+                }
+            ]
+        };
+        var updateResult = await method.UpdateAsync(did, new DidWebVhUpdateOptions
+        {
+            CurrentLogContent = Encoding.UTF8.GetBytes((string)createResult.Artifacts!["did.jsonl"]),
+            SigningKey = signer,
+            NewDocument = updatedDoc
+        });
+
+        var updatedLog = (string)updateResult.Artifacts!["did.jsonl"];
+        httpClient.SetLogResponse(
+            DidUrlMapper.MapToLogUrl(did), Encoding.UTF8.GetBytes(updatedLog));
+
+        var resolveResult = await method.ResolveAsync(
+            did, new DidResolutionOptions { IncludeLog = true });
+
+        var entries = (IReadOnlyList<LogEntry>)resolveResult.Artifacts!["log.entries"];
+        entries.Should().HaveCount(2);
+        entries[0].VersionNumber.Should().Be(1);
+        entries[1].VersionNumber.Should().Be(2);
+    }
+
+    [Fact]
+    public void Issue37_DidWebVhMethod_AdvertisesHistoryCapability()
+    {
+        var (method, _) = CreateMethod();
+        method.Capabilities.HasFlag(DidMethodCapabilities.History).Should().BeTrue();
+    }
+
+    [Fact]
+    public void Issue37_DidResolutionOptions_CacheDiscriminator_DistinguishesIncludeLog()
+    {
+        var without = new DidResolutionOptions();
+        var with = new DidResolutionOptions { IncludeLog = true };
+
+        without.GetCacheDiscriminator().Should().NotBe(with.GetCacheDiscriminator());
     }
 }

@@ -124,11 +124,9 @@ internal sealed class LogChainValidator
 
         // Verify entry hash: recreate the entry with the previous versionId
         // as specified by the spec: versionId = "<versionNumber>-<previousVersionId>"
-        var savedVersionId = current.VersionId;
-        current.VersionId = $"{expectedVersion}-{previous.VersionId}";
-        var entryJsonWithoutProof = LogEntrySerializer.SerializeWithoutProof(current);
+        var entryForHashing = current with { VersionId = $"{expectedVersion}-{previous.VersionId}" };
+        var entryJsonWithoutProof = LogEntrySerializer.SerializeWithoutProof(entryForHashing);
         var computedHash = ScidGenerator.ComputeEntryHash(entryJsonWithoutProof);
-        current.VersionId = savedVersionId; // Restore original
 
         if (computedHash != current.EntryHash)
             throw new LogChainValidationException(expectedVersion,

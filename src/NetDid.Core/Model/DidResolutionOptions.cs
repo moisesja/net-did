@@ -13,8 +13,15 @@ public record DidResolutionOptions
     public string? VersionTime { get; init; }
 
     /// <summary>
+    /// When <c>true</c>, methods that maintain a history (e.g. did:webvh) populate
+    /// <see cref="DidResolutionResult.Artifacts"/> with the parsed log. Methods without
+    /// history ignore this flag. Default: <c>false</c>.
+    /// </summary>
+    public bool IncludeLog { get; init; } = false;
+
+    /// <summary>
     /// Returns a deterministic string for cache key discrimination.
     /// </summary>
     public string GetCacheDiscriminator()
-        => $"{Accept}|{VersionId}|{VersionTime}";
+        => $"{Accept}|{VersionId}|{VersionTime}|{IncludeLog}";
 }
