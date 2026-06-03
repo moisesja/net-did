@@ -1775,6 +1775,102 @@ public sealed class DefaultDidUrlDereferencer : IDidUrlDereferencer
 }
 ```
 
+The relationship-list lookup formerly held privately inside the dereferencer is now exposed as a public extension method on `DidDocument`:
+
+```csharp
+public static class DidDocumentExtensions
+{
+    public static IReadOnlyList<VerificationRelationshipEntry>? GetRelationshipEntries(
+        this DidDocument document, VerificationRelationship relationship);
+
+    public static IReadOnlyList<VerificationRelationshipEntry>? GetRelationshipEntries(
+        this DidDocument document, string relationshipWireName);
+}
+```
+
+This selector is the shared building block consumed by `DefaultDidUrlDereferencer` (for relationship-constrained fragment dereferencing) and by `DefaultVerificationRelationshipResolver` (see §10.5).
+
+### 10.5 Verification Relationship Resolver
+
+W3C DID Core §5.3 separates verification methods by *purpose* (`authentication`, `assertionMethod`, `keyAgreement`, `capabilityInvocation`, `capabilityDelegation`). Real-world DID methods can list a referenced verification method whose base DID **differs** from the controller's DID (cross-DID reference), and can expose multiple keys under the same DID with each authorized for a different purpose (e.g. a "hot" key under `capabilityInvocation` and a "cold" key under `capabilityDelegation`). A correct verifier — for example a ZCAP-LD invocation/delegation checker — must therefore ask:
+
+> Does the **controller's** DID document authorize *this specific* verification method for *this specific* relationship?
+
+A string heuristic comparing `bareDid(verificationMethod) == controller` is sound only when the controller's DID and the verification method's base DID coincide (e.g. `did:key`); it admits cross-DID references and ignores per-purpose key separation. `IVerificationRelationshipResolver` exposes the correct check as a single primitive:
+
+```csharp
+public enum VerificationRelationship
+{
+    Authentication,
+    AssertionMethod,
+    KeyAgreement,
+    CapabilityInvocation,
+    CapabilityDelegation
+}
+
+public enum AuthorizationDecision
+{
+    Authorized,
+    NotAuthorized,
+    ControllerNotResolvable
+}
+
+public sealed record VerificationRelationshipAuthorizationResult
+{
+    public required AuthorizationDecision Decision { get; init; }
+    public string? ResolutionError { get; init; } // e.g. "notFound", "invalidDid"
+    public string? Message { get; init; }
+}
+
+public interface IVerificationRelationshipResolver
+{
+    Task<VerificationRelationshipAuthorizationResult> IsAuthorizedForRelationshipAsync(
+        string controllerDid,
+        string verificationMethodDidUrl,
+        VerificationRelationship relationship,
+        CancellationToken ct = default);
+}
+```
+
+**Tri-state result.** The decision is explicitly tri-state so callers can distinguish "the controller's document *says no*" from "the controller's document could not be resolved at all". The latter case surfaces the underlying resolution error (`notFound`, `invalidDid`, `methodNotSupported`) so a verifier can fail closed *and* log the infrastructure cause rather than silently treating a network blip as denial.
+
+**Default implementation.** `DefaultVerificationRelationshipResolver` is stateless, composes with `IDidResolver`, and uses `DidDocument.GetRelationshipEntries` (see §10.4) to read the relationship list. Verification-method ids inside the list — both `VerificationRelationshipEntry.Reference` strings and embedded `VerificationMethod.Id` values — are normalized against the controller document's `Id` using the same rule the dereferencer applies to service ids (`"#k1"` ↦ `"{controllerDid}#k1"`; bare `"k1"` ↦ `"{controllerDid}#k1"`; absolute DID URLs unchanged), then matched ordinally against the normalized query URL.
+
+**Worked example — cross-DID reference (controller authorizes a foreign key).**
+
+```jsonc
+// did:web:example.com — controller's document
+{
+  "id": "did:web:example.com",
+  "capabilityInvocation": ["did:web:alice.example#key-1"]
+}
+```
+
+`IsAuthorizedForRelationshipAsync("did:web:example.com", "did:web:alice.example#key-1", CapabilityInvocation)` returns `Authorized`. A naive `bareDid(verificationMethod) == controller` heuristic would reject it because `did:web:alice.example` ≠ `did:web:example.com`.
+
+**Worked example — relationship discrimination (hot/cold key separation).**
+
+```jsonc
+// did:web:example.com
+{
+  "verificationMethod": [
+    { "id": "did:web:example.com#hot",  ... },
+    { "id": "did:web:example.com#cold", ... }
+  ],
+  "capabilityInvocation": ["did:web:example.com#hot"],
+  "capabilityDelegation": ["did:web:example.com#cold"]
+}
+```
+
+`IsAuthorizedForRelationshipAsync(..., "did:web:example.com#hot", CapabilityDelegation)` returns `NotAuthorized`. A naive heuristic would authorize the hot key for delegation, defeating the operator's deliberate key separation.
+
+**Scope and limitations.**
+- The check resolves *the supplied* `controllerDid`; it does not walk the resolved document's own `controller` list. Callers with a multi-controller capability iterate per controller and OR-combine results.
+- Comparison is exact normalized-string match. References that include path or query components (e.g. `did:example:ctrl#k1?versionId=1`) are not stripped — they must match the query VM URL byte-for-byte after normalization.
+- No internal caching. If `IDidResolver` is wrapped with `CachingDidResolver`, authorization checks share the cache. The relationship resolver is the single source of truth — do not layer additional caches.
+
+**DI registration.** `services.AddNetDid(...)` registers `IVerificationRelationshipResolver` → `DefaultVerificationRelationshipResolver` as a singleton, alongside `IDidResolver` and `IDidManager`.
+
 ---
 
 ## 11. Pluggable Key Management
