@@ -210,7 +210,7 @@ public sealed class DefaultDidUrlDereferencer : IDidUrlDereferencer
         // When verificationRelationship is specified, only search that relationship
         if (verificationRelationship is not null)
         {
-            var entries = GetRelationshipEntries(doc, verificationRelationship);
+            var entries = doc.GetRelationshipEntries(verificationRelationship);
             if (entries is null) return null;
 
             // Check for embedded VM in the specified relationship
@@ -267,17 +267,6 @@ public sealed class DefaultDidUrlDereferencer : IDidUrlDereferencer
 
         return null;
     }
-
-    private static IReadOnlyList<VerificationRelationshipEntry>? GetRelationshipEntries(
-        DidDocument doc, string relationship) => relationship switch
-    {
-        "authentication" => doc.Authentication,
-        "assertionMethod" => doc.AssertionMethod,
-        "keyAgreement" => doc.KeyAgreement,
-        "capabilityInvocation" => doc.CapabilityInvocation,
-        "capabilityDelegation" => doc.CapabilityDelegation,
-        _ => null
-    };
 
     private static VerificationMethod? FindVmByFragment(
         IReadOnlyList<VerificationMethod> methods, string fragment)
