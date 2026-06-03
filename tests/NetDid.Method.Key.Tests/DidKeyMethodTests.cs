@@ -384,6 +384,19 @@ public class DidKeyMethodTests
         _method.Capabilities.Should().HaveFlag(DidMethodCapabilities.Resolve);
         _method.Capabilities.Should().NotHaveFlag(DidMethodCapabilities.Update);
         _method.Capabilities.Should().NotHaveFlag(DidMethodCapabilities.Deactivate);
+        _method.Capabilities.Should().NotHaveFlag(DidMethodCapabilities.History);
+    }
+
+    [Fact]
+    public async Task Issue37_Resolve_WithIncludeLog_ArtifactsStayNull()
+    {
+        var createResult = await _method.CreateAsync(new DidKeyCreateOptions { KeyType = KeyType.Ed25519 });
+
+        var resolveResult = await _method.ResolveAsync(
+            createResult.Did.Value,
+            new DidResolutionOptions { IncludeLog = true });
+
+        resolveResult.Artifacts.Should().BeNull();
     }
 
     [Fact]

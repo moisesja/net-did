@@ -58,5 +58,11 @@ public enum DidMethodCapabilities
     Resolve = 2,
     Update = 4,
     Deactivate = 8,
-    ServiceEndpoints = 16
+    ServiceEndpoints = 16,
+
+    /// <summary>
+    /// The method maintains an append-only history of versions. When set, callers may opt
+    /// into receiving the parsed history via <see cref="Model.DidResolutionOptions.IncludeLog"/>.
+    /// </summary>
+    History = 32
 }

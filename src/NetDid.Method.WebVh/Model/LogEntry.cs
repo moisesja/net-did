@@ -5,10 +5,10 @@ namespace NetDid.Method.WebVh.Model;
 /// <summary>
 /// A single entry in the did:webvh DID log (did.jsonl).
 /// </summary>
-public sealed class LogEntry
+public sealed record LogEntry
 {
     /// <summary>Format: "{version-number}-{entry-hash}". For genesis: "1-{SCID}".</summary>
-    public required string VersionId { get; set; }
+    public required string VersionId { get; init; }
 
     /// <summary>ISO 8601 timestamp of this entry.</summary>
     public required DateTimeOffset VersionTime { get; init; }
@@ -20,7 +20,7 @@ public sealed class LogEntry
     public required DidDocument State { get; init; }
 
     /// <summary>Data Integrity Proofs for this entry.</summary>
-    public IReadOnlyList<DataIntegrityProofValue>? Proof { get; set; }
+    public IReadOnlyList<DataIntegrityProofValue>? Proof { get; init; }
 
     /// <summary>The version number extracted from the versionId.</summary>
     public int VersionNumber => int.Parse(VersionId.Split('-')[0]);

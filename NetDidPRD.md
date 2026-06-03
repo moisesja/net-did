@@ -205,7 +205,10 @@ public enum DidMethodCapabilities
     Resolve = 2,
     Update = 4,
     Deactivate = 8,
-    ServiceEndpoints = 16
+    ServiceEndpoints = 16,
+    /// The method maintains an append-only history of versions. When set, callers may
+    /// opt into receiving the parsed history via DidResolutionOptions.IncludeLog.
+    History = 32
 }
 
 /// Standalone resolver interface for consumers who only need to resolve, not create.
@@ -234,6 +237,11 @@ public sealed record DidResolutionResult
     public required DidDocument? DidDocument { get; init; }
     public required DidResolutionMetadata ResolutionMetadata { get; init; }
     public DidDocumentMetadata? DocumentMetadata { get; init; }
+
+    /// Method-specific artifacts produced during resolution. Populated only when
+    /// explicitly requested (e.g. DidResolutionOptions.IncludeLog for did:webvh).
+    /// Methods without artifacts leave this null.
+    public IReadOnlyDictionary<string, object>? Artifacts { get; init; }
 }
 
 public sealed record DidResolutionMetadata
@@ -282,6 +290,12 @@ public record DidResolutionOptions
     /// Methods that do not support versioned resolution ignore these.
     public string? VersionId { get; init; }
     public string? VersionTime { get; init; }
+
+    /// When true, methods advertising DidMethodCapabilities.History populate
+    /// DidResolutionResult.Artifacts with the parsed log (e.g. did:webvh exposes
+    /// the UTF-8 did.jsonl content under "did.jsonl" and the parsed entries under
+    /// "log.entries"). Methods without history ignore this flag. Default: false.
+    public bool IncludeLog { get; init; } = false;
 }
 
 /// Base class for create options. Each DID method defines its own derived type.
@@ -1011,7 +1025,7 @@ well-known placeholder string (`{SCID}`) that stands in for the real SCID during
 4. Validate the genesis entry: verify the SCID matches the entry hash.
 5. For each subsequent entry: verify the proof signature against an authorized update key, verify the hash chain links to the previous entry, verify parameter constraints (pre-rotation key commitments, witness thresholds).
 6. If witnesses are configured, fetch `did-witness.json` and validate witness proofs meet the threshold.
-7. Return the DID Document from the final valid entry.
+7. Return the DID Document from the final valid entry. When `DidResolutionOptions.IncludeLog == true`, also surface the fetched log as `Artifacts["did.jsonl"]` (UTF-8 string, matching the Create/Update/Deactivate artifact convention) and the parsed chain as `Artifacts["log.entries"]` (`IReadOnlyList<LogEntry>`). The log is parsed and validated regardless; the flag only controls whether it is exposed to the caller.
 
 ### 7.7 Update
 

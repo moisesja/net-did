@@ -49,8 +49,8 @@ public class DidWebVhMethodTests
         result.DidDocument.VerificationMethod.Should().HaveCountGreaterOrEqualTo(1);
         result.DidDocument.Authentication.Should().NotBeEmpty();
         result.DidDocument.AssertionMethod.Should().NotBeEmpty();
-        result.Artifacts.Should().ContainKey("did.jsonl");
-        result.Artifacts.Should().ContainKey("did.json");
+        result.Artifacts.Should().ContainKey(DidWebVhArtifacts.DidJsonl);
+        result.Artifacts.Should().ContainKey(DidWebVhArtifacts.DidJson);
     }
 
     [Fact]
@@ -106,7 +106,7 @@ public class DidWebVhMethodTests
             UpdateKey = signer
         });
 
-        var logContent = (string)result.Artifacts!["did.jsonl"];
+        var logContent = (string)result.Artifacts![DidWebVhArtifacts.DidJsonl];
         logContent.Should().NotBeEmpty();
 
         // Parse the generated log
@@ -149,7 +149,7 @@ public class DidWebVhMethodTests
             PreRotationCommitments = [commitment]
         });
 
-        var logContent = (string)result.Artifacts!["did.jsonl"];
+        var logContent = (string)result.Artifacts![DidWebVhArtifacts.DidJsonl];
         var entries = LogEntrySerializer.ParseJsonLines(Encoding.UTF8.GetBytes(logContent));
         entries[0].Parameters.Prerotation.Should().BeTrue();
         entries[0].Parameters.NextKeyHashes.Should().Contain(commitment);
@@ -173,7 +173,7 @@ public class DidWebVhMethodTests
         });
 
         // Set up mock HTTP response
-        var logContent = (string)createResult.Artifacts!["did.jsonl"];
+        var logContent = (string)createResult.Artifacts![DidWebVhArtifacts.DidJsonl];
         var logUrl = DidUrlMapper.MapToLogUrl(createResult.Did.Value);
         httpClient.SetLogResponse(logUrl, Encoding.UTF8.GetBytes(logContent));
 
@@ -237,7 +237,7 @@ public class DidWebVhMethodTests
             UpdateKey = signer
         });
 
-        var logContent = (string)createResult.Artifacts!["did.jsonl"];
+        var logContent = (string)createResult.Artifacts![DidWebVhArtifacts.DidJsonl];
         var did = createResult.Did.Value;
 
         // Update — add a service
@@ -270,10 +270,10 @@ public class DidWebVhMethodTests
 
         updateResult.DidDocument.Service.Should().HaveCount(1);
         updateResult.DidDocument.Service![0].Type.Should().Be("TurtleShellPds");
-        updateResult.Artifacts.Should().ContainKey("did.jsonl");
+        updateResult.Artifacts.Should().ContainKey(DidWebVhArtifacts.DidJsonl);
 
         // Verify the updated log has 2 entries
-        var updatedLog = (string)updateResult.Artifacts!["did.jsonl"];
+        var updatedLog = (string)updateResult.Artifacts![DidWebVhArtifacts.DidJsonl];
         var entries = LogEntrySerializer.ParseJsonLines(Encoding.UTF8.GetBytes(updatedLog));
         entries.Should().HaveCount(2);
         entries[1].VersionNumber.Should().Be(2);
@@ -301,7 +301,7 @@ public class DidWebVhMethodTests
             ]
         });
 
-        var logContent = (string)createResult.Artifacts!["did.jsonl"];
+        var logContent = (string)createResult.Artifacts![DidWebVhArtifacts.DidJsonl];
         var did = createResult.Did.Value;
 
         // Update
@@ -325,7 +325,7 @@ public class DidWebVhMethodTests
             NewDocument = updatedDoc
         });
 
-        var updatedLog = (string)updateResult.Artifacts!["did.jsonl"];
+        var updatedLog = (string)updateResult.Artifacts![DidWebVhArtifacts.DidJsonl];
 
         // Resolve
         var logUrl = DidUrlMapper.MapToLogUrl(did);
@@ -351,7 +351,7 @@ public class DidWebVhMethodTests
             UpdateKey = originalKey
         });
 
-        var logContent = (string)createResult.Artifacts!["did.jsonl"];
+        var logContent = (string)createResult.Artifacts![DidWebVhArtifacts.DidJsonl];
         var did = createResult.Did.Value;
 
         // Rotate to a new key
@@ -367,7 +367,7 @@ public class DidWebVhMethodTests
             }
         });
 
-        var updatedLog = (string)updateResult.Artifacts!["did.jsonl"];
+        var updatedLog = (string)updateResult.Artifacts![DidWebVhArtifacts.DidJsonl];
         var entries = LogEntrySerializer.ParseJsonLines(Encoding.UTF8.GetBytes(updatedLog));
 
         // The effective updateKeys should be the new key after the update
@@ -387,7 +387,7 @@ public class DidWebVhMethodTests
             UpdateKey = authorizedKey
         });
 
-        var logContent = (string)createResult.Artifacts!["did.jsonl"];
+        var logContent = (string)createResult.Artifacts![DidWebVhArtifacts.DidJsonl];
         var did = createResult.Did.Value;
 
         var act = () => method.UpdateAsync(did, new DidWebVhUpdateOptions
@@ -416,7 +416,7 @@ public class DidWebVhMethodTests
             UpdateKey = signer
         });
 
-        var logContent = (string)createResult.Artifacts!["did.jsonl"];
+        var logContent = (string)createResult.Artifacts![DidWebVhArtifacts.DidJsonl];
         var did = createResult.Did.Value;
 
         // Deactivate
@@ -427,10 +427,10 @@ public class DidWebVhMethodTests
         });
 
         deactivateResult.Success.Should().BeTrue();
-        deactivateResult.Artifacts.Should().ContainKey("did.jsonl");
+        deactivateResult.Artifacts.Should().ContainKey(DidWebVhArtifacts.DidJsonl);
 
         // Resolve should show deactivated
-        var updatedLog = (string)deactivateResult.Artifacts!["did.jsonl"];
+        var updatedLog = (string)deactivateResult.Artifacts![DidWebVhArtifacts.DidJsonl];
         var logUrl = DidUrlMapper.MapToLogUrl(did);
         httpClient.SetLogResponse(logUrl, Encoding.UTF8.GetBytes(updatedLog));
 
@@ -452,7 +452,7 @@ public class DidWebVhMethodTests
             UpdateKey = authorizedKey
         });
 
-        var logContent = (string)createResult.Artifacts!["did.jsonl"];
+        var logContent = (string)createResult.Artifacts![DidWebVhArtifacts.DidJsonl];
         var did = createResult.Did.Value;
 
         var act = () => method.DeactivateAsync(did, new DidWebVhDeactivateOptions
@@ -485,7 +485,7 @@ public class DidWebVhMethodTests
             PreRotationCommitments = [commitment2]
         });
 
-        var logContent = (string)createResult.Artifacts!["did.jsonl"];
+        var logContent = (string)createResult.Artifacts![DidWebVhArtifacts.DidJsonl];
         var did = createResult.Did.Value;
 
         // Rotate to key2 — signed by key1 (the current authorized key),
@@ -506,7 +506,7 @@ public class DidWebVhMethodTests
         });
 
         // Verify the update succeeded and is resolvable
-        var updatedLog = (string)updateResult.Artifacts!["did.jsonl"];
+        var updatedLog = (string)updateResult.Artifacts![DidWebVhArtifacts.DidJsonl];
         var logUrl = DidUrlMapper.MapToLogUrl(did);
         httpClient.SetLogResponse(logUrl, Encoding.UTF8.GetBytes(updatedLog));
 
@@ -605,7 +605,7 @@ public class DidWebVhMethodTests
             UpdateKey = signer
         });
 
-        var logContent = (string)createResult.Artifacts!["did.jsonl"];
+        var logContent = (string)createResult.Artifacts![DidWebVhArtifacts.DidJsonl];
         var did = createResult.Did.Value;
 
         // First update
@@ -614,7 +614,7 @@ public class DidWebVhMethodTests
             CurrentLogContent = Encoding.UTF8.GetBytes(logContent),
             SigningKey = signer
         });
-        logContent = (string)update1.Artifacts!["did.jsonl"];
+        logContent = (string)update1.Artifacts![DidWebVhArtifacts.DidJsonl];
 
         // Second update
         var update2 = await method.UpdateAsync(did, new DidWebVhUpdateOptions
@@ -622,7 +622,7 @@ public class DidWebVhMethodTests
             CurrentLogContent = Encoding.UTF8.GetBytes(logContent),
             SigningKey = signer
         });
-        logContent = (string)update2.Artifacts!["did.jsonl"];
+        logContent = (string)update2.Artifacts![DidWebVhArtifacts.DidJsonl];
 
         // Third update
         var update3 = await method.UpdateAsync(did, new DidWebVhUpdateOptions
@@ -630,7 +630,7 @@ public class DidWebVhMethodTests
             CurrentLogContent = Encoding.UTF8.GetBytes(logContent),
             SigningKey = signer
         });
-        logContent = (string)update3.Artifacts!["did.jsonl"];
+        logContent = (string)update3.Artifacts![DidWebVhArtifacts.DidJsonl];
 
         // Verify 4 entries total
         var entries = LogEntrySerializer.ParseJsonLines(Encoding.UTF8.GetBytes(logContent));
@@ -661,7 +661,7 @@ public class DidWebVhMethodTests
             UpdateKey = signer
         });
 
-        var logContent = (string)createResult.Artifacts!["did.jsonl"];
+        var logContent = (string)createResult.Artifacts![DidWebVhArtifacts.DidJsonl];
         var did = createResult.Did.Value;
 
         // First update
@@ -670,7 +670,7 @@ public class DidWebVhMethodTests
             CurrentLogContent = Encoding.UTF8.GetBytes(logContent),
             SigningKey = signer
         });
-        logContent = (string)update1.Artifacts!["did.jsonl"];
+        logContent = (string)update1.Artifacts![DidWebVhArtifacts.DidJsonl];
 
         // Second update
         var update2 = await method.UpdateAsync(did, new DidWebVhUpdateOptions
@@ -678,7 +678,7 @@ public class DidWebVhMethodTests
             CurrentLogContent = Encoding.UTF8.GetBytes(logContent),
             SigningKey = signer
         });
-        logContent = (string)update2.Artifacts!["did.jsonl"];
+        logContent = (string)update2.Artifacts![DidWebVhArtifacts.DidJsonl];
 
         var entries = LogEntrySerializer.ParseJsonLines(Encoding.UTF8.GetBytes(logContent));
         entries.Should().HaveCount(3);
@@ -691,11 +691,9 @@ public class DidWebVhMethodTests
             var previous = entries[i - 1];
             var version = i + 1;
 
-            var savedVersionId = current.VersionId;
-            current.VersionId = $"{version}-{previous.VersionId}";
-            var json = LogEntrySerializer.SerializeWithoutProof(current);
+            var entryForHashing = current with { VersionId = $"{version}-{previous.VersionId}" };
+            var json = LogEntrySerializer.SerializeWithoutProof(entryForHashing);
             var computedHash = ScidGenerator.ComputeEntryHash(json);
-            current.VersionId = savedVersionId;
 
             current.EntryHash.Should().Be(computedHash,
                 $"version {version} entry hash should chain to previous versionId");
@@ -714,7 +712,7 @@ public class DidWebVhMethodTests
             Domain = "example.com",
             UpdateKey = signer
         });
-        var logContent = (string)createResult.Artifacts!["did.jsonl"];
+        var logContent = (string)createResult.Artifacts![DidWebVhArtifacts.DidJsonl];
         var did = createResult.Did.Value;
 
         var update1 = await method.UpdateAsync(did, new DidWebVhUpdateOptions
@@ -722,14 +720,14 @@ public class DidWebVhMethodTests
             CurrentLogContent = Encoding.UTF8.GetBytes(logContent),
             SigningKey = signer
         });
-        logContent = (string)update1.Artifacts!["did.jsonl"];
+        logContent = (string)update1.Artifacts![DidWebVhArtifacts.DidJsonl];
 
         var update2 = await method.UpdateAsync(did, new DidWebVhUpdateOptions
         {
             CurrentLogContent = Encoding.UTF8.GetBytes(logContent),
             SigningKey = signer
         });
-        logContent = (string)update2.Artifacts!["did.jsonl"];
+        logContent = (string)update2.Artifacts![DidWebVhArtifacts.DidJsonl];
 
         // Tamper with version 2's versionId (simulate rewriting history)
         var lines = logContent.Split('\n', StringSplitOptions.RemoveEmptyEntries);
@@ -769,7 +767,7 @@ public class DidWebVhMethodTests
             WitnessThreshold = 1
         });
 
-        var logContent = (string)createResult.Artifacts!["did.jsonl"];
+        var logContent = (string)createResult.Artifacts![DidWebVhArtifacts.DidJsonl];
         var did = createResult.Did.Value;
         var logUrl = DidUrlMapper.MapToLogUrl(did);
         httpClient.SetLogResponse(logUrl, Encoding.UTF8.GetBytes(logContent));
@@ -795,7 +793,7 @@ public class DidWebVhMethodTests
             WitnessThreshold = 1
         });
 
-        var logContent = (string)createResult.Artifacts!["did.jsonl"];
+        var logContent = (string)createResult.Artifacts![DidWebVhArtifacts.DidJsonl];
         var did = createResult.Did.Value;
         var logUrl = DidUrlMapper.MapToLogUrl(did);
         httpClient.SetLogResponse(logUrl, Encoding.UTF8.GetBytes(logContent));
@@ -965,7 +963,7 @@ public class DidWebVhMethodTests
             UpdateKey = signer
         });
 
-        var logContent = (string)createResult.Artifacts!["did.jsonl"];
+        var logContent = (string)createResult.Artifacts![DidWebVhArtifacts.DidJsonl];
         var realDid = createResult.Did.Value;
 
         // Host the log at the correct URL
@@ -1003,7 +1001,7 @@ public class DidWebVhMethodTests
             UpdateKey = signer
         });
 
-        var logContent = (string)createResult.Artifacts!["did.jsonl"];
+        var logContent = (string)createResult.Artifacts![DidWebVhArtifacts.DidJsonl];
         var did = createResult.Did.Value;
         var logUrl = DidUrlMapper.MapToLogUrl(did);
         httpClient.SetLogResponse(logUrl, Encoding.UTF8.GetBytes(logContent));
@@ -1048,7 +1046,7 @@ public class DidWebVhMethodTests
             UpdateKey = signer
         });
 
-        var logContent = (string)createResult.Artifacts!["did.jsonl"];
+        var logContent = (string)createResult.Artifacts![DidWebVhArtifacts.DidJsonl];
         var did = createResult.Did.Value;
         var logUrl = DidUrlMapper.MapToLogUrl(did);
         httpClient.SetLogResponse(logUrl, Encoding.UTF8.GetBytes(logContent));
@@ -1074,7 +1072,7 @@ public class DidWebVhMethodTests
             UpdateKey = signer
         });
 
-        var logContent = (string)createResult.Artifacts!["did.jsonl"];
+        var logContent = (string)createResult.Artifacts![DidWebVhArtifacts.DidJsonl];
         var did = createResult.Did.Value;
         var logUrl = DidUrlMapper.MapToLogUrl(did);
         httpClient.SetLogResponse(logUrl, Encoding.UTF8.GetBytes(logContent));
@@ -1101,7 +1099,7 @@ public class DidWebVhMethodTests
             Domain = "example.com",
             UpdateKey = signer
         });
-        var logContent = (string)createResult.Artifacts!["did.jsonl"];
+        var logContent = (string)createResult.Artifacts![DidWebVhArtifacts.DidJsonl];
         var did = createResult.Did.Value;
 
         var updateResult = await method.UpdateAsync(did, new DidWebVhUpdateOptions
@@ -1109,7 +1107,7 @@ public class DidWebVhMethodTests
             CurrentLogContent = Encoding.UTF8.GetBytes(logContent),
             SigningKey = signer
         });
-        logContent = (string)updateResult.Artifacts!["did.jsonl"];
+        logContent = (string)updateResult.Artifacts![DidWebVhArtifacts.DidJsonl];
 
         var entries = LogEntrySerializer.ParseJsonLines(Encoding.UTF8.GetBytes(logContent));
         var v1VersionId = entries[0].VersionId;
@@ -1139,7 +1137,7 @@ public class DidWebVhMethodTests
             Domain = "example.com",
             UpdateKey = signer
         });
-        var logContent = (string)createResult.Artifacts!["did.jsonl"];
+        var logContent = (string)createResult.Artifacts![DidWebVhArtifacts.DidJsonl];
         var did = createResult.Did.Value;
 
         var updateResult = await method.UpdateAsync(did, new DidWebVhUpdateOptions
@@ -1147,7 +1145,7 @@ public class DidWebVhMethodTests
             CurrentLogContent = Encoding.UTF8.GetBytes(logContent),
             SigningKey = signer
         });
-        logContent = (string)updateResult.Artifacts!["did.jsonl"];
+        logContent = (string)updateResult.Artifacts![DidWebVhArtifacts.DidJsonl];
 
         var entries = LogEntrySerializer.ParseJsonLines(Encoding.UTF8.GetBytes(logContent));
         var v1VersionId = entries[0].VersionId;
@@ -1192,7 +1190,7 @@ public class DidWebVhMethodTests
             PreRotationCommitments = [commitment2]
         });
 
-        var logContent = (string)createResult.Artifacts!["did.jsonl"];
+        var logContent = (string)createResult.Artifacts![DidWebVhArtifacts.DidJsonl];
         var did = createResult.Did.Value;
 
         // Try to update with TTL change only — no updateKeys
@@ -1226,7 +1224,7 @@ public class DidWebVhMethodTests
             PreRotationCommitments = [commitment2]
         });
 
-        var logContent = (string)createResult.Artifacts!["did.jsonl"];
+        var logContent = (string)createResult.Artifacts![DidWebVhArtifacts.DidJsonl];
         var did = createResult.Did.Value;
 
         // Update with both TTL change and key rotation — should succeed
@@ -1249,7 +1247,7 @@ public class DidWebVhMethodTests
         updateResult.DidDocument.Should().NotBeNull();
 
         // Verify it resolves
-        var updatedLog = (string)updateResult.Artifacts!["did.jsonl"];
+        var updatedLog = (string)updateResult.Artifacts![DidWebVhArtifacts.DidJsonl];
         var logUrl = DidUrlMapper.MapToLogUrl(did);
         httpClient.SetLogResponse(logUrl, Encoding.UTF8.GetBytes(updatedLog));
 
@@ -1297,8 +1295,8 @@ public class DidWebVhMethodTests
             WitnessProofs = witnessProofs
         });
 
-        result.Artifacts.Should().ContainKey("did-witness.json");
-        var witnessContent = (string)result.Artifacts!["did-witness.json"];
+        result.Artifacts.Should().ContainKey(DidWebVhArtifacts.DidWitnessJson);
+        var witnessContent = (string)result.Artifacts![DidWebVhArtifacts.DidWitnessJson];
         var witnessFile = WitnessValidator.ParseWitnessFile(Encoding.UTF8.GetBytes(witnessContent));
         witnessFile.Should().NotBeNull();
         witnessFile!.Entries.Should().HaveCount(1);
@@ -1318,7 +1316,7 @@ public class DidWebVhMethodTests
             UpdateKey = signer
         });
 
-        result.Artifacts.Should().NotContainKey("did-witness.json");
+        result.Artifacts.Should().NotContainKey(DidWebVhArtifacts.DidWitnessJson);
     }
 
     [Fact]
@@ -1485,8 +1483,8 @@ public class DidWebVhMethodTests
             ]
         });
 
-        var logContent = (string)createResult.Artifacts!["did.jsonl"];
-        var existingWitness = (string)createResult.Artifacts["did-witness.json"];
+        var logContent = (string)createResult.Artifacts![DidWebVhArtifacts.DidJsonl];
+        var existingWitness = (string)createResult.Artifacts[DidWebVhArtifacts.DidWitnessJson];
         var did = createResult.Did.Value;
 
         // Update with new witness proofs, merging with existing
@@ -1516,8 +1514,8 @@ public class DidWebVhMethodTests
             ]
         });
 
-        updateResult.Artifacts.Should().ContainKey("did-witness.json");
-        var mergedContent = (string)updateResult.Artifacts!["did-witness.json"];
+        updateResult.Artifacts.Should().ContainKey(DidWebVhArtifacts.DidWitnessJson);
+        var mergedContent = (string)updateResult.Artifacts![DidWebVhArtifacts.DidWitnessJson];
         var merged = WitnessValidator.ParseWitnessFile(Encoding.UTF8.GetBytes(mergedContent));
         merged.Should().NotBeNull();
         merged!.Entries.Should().HaveCount(2);
@@ -1535,7 +1533,7 @@ public class DidWebVhMethodTests
             UpdateKey = signer
         });
 
-        var logContent = (string)createResult.Artifacts!["did.jsonl"];
+        var logContent = (string)createResult.Artifacts![DidWebVhArtifacts.DidJsonl];
         var did = createResult.Did.Value;
 
         var deactivateResult = await method.DeactivateAsync(did, new DidWebVhDeactivateOptions
@@ -1563,8 +1561,8 @@ public class DidWebVhMethodTests
             ]
         });
 
-        deactivateResult.Artifacts.Should().ContainKey("did-witness.json");
-        var witnessContent = (string)deactivateResult.Artifacts!["did-witness.json"];
+        deactivateResult.Artifacts.Should().ContainKey(DidWebVhArtifacts.DidWitnessJson);
+        var witnessContent = (string)deactivateResult.Artifacts![DidWebVhArtifacts.DidWitnessJson];
         var witnessFile = WitnessValidator.ParseWitnessFile(Encoding.UTF8.GetBytes(witnessContent));
         witnessFile.Should().NotBeNull();
         witnessFile!.Entries.Should().HaveCount(1);
@@ -1586,7 +1584,7 @@ public class DidWebVhMethodTests
             PreRotationCommitments = [commitment2]
         });
 
-        var logContent = (string)createResult.Artifacts!["did.jsonl"];
+        var logContent = (string)createResult.Artifacts![DidWebVhArtifacts.DidJsonl];
         var did = createResult.Did.Value;
 
         // Manually construct an update entry WITHOUT updateKeys to bypass the API check
@@ -1608,7 +1606,7 @@ public class DidWebVhMethodTests
         });
 
         // The update succeeds at the API level; verify the log resolves correctly
-        var updatedLog = (string)updateResult.Artifacts!["did.jsonl"];
+        var updatedLog = (string)updateResult.Artifacts![DidWebVhArtifacts.DidJsonl];
         var logUrl = DidUrlMapper.MapToLogUrl(did);
         httpClient.SetLogResponse(logUrl, Encoding.UTF8.GetBytes(updatedLog));
 
@@ -1657,5 +1655,152 @@ public class DidWebVhMethodTests
         });
 
         await act.Should().ThrowAsync<ArgumentException>();
+    }
+
+    // ================================================================
+    // Issue #37: IncludeLog — expose parsed log on DidResolutionResult
+    // ================================================================
+
+    [Fact]
+    public async Task Issue37_Resolve_WithoutIncludeLog_ArtifactsIsNull()
+    {
+        var (method, httpClient) = CreateMethod();
+        var signer = CreateEd25519Signer();
+
+        var createResult = await method.CreateAsync(new DidWebVhCreateOptions
+        {
+            Domain = "example.com",
+            UpdateKey = signer
+        });
+        var logContent = (string)createResult.Artifacts![DidWebVhArtifacts.DidJsonl];
+        httpClient.SetLogResponse(
+            DidUrlMapper.MapToLogUrl(createResult.Did.Value),
+            Encoding.UTF8.GetBytes(logContent));
+
+        var resolveResult = await method.ResolveAsync(createResult.Did.Value);
+
+        resolveResult.Artifacts.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task Issue37_Resolve_WithIncludeLog_ReturnsParsedEntries()
+    {
+        var (method, httpClient) = CreateMethod();
+        var signer = CreateEd25519Signer();
+
+        var createResult = await method.CreateAsync(new DidWebVhCreateOptions
+        {
+            Domain = "example.com",
+            UpdateKey = signer
+        });
+        var logContent = (string)createResult.Artifacts![DidWebVhArtifacts.DidJsonl];
+        httpClient.SetLogResponse(
+            DidUrlMapper.MapToLogUrl(createResult.Did.Value),
+            Encoding.UTF8.GetBytes(logContent));
+
+        var resolveResult = await method.ResolveAsync(
+            createResult.Did.Value,
+            new DidResolutionOptions { IncludeLog = true });
+
+        resolveResult.Artifacts.Should().NotBeNull();
+        resolveResult.Artifacts!.Should().ContainKey(DidWebVhArtifacts.LogEntries);
+        var entries = (IReadOnlyList<LogEntry>)resolveResult.Artifacts![DidWebVhArtifacts.LogEntries];
+        entries.Should().HaveCount(1);
+        entries[0].VersionNumber.Should().Be(1);
+        entries[0].State.Id.Value.Should().Be(createResult.Did.Value);
+    }
+
+    [Fact]
+    public async Task Issue37_Resolve_WithIncludeLog_ReturnsRawJsonl()
+    {
+        var (method, httpClient) = CreateMethod();
+        var signer = CreateEd25519Signer();
+
+        var createResult = await method.CreateAsync(new DidWebVhCreateOptions
+        {
+            Domain = "example.com",
+            UpdateKey = signer
+        });
+        var createdLog = (string)createResult.Artifacts![DidWebVhArtifacts.DidJsonl];
+        httpClient.SetLogResponse(
+            DidUrlMapper.MapToLogUrl(createResult.Did.Value),
+            Encoding.UTF8.GetBytes(createdLog));
+
+        var resolveResult = await method.ResolveAsync(
+            createResult.Did.Value,
+            new DidResolutionOptions { IncludeLog = true });
+
+        resolveResult.Artifacts.Should().ContainKey(DidWebVhArtifacts.DidJsonl);
+        var resolvedLog = (string)resolveResult.Artifacts![DidWebVhArtifacts.DidJsonl];
+        resolvedLog.Should().Be(createdLog);
+    }
+
+    [Fact]
+    public async Task Issue37_Resolve_AfterUpdate_LogContainsAllEntries()
+    {
+        var (method, httpClient) = CreateMethod();
+        var signer = CreateEd25519Signer();
+
+        var createResult = await method.CreateAsync(new DidWebVhCreateOptions
+        {
+            Domain = "example.com",
+            UpdateKey = signer
+        });
+        var did = createResult.Did.Value;
+
+        // Update once
+        var updatedDoc = new DidDocument
+        {
+            Id = createResult.Did,
+            VerificationMethod = createResult.DidDocument.VerificationMethod,
+            Authentication = createResult.DidDocument.Authentication,
+            AssertionMethod = createResult.DidDocument.AssertionMethod,
+            CapabilityInvocation = createResult.DidDocument.CapabilityInvocation,
+            CapabilityDelegation = createResult.DidDocument.CapabilityDelegation,
+            AlsoKnownAs = createResult.DidDocument.AlsoKnownAs,
+            Service =
+            [
+                new Service
+                {
+                    Id = $"{did}#pds",
+                    Type = "TurtleShellPds",
+                    ServiceEndpoint = ServiceEndpointValue.FromUri("https://example.com/pds")
+                }
+            ]
+        };
+        var updateResult = await method.UpdateAsync(did, new DidWebVhUpdateOptions
+        {
+            CurrentLogContent = Encoding.UTF8.GetBytes((string)createResult.Artifacts![DidWebVhArtifacts.DidJsonl]),
+            SigningKey = signer,
+            NewDocument = updatedDoc
+        });
+
+        var updatedLog = (string)updateResult.Artifacts![DidWebVhArtifacts.DidJsonl];
+        httpClient.SetLogResponse(
+            DidUrlMapper.MapToLogUrl(did), Encoding.UTF8.GetBytes(updatedLog));
+
+        var resolveResult = await method.ResolveAsync(
+            did, new DidResolutionOptions { IncludeLog = true });
+
+        var entries = (IReadOnlyList<LogEntry>)resolveResult.Artifacts![DidWebVhArtifacts.LogEntries];
+        entries.Should().HaveCount(2);
+        entries[0].VersionNumber.Should().Be(1);
+        entries[1].VersionNumber.Should().Be(2);
+    }
+
+    [Fact]
+    public void Issue37_DidWebVhMethod_AdvertisesHistoryCapability()
+    {
+        var (method, _) = CreateMethod();
+        method.Capabilities.HasFlag(DidMethodCapabilities.History).Should().BeTrue();
+    }
+
+    [Fact]
+    public void Issue37_DidResolutionOptions_CacheDiscriminator_DistinguishesIncludeLog()
+    {
+        var without = new DidResolutionOptions();
+        var with = new DidResolutionOptions { IncludeLog = true };
+
+        without.GetCacheDiscriminator().Should().NotBe(with.GetCacheDiscriminator());
     }
 }

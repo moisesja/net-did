@@ -41,7 +41,8 @@ public sealed class DidWebVhMethod : DidMethodBase
         DidMethodCapabilities.Resolve |
         DidMethodCapabilities.Update |
         DidMethodCapabilities.Deactivate |
-        DidMethodCapabilities.ServiceEndpoints;
+        DidMethodCapabilities.ServiceEndpoints |
+        DidMethodCapabilities.History;
 
     /// <summary>
     /// did:webvh requires an Ed25519 update key (see <see cref="DidWebVhCreateOptions.UpdateKey"/>).
@@ -103,18 +104,21 @@ public sealed class DidWebVhMethod : DidMethodBase
             proofJson, createOptions.UpdateKey, "assertionMethod",
             finalEntry.VersionTime, ct);
 
-        finalEntry.Proof =
-        [
-            new DataIntegrityProofValue
-            {
-                Type = proof.Type,
-                Cryptosuite = proof.Cryptosuite,
-                VerificationMethod = proof.VerificationMethod,
-                Created = proof.Created.ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ"),
-                ProofPurpose = proof.ProofPurpose,
-                ProofValue = proof.ProofValue
-            }
-        ];
+        finalEntry = finalEntry with
+        {
+            Proof =
+            [
+                new DataIntegrityProofValue
+                {
+                    Type = proof.Type,
+                    Cryptosuite = proof.Cryptosuite,
+                    VerificationMethod = proof.VerificationMethod,
+                    Created = proof.Created.ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ"),
+                    ProofPurpose = proof.ProofPurpose,
+                    ProofValue = proof.ProofValue
+                }
+            ]
+        };
 
         // Build the final DID string
         var did = didTemplate.Replace(ScidGenerator.SafePlaceholder, scid);
@@ -126,14 +130,14 @@ public sealed class DidWebVhMethod : DidMethodBase
 
         var artifacts = new Dictionary<string, object>
         {
-            ["did.jsonl"] = logContent,
-            ["did.json"] = didJsonContent
+            [DidWebVhArtifacts.DidJsonl] = logContent,
+            [DidWebVhArtifacts.DidJson] = didJsonContent
         };
 
         if (createOptions.WitnessProofs is { Count: > 0 })
         {
             var merged = WitnessValidator.MergeWitnessProofs(null, createOptions.WitnessProofs);
-            artifacts["did-witness.json"] = Encoding.UTF8.GetString(WitnessValidator.SerializeWitnessFile(merged));
+            artifacts[DidWebVhArtifacts.DidWitnessJson] = Encoding.UTF8.GetString(WitnessValidator.SerializeWitnessFile(merged));
         }
 
         return new DidCreateResult
@@ -243,6 +247,16 @@ public sealed class DidWebVhMethod : DidMethodBase
             // Check if deactivated
             var isDeactivated = effectiveParams.Deactivated == true;
 
+            IReadOnlyDictionary<string, object>? artifacts = null;
+            if (options?.IncludeLog == true)
+            {
+                artifacts = new Dictionary<string, object>
+                {
+                    [DidWebVhArtifacts.DidJsonl] = Encoding.UTF8.GetString(logContent),
+                    [DidWebVhArtifacts.LogEntries] = entries
+                };
+            }
+
             return new DidResolutionResult
             {
                 DidDocument = targetEntry.State,
@@ -257,7 +271,8 @@ public sealed class DidWebVhMethod : DidMethodBase
                     VersionId = targetEntry.VersionId,
                     VersionTime = targetEntry.VersionTime,
                     Deactivated = isDeactivated ? true : null
-                }
+                },
+                Artifacts = artifacts
             };
         }
         catch (Core.Exceptions.LogChainValidationException ex)
@@ -332,7 +347,7 @@ public sealed class DidWebVhMethod : DidMethodBase
         // Compute entry hash from the entry with previous versionId
         var entryJsonWithoutProof = LogEntrySerializer.SerializeWithoutProof(newEntry);
         var entryHash = ScidGenerator.ComputeEntryHash(entryJsonWithoutProof);
-        newEntry.VersionId = $"{versionNumber}-{entryHash}";
+        newEntry = newEntry with { VersionId = $"{versionNumber}-{entryHash}" };
 
         // Re-serialize with correct versionId
         entryJsonWithoutProof = LogEntrySerializer.SerializeWithoutProof(newEntry);
@@ -342,18 +357,21 @@ public sealed class DidWebVhMethod : DidMethodBase
             entryJsonWithoutProof, updateOptions.SigningKey, "assertionMethod",
             newEntry.VersionTime, ct);
 
-        newEntry.Proof =
-        [
-            new DataIntegrityProofValue
-            {
-                Type = proof.Type,
-                Cryptosuite = proof.Cryptosuite,
-                VerificationMethod = proof.VerificationMethod,
-                Created = proof.Created.ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ"),
-                ProofPurpose = proof.ProofPurpose,
-                ProofValue = proof.ProofValue
-            }
-        ];
+        newEntry = newEntry with
+        {
+            Proof =
+            [
+                new DataIntegrityProofValue
+                {
+                    Type = proof.Type,
+                    Cryptosuite = proof.Cryptosuite,
+                    VerificationMethod = proof.VerificationMethod,
+                    Created = proof.Created.ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ"),
+                    ProofPurpose = proof.ProofPurpose,
+                    ProofValue = proof.ProofValue
+                }
+            ]
+        };
 
         // Build updated log (as UTF-8 strings for consumer convenience)
         var allEntries = new List<LogEntry>(entries) { newEntry };
@@ -361,8 +379,8 @@ public sealed class DidWebVhMethod : DidMethodBase
 
         var updateArtifacts = new Dictionary<string, object>
         {
-            ["did.jsonl"] = logContent,
-            ["did.json"] = Encoding.UTF8.GetString(DidWebCompatibility.GenerateDidJson(did, newDocument))
+            [DidWebVhArtifacts.DidJsonl] = logContent,
+            [DidWebVhArtifacts.DidJson] = Encoding.UTF8.GetString(DidWebCompatibility.GenerateDidJson(did, newDocument))
         };
 
         if (updateOptions.WitnessProofs is { Count: > 0 })
@@ -371,7 +389,7 @@ public sealed class DidWebVhMethod : DidMethodBase
             if (updateOptions.CurrentWitnessContent is not null)
                 existing = WitnessValidator.ParseWitnessFile(updateOptions.CurrentWitnessContent);
             var merged = WitnessValidator.MergeWitnessProofs(existing, updateOptions.WitnessProofs);
-            updateArtifacts["did-witness.json"] = Encoding.UTF8.GetString(WitnessValidator.SerializeWitnessFile(merged));
+            updateArtifacts[DidWebVhArtifacts.DidWitnessJson] = Encoding.UTF8.GetString(WitnessValidator.SerializeWitnessFile(merged));
         }
 
         return new DidUpdateResult
@@ -421,7 +439,7 @@ public sealed class DidWebVhMethod : DidMethodBase
         // Compute entry hash
         var entryJsonWithoutProof = LogEntrySerializer.SerializeWithoutProof(deactivationEntry);
         var entryHash = ScidGenerator.ComputeEntryHash(entryJsonWithoutProof);
-        deactivationEntry.VersionId = $"{versionNumber}-{entryHash}";
+        deactivationEntry = deactivationEntry with { VersionId = $"{versionNumber}-{entryHash}" };
 
         // Re-serialize with correct versionId
         entryJsonWithoutProof = LogEntrySerializer.SerializeWithoutProof(deactivationEntry);
@@ -431,18 +449,21 @@ public sealed class DidWebVhMethod : DidMethodBase
             entryJsonWithoutProof, deactivateOptions.SigningKey, "assertionMethod",
             deactivationEntry.VersionTime, ct);
 
-        deactivationEntry.Proof =
-        [
-            new DataIntegrityProofValue
-            {
-                Type = proof.Type,
-                Cryptosuite = proof.Cryptosuite,
-                VerificationMethod = proof.VerificationMethod,
-                Created = proof.Created.ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ"),
-                ProofPurpose = proof.ProofPurpose,
-                ProofValue = proof.ProofValue
-            }
-        ];
+        deactivationEntry = deactivationEntry with
+        {
+            Proof =
+            [
+                new DataIntegrityProofValue
+                {
+                    Type = proof.Type,
+                    Cryptosuite = proof.Cryptosuite,
+                    VerificationMethod = proof.VerificationMethod,
+                    Created = proof.Created.ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ"),
+                    ProofPurpose = proof.ProofPurpose,
+                    ProofValue = proof.ProofValue
+                }
+            ]
+        };
 
         // Build updated log (as UTF-8 strings for consumer convenience)
         var allEntries = new List<LogEntry>(entries) { deactivationEntry };
@@ -450,7 +471,7 @@ public sealed class DidWebVhMethod : DidMethodBase
 
         var deactivateArtifacts = new Dictionary<string, object>
         {
-            ["did.jsonl"] = logContent
+            [DidWebVhArtifacts.DidJsonl] = logContent
         };
 
         if (deactivateOptions.WitnessProofs is { Count: > 0 })
@@ -459,7 +480,7 @@ public sealed class DidWebVhMethod : DidMethodBase
             if (deactivateOptions.CurrentWitnessContent is not null)
                 existing = WitnessValidator.ParseWitnessFile(deactivateOptions.CurrentWitnessContent);
             var merged = WitnessValidator.MergeWitnessProofs(existing, deactivateOptions.WitnessProofs);
-            deactivateArtifacts["did-witness.json"] = Encoding.UTF8.GetString(WitnessValidator.SerializeWitnessFile(merged));
+            deactivateArtifacts[DidWebVhArtifacts.DidWitnessJson] = Encoding.UTF8.GetString(WitnessValidator.SerializeWitnessFile(merged));
         }
 
         return new DidDeactivateResult
