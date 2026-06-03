@@ -153,6 +153,34 @@ public class DefaultVerificationRelationshipResolverTests
         result.Decision.Should().Be(AuthorizationDecision.Authorized);
     }
 
+    // Case 5b — Query VM URL itself is fragment-relative; normalized against the controller
+    [Fact]
+    public async Task IsAuthorizedForRelationshipAsync_FragmentOnlyQuery_NormalizesAndMatches()
+    {
+        SetupResolver(DocWith(
+            VerificationRelationship.AssertionMethod,
+            VerificationRelationshipEntry.FromReference($"{ControllerDid}#k1")));
+
+        var result = await _sut.IsAuthorizedForRelationshipAsync(
+            ControllerDid, "#k1", VerificationRelationship.AssertionMethod);
+
+        result.Decision.Should().Be(AuthorizationDecision.Authorized);
+    }
+
+    // Case 5c — Query VM URL is a bare id; normalized against the controller
+    [Fact]
+    public async Task IsAuthorizedForRelationshipAsync_BareIdQuery_NormalizesAndMatches()
+    {
+        SetupResolver(DocWith(
+            VerificationRelationship.AssertionMethod,
+            VerificationRelationshipEntry.FromReference($"{ControllerDid}#k1")));
+
+        var result = await _sut.IsAuthorizedForRelationshipAsync(
+            ControllerDid, "k1", VerificationRelationship.AssertionMethod);
+
+        result.Decision.Should().Be(AuthorizationDecision.Authorized);
+    }
+
     // Case 6 — Relationship empty or absent
     [Fact]
     public async Task IsAuthorizedForRelationshipAsync_RelationshipAbsent_NotAuthorized()
