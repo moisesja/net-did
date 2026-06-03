@@ -47,6 +47,11 @@ public static class NetDidServiceCollectionExtensions
             return new DidManager(methods);
         });
 
+        // Register IVerificationRelationshipResolver — answers "does the controller's document
+        // authorize this VM for this relationship?" Used by zcap-dotnet for ZCAP-LD verification.
+        services.TryAddSingleton<IVerificationRelationshipResolver>(sp =>
+            new DefaultVerificationRelationshipResolver(sp.GetRequiredService<IDidResolver>()));
+
         return services;
     }
 }
