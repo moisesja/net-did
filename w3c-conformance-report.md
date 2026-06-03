@@ -1,6 +1,6 @@
 # W3C DID Core Conformance Report
 
-Generated: 2026-05-21T21:37:16Z
+Generated: 2026-06-03T16:39:00Z
 
 ## Scope and limitations
 
@@ -113,7 +113,7 @@ method's test project and link it here.
 | Statement | Description | did:key | did:peer | did:webvh |
 |-----------|-------------|----------|----------|----------|
 | 7.2-1 | Fragment dereferencing returns VerificationMethod | PASS | PASS | PASS |
-| 7.2-10 | ContentType is set on successful dereference | PASS | PASS | PASS |
+| 7.2-10 | Unsupported Accept returns representationNotSupported | PASS | PASS | PASS |
 | 7.2-11 | Error is null on successful dereference | PASS | PASS | PASS |
 | 7.2-12 | Error is set on failed dereference | PASS | PASS | N/A |
 | 7.2-2 | Returned VM id contains the requested fragment | PASS | PASS | PASS |
