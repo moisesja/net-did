@@ -1,9 +1,10 @@
 using System.Text;
+using System.Text.Json;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
+using DataProofsDotnet.DataIntegrity;
 using NetDid.Core;
 using NetCrypto;
-using NetDid.Core.Crypto.DataIntegrity;
 using NetDid.Core.Model;
 using NetDid.Method.WebVh.Model;
 
@@ -16,22 +17,55 @@ namespace NetDid.Method.WebVh;
 public sealed class DidWebVhMethod : DidMethodBase
 {
     private readonly IWebVhHttpClient _httpClient;
-    private readonly ICryptoProvider _crypto;
-    private readonly DataIntegrityProofEngine _proofEngine;
+    private readonly EddsaJcs2022Cryptosuite _suite;
     private readonly LogChainValidator _chainValidator;
     private readonly WitnessValidator _witnessValidator;
     private readonly ILogger<DidWebVhMethod> _logger;
 
     internal const string MethodVersion = "did:webvh:1.0";
 
-    public DidWebVhMethod(IWebVhHttpClient httpClient, ICryptoProvider crypto, ILogger<DidWebVhMethod>? logger = null)
+    public DidWebVhMethod(IWebVhHttpClient httpClient, ILogger<DidWebVhMethod>? logger = null)
     {
         _httpClient = httpClient ?? throw new ArgumentNullException(nameof(httpClient));
-        _crypto = crypto ?? throw new ArgumentNullException(nameof(crypto));
-        _proofEngine = new DataIntegrityProofEngine(crypto);
-        _chainValidator = new LogChainValidator(_proofEngine);
-        _witnessValidator = new WitnessValidator(_proofEngine);
+        _suite = new EddsaJcs2022Cryptosuite();
+        _chainValidator = new LogChainValidator(_suite);
+        _witnessValidator = new WitnessValidator(_suite);
         _logger = logger ?? NullLogger<DidWebVhMethod>.Instance;
+    }
+
+    /// <summary>
+    /// Signs the log entry (serialized without its <c>proof</c>) with the conformant
+    /// <c>eddsa-jcs-2022</c> cryptosuite from DataProofsDotnet and returns the wire proof.
+    /// The verificationMethod is the signer's own <c>did:key</c> (DID==fragment); the
+    /// <c>created</c> timestamp is a verbatim string carried through to the wire so the hashed
+    /// proof configuration is byte-identical on verification.
+    /// </summary>
+    private async Task<DataIntegrityProofValue> CreateProofValueAsync(
+        string entryJsonWithoutProof, ISigner signer, DateTimeOffset versionTime, CancellationToken ct)
+    {
+        var verificationMethod = $"did:key:{signer.MultibasePublicKey}#{signer.MultibasePublicKey}";
+        var created = versionTime.ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ");
+
+        var proofOptions = new DataIntegrityProof
+        {
+            Cryptosuite = EddsaJcs2022Cryptosuite.CryptosuiteName,
+            VerificationMethod = verificationMethod,
+            Created = created,
+            ProofPurpose = "assertionMethod",
+        };
+
+        using var document = JsonDocument.Parse(entryJsonWithoutProof);
+        var proof = await _suite.CreateProofAsync(document.RootElement, proofOptions, signer, ct);
+
+        return new DataIntegrityProofValue
+        {
+            Type = DataIntegrityProof.DataIntegrityProofType,
+            Cryptosuite = EddsaJcs2022Cryptosuite.CryptosuiteName,
+            VerificationMethod = verificationMethod,
+            Created = created,
+            ProofPurpose = "assertionMethod",
+            ProofValue = proof.ProofValue!,
+        };
     }
 
     public override string MethodName => "webvh";
@@ -100,25 +134,10 @@ public sealed class DidWebVhMethod : DidMethodBase
 
         // Step 8: Sign with Data Integrity Proof
         var proofJson = LogEntrySerializer.SerializeWithoutProof(finalEntry);
-        var proof = await _proofEngine.CreateProofAsync(
-            proofJson, createOptions.UpdateKey, "assertionMethod",
-            finalEntry.VersionTime, ct);
+        var proofValue = await CreateProofValueAsync(
+            proofJson, createOptions.UpdateKey, finalEntry.VersionTime, ct);
 
-        finalEntry = finalEntry with
-        {
-            Proof =
-            [
-                new DataIntegrityProofValue
-                {
-                    Type = proof.Type,
-                    Cryptosuite = proof.Cryptosuite,
-                    VerificationMethod = proof.VerificationMethod,
-                    Created = proof.Created.ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ"),
-                    ProofPurpose = proof.ProofPurpose,
-                    ProofValue = proof.ProofValue
-                }
-            ]
-        };
+        finalEntry = finalEntry with { Proof = [proofValue] };
 
         // Build the final DID string
         var did = didTemplate.Replace(ScidGenerator.SafePlaceholder, scid);
@@ -353,25 +372,10 @@ public sealed class DidWebVhMethod : DidMethodBase
         entryJsonWithoutProof = LogEntrySerializer.SerializeWithoutProof(newEntry);
 
         // Sign with Data Integrity Proof
-        var proof = await _proofEngine.CreateProofAsync(
-            entryJsonWithoutProof, updateOptions.SigningKey, "assertionMethod",
-            newEntry.VersionTime, ct);
+        var proofValue = await CreateProofValueAsync(
+            entryJsonWithoutProof, updateOptions.SigningKey, newEntry.VersionTime, ct);
 
-        newEntry = newEntry with
-        {
-            Proof =
-            [
-                new DataIntegrityProofValue
-                {
-                    Type = proof.Type,
-                    Cryptosuite = proof.Cryptosuite,
-                    VerificationMethod = proof.VerificationMethod,
-                    Created = proof.Created.ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ"),
-                    ProofPurpose = proof.ProofPurpose,
-                    ProofValue = proof.ProofValue
-                }
-            ]
-        };
+        newEntry = newEntry with { Proof = [proofValue] };
 
         // Build updated log (as UTF-8 strings for consumer convenience)
         var allEntries = new List<LogEntry>(entries) { newEntry };
@@ -445,25 +449,10 @@ public sealed class DidWebVhMethod : DidMethodBase
         entryJsonWithoutProof = LogEntrySerializer.SerializeWithoutProof(deactivationEntry);
 
         // Sign with Data Integrity Proof
-        var proof = await _proofEngine.CreateProofAsync(
-            entryJsonWithoutProof, deactivateOptions.SigningKey, "assertionMethod",
-            deactivationEntry.VersionTime, ct);
+        var proofValue = await CreateProofValueAsync(
+            entryJsonWithoutProof, deactivateOptions.SigningKey, deactivationEntry.VersionTime, ct);
 
-        deactivationEntry = deactivationEntry with
-        {
-            Proof =
-            [
-                new DataIntegrityProofValue
-                {
-                    Type = proof.Type,
-                    Cryptosuite = proof.Cryptosuite,
-                    VerificationMethod = proof.VerificationMethod,
-                    Created = proof.Created.ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ"),
-                    ProofPurpose = proof.ProofPurpose,
-                    ProofValue = proof.ProofValue
-                }
-            ]
-        };
+        deactivationEntry = deactivationEntry with { Proof = [proofValue] };
 
         // Build updated log (as UTF-8 strings for consumer convenience)
         var allEntries = new List<LogEntry>(entries) { deactivationEntry };

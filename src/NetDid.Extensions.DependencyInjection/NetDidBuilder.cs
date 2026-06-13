@@ -52,8 +52,7 @@ public sealed class NetDidBuilder
             sp.GetRequiredService<DefaultWebVhHttpClient>());
         Services.AddSingleton<IDidMethod>(sp =>
             new DidWebVhMethod(
-                sp.GetRequiredService<IWebVhHttpClient>(),
-                sp.GetRequiredService<ICryptoProvider>()));
+                sp.GetRequiredService<IWebVhHttpClient>()));
         return this;
     }
 

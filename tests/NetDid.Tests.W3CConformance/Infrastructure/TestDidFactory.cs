@@ -22,7 +22,7 @@ public sealed class TestDidFactory
     {
         _keyMethod = new DidKeyMethod(_keyGen);
         _peerMethod = new DidPeerMethod(_keyGen);
-        _webVhMethod = new DidWebVhMethod(_webVhHttpClient, _crypto);
+        _webVhMethod = new DidWebVhMethod(_webVhHttpClient);
     }
 
     public async Task<(string Did, DidDocument Doc)> CreateDidKey(

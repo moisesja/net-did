@@ -1,10 +1,9 @@
 using System.Text;
+using System.Text.Json;
+using DataProofsDotnet.DataIntegrity;
 using FluentAssertions;
-using NetCid;
 using NetDid.Core;
 using NetCrypto;
-using NetDid.Core.Crypto.DataIntegrity;
-using NetDid.Core.Crypto.Jcs;
 using NetDid.Core.Exceptions;
 using NetDid.Method.WebVh;
 using NetDid.Method.WebVh.Model;
@@ -28,7 +27,7 @@ public class LogChainValidatorAuthorizationTests
     private (DidWebVhMethod Method, MockWebVhHttpClient HttpClient) CreateMethod()
     {
         var httpClient = new MockWebVhHttpClient();
-        var method = new DidWebVhMethod(httpClient, _crypto);
+        var method = new DidWebVhMethod(httpClient);
         return (method, httpClient);
     }
 
@@ -57,19 +56,32 @@ public class LogChainValidatorAuthorizationTests
     }
 
     /// <summary>
-    /// Re-sign the genesis entry over its canonicalized form (without proof) using
-    /// <paramref name="signerKeyPair"/>'s private key, and return a copy whose proof's
-    /// <c>verificationMethod</c> is <paramref name="verificationMethod"/>.
+    /// Re-sign the genesis entry with the conformant <c>eddsa-jcs-2022</c> suite using
+    /// <paramref name="signerKeyPair"/>'s private key, declaring <paramref name="verificationMethod"/>
+    /// in the proof. Because the verificationMethod is part of the signed proof configuration,
+    /// the resulting signature is genuinely valid for the (key, verificationMethod) pair — which
+    /// is exactly what the anti-spoof authorization checks must still reject when the DID part and
+    /// fragment disagree or the signer is not authorized.
     /// </summary>
-    private LogEntry TamperGenesisProof(
+    private async Task<LogEntry> TamperGenesisProof(
         LogEntry genesis, KeyPair signerKeyPair, string verificationMethod)
     {
         var entryJsonWithoutProof = LogEntrySerializer.SerializeWithoutProof(genesis);
-        var canonical = JsonCanonicalization.CanonicalizeToUtf8(entryJsonWithoutProof);
-        var signature = _crypto.Sign(KeyType.Ed25519, signerKeyPair.PrivateKey, canonical);
-        var proofValue = Multibase.Encode(signature, MultibaseEncoding.Base58Btc);
-
         var original = genesis.Proof![0];
+        var signer = new KeyPairSigner(signerKeyPair, _crypto);
+
+        var proofOptions = new DataIntegrityProof
+        {
+            Cryptosuite = original.Cryptosuite,
+            VerificationMethod = verificationMethod,
+            Created = original.Created,
+            ProofPurpose = original.ProofPurpose,
+        };
+
+        using var document = JsonDocument.Parse(entryJsonWithoutProof);
+        var proof = await new EddsaJcs2022Cryptosuite()
+            .CreateProofAsync(document.RootElement, proofOptions, signer);
+
         return genesis with
         {
             Proof =
@@ -81,7 +93,7 @@ public class LogChainValidatorAuthorizationTests
                     VerificationMethod = verificationMethod,
                     Created = original.Created,
                     ProofPurpose = original.ProofPurpose,
-                    ProofValue = proofValue
+                    ProofValue = proof.ProofValue!
                 }
             ]
         };
@@ -107,7 +119,7 @@ public class LogChainValidatorAuthorizationTests
 
         // Sign the entry with the attacker's private key so the signature verifies
         // against the key extracted from the DID part (the attacker's key).
-        entries[0] = TamperGenesisProof(entries[0], attackerKp, verificationMethod);
+        entries[0] = await TamperGenesisProof(entries[0], attackerKp, verificationMethod);
 
         var (method, httpClient) = CreateMethod();
         httpClient.SetLogResponse(
@@ -151,26 +163,12 @@ public class LogChainValidatorAuthorizationTests
         var (authorizedKp, authorizedSigner) = CreateEd25519();
         var (did, entries) = await CreateLogAsync(authorizedSigner);
 
-        // Strip the fragment from the verificationMethod. The signature itself
-        // is unchanged (signed by the authorized key), and the DID-part still
-        // points at the same authorized multibase key.
+        // Re-sign with a fragment-less verificationMethod ("did:key:<auth>"). Under the
+        // conformant suite the verificationMethod is part of the signed proof config, so the
+        // proof must be created with the stripped form; the DID part still names the authorized
+        // key, which the parser accepts without a fragment.
         var stripped = $"did:key:{authorizedKp.MultibasePublicKey}";
-        var original = entries[0].Proof![0];
-        entries[0] = entries[0] with
-        {
-            Proof =
-            [
-                new DataIntegrityProofValue
-                {
-                    Type = original.Type,
-                    Cryptosuite = original.Cryptosuite,
-                    VerificationMethod = stripped,
-                    Created = original.Created,
-                    ProofPurpose = original.ProofPurpose,
-                    ProofValue = original.ProofValue
-                }
-            ]
-        };
+        entries[0] = await TamperGenesisProof(entries[0], authorizedKp, stripped);
 
         var (method, httpClient) = CreateMethod();
         httpClient.SetLogResponse(
@@ -198,7 +196,7 @@ public class LogChainValidatorAuthorizationTests
         // Signature is signed by authorized key (so it WOULD verify), but
         // the DID/fragment mismatch must cause authorization to reject the proof.
         var verificationMethod = $"did:key:{authorizedKp.MultibasePublicKey}#{attackerKp.MultibasePublicKey}";
-        entries[0] = TamperGenesisProof(entries[0], authorizedKp, verificationMethod);
+        entries[0] = await TamperGenesisProof(entries[0], authorizedKp, verificationMethod);
 
         var (method, httpClient) = CreateMethod();
         httpClient.SetLogResponse(
@@ -224,7 +222,7 @@ public class LogChainValidatorAuthorizationTests
         // Place the authorized key in a path segment. The pre-fix substring match
         // would have accepted this; the new parser must reject any '/' or '?'.
         var verificationMethod = $"did:key:{attackerKp.MultibasePublicKey}/{authorizedKp.MultibasePublicKey}";
-        entries[0] = TamperGenesisProof(entries[0], attackerKp, verificationMethod);
+        entries[0] = await TamperGenesisProof(entries[0], attackerKp, verificationMethod);
 
         var (method, httpClient) = CreateMethod();
         httpClient.SetLogResponse(
@@ -246,7 +244,7 @@ public class LogChainValidatorAuthorizationTests
         var (kp, _) = CreateEd25519();
         var vm = $"did:key:{kp.MultibasePublicKey}#{kp.MultibasePublicKey}";
 
-        DataIntegrityProofEngine.ExtractDidKeyMultibase(vm)
+        WebVhProofVerifier.ExtractDidKeyMultibase(vm)
             .Should().Be(kp.MultibasePublicKey);
     }
 
@@ -256,7 +254,7 @@ public class LogChainValidatorAuthorizationTests
         var (kp, _) = CreateEd25519();
         var vm = $"did:key:{kp.MultibasePublicKey}";
 
-        DataIntegrityProofEngine.ExtractDidKeyMultibase(vm)
+        WebVhProofVerifier.ExtractDidKeyMultibase(vm)
             .Should().Be(kp.MultibasePublicKey);
     }
 
@@ -267,7 +265,7 @@ public class LogChainValidatorAuthorizationTests
         var (kp2, _) = CreateEd25519();
         var vm = $"did:key:{kp1.MultibasePublicKey}#{kp2.MultibasePublicKey}";
 
-        DataIntegrityProofEngine.ExtractDidKeyMultibase(vm).Should().BeNull();
+        WebVhProofVerifier.ExtractDidKeyMultibase(vm).Should().BeNull();
     }
 
     [Fact]
@@ -276,7 +274,7 @@ public class LogChainValidatorAuthorizationTests
         var (kp, _) = CreateEd25519();
         var vm = $"did:key:{kp.MultibasePublicKey}/extra";
 
-        DataIntegrityProofEngine.ExtractDidKeyMultibase(vm).Should().BeNull();
+        WebVhProofVerifier.ExtractDidKeyMultibase(vm).Should().BeNull();
     }
 
     [Fact]
@@ -285,13 +283,13 @@ public class LogChainValidatorAuthorizationTests
         var (kp, _) = CreateEd25519();
         var vm = $"did:key:{kp.MultibasePublicKey}?foo=bar";
 
-        DataIntegrityProofEngine.ExtractDidKeyMultibase(vm).Should().BeNull();
+        WebVhProofVerifier.ExtractDidKeyMultibase(vm).Should().BeNull();
     }
 
     [Fact]
     public void ExtractDidKeyMultibase_NonDidKey_ReturnsNull()
     {
-        DataIntegrityProofEngine.ExtractDidKeyMultibase("did:web:example.com")
+        WebVhProofVerifier.ExtractDidKeyMultibase("did:web:example.com")
             .Should().BeNull();
     }
 }

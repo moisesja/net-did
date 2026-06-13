@@ -7,14 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [2.0.0] - 2026-06-13
 
-This is the **cryptographic half** of the NetCrypto/DataProofs refactor (#75). All in-repo
-cryptographic *primitives* have been deleted and are now consumed from the
-[**NetCrypto**](https://www.nuget.org/packages/NetCrypto) package. `NetDid.Core` now carries
-only DID-method logic. The Data Integrity / `eddsa-jcs-2022` engine, JCS canonicalization, and
-the `did:key` proof-signer parser remain in-repo for now and migrate to **DataProofsDotnet** in
-the separate data-proof half (#76).
+The crypto/proof externalization refactor. net-did now carries **only DID-method logic** — every
+cryptographic primitive comes from [**NetCrypto**](https://www.nuget.org/packages/NetCrypto) (#75),
+and did:webvh Data Integrity proofs come from
+[**DataProofsDotnet**](https://www.nuget.org/packages/DataProofsDotnet.Core) (#76). JCS
+canonicalization is owned by **NetCid**. No crypto primitive, signer, key model, JWK converter,
+JCS canonicalizer, or Data Integrity engine remains in net-did source.
 
 ### Changed (BREAKING)
+
+- **did:webvh Data Integrity now uses the conformant `eddsa-jcs-2022` cryptosuite from
+  DataProofsDotnet** (#76). net-did previously signed `JCS(document-only)` — a non-conformant
+  input. did:webvh log/witness proofs are now created and verified via
+  `DataProofsDotnet.DataIntegrity.EddsaJcs2022Cryptosuite`, which signs the spec-correct
+  `hashData = SHA-256(JCS(proofConfig)) ‖ SHA-256(JCS(document))`. **This changes the signed
+  bytes: did:webvh logs and witness proofs produced by net-did before 2.0.0 will not verify
+  under 2.0.0, and vice-versa.** net-did regenerates proofs deterministically, so there are no
+  shipped golden proof fixtures to migrate. The `eddsa-jcs-2022` cryptosuite identifier and the
+  did:webvh log wire shape are unchanged (the proof carries the same `type`/`cryptosuite`/
+  `verificationMethod`/`created`/`proofPurpose`/`proofValue` fields) — only the `proofValue`
+  bytes change — so the did:webvh method version is **not** bumped. One consequence of the
+  conformant algorithm: the `verificationMethod` is now part of the signed proof configuration,
+  so it can no longer be altered (e.g. adding/removing the `#fragment`) after signing without
+  re-signing.
+- **`DidWebVhMethod` no longer takes an `ICryptoProvider`** (#76). Its constructor is now
+  `DidWebVhMethod(IWebVhHttpClient httpClient, ILogger<DidWebVhMethod>? logger = null)` — the
+  cryptosuite is self-contained. `services.AddNetDid(...).AddDidWebVh()` is unaffected.
+- **Cryptographic primitives moved to NetCrypto** (#75): The crypto primitive, key-type,
 
 - **Cryptographic primitives moved to NetCrypto** (#75): The crypto primitive, key-type,
   signer, keystore, JWK, and KDF surface that previously lived under `NetDid.Core` is now
@@ -49,10 +68,18 @@ the separate data-proof half (#76).
   the bundled `runtimes/**` BBS dylib, the `runtimes` pack directive, and
   `<AllowUnsafeBlocks>` from `NetDid.Core.csproj`. The BBS native payload now flows
   transitively from the NetCrypto NuGet package (all 5 RIDs).
+- **In-repo Data Integrity engine and JCS canonicalizer** (#76): deleted
+  `NetDid.Core/Crypto/DataIntegrity/` (`DataIntegrityProofEngine`, the net-did `DataIntegrityProof`
+  model) and `NetDid.Core/Crypto/Jcs/JsonCanonicalization`. did:webvh proofs come from
+  DataProofsDotnet; SCID/entryHash JCS canonicalization comes from `NetCid.JcsCanonicalizer`. The
+  security-critical `did:key` proof-signer parser (the DID==fragment anti-spoof check, with no
+  upstream home) was relocated into an internal `NetDid.Method.WebVh` helper. `NetDid.Core` no
+  longer contains a `Crypto/` directory.
 
 ### Dependencies
 
-- Added `NetCrypto` `1.0.0`. Bumped `NetCid` `1.5.0` → `1.6.0`. Dropped the direct
+- Added `NetCrypto` `1.0.0` (#75) and `DataProofsDotnet.Core` `0.1.0-preview.1` (#76, referenced
+  by `NetDid.Method.WebVh`). Bumped `NetCid` `1.5.0` → `1.6.0`. Dropped the direct
   `NSec.Cryptography`, `NBitcoin.Secp256k1`, and `Nethermind.Crypto.Bls` references — they are
   now transitive via NetCrypto. `Microsoft.IdentityModel.Tokens` is retained
   (`VerificationMethod.PublicKeyJwk` + JWK round-trips).

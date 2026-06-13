@@ -1,4 +1,4 @@
-using NetDid.Core.Crypto.DataIntegrity;
+using DataProofsDotnet.DataIntegrity;
 using NetDid.Core.Exceptions;
 using NetDid.Method.WebVh.Model;
 
@@ -9,11 +9,11 @@ namespace NetDid.Method.WebVh;
 /// </summary>
 internal sealed class LogChainValidator
 {
-    private readonly DataIntegrityProofEngine _proofEngine;
+    private readonly EddsaJcs2022Cryptosuite _suite;
 
-    public LogChainValidator(DataIntegrityProofEngine proofEngine)
+    public LogChainValidator(EddsaJcs2022Cryptosuite suite)
     {
-        _proofEngine = proofEngine;
+        _suite = suite;
     }
 
     /// <summary>
@@ -157,36 +157,22 @@ internal sealed class LogChainValidator
         // At least one proof must be valid from an authorized update key
         foreach (var proofValue in entry.Proof)
         {
-            var proof = new DataIntegrityProof
-            {
-                Cryptosuite = proofValue.Cryptosuite,
-                VerificationMethod = proofValue.VerificationMethod,
-                Created = DateTimeOffset.Parse(proofValue.Created),
-                ProofPurpose = proofValue.ProofPurpose,
-                ProofValue = proofValue.ProofValue
-            };
-
-            // Verify the proof signature
-            if (!_proofEngine.VerifyProof(entryJsonWithoutProof, proof))
+            // Verify the signature; the returned multibase is the signer's did:key id with
+            // the DID==fragment anti-spoof check already enforced. Null => invalid signature
+            // or malformed verificationMethod.
+            var signerKey = WebVhProofVerifier.VerifyAndExtractSigner(_suite, entryJsonWithoutProof, proofValue);
+            if (signerKey is null)
                 continue;
 
-            // Verify the signer is an authorized update key
-            if (authorizedKeys is not null)
-            {
-                // Exact equality between the signer's multibase key and an entry
-                // in authorizedKeys. Substring matching would allow a proof with
-                // verificationMethod = "did:key:<attacker>#<authorized>" to be
-                // signed by the attacker yet authorized as the legitimate key.
-                var signerKey = DataIntegrityProofEngine.ExtractDidKeyMultibase(proof.VerificationMethod);
-                if (signerKey is null) continue;
-
-                if (authorizedKeys.Contains(signerKey, StringComparer.Ordinal))
-                    return; // Valid proof from authorized key
-            }
-            else
-            {
+            // Verify the signer is an authorized update key. Exact equality between the
+            // signer's multibase key and an entry in authorizedKeys — substring matching would
+            // allow a proof with verificationMethod = "did:key:<attacker>#<authorized>" to be
+            // signed by the attacker yet authorized as the legitimate key.
+            if (authorizedKeys is null)
                 return; // Valid proof, no key restriction
-            }
+
+            if (authorizedKeys.Contains(signerKey, StringComparer.Ordinal))
+                return; // Valid proof from authorized key
         }
 
         throw new LogChainValidationException(version,

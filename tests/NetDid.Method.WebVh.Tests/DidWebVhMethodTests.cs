@@ -1,4 +1,6 @@
 using System.Text;
+using System.Text.Json;
+using DataProofsDotnet.DataIntegrity;
 using FluentAssertions;
 using NetDid.Core;
 using NetCrypto;
@@ -16,7 +18,7 @@ public class DidWebVhMethodTests
     private (DidWebVhMethod Method, MockWebVhHttpClient HttpClient) CreateMethod()
     {
         var httpClient = new MockWebVhHttpClient();
-        var method = new DidWebVhMethod(httpClient, _crypto);
+        var method = new DidWebVhMethod(httpClient);
         return (method, httpClient);
     }
 
@@ -877,8 +879,8 @@ public class DidWebVhMethodTests
         // A witness proof at version 3 should satisfy the witness requirement
         // for version 1, since witnessing version 3 implies approval of all prior entries.
         var crypto = new DefaultCryptoProvider();
-        var proofEngine = new NetDid.Core.Crypto.DataIntegrity.DataIntegrityProofEngine(crypto);
-        var validator = new WitnessValidator(proofEngine);
+        var suite = new EddsaJcs2022Cryptosuite();
+        var validator = new WitnessValidator(suite);
 
         // Create 3 log entries, all requiring witnessing
         var witnessSigner = new KeyPairSigner(
@@ -911,9 +913,18 @@ public class DidWebVhMethodTests
 
         // Create witness proofs ONLY for version 3
         var entry3Json = LogEntrySerializer.SerializeWithoutProof(entries[2]);
-        var proof3 = await proofEngine.CreateProofAsync(
-            entry3Json, witnessSigner, "assertionMethod",
-            entries[2].VersionTime, CancellationToken.None);
+        var proof3Created = entries[2].VersionTime.ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ");
+        using var entry3Doc = JsonDocument.Parse(entry3Json);
+        var proof3 = await suite.CreateProofAsync(
+            entry3Doc.RootElement,
+            new DataIntegrityProof
+            {
+                Cryptosuite = EddsaJcs2022Cryptosuite.CryptosuiteName,
+                VerificationMethod = witnessVm,
+                Created = proof3Created,
+                ProofPurpose = "assertionMethod",
+            },
+            witnessSigner);
 
         var witnessFile = new WitnessFile
         {
@@ -926,12 +937,12 @@ public class DidWebVhMethodTests
                     [
                         new DataIntegrityProofValue
                         {
-                            Type = proof3.Type,
-                            Cryptosuite = proof3.Cryptosuite,
-                            VerificationMethod = proof3.VerificationMethod,
-                            Created = proof3.Created.ToString("yyyy-MM-ddTHH:mm:ssZ"),
-                            ProofPurpose = proof3.ProofPurpose,
-                            ProofValue = proof3.ProofValue
+                            Type = DataIntegrityProof.DataIntegrityProofType,
+                            Cryptosuite = EddsaJcs2022Cryptosuite.CryptosuiteName,
+                            VerificationMethod = witnessVm,
+                            Created = proof3Created,
+                            ProofPurpose = "assertionMethod",
+                            ProofValue = proof3.ProofValue!
                         }
                     ]
                 }

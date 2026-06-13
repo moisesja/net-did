@@ -14,7 +14,7 @@ var crypto = new DefaultCryptoProvider();
 
 // In-memory HTTP client for samples (in production, use DefaultWebVhHttpClient)
 var webVhHttpClient = new InMemoryWebVhHttpClient();
-var didWebVh = new DidWebVhMethod(webVhHttpClient, crypto);
+var didWebVh = new DidWebVhMethod(webVhHttpClient);
 
 // -------------------------------------------------------
 // 1. Create a DID with services

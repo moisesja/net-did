@@ -1,6 +1,6 @@
 using System.Security.Cryptography;
+using System.Text.Json;
 using NetCid;
-using NetDid.Core.Crypto.Jcs;
 
 namespace NetDid.Method.WebVh;
 
@@ -33,7 +33,8 @@ internal static class ScidGenerator
     /// </summary>
     public static string ComputeScid(string genesisEntryJsonWithPlaceholders)
     {
-        var canonicalBytes = JsonCanonicalization.CanonicalizeToUtf8(genesisEntryJsonWithPlaceholders);
+        using var document = JsonDocument.Parse(genesisEntryJsonWithPlaceholders);
+        var canonicalBytes = JcsCanonicalizer.Canonicalize(document.RootElement);
         var hash = SHA256.HashData(canonicalBytes);
         var multihash = Multicodec.Prefix(0x12, hash); // 0x12 = sha2-256
         return Multibase.Encode(multihash, MultibaseEncoding.Base58Btc);
@@ -54,7 +55,8 @@ internal static class ScidGenerator
     /// </summary>
     public static string ComputeEntryHash(string entryJsonWithoutProof)
     {
-        var canonicalBytes = JsonCanonicalization.CanonicalizeToUtf8(entryJsonWithoutProof);
+        using var document = JsonDocument.Parse(entryJsonWithoutProof);
+        var canonicalBytes = JcsCanonicalizer.Canonicalize(document.RootElement);
         var hash = SHA256.HashData(canonicalBytes);
         var multihash = Multicodec.Prefix(0x12, hash);
         return Multibase.Encode(multihash, MultibaseEncoding.Base58Btc);
