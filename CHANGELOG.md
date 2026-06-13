@@ -5,6 +5,58 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.0] - 2026-06-13
+
+This is the **cryptographic half** of the NetCrypto/DataProofs refactor (#75). All in-repo
+cryptographic *primitives* have been deleted and are now consumed from the
+[**NetCrypto**](https://www.nuget.org/packages/NetCrypto) package. `NetDid.Core` now carries
+only DID-method logic. The Data Integrity / `eddsa-jcs-2022` engine, JCS canonicalization, and
+the `did:key` proof-signer parser remain in-repo for now and migrate to **DataProofsDotnet** in
+the separate data-proof half (#76).
+
+### Changed (BREAKING)
+
+- **Cryptographic primitives moved to NetCrypto** (#75): The crypto primitive, key-type,
+  signer, keystore, JWK, and KDF surface that previously lived under `NetDid.Core` is now
+  provided by NetCrypto. The affected public types **changed namespace** from
+  `NetDid.Core` / `NetDid.Core.Crypto` / `NetDid.Core.KeyStore` / `NetDid.Core.Jwk` to
+  **`NetCrypto`**: `ICryptoProvider`, `IBbsCryptoProvider`, `ISigner`, `IKeyGenerator`,
+  `IKeyStore`, `DefaultCryptoProvider`, `DefaultBbsCryptoProvider`, `DefaultKeyGenerator`,
+  `KeyType`, `KeyTypeExtensions`, `EcPointValidator`, `EcdsaSignatureFormat`, `KeyPair`,
+  `KeyPairSigner`, `KeyStoreSigner`, `StoredKeyInfo`, `PublicKeyReference`, `InMemoryKeyStore`,
+  `JwkConverter`, and `ConcatKdf`. Consumers must replace `using NetDid.Core.Crypto;` (and the
+  `.KeyStore` / `.Jwk` / `.Crypto.Kdf` namespaces) with `using NetCrypto;`. The method,
+  property, and enum-ordinal signatures are otherwise unchanged, so behavior is identical — the
+  W3C conformance suite (`did:key` / `did:peer` vectors, multibase + JWK round-trips) is
+  byte-for-byte green across the swap.
+- **`KeyTypeExtensions.ToKeyType(ulong)` renamed to `FromMulticodec(ulong)`** (#75): clearer
+  name for "map a multicodec code to a `KeyType`". Call sites updated.
+- **`AddNetDid(...)` now registers crypto services via `NetCrypto.AddNetCrypto()`** (#75):
+  the DI container resolves `ICryptoProvider`, `IBbsCryptoProvider`, and `IKeyGenerator` from
+  NetCrypto (still `TryAddSingleton`, `IKeyStore` still not auto-registered — unchanged
+  behavior). The BBS-absent path now surfaces as `NetCrypto.BbsUnavailableException`
+  (a `CryptographicException`) rather than `PlatformNotSupportedException`.
+
+### Removed
+
+- **In-repo crypto sources** (#75): deleted the `NetDid.Core/Crypto/` primitive cluster
+  (`DefaultCryptoProvider`, `KeyType`, `KeyTypeExtensions`, `EcPointValidator`,
+  `EcdsaSignatureFormat`, `KeyPair`, `KeyPairSigner`, `KeyStoreSigner`, `DefaultKeyGenerator`,
+  `StoredKeyInfo`, `PublicKeyReference`, `DefaultBbsCryptoProvider`, `Native/ZkryptiumNative`,
+  `Kdf/ConcatKdf`), the `I*` crypto interfaces, `KeyStore/InMemoryKeyStore`, and
+  `Jwk/JwkConverter`.
+- **Self-hosted zkryptium native FFI** (#75): removed the `native/zkryptium-ffi/` Rust crate,
+  the bundled `runtimes/**` BBS dylib, the `runtimes` pack directive, and
+  `<AllowUnsafeBlocks>` from `NetDid.Core.csproj`. The BBS native payload now flows
+  transitively from the NetCrypto NuGet package (all 5 RIDs).
+
+### Dependencies
+
+- Added `NetCrypto` `1.0.0`. Bumped `NetCid` `1.5.0` → `1.6.0`. Dropped the direct
+  `NSec.Cryptography`, `NBitcoin.Secp256k1`, and `Nethermind.Crypto.Bls` references — they are
+  now transitive via NetCrypto. `Microsoft.IdentityModel.Tokens` is retained
+  (`VerificationMethod.PublicKeyJwk` + JWK round-trips).
+
 ## [1.3.1] - 2026-06-03
 
 ### Added

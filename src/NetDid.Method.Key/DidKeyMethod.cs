@@ -1,7 +1,6 @@
 using NetCid;
 using NetDid.Core;
-using NetDid.Core.Crypto;
-using NetDid.Core.Jwk;
+using NetCrypto;
 using NetDid.Core.Model;
 using NetDid.Core.Parsing;
 
@@ -84,7 +83,7 @@ public sealed class DidKeyMethod : DidMethodBase
 
             var decoded = Multibase.Decode(methodSpecificId);
             var (codec, rawKey) = Multicodec.Decode(decoded);
-            var keyType = KeyTypeExtensions.ToKeyType(codec);
+            var keyType = KeyTypeExtensions.FromMulticodec(codec);
 
             if (!keyType.IsValidKeyLength(rawKey.Length))
                 return Task.FromResult(DidResolutionResult.InvalidDid(did));

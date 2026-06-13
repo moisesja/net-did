@@ -1,6 +1,6 @@
 using NetCid;
 using NetDid.Core;
-using NetDid.Core.Crypto;
+using NetCrypto;
 using NetDid.Core.Model;
 
 namespace NetDid.Method.Peer;
@@ -54,7 +54,7 @@ internal sealed class Numalgo0Handler
         var multibaseKey = methodSpecificId[1..];
         var decoded = Multibase.Decode(multibaseKey);
         var (codec, rawKey) = Multicodec.Decode(decoded);
-        var keyType = KeyTypeExtensions.ToKeyType(codec);
+        var keyType = KeyTypeExtensions.FromMulticodec(codec);
 
         if (!keyType.IsValidKeyLength(rawKey.Length))
             return null;

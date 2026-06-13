@@ -1,8 +1,7 @@
 using System.Text;
 using NetCid;
 using NetDid.Core;
-using NetDid.Core.Crypto;
-using NetDid.Core.Crypto.Kdf;
+using NetCrypto;
 using NetDid.Core.Model;
 using NetDid.Method.Peer;
 

@@ -1,5 +1,5 @@
 using FluentAssertions;
-using NetDid.Core.Crypto;
+using NetCrypto;
 
 namespace NetDid.Core.Tests.Crypto;
 

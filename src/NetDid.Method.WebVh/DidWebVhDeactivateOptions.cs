@@ -1,3 +1,4 @@
+using NetCrypto;
 using NetDid.Core;
 using NetDid.Core.Model;
 using NetDid.Method.WebVh.Model;

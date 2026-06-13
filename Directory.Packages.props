@@ -4,11 +4,12 @@
   </PropertyGroup>
   <ItemGroup>
     <!-- Cryptography -->
+    <PackageVersion Include="NetCrypto" Version="1.0.0" />
     <PackageVersion Include="NSec.Cryptography" Version="26.4.0" />
     <PackageVersion Include="NBitcoin.Secp256k1" Version="4.0.0" />
     <PackageVersion Include="Nethermind.Crypto.Bls" Version="1.0.5" />
     <!-- Encoding -->
-    <PackageVersion Include="NetCid" Version="1.5.0" />
+    <PackageVersion Include="NetCid" Version="1.6.0" />
     <!-- Caching -->
     <PackageVersion Include="Microsoft.Extensions.Caching.Memory" Version="10.0.8" />
     <!-- Logging -->

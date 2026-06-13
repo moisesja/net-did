@@ -1,5 +1,5 @@
 using FluentAssertions;
-using NetDid.Core.Crypto;
+using NetCrypto;
 using NetDid.Core.Exceptions;
 using NetDid.Method.WebVh;
 

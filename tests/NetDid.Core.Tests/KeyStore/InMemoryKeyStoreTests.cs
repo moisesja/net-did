@@ -1,6 +1,5 @@
 using FluentAssertions;
-using NetDid.Core.Crypto;
-using NetDid.Core.KeyStore;
+using NetCrypto;
 
 namespace NetDid.Core.Tests.KeyStore;
 

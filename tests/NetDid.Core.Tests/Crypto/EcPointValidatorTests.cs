@@ -3,8 +3,7 @@ using System.Security.Cryptography;
 using FluentAssertions;
 using Microsoft.IdentityModel.Tokens;
 using NetCid;
-using NetDid.Core.Crypto;
-using NetDid.Core.Jwk;
+using NetCrypto;
 
 namespace NetDid.Core.Tests.Crypto;
 
@@ -185,44 +184,13 @@ public class EcPointValidatorTests
         publicKey.Should().Equal(keyPair.PublicKey);
     }
 
-    // -------- Decompression validation (defense in depth) --------
-
-    [Theory]
-    [InlineData(KeyType.P256)]
-    [InlineData(KeyType.P384)]
-    [InlineData(KeyType.P521)]
-    public void DecompressEcPoint_AcceptsRealKey(KeyType keyType)
-    {
-        // The freshly generated compressed key should round-trip cleanly through the
-        // decompression + on-curve validation path.
-        var keyPair = _keyGen.Generate(keyType);
-        var curve = keyType switch
-        {
-            KeyType.P256 => ECCurve.NamedCurves.nistP256,
-            KeyType.P384 => ECCurve.NamedCurves.nistP384,
-            KeyType.P521 => ECCurve.NamedCurves.nistP521,
-            _ => throw new InvalidOperationException()
-        };
-
-        var act = () => DefaultCryptoProvider.DecompressEcPoint(keyPair.PublicKey, curve);
-        act.Should().NotThrow();
-    }
-
     // -------- Helpers --------
 
     private static (byte[] X, byte[] Y) DecompressForValidation(KeyType keyType, byte[] compressed)
     {
-        if (keyType == KeyType.Secp256k1)
-            return DefaultCryptoProvider.DecompressSecp256k1Point(compressed);
-
-        var curve = keyType switch
-        {
-            KeyType.P256 => ECCurve.NamedCurves.nistP256,
-            KeyType.P384 => ECCurve.NamedCurves.nistP384,
-            KeyType.P521 => ECCurve.NamedCurves.nistP521,
-            _ => throw new InvalidOperationException()
-        };
-        var p = DefaultCryptoProvider.DecompressEcPoint(compressed, curve);
-        return (p.Q.X!, p.Q.Y!);
+        // Expand the compressed SEC1 point into explicit X/Y via NetCrypto's public JWK
+        // conversion. (The internal decompression primitive is covered by NetCrypto.Tests.)
+        var jwk = JwkConverter.ToPublicJwk(keyType, compressed);
+        return (Base64UrlEncoder.DecodeBytes(jwk.X), Base64UrlEncoder.DecodeBytes(jwk.Y));
     }
 }

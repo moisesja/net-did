@@ -1,7 +1,7 @@
 using System.Buffers.Binary;
 using System.Security.Cryptography;
 using FluentAssertions;
-using NetDid.Core.Crypto.Kdf;
+using NetCrypto;
 
 namespace NetDid.Core.Tests.Crypto.Kdf;
 

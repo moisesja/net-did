@@ -1,6 +1,6 @@
 using System.Text;
 using NetDid.Core;
-using NetDid.Core.Crypto;
+using NetCrypto;
 using NetDid.Core.Model;
 using NetDid.Method.Key;
 using NetDid.Method.WebVh;
