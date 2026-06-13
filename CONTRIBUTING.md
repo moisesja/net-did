@@ -5,7 +5,6 @@ Thank you for your interest in contributing to NetDid. This guide covers everyth
 ## Prerequisites
 
 - [.NET 10 SDK](https://dotnet.microsoft.com/download/dotnet/10.0)
-- [Rust toolchain](https://rustup.rs/) (1.70+) — required only for building native BBS+ library
 - Git
 - An editor with C# support (Visual Studio, VS Code with C# Dev Kit, Rider)
 
@@ -30,19 +29,13 @@ All unit tests should pass with zero warnings.
 ```
 netdid/
 ├── src/
-│   ├── NetDid.Core/                         # Core abstractions, crypto, encoding, serialization
-│   │   ├── Crypto/                          # Cryptographic providers, key generation, signers
-│   │   │   ├── Jcs/                         # JSON Canonicalization Scheme (RFC 8785)
-│   │   │   └── Native/                      # P/Invoke declarations for native FFI libraries
+│   ├── NetDid.Core/                         # Core abstractions, DID model, encoding, serialization
 │   │   ├── Encoding/                        # Multibase, multicodec, Base58Btc, Base64Url
 │   │   ├── Exceptions/                      # Custom exception hierarchy (8 types)
-│   │   ├── Jwk/                             # JWK <-> raw key byte conversion
-│   │   ├── KeyStore/                        # InMemoryKeyStore implementation
 │   │   ├── Model/                           # DID Document model, builder, result/option types
 │   │   ├── Parsing/                         # DID string validation and URL parsing
 │   │   ├── Resolution/                      # Composite resolver, caching, URL dereferencing
-│   │   ├── Serialization/                   # DID Document JSON/JSON-LD serializer
-│   │   └── runtimes/                        # Platform-specific native libraries
+│   │   └── Serialization/                   # DID Document JSON/JSON-LD serializer
 │   ├── NetDid.Method.Key/                   # did:key method
 │   ├── NetDid.Method.Peer/                  # did:peer method (numalgo 0, 2, 4)
 │   ├── NetDid.Method.WebVh/                 # did:webvh method (full CRUD)
@@ -59,7 +52,6 @@ netdid/
 │   ├── NetDid.Samples.DidPeer/              # did:peer usage examples
 │   ├── NetDid.Samples.DidWebVh/             # did:webvh CRUD examples
 │   └── NetDid.Samples.DependencyInjection/  # DI registration pattern
-├── native/zkryptium-ffi/                    # Rust FFI shim for BBS+ signatures
 ├── Directory.Build.props                    # Shared build properties
 ├── Directory.Packages.props                 # Central NuGet version management
 ├── .editorconfig                            # Code style rules
@@ -87,7 +79,7 @@ Tests use **xunit** with **FluentAssertions** for assertions and **NSubstitute**
 ### Test project setup
 
 - `GlobalUsings.cs` provides `global using Xunit;` so test files don't need explicit xunit imports
-- Test file structure mirrors `src/` — e.g., `src/NetDid.Core/Crypto/DefaultKeyGenerator.cs` is tested by `tests/NetDid.Core.Tests/Crypto/DefaultKeyGeneratorTests.cs`
+- Test file structure mirrors `src/` — e.g., `src/NetDid.Core/Parsing/DidParser.cs` is tested by `tests/NetDid.Core.Tests/Parsing/DidParserTests.cs`
 
 ### Naming convention
 
@@ -200,77 +192,27 @@ To implement a new DID method (e.g., `did:web`):
 
 7. **Update `NetDidPRD.md`** with the method's specification details.
 
-## How to Add a New Key Type
+## Cryptography lives in NetCrypto
 
-Adding support for a new cryptographic key type requires changes across several files:
-
-1. **`Crypto/KeyType.cs`** — Add the enum value
-2. **`Encoding/MulticodecEncoder.cs`** — Add the multicodec prefix bytes
-3. **`Crypto/DefaultKeyGenerator.cs`** — Add key pair generation logic
-4. **`Crypto/DefaultCryptoProvider.cs`** — Add sign/verify (or key agreement) implementations
-5. **`Jwk/JwkConverter.cs`** — Add JWK encoding/decoding for the key type
-6. **Tests** — Add round-trip tests for each of the above
-
-## Working with Native Libraries
-
-NetDid uses two native cryptographic libraries:
-
-### BLS12-381 (via Nethermind.Crypto.Bls)
-
-The `Nethermind.Crypto.Bls` NuGet package wraps Supranational's [blst](https://github.com/supranational/blst) C library and ships pre-built native binaries for all platforms. No manual build step is required — `dotnet restore` handles everything.
-
-Used for: BLS12-381 key generation, single-message signing/verification (G1 and G2 variants).
-
-### BBS+ Signatures (via zkryptium-ffi)
-
-BBS+ selective-disclosure signatures use a Rust FFI shim (`native/zkryptium-ffi/`) that wraps the [zkryptium](https://github.com/Cybersecurity-LINKS/zkryptium) crate (IETF draft-irtf-cfrg-bbs-signatures-10, BLS12-381-SHA-256 ciphersuite).
-
-**First-time setup:**
-
-```bash
-cd native/zkryptium-ffi
-
-# Build for current platform and copy to runtimes/
-./build-all.sh
-```
-
-The native binary is placed in `src/NetDid.Core/runtimes/{rid}/native/` and is automatically copied to the output directory during `dotnet build`.
-
-**Rebuilding after changes:**
-
-```bash
-cd native/zkryptium-ffi
-cargo build --release
-cp target/release/libzkryptium_ffi.dylib ../../src/NetDid.Core/runtimes/osx-arm64/native/
-```
-
-**Adding a new platform:**
-
-1. Install the Rust target: `rustup target add <target-triple>`
-2. Build: `cargo build --release --target <target-triple>`
-3. Copy the output to `src/NetDid.Core/runtimes/<rid>/native/`
-
-See [native/zkryptium-ffi/README.md](native/zkryptium-ffi/README.md) for detailed build instructions, cross-compilation, and troubleshooting.
-
-**Architecture:**
-
-```
-Rust (zkryptium crate)
-  └── native/zkryptium-ffi/src/lib.rs    (C-ABI extern functions)
-       └── libzkryptium_ffi.{dylib,so,dll}
-            └── ZkryptiumNative.cs        (P/Invoke declarations)
-                 └── DefaultBbsCryptoProvider.cs  (managed API)
-```
+NetDid carries **no cryptographic primitives or native code**. All key generation, signing,
+verification, key agreement, JWK conversion, and the BBS+ / BLS12-381 native payloads are
+provided by the [**NetCrypto**](https://www.nuget.org/packages/NetCrypto) package (the
+[`crypto-dotnet`](https://github.com/moisesja/crypto-dotnet) repository), consumed via `dotnet
+restore` with no manual build step. did:webvh Data Integrity proofs come from
+[**DataProofsDotnet**](https://www.nuget.org/packages/DataProofsDotnet.Core). Adding a new key
+type or cryptographic capability is a change in those repositories, not here — NetDid only
+maps key types to multicodec prefixes (`Encoding/`) and consumes `NetCrypto.KeyType` /
+`NetCrypto.ISigner` through its DID-method APIs.
 
 ## Commit Messages
 
 Write concise commit messages that describe what changed and why:
 
 ```
-Add X25519 key agreement support
+Add did:peer numalgo 4 long-form resolution
 
-Implement ECDH key agreement using NSec's X25519 algorithm.
-Includes DefaultCryptoProvider and DefaultKeyGenerator support.
+Resolve the long-form did:peer:4 identifier by decoding the
+multibase-encoded document and verifying the embedded SCID hash.
 ```
 
 - Use imperative mood ("Add", "Fix", "Update")
