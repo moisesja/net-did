@@ -3,11 +3,10 @@
     <ManagePackageVersionsCentrally>true</ManagePackageVersionsCentrally>
   </PropertyGroup>
   <ItemGroup>
-    <!-- Cryptography -->
+    <!-- Cryptography (NSec.Cryptography, NBitcoin.Secp256k1, Nethermind.Crypto.Bls
+         are no longer pinned here: NetCrypto owns them and brings them transitively.
+         Re-add a pin only if a project takes a direct PackageReference. -->
     <PackageVersion Include="NetCrypto" Version="1.0.0" />
-    <PackageVersion Include="NSec.Cryptography" Version="26.4.0" />
-    <PackageVersion Include="NBitcoin.Secp256k1" Version="4.0.0" />
-    <PackageVersion Include="Nethermind.Crypto.Bls" Version="1.0.5" />
     <!-- Encoding -->
     <PackageVersion Include="NetCid" Version="1.6.0" />
     <!-- Caching -->
