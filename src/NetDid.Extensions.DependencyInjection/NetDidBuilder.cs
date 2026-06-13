@@ -1,7 +1,6 @@
 using Microsoft.Extensions.DependencyInjection;
-using Microsoft.Extensions.DependencyInjection.Extensions;
 using NetDid.Core;
-using NetDid.Core.Crypto;
+using NetCrypto;
 using NetDid.Core.Resolution;
 using NetDid.Method.Key;
 using NetDid.Method.Peer;
@@ -22,9 +21,10 @@ public sealed class NetDidBuilder
     {
         Services = services;
 
-        // Register shared infrastructure (idempotent via TryAdd)
-        services.TryAddSingleton<IKeyGenerator, DefaultKeyGenerator>();
-        services.TryAddSingleton<ICryptoProvider, DefaultCryptoProvider>();
+        // Register shared crypto infrastructure (ICryptoProvider, IBbsCryptoProvider,
+        // IKeyGenerator) from NetCrypto. Idempotent via TryAdd; IKeyStore is intentionally
+        // not registered (matches prior behaviour).
+        services.AddNetCrypto();
     }
 
     /// <summary>Register the did:key method.</summary>

@@ -1,6 +1,6 @@
 using FluentAssertions;
 using NetCid;
-using NetDid.Core.Crypto;
+using NetCrypto;
 
 namespace NetDid.Core.Tests.Encoding;
 
@@ -21,7 +21,7 @@ public class MulticodecKeyTypeTests
 
         var prefixed = Multicodec.Prefix(keyType.GetMulticodec(), rawKey);
         var (codec, decodedKey) = Multicodec.Decode(prefixed);
-        var decodedType = KeyTypeExtensions.ToKeyType(codec);
+        var decodedType = KeyTypeExtensions.FromMulticodec(codec);
 
         decodedType.Should().Be(keyType);
         decodedKey.Should().Equal(rawKey);
@@ -53,7 +53,7 @@ public class MulticodecKeyTypeTests
     [Fact]
     public void ToKeyType_UnknownCodec_ThrowsArgumentException()
     {
-        var act = () => KeyTypeExtensions.ToKeyType(0xFFFF);
+        var act = () => KeyTypeExtensions.FromMulticodec(0xFFFF);
         act.Should().Throw<ArgumentException>();
     }
 

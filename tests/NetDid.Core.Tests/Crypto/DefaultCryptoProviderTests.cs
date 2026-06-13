@@ -1,5 +1,6 @@
 using FluentAssertions;
-using NetDid.Core.Crypto;
+using Microsoft.IdentityModel.Tokens;
+using NetCrypto;
 
 namespace NetDid.Core.Tests.Crypto;
 
@@ -411,14 +412,15 @@ public class DefaultCryptoProviderTests
         var alice = _keyGen.Generate(KeyType.P256);
         var bob = _keyGen.Generate(KeyType.P256);
 
-        // Decompress Bob's public key to uncompressed SEC1 form (0x04 || X || Y).
-        using var ecdsa = System.Security.Cryptography.ECDsa.Create();
-        ecdsa.ImportParameters(DefaultCryptoProvider.DecompressEcPoint(bob.PublicKey, System.Security.Cryptography.ECCurve.NamedCurves.nistP256));
-        var p = ecdsa.ExportParameters(false);
-        var uncompressed = new byte[1 + p.Q.X!.Length + p.Q.Y!.Length];
+        // Build Bob's public key in uncompressed SEC1 form (0x04 || X || Y) via the
+        // public JWK conversion path (NetCrypto expands the compressed point to X/Y).
+        var bobJwk = JwkConverter.ToPublicJwk(KeyType.P256, bob.PublicKey);
+        var qx = Base64UrlEncoder.DecodeBytes(bobJwk.X);
+        var qy = Base64UrlEncoder.DecodeBytes(bobJwk.Y);
+        var uncompressed = new byte[1 + qx.Length + qy.Length];
         uncompressed[0] = 0x04;
-        p.Q.X.CopyTo(uncompressed, 1);
-        p.Q.Y.CopyTo(uncompressed, 1 + p.Q.X.Length);
+        qx.CopyTo(uncompressed, 1);
+        qy.CopyTo(uncompressed, 1 + qx.Length);
 
         var fromCompressed = _crypto.DeriveSharedSecret(KeyType.P256, alice.PrivateKey, bob.PublicKey);
         var fromUncompressed = _crypto.DeriveSharedSecret(KeyType.P256, alice.PrivateKey, uncompressed);

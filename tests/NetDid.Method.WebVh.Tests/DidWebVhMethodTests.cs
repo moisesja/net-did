@@ -1,7 +1,7 @@
 using System.Text;
 using FluentAssertions;
 using NetDid.Core;
-using NetDid.Core.Crypto;
+using NetCrypto;
 using NetDid.Core.Model;
 using NetDid.Method.WebVh;
 using NetDid.Method.WebVh.Model;
@@ -882,7 +882,7 @@ public class DidWebVhMethodTests
 
         // Create 3 log entries, all requiring witnessing
         var witnessSigner = new KeyPairSigner(
-            new DefaultKeyGenerator().Generate(Core.Crypto.KeyType.Ed25519), crypto);
+            new DefaultKeyGenerator().Generate(KeyType.Ed25519), crypto);
         var witnessDidKey = $"did:key:{witnessSigner.MultibasePublicKey}";
         var witnessVm = $"{witnessDidKey}#{witnessSigner.MultibasePublicKey}";
 

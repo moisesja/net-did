@@ -1,5 +1,5 @@
 using NetDid.Core;
-using NetDid.Core.Crypto;
+using NetCrypto;
 using NetDid.Core.Model;
 using NetDid.Core.Serialization;
 using NetDid.Method.Key;

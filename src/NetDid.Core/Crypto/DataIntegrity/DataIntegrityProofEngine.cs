@@ -1,4 +1,5 @@
 using NetCid;
+using NetCrypto;
 using NetDid.Core.Crypto.Jcs;
 
 namespace NetDid.Core.Crypto.DataIntegrity;

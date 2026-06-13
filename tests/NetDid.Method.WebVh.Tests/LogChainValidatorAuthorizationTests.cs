@@ -2,7 +2,7 @@ using System.Text;
 using FluentAssertions;
 using NetCid;
 using NetDid.Core;
-using NetDid.Core.Crypto;
+using NetCrypto;
 using NetDid.Core.Crypto.DataIntegrity;
 using NetDid.Core.Crypto.Jcs;
 using NetDid.Core.Exceptions;

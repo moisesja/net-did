@@ -1,6 +1,5 @@
 using NetCid;
-using NetDid.Core.Crypto;
-using NetDid.Core.Jwk;
+using NetCrypto;
 using NetDid.Core.Model;
 
 namespace NetDid.Core.Resolution;
@@ -29,7 +28,7 @@ public sealed class DefaultVerificationMethodResolver : IVerificationMethodResol
         {
             var decoded = Multibase.Decode(vm.PublicKeyMultibase);
             var (codec, rawKey) = Multicodec.Decode(decoded);
-            var keyType = KeyTypeExtensions.ToKeyType(codec);
+            var keyType = KeyTypeExtensions.FromMulticodec(codec);
             return (keyType, rawKey);
         }
 
