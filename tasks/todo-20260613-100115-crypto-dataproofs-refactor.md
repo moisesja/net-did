@@ -184,3 +184,18 @@ net-did can shed essentially its entire crypto/proof implementation. Eighteen so
 **Execution note:** Phase 1 (ConcatKdf) could not be isolated — see `tasks/lessons.md` (namespace ambiguity forces the whole crypto swap to be one atomic pass: delete sources first, then rewire).
 
 **What still lives in net-did for #76 (data-proof half):** `Crypto/DataIntegrity/DataIntegrityProofEngine.cs` (+ the `did:key` proof-signer parser), `Crypto/DataIntegrity/DataIntegrityProof.cs`, `Crypto/Jcs/JsonCanonicalization.cs` — each given a `using NetCrypto;` swap so they consume the moved `ICryptoProvider`/`ISigner`/`KeyType` types.
+
+---
+
+## Review — Issue #76 (data-proof half) — ✅ DONE (2026-06-13, branch `feat/issue-76-dataproofs-migration` stacked on #75)
+
+**Outcome:** full solution builds clean; **770 tests pass** (Core 370, W3CConformance 175, WebVh 130, Key 44, Peer 40, DI 11); all 4 samples run end-to-end (incl. DidWebVh create/update/deactivate/resolve + witness/rotation). `src/NetDid.Core/Crypto/` no longer exists — net-did carries zero crypto/proof/JCS code.
+
+**What landed:**
+- Added `DataProofsDotnet.Core 0.1.0-preview.1` (NuGet, deps NetCrypto 1.0.0 + NetCid 1.6.0 — exact match). did:webvh now signs/verifies via `EddsaJcs2022Cryptosuite` (conformant hash-concat). User ratified the wire-format break (old logs invalidated, no committed fixtures) and **no did:webvh method-version bump**.
+- Relocated the `did:key` proof-signer parser into internal `NetDid.Method.WebVh.WebVhProofVerifier` (preserves the `StringComparer.Ordinal` DID==fragment anti-spoof). `VerifyAndExtractSigner` verifies the signature AND returns the authorized multibase in one shot, used by both validators.
+- `DidWebVhMethod` ctor drops `ICryptoProvider` (now `(IWebVhHttpClient, ILogger?)`); 3 create sites collapsed into one `CreateProofValueAsync` helper. NetDidBuilder DI updated.
+- Phase 4 completed: `ScidGenerator` → `NetCid.JcsCanonicalizer`; deleted `JsonCanonicalization.cs` + its tests. SCID golden tests stayed byte-identical.
+- Tests: deleted `DataIntegrityProofEngineTests`; rewrote `TamperGenesisProof` to mint **conformant** proofs via the suite; **Scenario 3 (fragment-less VM) had to re-sign** — see `tasks/lessons.md` (the verificationMethod is now part of the signed proofConfig, so it can't be edited post-signing).
+
+**Both halves of the refactor (#75 + #76) ship under `NetDidVersion 2.0.0`.**

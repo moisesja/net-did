@@ -18,6 +18,14 @@ A specification-compliant .NET library for Decentralized Identifiers (DIDs). Net
 - **DI integration**: `services.AddNetDid()` for Microsoft.Extensions.DependencyInjection, or use standalone with zero framework opinions
 - **Fluent document builder**: `new DidDocumentBuilder(did).AddVerificationMethod(...).Build()`
 
+> **Cryptography is provided by [NetCrypto](https://www.nuget.org/packages/NetCrypto).** NetDid
+> carries no cryptographic primitives — key generation, signing, verification, key agreement,
+> BBS+, JWK conversion, and the native crypto payloads all come from NetCrypto (the
+> [`crypto-dotnet`](https://github.com/moisesja/crypto-dotnet) project). `did:webvh` Data Integrity
+> proofs are produced and verified by
+> [DataProofsDotnet](https://www.nuget.org/packages/DataProofsDotnet.Core). Types like `KeyType`,
+> `DefaultKeyGenerator`, `ISigner`, and `InMemoryKeyStore` live in the `NetCrypto` namespace.
+
 ## Installation
 
 ```bash
@@ -26,16 +34,17 @@ dotnet add package NetDid.Method.Key    # did:key method
 dotnet add package NetDid.Method.Peer   # did:peer method
 dotnet add package NetDid.Method.WebVh  # did:webvh method
 dotnet add package NetDid.Extensions.DependencyInjection  # Microsoft DI integration
+dotnet add package NetCrypto            # key generation, signing, JWK (NetCrypto namespace)
 ```
 
-> **Note**: NetDid targets .NET 10. Ensure you have the [.NET 10 SDK](https://dotnet.microsoft.com/download/dotnet/10.0) installed.
+> **Note**: NetDid targets .NET 10. Ensure you have the [.NET 10 SDK](https://dotnet.microsoft.com/download/dotnet/10.0) installed. NetCrypto is pulled in transitively by the NetDid packages; add it explicitly only if you use its types directly (as the examples below do).
 
 ## Quick Start
 
 ### Generate a Key Pair
 
 ```csharp
-using NetDid.Core.Crypto;
+using NetCrypto;
 
 var keyGen = new DefaultKeyGenerator();
 var keyPair = keyGen.Generate(KeyType.Ed25519);
@@ -62,7 +71,7 @@ bool valid = crypto.Verify(KeyType.Ed25519, keyPair.PublicKey, data, signature);
 ### Create a did:key
 
 ```csharp
-using NetDid.Core.Crypto;
+using NetCrypto;
 using NetDid.Method.Key;
 
 var keyGen = new DefaultKeyGenerator();
@@ -148,7 +157,7 @@ var result = await didKey.CreateAsync(new DidKeyCreateOptions
 Functionally identical to `did:key` but with a `did:peer:0` prefix. Useful when you want peer DID semantics with a single key.
 
 ```csharp
-using NetDid.Core.Crypto;
+using NetCrypto;
 using NetDid.Method.Peer;
 
 var keyGen = new DefaultKeyGenerator();
@@ -257,7 +266,7 @@ Short-form-only resolution returns `notFound` (requires prior long-form exchange
 ### Create a did:webvh
 
 ```csharp
-using NetDid.Core.Crypto;
+using NetCrypto;
 using NetDid.Core.Model;
 using NetDid.Method.WebVh;
 
@@ -369,7 +378,7 @@ DidDocument restored = DidDocumentSerializer.Deserialize(jsonLd, DidContentTypes
 ## Key Store
 
 ```csharp
-using NetDid.Core.KeyStore;
+using NetCrypto;
 
 var store = new InMemoryKeyStore(keyGen, crypto);
 var info = await store.GenerateAsync("my-signing-key", KeyType.Ed25519);
@@ -442,13 +451,18 @@ public class MyService(IDidManager manager)
 
 ## Architecture
 
-NetDid is built around a small set of core interfaces:
+NetDid is built around a small set of core interfaces (in `NetDid.Core`):
 
 | Interface | Purpose |
 |-----------|---------|
 | `IDidManager` | Unified DID lifecycle manager — routes CRUD operations across registered methods |
 | `IDidMethod` | Single DID method implementation (create, resolve, update, deactivate) |
 | `IDidResolver` | Standalone DID resolution (for consumers who only need to resolve) |
+
+The cryptographic interfaces are provided by **NetCrypto** (the `NetCrypto` namespace):
+
+| Interface | Purpose |
+|-----------|---------|
 | `IKeyStore` | Pluggable key storage — swap in HSM, vault, or cloud KMS |
 | `ISigner` | Signing abstraction — works with in-memory keys or secure enclaves |
 | `IKeyGenerator` | Key pair generation and derivation for all supported key types |
@@ -474,18 +488,18 @@ DID string
 ```
 netdid/
 ├── src/
-│   ├── NetDid.Core/                         # Core abstractions, crypto, encoding, serialization
+│   ├── NetDid.Core/                         # Core abstractions, DID model, encoding, serialization
 │   ├── NetDid.Method.Key/                   # did:key method
 │   ├── NetDid.Method.Peer/                  # did:peer method (numalgo 0, 2, 4)
 │   ├── NetDid.Method.WebVh/                 # did:webvh method (full CRUD)
 │   └── NetDid.Extensions.DependencyInjection/  # Microsoft DI integration
 ├── tests/
-│   ├── NetDid.Core.Tests/                   # 305 unit tests
-│   ├── NetDid.Method.Key.Tests/             # 28 tests
-│   ├── NetDid.Method.Peer.Tests/            # 31 tests
-│   ├── NetDid.Method.WebVh.Tests/           # 70 tests
+│   ├── NetDid.Core.Tests/                   # 370 unit tests
+│   ├── NetDid.Method.Key.Tests/             # 44 tests
+│   ├── NetDid.Method.Peer.Tests/            # 40 tests
+│   ├── NetDid.Method.WebVh.Tests/           # 130 tests
 │   ├── NetDid.Tests.W3CConformance/         # 175 W3C conformance tests
-│   └── NetDid.Extensions.DependencyInjection.Tests/  # 10 tests
+│   └── NetDid.Extensions.DependencyInjection.Tests/  # 11 tests
 ├── samples/
 │   ├── NetDid.Samples.DidKey/               # did:key usage examples
 │   ├── NetDid.Samples.DidPeer/              # did:peer usage examples

@@ -1,6 +1,6 @@
 using System.Text;
 using System.Text.Json;
-using NetDid.Core.Crypto.DataIntegrity;
+using DataProofsDotnet.DataIntegrity;
 using NetDid.Method.WebVh.Model;
 
 namespace NetDid.Method.WebVh;
@@ -10,11 +10,11 @@ namespace NetDid.Method.WebVh;
 /// </summary>
 internal sealed class WitnessValidator
 {
-    private readonly DataIntegrityProofEngine _proofEngine;
+    private readonly EddsaJcs2022Cryptosuite _suite;
 
-    public WitnessValidator(DataIntegrityProofEngine proofEngine)
+    public WitnessValidator(EddsaJcs2022Cryptosuite suite)
     {
-        _proofEngine = proofEngine;
+        _suite = suite;
     }
 
     /// <summary>
@@ -50,17 +50,7 @@ internal sealed class WitnessValidator
 
             if (witness is null) continue;
 
-            // Convert to Core proof type for verification
-            var proof = new DataIntegrityProof
-            {
-                Cryptosuite = witnessProof.Cryptosuite,
-                VerificationMethod = witnessProof.VerificationMethod,
-                Created = DateTimeOffset.Parse(witnessProof.Created),
-                ProofPurpose = witnessProof.ProofPurpose,
-                ProofValue = witnessProof.ProofValue
-            };
-
-            if (_proofEngine.VerifyProof(entryJsonWithoutProof, proof))
+            if (WebVhProofVerifier.VerifyAndExtractSigner(_suite, entryJsonWithoutProof, witnessProof) is not null)
             {
                 totalWeight += witness.Weight;
             }
@@ -129,16 +119,7 @@ internal sealed class WitnessValidator
                 if (witness is null) continue;
                 if (!countedWitnessIds.Add(witness.Id)) continue; // Already counted
 
-                var proof = new DataIntegrityProof
-                {
-                    Cryptosuite = witnessProof.Cryptosuite,
-                    VerificationMethod = witnessProof.VerificationMethod,
-                    Created = DateTimeOffset.Parse(witnessProof.Created),
-                    ProofPurpose = witnessProof.ProofPurpose,
-                    ProofValue = witnessProof.ProofValue
-                };
-
-                if (_proofEngine.VerifyProof(entryJson, proof))
+                if (WebVhProofVerifier.VerifyAndExtractSigner(_suite, entryJson, witnessProof) is not null)
                 {
                     totalWeight += witness.Weight;
                 }
