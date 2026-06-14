@@ -34,8 +34,6 @@ JCS canonicalizer, or Data Integrity engine remains in net-did source.
   `DidWebVhMethod(IWebVhHttpClient httpClient, ILogger<DidWebVhMethod>? logger = null)` — the
   cryptosuite is self-contained. `services.AddNetDid(...).AddDidWebVh()` is unaffected.
 - **Cryptographic primitives moved to NetCrypto** (#75): The crypto primitive, key-type,
-
-- **Cryptographic primitives moved to NetCrypto** (#75): The crypto primitive, key-type,
   signer, keystore, JWK, and KDF surface that previously lived under `NetDid.Core` is now
   provided by NetCrypto. The affected public types **changed namespace** from
   `NetDid.Core` / `NetDid.Core.Crypto` / `NetDid.Core.KeyStore` / `NetDid.Core.Jwk` to
@@ -83,6 +81,16 @@ JCS canonicalizer, or Data Integrity engine remains in net-did source.
   `NSec.Cryptography`, `NBitcoin.Secp256k1`, and `Nethermind.Crypto.Bls` references — they are
   now transitive via NetCrypto. `Microsoft.IdentityModel.Tokens` is retained
   (`VerificationMethod.PublicKeyJwk` + JWK round-trips).
+
+> **Preview dependency (conscious call).** `NetDid.Method.WebVh` `2.0.0` takes a **transitive
+> dependency on `DataProofsDotnet.Core 0.1.0-preview.1`**, a prerelease package. Consumers that
+> otherwise pin only stable packages will pull in this preview when they use `did:webvh`. The
+> contract net-did relies on (`EddsaJcs2022Cryptosuite` / `DataIntegrityProof` /
+> `PublicKeyMaterial` / `ProofVerificationResult`) is API-frozen, so the risk is the release
+> channel, not the surface. net-did will move to the stable `DataProofsDotnet.Core 1.0.0` (and
+> publish a corresponding net-did patch) as soon as it ships. `did:key` and `did:peer` have no
+> preview dependencies. If a fully-stable dependency tree is required before adopting `did:webvh`,
+> pin `NetDid.Method.WebVh` to the `1.x` line until then.
 
 ## [1.3.1] - 2026-06-03
 

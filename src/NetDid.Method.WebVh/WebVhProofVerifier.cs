@@ -51,13 +51,15 @@ internal static class WebVhProofVerifier
             ProofValue = proofValue.ProofValue,
         };
 
+        // Fail closed on anything unexpected (malformed entry JSON, or any error the
+        // cryptosuite might surface) — a verification path must never throw for hostile input.
         try
         {
             using var document = JsonDocument.Parse(entryJsonWithoutProof);
             var result = suite.VerifyProof(document.RootElement, proof, publicKey);
             return result.Verified ? multibaseKey : null;
         }
-        catch (JsonException)
+        catch (Exception)
         {
             return null;
         }

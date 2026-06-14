@@ -57,13 +57,15 @@ public sealed class DidWebVhMethod : DidMethodBase
         using var document = JsonDocument.Parse(entryJsonWithoutProof);
         var proof = await _suite.CreateProofAsync(document.RootElement, proofOptions, signer, ct);
 
+        // Echo the proof config the suite actually signed (it returns the options with the
+        // proofValue filled in) so the wire DTO can't drift from the signed bytes.
         return new DataIntegrityProofValue
         {
-            Type = DataIntegrityProof.DataIntegrityProofType,
-            Cryptosuite = EddsaJcs2022Cryptosuite.CryptosuiteName,
-            VerificationMethod = verificationMethod,
-            Created = created,
-            ProofPurpose = "assertionMethod",
+            Type = proof.Type,
+            Cryptosuite = proof.Cryptosuite!,
+            VerificationMethod = proof.VerificationMethod!,
+            Created = proof.Created!,
+            ProofPurpose = proof.ProofPurpose!,
             ProofValue = proof.ProofValue!,
         };
     }

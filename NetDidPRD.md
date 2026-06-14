@@ -486,6 +486,28 @@ for each method.
 
 ## 4. Cryptographic Key Management
 
+> **Architecture note (v2.0.0): cryptography is externalized.** As of v2.0.0, NetDid contains
+> **no cryptographic primitives, signers, key models, JWK conversion, KDF, BBS, JCS, or native
+> code**. All of it is provided by the **[NetCrypto](https://github.com/moisesja/crypto-dotnet)**
+> package and consumed through NetDid's DID-method APIs:
+>
+> - **NetCrypto** (`NetCrypto` namespace) supplies `KeyType`, `KeyTypeExtensions`,
+>   `IKeyGenerator`/`DefaultKeyGenerator`, `ISigner`/`KeyPairSigner`/`KeyStoreSigner`,
+>   `ICryptoProvider`/`DefaultCryptoProvider`, `IBbsCryptoProvider`/`DefaultBbsCryptoProvider`
+>   (+ the native BBS payload, transitively), `EcPointValidator`, `EcdsaSignatureFormat`,
+>   `ConcatKdf`, `JwkConverter`, `IKeyStore`/`InMemoryKeyStore`, `KeyPair`/`StoredKeyInfo`/
+>   `PublicKeyReference`. Register them with `services.AddNetCrypto()`.
+> - **NetCid** supplies multiformats (`Multibase`/`Multicodec`/`Multihash`/`Multikey`) and the
+>   `JcsCanonicalizer` (RFC 8785) used for SCID/entryHash computation.
+> - **DataProofsDotnet** supplies the conformant `eddsa-jcs-2022` Data Integrity cryptosuite
+>   (`EddsaJcs2022Cryptosuite`, `DataIntegrityProof`, `PublicKeyMaterial`,
+>   `ProofVerificationResult`) used by `did:webvh` log/witness proofs.
+>
+> The type names, signatures, algorithms, and key-type/multicodec tables below remain accurate —
+> only their **namespace and owning package** moved from `NetDid.Core[.Crypto]` to `NetCrypto`
+> (and the Data Integrity engine to DataProofsDotnet). NetDid keeps only DID-method logic, the
+> `did:key` proof-signer parser (anti-spoof), and the multicodec ↔ key-type mapping.
+
 ### 4.1 Supported Key Types
 
 | Key Type         | Algorithm      | Multicodec Prefix                   | Usage                                                                                          |
@@ -573,9 +595,9 @@ public interface ICryptoProvider
 
 **ECDSA signature format**: NIST-curve ECDSA (P-256, P-384, P-521) signatures default to ASN.1 / DER — the format expected by X.509, CMS, and generic DID proofs. JOSE / JWS / JWE / COSE / WebAuthn consumers should pass `EcdsaSignatureFormat.IeeeP1363` to get a fixed-width R‖S concatenation (64, 96, or 132 bytes). secp256k1 signatures are always 64-byte compact (already P1363); EdDSA and BLS ignore the format parameter.
 
-**Concat KDF**: `NetDid.Core.Crypto.Kdf.ConcatKdf.DeriveKey(sharedSecret, algorithmId, partyUInfo, partyVInfo, suppPubInfo, suppPrivInfo, keyDataLen)` implements the NIST SP 800-56A §5.8.1 Concat KDF with SHA-256, exactly as bound by RFC 7518 §4.6 for JOSE ECDH-ES. Pair it with `DeriveSharedSecret` to derive a content encryption key from a raw `Z`. For ECDH-1PU (draft-madden-jose-ecdh-1pu), pass `Ze ‖ Zs` as the shared secret and append the AEAD authentication tag after the keydatalen bytes in `suppPubInfo`. Length-prefixing is added internally for `algorithmId`/`partyUInfo`/`partyVInfo`; `suppPubInfo` and `suppPrivInfo` pass through verbatim. Counter mode is supported (any `keyDataLen > 32` exercises it). Validated against the RFC 7518 Appendix C worked example.
+**Concat KDF**: `NetCrypto.ConcatKdf.DeriveKey(sharedSecret, algorithmId, partyUInfo, partyVInfo, suppPubInfo, suppPrivInfo, keyDataLen)` implements the NIST SP 800-56A §5.8.1 Concat KDF with SHA-256, exactly as bound by RFC 7518 §4.6 for JOSE ECDH-ES. Pair it with `DeriveSharedSecret` to derive a content encryption key from a raw `Z`. For ECDH-1PU (draft-madden-jose-ecdh-1pu), pass `Ze ‖ Zs` as the shared secret and append the AEAD authentication tag after the keydatalen bytes in `suppPubInfo`. Length-prefixing is added internally for `algorithmId`/`partyUInfo`/`partyVInfo`; `suppPubInfo` and `suppPrivInfo` pass through verbatim. Counter mode is supported (any `keyDataLen > 32` exercises it). Validated against the RFC 7518 Appendix C worked example.
 
-**Invalid-curve defense**: `JwkConverter.ExtractPublicKey` validates that any `"EC"` JWK's `(x, y)` coordinates actually lie on the stated curve before returning, and the same check runs inside `DefaultCryptoProvider.ImportEcPublicKey` / `DecompressEcPoint`. This is the RFC 7518 §6.2.2 requirement — without it, consumers doing `ExtractPublicKey → DeriveSharedSecret` would be vulnerable to the Antipa-style invalid-curve attack. Centralizing the check in net-did means every downstream SSI library inherits the protection automatically. The validation logic is also exposed as `NetDid.Core.Crypto.EcPointValidator.EnsureOnCurve(KeyType, x, y)` for callers that import keys outside the JWK pipeline.
+**Invalid-curve defense**: `JwkConverter.ExtractPublicKey` validates that any `"EC"` JWK's `(x, y)` coordinates actually lie on the stated curve before returning, and the same check runs inside `DefaultCryptoProvider.ImportEcPublicKey` / `DecompressEcPoint`. This is the RFC 7518 §6.2.2 requirement — without it, consumers doing `ExtractPublicKey → DeriveSharedSecret` would be vulnerable to the Antipa-style invalid-curve attack. Centralizing the check in NetCrypto means every downstream SSI library inherits the protection automatically. The validation logic is also exposed as `NetCrypto.EcPointValidator.EnsureOnCurve(KeyType, x, y)` for callers that import keys outside the JWK pipeline.
 
 > **Note**: `ICryptoProvider.Sign` is a low-level primitive used internally by `KeyPairSigner`. Application code and DID method implementations should use `ISigner.SignAsync()` instead, which works with both in-memory keys and HSM-backed keys.
 
@@ -713,7 +735,7 @@ byte[] Sign(ReadOnlySpan<byte> privateKey, IReadOnlyList<byte[]> messages);
 - **P-384**: `System.Security.Cryptography.ECDsa` with `ECCurve.NamedCurves.nistP384`. Native .NET support, no third-party dependency needed.
 - **secp256k1**: `System.Security.Cryptography.ECDsa` with explicit curve parameters (secp256k1 is not a named curve in .NET), or `NBitcoin.Secp256k1` for a battle-tested implementation with Ethereum-compatible signing (recoverable signatures with v, r, s).
 - **BLS12-381 (G1/G2)**: No native .NET support. Uses `Nethermind.Crypto.Bls` v1.0.5 (C# wrapper around the Supranational `blst` library, Apache 2.0). The `blst` library is the most widely deployed and audited BLS12-381 implementation (used by Ethereum 2.0 consensus clients). Nethermind exposes full pairing primitives: `SecretKey` (keygen, import/export), `P1`/`P2` (point operations, hash-to-curve, sign), `P1Affine`/`P2Affine` (decode, group check, compress), `Pairing` (aggregate, commit, final verify), `Scalar` (field arithmetic), and `PT` (Miller loop, final exponentiation). Key generation uses `SecretKey.Keygen(ikm)` for G1 and `P2.Generator().Mult(scalar)` for G2 (since P2 lacks `FromSk()`). Signature verification uses `Pairing.Aggregate` + `Pairing.Commit` + `Pairing.FinalVerify` with DST `BLS_SIG_BLS12381G2_XMD:SHA-256_SSWU_RO_NUL_`.
-- **BBS+ Signatures**: Implemented via a Rust FFI shim (`native/zkryptium-ffi/`) wrapping the [zkryptium](https://github.com/Cybersecurity-LINKS/zkryptium) crate v0.2 (Apache 2.0, IETF draft-irtf-cfrg-bbs-signatures-10, BLS12-381-SHA-256 ciphersuite). The Rust shim compiles to a `cdylib` and is consumed via .NET `[LibraryImport]` P/Invoke source generation (NativeAOT-compatible). BBS+ keys use the same BLS12-381 scalar field as BLS keys (SK: 32 bytes, PK: 96 bytes G2 point), but are generated via the BBS+-specific `KeyGen` algorithm from the IETF draft. Signatures are 80 bytes; selective-disclosure proofs are variable-length. See `native/zkryptium-ffi/README.md` for build instructions and platform support.
+- **BBS+ Signatures**: Provided by **NetCrypto** (`IBbsCryptoProvider`/`DefaultBbsCryptoProvider`) via a Rust FFI shim (the `zkryptium-ffi` crate in the [crypto-dotnet](https://github.com/moisesja/crypto-dotnet) repository) wrapping the [zkryptium](https://github.com/Cybersecurity-LINKS/zkryptium) crate (Apache 2.0, IETF draft-irtf-cfrg-bbs-signatures-10, BLS12-381-SHA-256 ciphersuite). The shim compiles to a `cdylib` consumed via .NET `[LibraryImport]` P/Invoke; the per-RID native binaries flow into NetDid transitively through the NetCrypto NuGet package (no build step in this repository). BBS+ keys use the same BLS12-381 scalar field as BLS keys (SK: 32 bytes, PK: 96 bytes G2 point), generated via the BBS+-specific `KeyGen` algorithm from the IETF draft. Signatures are 80 bytes; selective-disclosure proofs are variable-length.
 - **JCS (JSON Canonicalization Scheme)**: Required for `eddsa-jcs-2022` Data Integrity Proofs used by did:webvh. Implements RFC 8785 deterministic JSON serialization. Use a custom implementation or port — no widely-adopted .NET library exists. The canonicalization must handle Unicode normalization, number serialization (IEEE 754 double), and property ordering as specified by RFC 8785.
 
 ### 4.5 Multicodec & Multibase
@@ -2565,21 +2587,9 @@ netdid/
 │   │   │   ├── DidUrlDereferencingResult.cs
 │   │   │   ├── DereferencingMetadata.cs
 │   │   │   └── DidUrlDereferencingOptions.cs
-│   │   ├── Crypto/
-│   │   │   ├── DefaultCryptoProvider.cs
-│   │   │   ├── DefaultKeyGenerator.cs
-│   │   │   ├── DefaultBbsCryptoProvider.cs
-│   │   │   ├── KeyPairSigner.cs
-│   │   │   ├── KeyStoreSigner.cs
-│   │   │   ├── KeyPair.cs
-│   │   │   ├── StoredKeyInfo.cs
-│   │   │   ├── KeyType.cs
-│   │   │   ├── Native/
-│   │   │   │   └── ZkryptiumNative.cs       # P/Invoke declarations for BBS+ FFI
-│   │   │   └── Jcs/
-│   │   │       └── JsonCanonicalization.cs
-│   │   ├── runtimes/                        # Platform-specific native libraries
-│   │   │   └── osx-arm64/native/            # (additional RIDs as built)
+│   │   │                                   # crypto providers, signers, key types, keystore,
+│   │   │                                   # JWK, KDF, BBS + native FFI → NetCrypto package
+│   │   │                                   # JCS canonicalization → NetCid package
 │   │   ├── Encoding/
 │   │   │   ├── MulticodecEncoder.cs
 │   │   │   ├── MultibaseEncoder.cs
@@ -2596,11 +2606,7 @@ netdid/
 │   │   │   ├── DefaultDidUrlDereferencer.cs
 │   │   │   ├── IVerificationMethodResolver.cs
 │   │   │   └── DefaultVerificationMethodResolver.cs
-│   │   ├── KeyStore/
-│   │   │   ├── InMemoryKeyStore.cs
-│   │   │   └── FileSystemKeyStore.cs
-│   │   └── Jwk/
-│   │       └── JwkConverter.cs
+│   │   └── (no Crypto/KeyStore/Jwk — provided by the NetCrypto package)
 │   │
 │   ├── NetDid.Method.Key/            # did:key implementation
 │   │   ├── NetDid.Method.Key.csproj
@@ -2625,8 +2631,8 @@ netdid/
 │   │   ├── LogEntry.cs
 │   │   ├── LogEntryParser.cs
 │   │   ├── LogChainValidator.cs
-│   │   ├── ScidGenerator.cs
-│   │   ├── DataIntegrityProof.cs
+│   │   ├── ScidGenerator.cs                 # SCID/entryHash via NetCid.JcsCanonicalizer
+│   │   ├── WebVhProofVerifier.cs            # eddsa-jcs-2022 verify (DataProofsDotnet) + did:key anti-spoof
 │   │   ├── PreRotationManager.cs
 │   │   ├── WitnessValidator.cs
 │   │   └── IWebVhHttpClient.cs
@@ -2730,13 +2736,8 @@ netdid/
 │       ├── DualIdentityPatternTests.cs
 │       ├── ZcapDotnetBridgeTests.cs
 │       └── AllMethodsRoundTripTests.cs
-│
-├── native/
-│   └── zkryptium-ffi/                  # Rust FFI shim for BBS+ signatures
-│       ├── Cargo.toml
-│       ├── src/lib.rs
-│       ├── build-all.sh                # Cross-platform build script
-│       └── README.md
+│                                       # (no native/ crate — the BBS Rust FFI lives in the
+│                                       #  crypto-dotnet repo and ships inside the NetCrypto NuGet)
 │
 └── docs/
     ├── getting-started.md
@@ -2874,17 +2875,21 @@ netdid/
 #### Phase 1 Implementation Summary
 
 **Cryptographic primitives** (7 key types, 219 tests):
-- Ed25519, X25519, P-256, P-384, secp256k1 — implemented using NSec.Cryptography, System.Security.Cryptography, and NBitcoin.Secp256k1
-- BLS12-381 G1/G2 key generation and sign/verify — implemented using `Nethermind.Crypto.Bls` (C# wrapper around Supranational's `blst` C library). G1 public keys are 48 bytes compressed, G2 public keys are 96 bytes compressed, private keys are 32-byte scalars. The G2 variant uses `P2.Generator().Mult(scalar)` for key derivation since P2 lacks `FromSk()`. Pairing-based signature verification uses the `Pairing` class with `Aggregate` + `Commit` + `FinalVerify`
-- BBS+ multi-message signatures with selective disclosure — implemented via a Rust FFI shim (`native/zkryptium-ffi/`) wrapping the [zkryptium](https://github.com/Cybersecurity-LINKS/zkryptium) crate (IETF draft-irtf-cfrg-bbs-signatures-10, BLS12-381-SHA-256 ciphersuite). The shim exposes 6 C-ABI functions (`bbs_keygen`, `bbs_sk_to_pk`, `bbs_sign`, `bbs_verify`, `bbs_proof_gen`, `bbs_proof_verify`) consumed via `[LibraryImport]` P/Invoke source generation. Messages and indices are serialized as flat little-endian TLV buffers across the FFI boundary. Signatures are 80 bytes; proofs are variable-length
+> All cryptographic primitives below are **provided by the NetCrypto package** (the
+> `crypto-dotnet` repository) as of v2.0.0 — NetDid consumes them, it does not implement them.
+> The algorithm details are retained here as a reference for the behaviour NetDid relies on.
 
-**Native interop architecture**:
+- Ed25519, X25519, P-256, P-384, secp256k1 — NetCrypto implements these using NSec.Cryptography, System.Security.Cryptography, and NBitcoin.Secp256k1
+- BLS12-381 G1/G2 key generation and sign/verify — NetCrypto implements these using `Nethermind.Crypto.Bls` (C# wrapper around Supranational's `blst` C library). G1 public keys are 48 bytes compressed, G2 public keys are 96 bytes compressed, private keys are 32-byte scalars. The G2 variant uses `P2.Generator().Mult(scalar)` for key derivation since P2 lacks `FromSk()`. Pairing-based signature verification uses the `Pairing` class with `Aggregate` + `Commit` + `FinalVerify`
+- BBS+ multi-message signatures with selective disclosure — NetCrypto provides these via a Rust FFI shim (the `zkryptium-ffi` crate in the crypto-dotnet repo) wrapping the [zkryptium](https://github.com/Cybersecurity-LINKS/zkryptium) crate (IETF draft-irtf-cfrg-bbs-signatures-10, BLS12-381-SHA-256 ciphersuite). The shim exposes C-ABI functions consumed via `[LibraryImport]` P/Invoke source generation; messages and indices cross the FFI boundary as flat little-endian TLV buffers. Signatures are 80 bytes; proofs are variable-length. The per-RID native binaries reach NetDid transitively through the NetCrypto NuGet package — there is no native build step in this repository.
+
+**Native interop architecture** (owned by NetCrypto / crypto-dotnet):
 ```
 Rust (zkryptium crate, Apache 2.0)
-  └── native/zkryptium-ffi/src/lib.rs    (C-ABI extern functions)
-       └── libzkryptium_ffi.{dylib,so,dll}  (per-platform native binary)
-            └── Crypto/Native/ZkryptiumNative.cs  ([LibraryImport] P/Invoke)
-                 └── Crypto/DefaultBbsCryptoProvider.cs  (managed IBbsCryptoProvider)
+  └── zkryptium-ffi/src/lib.rs           (C-ABI extern functions, in crypto-dotnet)
+       └── libzkryptium_ffi.{dylib,so,dll}  (per-platform native binary, shipped in the NetCrypto NuGet)
+            └── NetCrypto.Native.ZkryptiumNative  ([LibraryImport] P/Invoke, internal to NetCrypto)
+                 └── NetCrypto.DefaultBbsCryptoProvider  (managed IBbsCryptoProvider)
 ```
 
 **Test coverage**: 219 unit tests across 19 test files covering all public API surface — cryptographic operations (keygen, sign/verify, key agreement, BBS+ selective disclosure), encoding (multibase, multicodec, base58, base64url), serialization (JSON-LD/JSON round-trips, polymorphic DID Document properties), resolution (composite routing, caching, URL dereferencing), key storage (InMemoryKeyStore), JWK conversion, and JSON canonicalization (RFC 8785).
