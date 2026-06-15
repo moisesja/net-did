@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.1] - 2026-06-14
+
+### Changed
+
+- **Bumped `NetCrypto` `1.0.0` → `1.1.0`.** A backward-compatible (additive + hardening) refresh of
+  the cryptography provider; net-did's own public API is unchanged. NetCrypto 1.1.0 adds
+  `IKeyStore.DeriveSharedSecretAsync` (HSM-friendly ECDH), a `Base64Url` codec, and unified AEAD
+  size metadata, and tightens EC public-key validation (wrong-length NIST EC keys now throw a
+  parameter-named `ArgumentException` rather than an opaque `CryptographicException`). Consumers
+  using NetCrypto types transitively pick these up automatically. `DataProofsDotnet.Core`
+  `0.1.0-preview.1` (pinned to NetCrypto `>= 1.0.0`) resolves cleanly to 1.1.0 — the full suite,
+  including did:webvh Data Integrity and all 182 W3C conformance assertions, passes against it.
+
 ## [2.0.0] - 2026-06-13
 
 The crypto/proof externalization refactor. net-did now carries **only DID-method logic** — every
