@@ -219,6 +219,24 @@ public sealed class DidWebVhMethod : DidMethodBase
                 };
             }
 
+            // Bind the DID's self-certifying SCID to the genesis entry. State.Id above is an
+            // attacker-controllable document field; the SCID in the DID string is the hash of
+            // the genesis and is did:webvh's actual root of trust. entries[0].Parameters.Scid
+            // has already been proven equal to the recomputed genesis hash by chain validation,
+            // so this comparison rejects a self-consistent-but-unrelated genesis served for the
+            // requested DID — the impersonation that defeats self-certification. See issue #82.
+            if (DidUrlMapper.ExtractScid(did) != entries[0].Parameters.Scid)
+            {
+                return new DidResolutionResult
+                {
+                    DidDocument = null,
+                    ResolutionMetadata = new DidResolutionMetadata
+                    {
+                        Error = "invalidDidLog"
+                    }
+                };
+            }
+
             // Validate witnesses for ALL entries that require it
             bool anyEntryRequiresWitness = perEntryParams.Any(p => p.Witness is { Threshold: > 0 });
             if (anyEntryRequiresWitness)
@@ -328,6 +346,17 @@ public sealed class DidWebVhMethod : DidMethodBase
         var entries = LogEntrySerializer.ParseJsonLines(updateOptions.CurrentLogContent);
         var effectiveParams = _chainValidator.ValidateChain(entries);
 
+        // Bind the supplied log and new document to the target DID. Without these checks the
+        // driver could emit a log the resolver rejects on identity grounds (resolution enforces
+        // State.Id == did and the genesis-SCID binding — see ResolveCoreAsync above), or authorize
+        // an update of A entirely with B's log/key. See issue #82. (Other resolution checks, e.g.
+        // witness thresholds, are orthogonal — a witness-policy update still needs matching proofs
+        // published for the resulting log to resolve.)
+        RequireAppendableLogForDid(entries, effectiveParams, did);
+        if (updateOptions.NewDocument is not null && updateOptions.NewDocument.Id.Value != did)
+            throw new ArgumentException(
+                $"NewDocument.Id must equal the DID being updated ('{did}').", nameof(options));
+
         // Verify signing key is authorized
         var signerMultibase = updateOptions.SigningKey.MultibasePublicKey;
         if (effectiveParams.UpdateKeys?.Contains(signerMultibase) != true)
@@ -354,6 +383,16 @@ public sealed class DidWebVhMethod : DidMethodBase
 
         // Build updated parameters (only include changed fields)
         var newParams = BuildUpdateParameters(updateOptions.ParameterUpdates);
+
+        // Determine whether this update touched the method's authorization material, by
+        // comparing the effective parameters before and after the merge. Surfaced on the
+        // result so a method-agnostic caller can enforce a document-only postcondition — the
+        // authority (updateKeys etc.) never appears in the DID Document. This driver always
+        // evaluates it, so it reports Changed or Unchanged (never Unknown). See issue #82.
+        var newEffectiveParams = newParams.MergeWith(effectiveParams);
+        var authorizationChange = HasAuthorizationChange(effectiveParams, newEffectiveParams)
+            ? AuthorizationChangeStatus.Changed
+            : AuthorizationChangeStatus.Unchanged;
 
         // Build new entry — hash includes previous versionId per spec
         var versionNumber = entries.Count + 1;
@@ -401,7 +440,8 @@ public sealed class DidWebVhMethod : DidMethodBase
         return new DidUpdateResult
         {
             DidDocument = newDocument,
-            Artifacts = updateArtifacts
+            Artifacts = updateArtifacts,
+            AuthorizationChange = authorizationChange
         };
     }
 
@@ -417,6 +457,9 @@ public sealed class DidWebVhMethod : DidMethodBase
         // Parse and validate existing log
         var entries = LogEntrySerializer.ParseJsonLines(deactivateOptions.CurrentLogContent);
         var effectiveParams = _chainValidator.ValidateChain(entries);
+
+        // Bind the supplied log to the target DID (see issue #82 and UpdateCoreAsync).
+        RequireAppendableLogForDid(entries, effectiveParams, did);
 
         // Verify signing key is authorized
         var signerMultibase = deactivateOptions.SigningKey.MultibasePublicKey;
@@ -587,6 +630,95 @@ public sealed class DidWebVhMethod : DidMethodBase
             Witness = updates.Witness,
             Ttl = updates.Ttl
         };
+    }
+
+    /// <summary>
+    /// Precondition for appending to a supplied log: it must not already be deactivated, its latest
+    /// entry's document must be the DID we were asked to operate on, and its genesis SCID must match
+    /// the SCID in that DID. Mirrors the identity invariants resolution enforces (<c>State.Id == did</c>,
+    /// the genesis-SCID binding, and "cannot append after deactivation"), so the driver cannot emit a
+    /// log that its own resolver rejects <b>on DID/SCID identity grounds</b>. (Other resolution checks,
+    /// such as witness thresholds, are orthogonal and can still fail — see <see cref="UpdateCoreAsync"/>.)
+    /// See issue #82.
+    /// </summary>
+    private static void RequireAppendableLogForDid(
+        IReadOnlyList<LogEntry> entries, LogEntryParameters effectiveParams, string did)
+    {
+        if (effectiveParams.Deactivated == true)
+            throw new ArgumentException(
+                "The supplied DID log is already deactivated and cannot be updated.");
+
+        // entries is non-empty here: ValidateChain has already run and throws on an empty log.
+        if (entries[^1].State.Id.Value != did)
+            throw new ArgumentException(
+                $"The supplied CurrentLogContent does not belong to the DID being operated on ('{did}').");
+
+        // Bind the DID's self-certifying SCID to the supplied log's genesis. State.Id above is
+        // an attacker-settable document field, whereas the SCID pins the genesis authority. This
+        // stops an update/deactivation of the target DID from being authorized by an unrelated
+        // (attacker-owned) log whose latest entry merely claims the target's id. Mirrors the
+        // resolution-side binding, so the writer cannot emit a log the resolver rejects on
+        // DID/SCID identity grounds. #82.
+        if (DidUrlMapper.ExtractScid(did) != entries[0].Parameters.Scid)
+            throw new ArgumentException(
+                $"The supplied CurrentLogContent's genesis SCID does not match the DID being operated on ('{did}').");
+    }
+
+    /// <summary>
+    /// True when the effective authorization material differs between two parameter sets —
+    /// <c>updateKeys</c>, <c>prerotation</c>, <c>nextKeyHashes</c>, or <c>witness</c> config.
+    /// <c>ttl</c> is deliberately excluded (it is a caching hint, not authority). Drives
+    /// <see cref="DidUpdateResult.AuthorizationChange"/>.
+    /// </summary>
+    private static bool HasAuthorizationChange(LogEntryParameters before, LogEntryParameters after)
+    {
+        if (!StringSetEquals(before.UpdateKeys, after.UpdateKeys))
+            return true;
+        if ((before.Prerotation ?? false) != (after.Prerotation ?? false))
+            return true;
+        if (!StringSetEquals(before.NextKeyHashes, after.NextKeyHashes))
+            return true;
+        if (!WitnessConfigEquals(before.Witness, after.Witness))
+            return true;
+        return false;
+    }
+
+    /// <summary>Order-insensitive, ordinal set equality; a null list is treated as empty.</summary>
+    private static bool StringSetEquals(IReadOnlyList<string>? a, IReadOnlyList<string>? b)
+    {
+        var setA = a is null ? new HashSet<string>(StringComparer.Ordinal) : new HashSet<string>(a, StringComparer.Ordinal);
+        var setB = b is null ? new HashSet<string>(StringComparer.Ordinal) : new HashSet<string>(b, StringComparer.Ordinal);
+        return setA.SetEquals(setB);
+    }
+
+    /// <summary>
+    /// Value equality for witness configuration: same threshold and the same ordered sequence of
+    /// (witness id, weight) entries. Null and an empty/thresholdless config are equivalent.
+    /// The comparison is <b>order-sensitive</b>: witness enforcement resolves a proof to a witness
+    /// by the first id match (<see cref="WitnessValidator"/>), so reordering entries — including
+    /// duplicate ids carrying different weights — changes the effective policy and must be reported
+    /// as an authorization change. Uses typed field equality (no string delimiter).
+    /// </summary>
+    private static bool WitnessConfigEquals(WitnessConfig? a, WitnessConfig? b)
+    {
+        if (ReferenceEquals(a, b))
+            return true;
+        if ((a?.Threshold ?? 0) != (b?.Threshold ?? 0))
+            return false;
+
+        var entriesA = a?.Witnesses ?? [];
+        var entriesB = b?.Witnesses ?? [];
+        if (entriesA.Count != entriesB.Count)
+            return false;
+
+        for (int i = 0; i < entriesA.Count; i++)
+        {
+            if (!string.Equals(entriesA[i].Id, entriesB[i].Id, StringComparison.Ordinal)
+                || entriesA[i].Weight != entriesB[i].Weight)
+                return false;
+        }
+
+        return true;
     }
 
     /// <summary>

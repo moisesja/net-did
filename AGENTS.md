@@ -25,6 +25,7 @@ See [`NetDidPRD.md`](NetDidPRD.md) for requirements and architecture of the syst
 - Offload research, exploration, and parallel analysis to subagents
 - For complex problems, throw more compute at it via subagents
 - One task per subagent for focused execution
+- Always use adversarial agents to attempt to exploit the code that is being generated. The adversarial agents must report in detail about any findings
 
 ### 3. Self-Improvement Loop
 
