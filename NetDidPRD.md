@@ -268,6 +268,13 @@ public sealed record DidUpdateResult
 {
     public required DidDocument DidDocument { get; init; }
     public IReadOnlyDictionary<string, object>? Artifacts { get; init; }
+
+    /// True if the update changed the method's authorization material (did:webvh:
+    /// updateKeys / nextKeyHashes / prerotation / witness config), i.e. it was not a
+    /// document-only edit. did:webvh keeps update authority in the log parameters, not
+    /// the DID Document, so a method-agnostic caller reading back DidDocument cannot
+    /// otherwise distinguish a document edit from a key rotation. Default: false.
+    public bool AuthorizationChanged { get; init; }
 }
 
 public sealed record DidDeactivateResult
@@ -1046,25 +1053,29 @@ well-known placeholder string (`{SCID}`) that stands in for the real SCID during
 3. Parse each JSON Lines entry sequentially.
 4. Validate the genesis entry: verify the SCID matches the entry hash.
 5. For each subsequent entry: verify the proof signature against an authorized update key, verify the hash chain links to the previous entry, verify parameter constraints (pre-rotation key commitments, witness thresholds).
-6. If witnesses are configured, fetch `did-witness.json` and validate witness proofs meet the threshold.
-7. Return the DID Document from the final valid entry. When `DidResolutionOptions.IncludeLog == true`, also surface the fetched log as `Artifacts["did.jsonl"]` (UTF-8 string, matching the Create/Update/Deactivate artifact convention) and the parsed chain as `Artifacts["log.entries"]` (`IReadOnlyList<LogEntry>`). The log is parsed and validated regardless; the flag only controls whether it is exposed to the caller.
+6. **Bind the DID's self-certifying SCID to the genesis (issue #82).** The SCID segment of the requested DID string MUST equal the genesis entry's SCID (`entries[0].Parameters.Scid`, already proven equal to the recomputed genesis hash by step 4). The target entry's `state.id` (an author-controlled field) matching `did` is necessary but **not** sufficient: without the SCID check, a host/CDN/MITM adversary can serve a self-consistent genesis signed by their own key with `state.id` set to the victim's DID and impersonate it, collapsing did:webvh's security to plain did:web. Reject with `invalidDidLog` on mismatch.
+7. If witnesses are configured, fetch `did-witness.json` and validate witness proofs meet the threshold.
+8. Return the DID Document from the final valid entry. When `DidResolutionOptions.IncludeLog == true`, also surface the fetched log as `Artifacts["did.jsonl"]` (UTF-8 string, matching the Create/Update/Deactivate artifact convention) and the parsed chain as `Artifacts["log.entries"]` (`IReadOnlyList<LogEntry>`). The log is parsed and validated regardless; the flag only controls whether it is exposed to the caller.
 
 ### 7.7 Update
 
-1. Load the current DID log.
-2. Build a new log entry with the updated DID Document and/or parameters.
-3. If pre-rotation is active: the proof MUST be signed by a key committed to in the previous entry, and new pre-rotation commitments MUST be provided.
-4. Chain the new entry to the previous one via hash.
-5. Sign with an authorized update key.
-6. Append to `did.jsonl`.
-7. If witnesses are configured, collect witness signatures into `did-witness.json`.
-8. Return the new log entry for the caller to publish.
+1. Load the current DID log and validate the chain.
+2. **Bind the inputs to the target DID (issue #82).** The supplied `CurrentLogContent` must belong to the `did` being updated — its latest entry's `state.id` MUST equal `did`, its **genesis SCID MUST equal the SCID in `did`** (the same self-certification binding resolution enforces, so an attacker-owned log cannot authorize an update of the victim DID merely by claiming its id), and the log MUST NOT already be deactivated. If `NewDocument` is supplied, `NewDocument.id` MUST equal `did`. This guarantees Update can never emit a log that Resolve would reject. Violations throw `ArgumentException`.
+   - *Portability note:* net-did does not implement did:webvh portability (there is no `Portable` field in `DidWebVhParameterUpdates`). If portability is added later, the `state.id == did` / `NewDocument.id == did` binding needs a carve-out for the domain-change entry.
+3. Build a new log entry with the updated DID Document and/or parameters.
+4. If pre-rotation is active: the proof MUST be signed by a key committed to in the previous entry, and new pre-rotation commitments MUST be provided.
+5. Chain the new entry to the previous one via hash.
+6. Sign with an authorized update key.
+7. Append to `did.jsonl`.
+8. If witnesses are configured, collect witness signatures into `did-witness.json`.
+9. Return the new log entry for the caller to publish, with `DidUpdateResult.AuthorizationChanged` set when the update altered the authorization material (`updateKeys` / `nextKeyHashes` / `prerotation` / `witness`) so a method-agnostic caller can enforce a document-only postcondition.
 
 ### 7.8 Deactivate
 
-1. Create a new log entry with `parameters.deactivated = true`.
-2. The DID Document in the final state is empty (or minimal).
-3. Append to the log, sign, and publish.
+1. Load and validate the current DID log, and **bind it to the target DID** (same latest-`state.id == did`, genesis-SCID, and not-already-deactivated checks as Update, issue #82).
+2. Create a new log entry with `parameters.deactivated = true`.
+3. The DID Document in the final state is empty (or minimal).
+4. Append to the log, sign, and publish.
 
 ### 7.9 Configuration
 

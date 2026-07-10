@@ -1814,4 +1814,458 @@ public class DidWebVhMethodTests
 
         without.GetCacheDiscriminator().Should().NotBe(with.GetCacheDiscriminator());
     }
+
+    // ================================================================
+    // ISSUE 82 — Update/Deactivate must bind their inputs to the target
+    // DID, and DidUpdateResult must expose authorization-change evidence.
+    // https://github.com/moisesja/net-did/issues/82
+    // ================================================================
+
+    /// <summary>Creates a fresh did:webvh DID and returns (did, log bytes-as-string, its update signer).</summary>
+    private async Task<(string Did, string Log, ISigner Signer)> CreateWebVhDidAsync(
+        DidWebVhMethod method, string? path = null)
+    {
+        var signer = CreateEd25519Signer();
+        var result = await method.CreateAsync(new DidWebVhCreateOptions
+        {
+            Domain = "example.com",
+            Path = path,
+            UpdateKey = signer
+        });
+        return (result.Did.Value, (string)result.Artifacts![DidWebVhArtifacts.DidJsonl], signer);
+    }
+
+    [Fact]
+    public async Task Issue82_Update_LogOfDifferentDid_Throws()
+    {
+        // Reproduction #1: an "update of A" driven entirely by B's log + B's signer, with a
+        // document claiming Id = A, must be rejected — otherwise the driver mints a log its
+        // own resolver rejects.
+        var (method, _) = CreateMethod();
+        var (didA, _, _) = await CreateWebVhDidAsync(method, "alice");
+        var (_, logB, signerB) = await CreateWebVhDidAsync(method, "bob");
+
+        var act = () => method.UpdateAsync(didA, new DidWebVhUpdateOptions
+        {
+            CurrentLogContent = Encoding.UTF8.GetBytes(logB),
+            SigningKey = signerB,
+            NewDocument = new DidDocument { Id = new Did(didA) }
+        });
+
+        await act.Should().ThrowAsync<ArgumentException>().WithMessage("*does not belong*");
+    }
+
+    [Fact]
+    public async Task Issue82_Update_NewDocumentIdMismatch_Throws()
+    {
+        var (method, _) = CreateMethod();
+        var (didA, logA, signerA) = await CreateWebVhDidAsync(method, "alice");
+        var (didB, _, _) = await CreateWebVhDidAsync(method, "bob");
+
+        var act = () => method.UpdateAsync(didA, new DidWebVhUpdateOptions
+        {
+            CurrentLogContent = Encoding.UTF8.GetBytes(logA),
+            SigningKey = signerA,
+            NewDocument = new DidDocument { Id = new Did(didB) }
+        });
+
+        await act.Should().ThrowAsync<ArgumentException>().WithMessage("*NewDocument.Id*");
+    }
+
+    [Fact]
+    public async Task Issue82_Update_NewDocumentMissingId_Throws()
+    {
+        var (method, _) = CreateMethod();
+        var (didA, logA, signerA) = await CreateWebVhDidAsync(method, "alice");
+
+        // A document with no Id (default(Did).Value == null) must not be accepted for an update.
+        var act = () => method.UpdateAsync(didA, new DidWebVhUpdateOptions
+        {
+            CurrentLogContent = Encoding.UTF8.GetBytes(logA),
+            SigningKey = signerA,
+            NewDocument = new DidDocument()
+        });
+
+        await act.Should().ThrowAsync<ArgumentException>().WithMessage("*NewDocument.Id*");
+    }
+
+    [Fact]
+    public async Task Issue82_Update_OnDeactivatedLog_Throws()
+    {
+        var (method, _) = CreateMethod();
+        var (didA, logA, signerA) = await CreateWebVhDidAsync(method, "alice");
+
+        var deactivated = await method.DeactivateAsync(didA, new DidWebVhDeactivateOptions
+        {
+            CurrentLogContent = Encoding.UTF8.GetBytes(logA),
+            SigningKey = signerA
+        });
+        var deactivatedLog = (string)deactivated.Artifacts![DidWebVhArtifacts.DidJsonl];
+
+        var act = () => method.UpdateAsync(didA, new DidWebVhUpdateOptions
+        {
+            CurrentLogContent = Encoding.UTF8.GetBytes(deactivatedLog),
+            SigningKey = signerA,
+            NewDocument = new DidDocument { Id = new Did(didA) }
+        });
+
+        await act.Should().ThrowAsync<ArgumentException>().WithMessage("*deactivated*");
+    }
+
+    [Fact]
+    public async Task Issue82_Deactivate_LogOfDifferentDid_Throws()
+    {
+        var (method, _) = CreateMethod();
+        var (didA, _, _) = await CreateWebVhDidAsync(method, "alice");
+        var (_, logB, signerB) = await CreateWebVhDidAsync(method, "bob");
+
+        var act = () => method.DeactivateAsync(didA, new DidWebVhDeactivateOptions
+        {
+            CurrentLogContent = Encoding.UTF8.GetBytes(logB),
+            SigningKey = signerB
+        });
+
+        await act.Should().ThrowAsync<ArgumentException>().WithMessage("*does not belong*");
+    }
+
+    [Fact]
+    public async Task Issue82_Deactivate_OnDeactivatedLog_Throws()
+    {
+        var (method, _) = CreateMethod();
+        var (didA, logA, signerA) = await CreateWebVhDidAsync(method, "alice");
+
+        var deactivated = await method.DeactivateAsync(didA, new DidWebVhDeactivateOptions
+        {
+            CurrentLogContent = Encoding.UTF8.GetBytes(logA),
+            SigningKey = signerA
+        });
+        var deactivatedLog = (string)deactivated.Artifacts![DidWebVhArtifacts.DidJsonl];
+
+        var act = () => method.DeactivateAsync(didA, new DidWebVhDeactivateOptions
+        {
+            CurrentLogContent = Encoding.UTF8.GetBytes(deactivatedLog),
+            SigningKey = signerA
+        });
+
+        await act.Should().ThrowAsync<ArgumentException>().WithMessage("*deactivated*");
+    }
+
+    [Fact]
+    public async Task Issue82_Update_DocumentOnlyEdit_AuthorizationChangedFalse()
+    {
+        var (method, httpClient) = CreateMethod();
+        var signerA = CreateEd25519Signer();
+        var createA = await method.CreateAsync(new DidWebVhCreateOptions
+        {
+            Domain = "example.com",
+            Path = "alice",
+            UpdateKey = signerA
+        });
+        var didA = createA.Did.Value;
+        var logA = (string)createA.Artifacts![DidWebVhArtifacts.DidJsonl];
+
+        // Document-only edit: add a service, touch no parameters.
+        var editedDoc = createA.DidDocument with
+        {
+            Service =
+            [
+                new Service
+                {
+                    Id = $"{didA}#pds",
+                    Type = "TurtleShellPds",
+                    ServiceEndpoint = ServiceEndpointValue.FromUri("https://example.com/pds")
+                }
+            ]
+        };
+
+        var updateResult = await method.UpdateAsync(didA, new DidWebVhUpdateOptions
+        {
+            CurrentLogContent = Encoding.UTF8.GetBytes(logA),
+            SigningKey = signerA,
+            NewDocument = editedDoc
+        });
+
+        updateResult.AuthorizationChanged.Should().BeFalse();
+
+        // Writer/reader parity: the appended log must resolve for the target DID.
+        var updatedLog = (string)updateResult.Artifacts![DidWebVhArtifacts.DidJsonl];
+        var logUrl = DidUrlMapper.MapToLogUrl(didA);
+        httpClient.SetLogResponse(logUrl, Encoding.UTF8.GetBytes(updatedLog));
+        var resolved = await method.ResolveAsync(didA);
+        resolved.DidDocument.Should().NotBeNull();
+        resolved.DidDocument!.Id.Value.Should().Be(didA);
+
+        // Preserve-document case (NewDocument == null) is likewise not an authority change.
+        var preserveResult = await method.UpdateAsync(didA, new DidWebVhUpdateOptions
+        {
+            CurrentLogContent = Encoding.UTF8.GetBytes(logA),
+            SigningKey = signerA
+        });
+        preserveResult.AuthorizationChanged.Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task Issue82_Update_KeyRotation_AuthorizationChangedTrue()
+    {
+        // Reproduction #2: a smuggled updateKeys rotation is invisible in DidDocument but must
+        // be flagged so a method-agnostic caller can reject an unintended authority change.
+        var (method, _) = CreateMethod();
+        var (didA, logA, signerA) = await CreateWebVhDidAsync(method, "alice");
+        var newKey = CreateEd25519Signer();
+
+        var updateResult = await method.UpdateAsync(didA, new DidWebVhUpdateOptions
+        {
+            CurrentLogContent = Encoding.UTF8.GetBytes(logA),
+            SigningKey = signerA,
+            ParameterUpdates = new DidWebVhParameterUpdates
+            {
+                UpdateKeys = [newKey.MultibasePublicKey]
+            }
+        });
+
+        updateResult.AuthorizationChanged.Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task Issue82_Update_SameUpdateKeysSupplied_AuthorizationChangedFalse()
+    {
+        // Re-supplying the identical authorized key set is a no-op for authority.
+        var (method, _) = CreateMethod();
+        var (didA, logA, signerA) = await CreateWebVhDidAsync(method, "alice");
+
+        var updateResult = await method.UpdateAsync(didA, new DidWebVhUpdateOptions
+        {
+            CurrentLogContent = Encoding.UTF8.GetBytes(logA),
+            SigningKey = signerA,
+            ParameterUpdates = new DidWebVhParameterUpdates
+            {
+                UpdateKeys = [signerA.MultibasePublicKey]
+            }
+        });
+
+        updateResult.AuthorizationChanged.Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task Issue82_Update_PrerotationAndNextKeyHashes_AuthorizationChangedTrue()
+    {
+        var (method, _) = CreateMethod();
+        var (didA, logA, signerA) = await CreateWebVhDidAsync(method, "alice");
+        var nextKey = CreateEd25519Signer();
+        var commitment = PreRotationManager.ComputeKeyCommitment(nextKey.MultibasePublicKey);
+
+        var updateResult = await method.UpdateAsync(didA, new DidWebVhUpdateOptions
+        {
+            CurrentLogContent = Encoding.UTF8.GetBytes(logA),
+            SigningKey = signerA,
+            ParameterUpdates = new DidWebVhParameterUpdates
+            {
+                Prerotation = true,
+                NextKeyHashes = [commitment]
+            }
+        });
+
+        updateResult.AuthorizationChanged.Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task Issue82_Update_WitnessChange_AuthorizationChangedTrue()
+    {
+        var (method, _) = CreateMethod();
+        var (didA, logA, signerA) = await CreateWebVhDidAsync(method, "alice");
+        var witnessSigner = CreateEd25519Signer();
+
+        var updateResult = await method.UpdateAsync(didA, new DidWebVhUpdateOptions
+        {
+            CurrentLogContent = Encoding.UTF8.GetBytes(logA),
+            SigningKey = signerA,
+            ParameterUpdates = new DidWebVhParameterUpdates
+            {
+                Witness = new WitnessConfig
+                {
+                    Threshold = 1,
+                    Witnesses = [new WitnessEntry { Id = $"did:key:{witnessSigner.MultibasePublicKey}", Weight = 1 }]
+                }
+            }
+        });
+
+        updateResult.AuthorizationChanged.Should().BeTrue();
+    }
+
+    // ----------------------------------------------------------------
+    // Issue #82 (adversarial audit follow-up): the DID's self-certifying
+    // SCID must be bound to the genesis on BOTH the read and write paths.
+    // A domain/host-controlling attacker can serve a self-consistent
+    // genesis whose latest state.id claims the victim DID (passing the
+    // State.Id check) but whose genesis SCID is the attacker's — this is
+    // caught only by binding ExtractScid(did) == genesis SCID.
+    // ----------------------------------------------------------------
+
+    /// <summary>
+    /// Signs a log entry exactly as the driver does (eddsa-jcs-2022 over the entry without its
+    /// proof, verificationMethod = signer's own did:key), so tests can forge a validly-signed log.
+    /// </summary>
+    private static async Task<DataIntegrityProofValue> SignEntryAsync(LogEntry entry, ISigner signer)
+    {
+        var suite = new EddsaJcs2022Cryptosuite();
+        var proofOptions = new DataIntegrityProof
+        {
+            Cryptosuite = EddsaJcs2022Cryptosuite.CryptosuiteName,
+            VerificationMethod = $"did:key:{signer.MultibasePublicKey}#{signer.MultibasePublicKey}",
+            Created = entry.VersionTime.ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ"),
+            ProofPurpose = "assertionMethod",
+        };
+        using var document = JsonDocument.Parse(LogEntrySerializer.SerializeWithoutProof(entry));
+        var proof = await suite.CreateProofAsync(document.RootElement, proofOptions, signer, default);
+        return new DataIntegrityProofValue
+        {
+            Type = proof.Type,
+            Cryptosuite = proof.Cryptosuite!,
+            VerificationMethod = proof.VerificationMethod!,
+            Created = proof.Created!,
+            ProofPurpose = proof.ProofPurpose!,
+            ProofValue = proof.ProofValue!,
+        };
+    }
+
+    /// <summary>
+    /// Builds a self-consistent, validly-signed single-entry log whose document <c>id</c> is the
+    /// literal <paramref name="claimedDid"/> but whose genesis SCID is freshly computed from the
+    /// attacker's own content (so it does NOT equal <paramref name="claimedDid"/>'s SCID). This is
+    /// what an attacker serves at the victim's URL; it passes chain validation and the State.Id
+    /// check, and is only rejected by the genesis-SCID binding.
+    /// </summary>
+    private static async Task<byte[]> ForgeGenesisClaimingDidAsync(string claimedDid, ISigner attackerKey)
+    {
+        var attackerMb = attackerKey.MultibasePublicKey;
+        var doc = new DidDocument
+        {
+            Id = new Did(claimedDid),
+            VerificationMethod =
+            [
+                new VerificationMethod
+                {
+                    Id = $"{claimedDid}#{attackerMb}",
+                    Type = "Multikey",
+                    Controller = new Did(claimedDid),
+                    PublicKeyMultibase = attackerMb
+                }
+            ]
+        };
+        var parameters = new LogEntryParameters
+        {
+            Method = DidWebVhMethod.MethodVersion,
+            Scid = ScidGenerator.SafePlaceholder,
+            UpdateKeys = [attackerMb],
+            Deactivated = false
+        };
+        var entry = new LogEntry
+        {
+            VersionId = $"1-{ScidGenerator.SafePlaceholder}",
+            VersionTime = DateTimeOffset.UtcNow,
+            Parameters = parameters,
+            State = doc
+        };
+
+        // Compute a self-consistent SCID over this forged genesis (state.id kept literal).
+        var jsonWithPlaceholder = LogEntrySerializer.SerializeWithoutProof(entry)
+            .Replace(ScidGenerator.SafePlaceholder, ScidGenerator.Placeholder);
+        var scid = ScidGenerator.ComputeScid(jsonWithPlaceholder);
+        var finalEntry = LogEntrySerializer.DeserializeEntry(
+            ScidGenerator.ReplacePlaceholders(jsonWithPlaceholder, scid));
+
+        finalEntry = finalEntry with { Proof = [await SignEntryAsync(finalEntry, attackerKey)] };
+        return LogEntrySerializer.ToJsonLines([finalEntry]);
+    }
+
+    [Fact]
+    public async Task Issue82_Resolve_ForgedGenesisClaimingDid_ReturnsInvalidDidLog()
+    {
+        var (method, httpClient) = CreateMethod();
+
+        // Victim publishes a real DID.
+        var victimSigner = CreateEd25519Signer();
+        var victim = await method.CreateAsync(new DidWebVhCreateOptions
+        {
+            Domain = "example.com",
+            Path = "alice",
+            UpdateKey = victimSigner
+        });
+        var victimDid = victim.Did.Value;
+
+        // Attacker who controls example.com serves a forged genesis: its document claims the
+        // victim's DID, but it is self-signed by the attacker's key with the attacker's own SCID.
+        var attackerKey = CreateEd25519Signer();
+        var forgedLog = await ForgeGenesisClaimingDidAsync(victimDid, attackerKey);
+
+        // Sanity: the forged log's latest entry really does claim the victim DID (so the older
+        // State.Id check alone would NOT catch it) — the SCID binding is what rejects it.
+        var forgedEntries = LogEntrySerializer.ParseJsonLines(forgedLog);
+        forgedEntries[^1].State.Id.Value.Should().Be(victimDid);
+        forgedEntries[0].Parameters.Scid.Should().NotBe(DidUrlMapper.ExtractScid(victimDid));
+
+        var logUrl = DidUrlMapper.MapToLogUrl(victimDid);
+        httpClient.SetLogResponse(logUrl, forgedLog);
+
+        var resolveResult = await method.ResolveAsync(victimDid);
+
+        resolveResult.DidDocument.Should().BeNull("the genesis SCID does not match the DID's SCID");
+        resolveResult.ResolutionMetadata.Error.Should().Be("invalidDidLog");
+    }
+
+    [Fact]
+    public async Task Issue82_Update_ForgedLogClaimingDid_Throws()
+    {
+        var (method, _) = CreateMethod();
+
+        var victimSigner = CreateEd25519Signer();
+        var victim = await method.CreateAsync(new DidWebVhCreateOptions
+        {
+            Domain = "example.com",
+            Path = "alice",
+            UpdateKey = victimSigner
+        });
+        var victimDid = victim.Did.Value;
+
+        // Attacker crafts a validly-signed log whose latest entry claims the victim DID and whose
+        // authority is the attacker's own key. RequireAppendableLogForDid's State.Id check passes;
+        // the genesis-SCID binding must reject it.
+        var attackerKey = CreateEd25519Signer();
+        var forgedLog = await ForgeGenesisClaimingDidAsync(victimDid, attackerKey);
+
+        var act = () => method.UpdateAsync(victimDid, new DidWebVhUpdateOptions
+        {
+            CurrentLogContent = forgedLog,
+            SigningKey = attackerKey,
+            NewDocument = new DidDocument { Id = new Did(victimDid) }
+        });
+
+        await act.Should().ThrowAsync<ArgumentException>().WithMessage("*genesis SCID*");
+    }
+
+    [Fact]
+    public async Task Issue82_Deactivate_ForgedLogClaimingDid_Throws()
+    {
+        var (method, _) = CreateMethod();
+
+        var victimSigner = CreateEd25519Signer();
+        var victim = await method.CreateAsync(new DidWebVhCreateOptions
+        {
+            Domain = "example.com",
+            Path = "alice",
+            UpdateKey = victimSigner
+        });
+        var victimDid = victim.Did.Value;
+
+        var attackerKey = CreateEd25519Signer();
+        var forgedLog = await ForgeGenesisClaimingDidAsync(victimDid, attackerKey);
+
+        var act = () => method.DeactivateAsync(victimDid, new DidWebVhDeactivateOptions
+        {
+            CurrentLogContent = forgedLog,
+            SigningKey = attackerKey
+        });
+
+        await act.Should().ThrowAsync<ArgumentException>().WithMessage("*genesis SCID*");
+    }
 }

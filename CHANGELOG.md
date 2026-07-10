@@ -5,6 +5,46 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Security
+
+- **did:webvh resolution now binds the DID's self-certifying SCID to the genesis entry** (#82). Resolution previously
+  anchored identity only on the latest entry's `state.id` — an attacker-controllable document field — and validated the
+  genesis SCID for internal self-consistency only. It never compared the SCID embedded in the requested DID string
+  (`did:webvh:<SCID>:<domain>`) against the genesis entry's actual SCID. An attacker able to serve `did.jsonl` at the
+  victim's URL (subdomain/host takeover, malicious CDN, or on-path MITM) could therefore serve a self-consistent genesis
+  signed by *their own* key, with `state.id` set to the victim's literal DID, and the resolver would return the
+  attacker's document with attacker keys as the authoritative resolution of the victim's unchanged DID. This defeated
+  the self-certifying property that is did:webvh's entire security gain over did:web. `ResolveCoreAsync` now rejects
+  (`invalidDidLog`) any log whose genesis SCID differs from the SCID in the requested DID, and the same binding is
+  enforced on the write path (see below), so the writer can never emit a log its own resolver rejects. Discovered by an
+  adversarial audit while fixing the Update/Deactivate binding below.
+
+### Fixed
+
+- **did:webvh Update/Deactivate now bind their inputs to the target DID** (#82). `DidWebVhMethod.UpdateCoreAsync`
+  and `DeactivateCoreAsync` previously validated the caller-supplied `CurrentLogContent` chain and authorized the
+  `SigningKey` against *that log's* `updateKeys` without checking that the log actually belonged to the `did` being
+  operated on, and Update accepted a `NewDocument` without checking `NewDocument.Id == did`. An "update of A" could
+  therefore be driven entirely by B's log + B's key (returning a document claiming `Id = A`), and the driver could
+  emit an appended log that its own resolver rejects (resolution enforces `state.id == did`) — publishing it would
+  brick the identity. Both operations now reject, with `ArgumentException`, a log whose latest entry's `state.id`
+  differs from `did`, a log whose **genesis SCID** differs from the SCID in `did` (the self-certification binding
+  above, applied writer-side so an attacker-owned log cannot authorize an update of the victim DID merely by claiming
+  its id), a log that is already deactivated, and (Update) a `NewDocument` whose `Id` differs from `did`. This makes
+  the write path match the read path's invariants.
+
+### Added
+
+- **`DidUpdateResult.AuthorizationChanged`** (#82) — a method-agnostic boolean signalling whether an update changed
+  the method's authorization material. did:webvh keeps update authority (`updateKeys` and related parameters) in the
+  log parameters rather than the DID Document, so a caller reading back `DidUpdateResult.DidDocument` could not
+  otherwise tell a document-only edit apart from a (possibly smuggled) key rotation. The did:webvh driver sets this
+  by comparing the effective `updateKeys` / `nextKeyHashes` / `prerotation` / `witness` configuration before and
+  after the update (`ttl` is excluded as a non-authority caching hint). The property is additive with a safe
+  `false` default, so existing consumers are unaffected.
+
 ## [2.0.1] - 2026-06-14
 
 ### Changed
