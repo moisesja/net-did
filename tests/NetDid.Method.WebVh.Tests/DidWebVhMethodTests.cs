@@ -222,6 +222,47 @@ public class DidWebVhMethodTests
         result.ResolutionMetadata.Error.Should().Be("methodNotSupported");
     }
 
+    /// <summary>
+    /// Stands in for the HTTP layer surfacing an exception mid-fetch, as
+    /// DefaultWebVhHttpClient does when the token is cancelled or HttpClient times out.
+    /// </summary>
+    private sealed class ThrowingWebVhHttpClient(Func<CancellationToken, Exception> exceptionFactory) : IWebVhHttpClient
+    {
+        public Task<byte[]?> FetchDidLogAsync(Uri logUrl, CancellationToken ct = default)
+            => Task.FromException<byte[]?>(exceptionFactory(ct));
+
+        public Task<byte[]?> FetchWitnessFileAsync(Uri witnessUrl, CancellationToken ct = default)
+            => Task.FromException<byte[]?>(exceptionFactory(ct));
+    }
+
+    [Fact]
+    public async Task Issue81_Resolve_CallerCancellation_PropagatesOperationCanceledException()
+    {
+        var method = new DidWebVhMethod(new ThrowingWebVhHttpClient(ct => new OperationCanceledException(ct)));
+        using var cts = new CancellationTokenSource();
+        cts.Cancel();
+
+        var act = () => method.ResolveAsync("did:webvh:QmNotExist:example.com", options: null, cts.Token);
+
+        await act.Should().ThrowAsync<OperationCanceledException>();
+    }
+
+    [Fact]
+    public async Task Issue81_Resolve_HttpTimeoutWithoutCallerCancellation_ReturnsNotFound()
+    {
+        // HttpClient.Timeout surfaces as TaskCanceledException (inner TimeoutException on
+        // .NET 5+) while the caller's token is NOT cancelled — that must stay a resolution
+        // failure, not propagate as cancellation.
+        var method = new DidWebVhMethod(new ThrowingWebVhHttpClient(
+            _ => new TaskCanceledException("The request was canceled due to the configured HttpClient.Timeout.",
+                new TimeoutException())));
+
+        var result = await method.ResolveAsync("did:webvh:QmNotExist:example.com");
+
+        result.DidDocument.Should().BeNull();
+        result.ResolutionMetadata.Error.Should().Be("notFound");
+    }
+
     // ================================================================
     // UPDATE TESTS
     // ================================================================

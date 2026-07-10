@@ -314,6 +314,13 @@ public sealed class DidWebVhMethod : DidMethodBase
                 Artifacts = artifacts
             };
         }
+        // Caller-initiated cancellation is not a resolution failure — propagate it. The
+        // ct.IsCancellationRequested filter keeps an HttpClient.Timeout-driven
+        // TaskCanceledException (caller token not cancelled) normalizing to notFound below.
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw;
+        }
         catch (Core.Exceptions.LogChainValidationException ex)
         {
             _logger.LogWarning(ex, "Chain validation failed for {Did}", did);
