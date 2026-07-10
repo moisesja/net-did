@@ -24,6 +24,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **did:webvh resolution no longer swallows caller-initiated cancellation** (#81). `DidWebVhMethod.ResolveCoreAsync`
+  wrapped the whole resolve in a broad `catch (Exception)` that converted a caller-cancelled `CancellationToken`'s
+  `OperationCanceledException`/`TaskCanceledException` (surfaced through the HTTP fetch) into
+  `DidResolutionResult.NotFound`, so a consumer that cancelled resolution could not distinguish "the DID doesn't
+  exist" from "I cancelled". A `catch (OperationCanceledException) when (ct.IsCancellationRequested)` clause now
+  rethrows genuine cooperative cancellation. The `when` filter deliberately preserves the existing normalization of
+  an `HttpClient.Timeout`-driven `TaskCanceledException` (caller token not cancelled) to a `notFound` resolution
+  failure — configurable timeouts are tracked separately in #80. The broad catches in `DidKeyMethod`/`DidPeerMethod`
+  are untouched: those paths are CPU-bound and never observe the token, so no cancellation can reach them.
+
 - **did:webvh Update/Deactivate now bind their inputs to the target DID** (#82). `DidWebVhMethod.UpdateCoreAsync`
   and `DeactivateCoreAsync` previously validated the caller-supplied `CurrentLogContent` chain and authorized the
   `SigningKey` against *that log's* `updateKeys` without checking that the log actually belonged to the `did` being
