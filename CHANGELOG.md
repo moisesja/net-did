@@ -18,8 +18,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   attacker's document with attacker keys as the authoritative resolution of the victim's unchanged DID. This defeated
   the self-certifying property that is did:webvh's entire security gain over did:web. `ResolveCoreAsync` now rejects
   (`invalidDidLog`) any log whose genesis SCID differs from the SCID in the requested DID, and the same binding is
-  enforced on the write path (see below), so the writer can never emit a log its own resolver rejects. Discovered by an
-  adversarial audit while fixing the Update/Deactivate binding below.
+  enforced on the write path (see below), so the writer cannot emit a log the resolver rejects on DID/SCID identity
+  grounds (other resolution checks, e.g. witness thresholds, remain orthogonal). Discovered by an adversarial audit
+  while fixing the Update/Deactivate binding below.
 
 ### Fixed
 
@@ -37,13 +38,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **`DidUpdateResult.AuthorizationChanged`** (#82) — a method-agnostic boolean signalling whether an update changed
-  the method's authorization material. did:webvh keeps update authority (`updateKeys` and related parameters) in the
-  log parameters rather than the DID Document, so a caller reading back `DidUpdateResult.DidDocument` could not
-  otherwise tell a document-only edit apart from a (possibly smuggled) key rotation. The did:webvh driver sets this
-  by comparing the effective `updateKeys` / `nextKeyHashes` / `prerotation` / `witness` configuration before and
-  after the update (`ttl` is excluded as a non-authority caching hint). The property is additive with a safe
-  `false` default, so existing consumers are unaffected.
+- **`DidUpdateResult.AuthorizationChange`** (#82) — a method-agnostic signal of whether an update changed the
+  method's authorization material, typed as the new **`AuthorizationChangeStatus`** enum (`Unknown` / `Unchanged` /
+  `Changed`). did:webvh keeps update authority (`updateKeys` and related parameters) in the log parameters rather
+  than the DID Document, so a caller reading back `DidUpdateResult.DidDocument` could not otherwise tell a
+  document-only edit apart from a (possibly smuggled) key rotation. The did:webvh driver reports `Changed` /
+  `Unchanged` by comparing the effective `updateKeys` / `nextKeyHashes` / `prerotation` / `witness` configuration
+  before and after the update (`ttl` is excluded as a non-authority caching hint; the `witness` comparison is
+  order-sensitive because enforcement resolves a witness by first-id match). The default is **`Unknown` so absence
+  of evidence fails closed** — a method that does not evaluate change evidence (including any third-party
+  `IDidMethod`) leaves the value at `Unknown`, and a consumer enforcing a document-only postcondition must require
+  `Unchanged` explicitly rather than treat "not reported" as "confirmed unchanged."
 
 ## [2.0.1] - 2026-06-14
 

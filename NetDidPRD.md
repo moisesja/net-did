@@ -269,13 +269,18 @@ public sealed record DidUpdateResult
     public required DidDocument DidDocument { get; init; }
     public IReadOnlyDictionary<string, object>? Artifacts { get; init; }
 
-    /// True if the update changed the method's authorization material (did:webvh:
-    /// updateKeys / nextKeyHashes / prerotation / witness config), i.e. it was not a
-    /// document-only edit. did:webvh keeps update authority in the log parameters, not
-    /// the DID Document, so a method-agnostic caller reading back DidDocument cannot
-    /// otherwise distinguish a document edit from a key rotation. Default: false.
-    public bool AuthorizationChanged { get; init; }
+    /// Whether the update changed the method's authorization material (did:webvh:
+    /// updateKeys / nextKeyHashes / prerotation / witness config). did:webvh keeps update
+    /// authority in the log parameters, not the DID Document, so a method-agnostic caller
+    /// reading back DidDocument cannot otherwise distinguish a document edit from a key
+    /// rotation. Defaults to Unknown so absence of evidence fails closed: a caller enforcing
+    /// a document-only postcondition must require Unchanged (never treat "not reported" as
+    /// "confirmed unchanged").
+    public AuthorizationChangeStatus AuthorizationChange { get; init; }
 }
+
+/// Tri-state so that a method which does not evaluate change evidence fails closed.
+public enum AuthorizationChangeStatus { Unknown = 0, Unchanged, Changed }
 
 public sealed record DidDeactivateResult
 {
@@ -1060,7 +1065,7 @@ well-known placeholder string (`{SCID}`) that stands in for the real SCID during
 ### 7.7 Update
 
 1. Load the current DID log and validate the chain.
-2. **Bind the inputs to the target DID (issue #82).** The supplied `CurrentLogContent` must belong to the `did` being updated — its latest entry's `state.id` MUST equal `did`, its **genesis SCID MUST equal the SCID in `did`** (the same self-certification binding resolution enforces, so an attacker-owned log cannot authorize an update of the victim DID merely by claiming its id), and the log MUST NOT already be deactivated. If `NewDocument` is supplied, `NewDocument.id` MUST equal `did`. This guarantees Update can never emit a log that Resolve would reject. Violations throw `ArgumentException`.
+2. **Bind the inputs to the target DID (issue #82).** The supplied `CurrentLogContent` must belong to the `did` being updated — its latest entry's `state.id` MUST equal `did`, its **genesis SCID MUST equal the SCID in `did`** (the same self-certification binding resolution enforces, so an attacker-owned log cannot authorize an update of the victim DID merely by claiming its id), and the log MUST NOT already be deactivated. If `NewDocument` is supplied, `NewDocument.id` MUST equal `did`. This guarantees Update cannot emit a log that Resolve would reject **on DID/SCID identity grounds** (other resolution checks — e.g. witness thresholds — are orthogonal: a witness-policy update still needs matching witness proofs published for the resulting log to resolve). Violations throw `ArgumentException`.
    - *Portability note:* net-did does not implement did:webvh portability (there is no `Portable` field in `DidWebVhParameterUpdates`). If portability is added later, the `state.id == did` / `NewDocument.id == did` binding needs a carve-out for the domain-change entry.
 3. Build a new log entry with the updated DID Document and/or parameters.
 4. If pre-rotation is active: the proof MUST be signed by a key committed to in the previous entry, and new pre-rotation commitments MUST be provided.
@@ -1068,7 +1073,7 @@ well-known placeholder string (`{SCID}`) that stands in for the real SCID during
 6. Sign with an authorized update key.
 7. Append to `did.jsonl`.
 8. If witnesses are configured, collect witness signatures into `did-witness.json`.
-9. Return the new log entry for the caller to publish, with `DidUpdateResult.AuthorizationChanged` set when the update altered the authorization material (`updateKeys` / `nextKeyHashes` / `prerotation` / `witness`) so a method-agnostic caller can enforce a document-only postcondition.
+9. Return the new log entry for the caller to publish, with `DidUpdateResult.AuthorizationChange` set to `Changed`/`Unchanged` according to whether the update altered the authorization material (`updateKeys` / `nextKeyHashes` / `prerotation` / `witness`) so a method-agnostic caller can enforce a document-only postcondition. (The type defaults to `Unknown` for methods that do not report evidence, so the postcondition fails closed.)
 
 ### 7.8 Deactivate
 

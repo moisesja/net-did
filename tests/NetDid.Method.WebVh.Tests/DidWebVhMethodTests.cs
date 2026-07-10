@@ -1951,7 +1951,7 @@ public class DidWebVhMethodTests
     }
 
     [Fact]
-    public async Task Issue82_Update_DocumentOnlyEdit_AuthorizationChangedFalse()
+    public async Task Issue82_Update_DocumentOnlyEdit_ReportsUnchanged()
     {
         var (method, httpClient) = CreateMethod();
         var signerA = CreateEd25519Signer();
@@ -1985,7 +1985,7 @@ public class DidWebVhMethodTests
             NewDocument = editedDoc
         });
 
-        updateResult.AuthorizationChanged.Should().BeFalse();
+        updateResult.AuthorizationChange.Should().Be(AuthorizationChangeStatus.Unchanged);
 
         // Writer/reader parity: the appended log must resolve for the target DID.
         var updatedLog = (string)updateResult.Artifacts![DidWebVhArtifacts.DidJsonl];
@@ -2001,11 +2001,11 @@ public class DidWebVhMethodTests
             CurrentLogContent = Encoding.UTF8.GetBytes(logA),
             SigningKey = signerA
         });
-        preserveResult.AuthorizationChanged.Should().BeFalse();
+        preserveResult.AuthorizationChange.Should().Be(AuthorizationChangeStatus.Unchanged);
     }
 
     [Fact]
-    public async Task Issue82_Update_KeyRotation_AuthorizationChangedTrue()
+    public async Task Issue82_Update_KeyRotation_ReportsChanged()
     {
         // Reproduction #2: a smuggled updateKeys rotation is invisible in DidDocument but must
         // be flagged so a method-agnostic caller can reject an unintended authority change.
@@ -2023,11 +2023,11 @@ public class DidWebVhMethodTests
             }
         });
 
-        updateResult.AuthorizationChanged.Should().BeTrue();
+        updateResult.AuthorizationChange.Should().Be(AuthorizationChangeStatus.Changed);
     }
 
     [Fact]
-    public async Task Issue82_Update_SameUpdateKeysSupplied_AuthorizationChangedFalse()
+    public async Task Issue82_Update_SameUpdateKeysSupplied_ReportsUnchanged()
     {
         // Re-supplying the identical authorized key set is a no-op for authority.
         var (method, _) = CreateMethod();
@@ -2043,11 +2043,11 @@ public class DidWebVhMethodTests
             }
         });
 
-        updateResult.AuthorizationChanged.Should().BeFalse();
+        updateResult.AuthorizationChange.Should().Be(AuthorizationChangeStatus.Unchanged);
     }
 
     [Fact]
-    public async Task Issue82_Update_PrerotationAndNextKeyHashes_AuthorizationChangedTrue()
+    public async Task Issue82_Update_PrerotationAndNextKeyHashes_ReportsChanged()
     {
         var (method, _) = CreateMethod();
         var (didA, logA, signerA) = await CreateWebVhDidAsync(method, "alice");
@@ -2065,11 +2065,11 @@ public class DidWebVhMethodTests
             }
         });
 
-        updateResult.AuthorizationChanged.Should().BeTrue();
+        updateResult.AuthorizationChange.Should().Be(AuthorizationChangeStatus.Changed);
     }
 
     [Fact]
-    public async Task Issue82_Update_WitnessChange_AuthorizationChangedTrue()
+    public async Task Issue82_Update_WitnessChange_ReportsChanged()
     {
         var (method, _) = CreateMethod();
         var (didA, logA, signerA) = await CreateWebVhDidAsync(method, "alice");
@@ -2089,7 +2089,60 @@ public class DidWebVhMethodTests
             }
         });
 
-        updateResult.AuthorizationChanged.Should().BeTrue();
+        updateResult.AuthorizationChange.Should().Be(AuthorizationChangeStatus.Changed);
+    }
+
+    [Fact]
+    public async Task Issue82_Update_WitnessReorderWithDuplicateIds_ReportsChanged()
+    {
+        // Regression for the review's WitnessConfigEquals false-negative: witness enforcement
+        // resolves a proof to a witness by the FIRST id match, so reordering duplicate ids with
+        // different weights changes the effective policy even though the multiset is identical.
+        // An order-insensitive comparison would report Unchanged and mask a real authority change.
+        var (method, _) = CreateMethod();
+        var (didA, logA, signerA) = await CreateWebVhDidAsync(method, "alice");
+        var wid = $"did:key:{CreateEd25519Signer().MultibasePublicKey}";
+
+        // Establish a witness policy carrying a duplicate id (weights 1 then 100).
+        var u1 = await method.UpdateAsync(didA, new DidWebVhUpdateOptions
+        {
+            CurrentLogContent = Encoding.UTF8.GetBytes(logA),
+            SigningKey = signerA,
+            ParameterUpdates = new DidWebVhParameterUpdates
+            {
+                Witness = new WitnessConfig
+                {
+                    Threshold = 50,
+                    Witnesses =
+                    [
+                        new WitnessEntry { Id = wid, Weight = 1 },
+                        new WitnessEntry { Id = wid, Weight = 100 }
+                    ]
+                }
+            }
+        });
+        var log1 = (string)u1.Artifacts![DidWebVhArtifacts.DidJsonl];
+
+        // Reorder only — same multiset of (id, weight), different effective policy.
+        var u2 = await method.UpdateAsync(didA, new DidWebVhUpdateOptions
+        {
+            CurrentLogContent = Encoding.UTF8.GetBytes(log1),
+            SigningKey = signerA,
+            ParameterUpdates = new DidWebVhParameterUpdates
+            {
+                Witness = new WitnessConfig
+                {
+                    Threshold = 50,
+                    Witnesses =
+                    [
+                        new WitnessEntry { Id = wid, Weight = 100 },
+                        new WitnessEntry { Id = wid, Weight = 1 }
+                    ]
+                }
+            }
+        });
+
+        u2.AuthorizationChange.Should().Be(AuthorizationChangeStatus.Changed);
     }
 
     // ----------------------------------------------------------------
