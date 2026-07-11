@@ -1,3 +1,5 @@
+using System.Globalization;
+using System.Net;
 using NetDid.Core.Parsing;
 
 namespace NetDid.Method.WebVh;
@@ -89,11 +91,34 @@ public static class DidUrlMapper
             host = decoded;
         }
 
-        if (string.IsNullOrEmpty(host) || Uri.CheckHostName(host) == UriHostNameType.Unknown)
+        string canonicalHost;
+        try
+        {
+            // Apply IDNA mapping before the security classification. Unicode label separators
+            // and compatibility digits can otherwise disguise localhost or a private IP literal
+            // even though Uri/SocketsHttpHandler canonicalizes them before connecting.
+            canonicalHost = new IdnMapping().GetAscii(host);
+        }
+        catch (ArgumentException)
+        {
+            throw new ArgumentException(
+                $"Invalid did:webvh domain — invalid host '{host}': {did}");
+        }
+
+        if (string.IsNullOrEmpty(canonicalHost)
+            || Uri.CheckHostName(canonicalHost) == UriHostNameType.Unknown)
             throw new ArgumentException(
                 $"Invalid did:webvh domain — invalid host '{host}': {did}");
 
-        return (host, port);
+        if (WebVhNetworkPolicy.IsLocalhost(canonicalHost)
+            || IPAddress.TryParse(canonicalHost, out var address)
+                && !WebVhNetworkPolicy.IsPublicAddress(address))
+        {
+            throw new ArgumentException(
+                $"Invalid did:webvh domain — non-public host '{host}': {did}");
+        }
+
+        return (canonicalHost, port);
     }
 
     /// <summary>

@@ -124,10 +124,29 @@ public class DidUrlMapperTests
         url.Should().Be(new Uri("https://example.com/users/alice/did.jsonl"));
     }
 
-    [Fact]
-    public void Issue49_MapToLogUrl_IpV4Host_Maps()
+    [Theory]
+    [InlineData("did:webvh:QmTest:localhost")]
+    [InlineData("did:webvh:QmTest:sub.localhost")]
+    [InlineData("did:webvh:QmTest:0.0.0.0")]
+    [InlineData("did:webvh:QmTest:10.0.0.5")]
+    [InlineData("did:webvh:QmTest:127.0.0.1")]
+    [InlineData("did:webvh:QmTest:2130706433")]
+    [InlineData("did:webvh:QmTest:0177.0.0.1")]
+    [InlineData("did:webvh:QmTest:0x7f000001")]
+    [InlineData("did:webvh:QmTest:localhost。")]
+    [InlineData("did:webvh:QmTest:localhost．")]
+    [InlineData("did:webvh:QmTest:localhost｡")]
+    [InlineData("did:webvh:QmTest:１２７。０。０。１")]
+    [InlineData("did:webvh:QmTest:127。0。0。1")]
+    [InlineData("did:webvh:QmTest:169.254.169.254")]
+    [InlineData("did:webvh:QmTest:172.16.0.1")]
+    [InlineData("did:webvh:QmTest:172.31.255.255")]
+    [InlineData("did:webvh:QmTest:192.168.1.10")]
+    [InlineData("did:webvh:QmTest:192.168.1.10%3A8443")]
+    public void SecurityAdvisory_MapToLogUrl_NonPublicHost_Throws(string did)
     {
-        var url = DidUrlMapper.MapToLogUrl("did:webvh:QmTest:192.168.1.10");
-        url.Should().Be(new Uri("https://192.168.1.10/.well-known/did.jsonl"));
+        var act = () => DidUrlMapper.MapToLogUrl(did);
+
+        act.Should().Throw<ArgumentException>();
     }
 }

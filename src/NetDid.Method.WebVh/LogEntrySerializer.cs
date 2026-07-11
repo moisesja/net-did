@@ -69,7 +69,16 @@ public static class LogEntrySerializer
         writer.WriteString("versionId", entry.VersionId);
 
         // versionTime — ISO 8601 UTC
-        writer.WriteString("versionTime", entry.VersionTime.ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ"));
+        writer.WritePropertyName("versionTime");
+        if (entry.VersionTimeRawJson is not null
+            && WebVhTimestamp.Matches(entry.VersionTime, entry.VersionTimeWireValue))
+        {
+            writer.WriteRawValue(entry.VersionTimeRawJson);
+        }
+        else
+        {
+            writer.WriteStringValue(WebVhTimestamp.Format(entry.VersionTime));
+        }
 
         // parameters
         writer.WritePropertyName("parameters");
@@ -180,7 +189,8 @@ public static class LogEntrySerializer
         var root = doc.RootElement;
 
         var versionId = root.GetProperty("versionId").GetString()!;
-        var versionTime = root.GetProperty("versionTime").GetString()!;
+        var versionTimeElement = root.GetProperty("versionTime");
+        var versionTime = versionTimeElement.GetString()!;
         var parameters = ParseParameters(root.GetProperty("parameters"));
 
         // Parse state as a DID Document
@@ -197,7 +207,9 @@ public static class LogEntrySerializer
         return new LogEntry
         {
             VersionId = versionId,
-            VersionTime = DateTimeOffset.Parse(versionTime),
+            VersionTime = WebVhTimestamp.Parse(versionTime),
+            VersionTimeWireValue = versionTime,
+            VersionTimeRawJson = versionTimeElement.GetRawText(),
             Parameters = parameters,
             State = state,
             Proof = proof

@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Text;
 using System.Text.Json;
 using Microsoft.Extensions.Logging;
@@ -44,7 +45,7 @@ public sealed class DidWebVhMethod : DidMethodBase
         string entryJsonWithoutProof, ISigner signer, DateTimeOffset versionTime, CancellationToken ct)
     {
         var verificationMethod = $"did:key:{signer.MultibasePublicKey}#{signer.MultibasePublicKey}";
-        var created = versionTime.ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ");
+        var created = WebVhTimestamp.Format(versionTime);
 
         var proofOptions = new DataIntegrityProof
         {
@@ -237,8 +238,12 @@ public sealed class DidWebVhMethod : DidMethodBase
                 };
             }
 
-            // Validate witnesses for ALL entries that require it
-            bool anyEntryRequiresWitness = perEntryParams.Any(p => p.Witness is { Threshold: > 0 });
+            // Validate witnesses for every governed entry. Genesis and the first activation
+            // use the policy they declare; after activation, the prior effective policy governs
+            // the transition. In particular, an entry cannot disable or replace the requirement
+            // that authorizes that entry itself.
+            bool anyEntryRequiresWitness = WitnessValidator.RequiresWitness(
+                perEntryParams, targetIndex);
             if (anyEntryRequiresWitness)
             {
                 var witnessUrl = DidUrlMapper.MapToWitnessUrl(did);
@@ -403,9 +408,10 @@ public sealed class DidWebVhMethod : DidMethodBase
 
         // Build new entry — hash includes previous versionId per spec
         var versionNumber = entries.Count + 1;
+        var versionNumberText = versionNumber.ToString(CultureInfo.InvariantCulture);
         var newEntry = new LogEntry
         {
-            VersionId = $"{versionNumber}-{previousEntry.VersionId}",
+            VersionId = $"{versionNumberText}-{previousEntry.VersionId}",
             VersionTime = DateTimeOffset.UtcNow,
             Parameters = newParams,
             State = newDocument
@@ -414,7 +420,7 @@ public sealed class DidWebVhMethod : DidMethodBase
         // Compute entry hash from the entry with previous versionId
         var entryJsonWithoutProof = LogEntrySerializer.SerializeWithoutProof(newEntry);
         var entryHash = ScidGenerator.ComputeEntryHash(entryJsonWithoutProof);
-        newEntry = newEntry with { VersionId = $"{versionNumber}-{entryHash}" };
+        newEntry = newEntry with { VersionId = $"{versionNumberText}-{entryHash}" };
 
         // Re-serialize with correct versionId
         entryJsonWithoutProof = LogEntrySerializer.SerializeWithoutProof(newEntry);
@@ -477,6 +483,7 @@ public sealed class DidWebVhMethod : DidMethodBase
 
         // Build deactivation entry with minimal document
         var versionNumber = entries.Count + 1;
+        var versionNumberText = versionNumber.ToString(CultureInfo.InvariantCulture);
         var minimalDoc = new DidDocument { Id = new Did(did) };
 
         var deactivationParams = new LogEntryParameters
@@ -486,7 +493,7 @@ public sealed class DidWebVhMethod : DidMethodBase
 
         var deactivationEntry = new LogEntry
         {
-            VersionId = $"{versionNumber}-{previousEntry.VersionId}",
+            VersionId = $"{versionNumberText}-{previousEntry.VersionId}",
             VersionTime = DateTimeOffset.UtcNow,
             Parameters = deactivationParams,
             State = minimalDoc
@@ -495,7 +502,7 @@ public sealed class DidWebVhMethod : DidMethodBase
         // Compute entry hash
         var entryJsonWithoutProof = LogEntrySerializer.SerializeWithoutProof(deactivationEntry);
         var entryHash = ScidGenerator.ComputeEntryHash(entryJsonWithoutProof);
-        deactivationEntry = deactivationEntry with { VersionId = $"{versionNumber}-{entryHash}" };
+        deactivationEntry = deactivationEntry with { VersionId = $"{versionNumberText}-{entryHash}" };
 
         // Re-serialize with correct versionId
         entryJsonWithoutProof = LogEntrySerializer.SerializeWithoutProof(deactivationEntry);
@@ -732,7 +739,7 @@ public sealed class DidWebVhMethod : DidMethodBase
     /// Find the target entry index based on resolution options.
     /// Returns -1 if a specific version was requested but not found.
     /// </summary>
-    private static int FindTargetIndex(
+    internal static int FindTargetIndex(
         IReadOnlyList<LogEntry> entries, DidResolutionOptions? options)
     {
         if (options is null)
@@ -749,9 +756,14 @@ public sealed class DidWebVhMethod : DidMethodBase
             return -1; // Requested version not found
         }
 
-        // VersionTime filtering — find latest entry at or before the specified time
-        if (options.VersionTime is not null && DateTimeOffset.TryParse(options.VersionTime, out var versionTime))
+        // VersionTime filtering — find latest entry at or before the specified time. A caller
+        // that supplies an invalid timestamp requested a constrained resolution; never weaken
+        // that request by silently falling back to the latest entry.
+        if (options.VersionTime is not null)
         {
+            if (!WebVhTimestamp.TryParse(options.VersionTime, out var versionTime))
+                return -1;
+
             int bestIndex = -1;
             for (int i = 0; i < entries.Count; i++)
             {
