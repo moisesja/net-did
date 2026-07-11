@@ -7,6 +7,9 @@ namespace NetDid.Method.WebVh;
 /// </summary>
 public sealed record WebVhHttpClientOptions
 {
+    private static readonly TimeSpan MaxFiniteTimeout =
+        TimeSpan.FromMilliseconds(int.MaxValue);
+
     /// <summary>
     /// Maximum bytes accepted for <c>did.jsonl</c>. Default: 5 MiB.
     /// Responses with a larger <c>Content-Length</c> are rejected before
@@ -26,7 +29,8 @@ public sealed record WebVhHttpClientOptions
     /// headers and the full body read. Default: 30 seconds. A fetch that
     /// exceeds this is treated as a failed fetch (the DID resolves as
     /// <c>notFound</c>); cancellation requested by the caller's own token is
-    /// unaffected and still propagates. Must be positive, or
+    /// unaffected and still propagates. Must be positive and no greater
+    /// than <c>TimeSpan.FromMilliseconds(int.MaxValue)</c>, or
     /// <see cref="System.Threading.Timeout.InfiniteTimeSpan"/> to disable.
     /// For clients the library constructs itself (the parameterless
     /// <see cref="DefaultWebVhHttpClient"/> fallback and the
@@ -41,10 +45,12 @@ public sealed record WebVhHttpClientOptions
     public TimeSpan Timeout
     {
         get => _timeout;
-        init => _timeout = value > TimeSpan.Zero || value == System.Threading.Timeout.InfiniteTimeSpan
+        init => _timeout = value == System.Threading.Timeout.InfiniteTimeSpan
+            || (value > TimeSpan.Zero && value <= MaxFiniteTimeout)
             ? value
             : throw new ArgumentOutOfRangeException(nameof(Timeout), value,
-                "Timeout must be positive, or Timeout.InfiniteTimeSpan to disable.");
+                $"Timeout must be positive and at most {MaxFiniteTimeout}, " +
+                "or Timeout.InfiniteTimeSpan to disable.");
     }
 
     private readonly TimeSpan _timeout = TimeSpan.FromSeconds(30);

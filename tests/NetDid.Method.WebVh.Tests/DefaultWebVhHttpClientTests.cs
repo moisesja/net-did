@@ -7,9 +7,8 @@ using NetDid.Method.WebVh;
 namespace NetDid.Method.WebVh.Tests;
 
 /// <summary>
-/// Regression tests for issue #51: DefaultWebVhHttpClient must bound the
-/// number of bytes it reads from a did:webvh host so that a hostile or
-/// misconfigured server cannot push hundreds of MB into the resolver.
+/// Security regression tests for bounded response reads and SSRF-safe request
+/// handling by <see cref="DefaultWebVhHttpClient"/>.
 /// </summary>
 public class DefaultWebVhHttpClientTests
 {
@@ -170,6 +169,64 @@ public class DefaultWebVhHttpClientTests
     }
 
     [Fact]
+    public async Task FetchDidLog_NonHttpsUrl_IsRejectedBeforeCallerControlledHandler()
+    {
+        var handler = new RecordingHandler();
+        var client = BuildClient(handler);
+
+        var result = await client.FetchDidLogAsync(
+            new Uri("http://example.com/.well-known/did.jsonl"));
+
+        result.Should().BeNull();
+        handler.SendCount.Should().Be(0);
+    }
+
+    [Theory]
+    [InlineData("https://localhost/.well-known/did.jsonl")]
+    [InlineData("https://127.0.0.1/.well-known/did.jsonl")]
+    [InlineData("https://10.0.0.1/.well-known/did.jsonl")]
+    [InlineData("https://169.254.169.254/.well-known/did.jsonl")]
+    [InlineData("https://[::1]/.well-known/did.jsonl")]
+    [InlineData("https://localhost。/.well-known/did.jsonl")]
+    [InlineData("https://１２７。０。０。１/.well-known/did.jsonl")]
+    public async Task FetchDidLog_NonPublicLiteral_IsRejectedBeforeCallerControlledHandler(
+        string url)
+    {
+        var handler = new RecordingHandler();
+        var client = BuildClient(handler);
+
+        var result = await client.FetchDidLogAsync(new Uri(url));
+
+        result.Should().BeNull();
+        handler.SendCount.Should().Be(0);
+    }
+
+    [Fact]
+    public async Task FetchDidLog_AlreadyCancelledUnsafeRequest_PropagatesWithoutDispatch()
+    {
+        var handler = new RecordingHandler();
+        var client = BuildClient(handler);
+        using var callerCts = new CancellationTokenSource();
+        callerCts.Cancel();
+
+        var act = () => client.FetchDidLogAsync(
+            new Uri("http://localhost/.well-known/did.jsonl"), callerCts.Token);
+
+        await act.Should().ThrowAsync<OperationCanceledException>();
+        handler.SendCount.Should().Be(0);
+    }
+
+    [Fact]
+    public void CreateSecurePrimaryHandler_DisablesRedirectsAndProxies()
+    {
+        using var handler = DefaultWebVhHttpClient.CreateSecurePrimaryHandler();
+
+        handler.AllowAutoRedirect.Should().BeFalse();
+        handler.UseProxy.Should().BeFalse();
+        handler.ConnectCallback.Should().NotBeNull();
+    }
+
+    [Fact]
     public async Task FetchDidLog_DefaultLimits_AreFiveAndOneMiB()
     {
         var defaults = new WebVhHttpClientOptions();
@@ -191,6 +248,17 @@ public class DefaultWebVhHttpClientTests
     public void WebVhHttpClientOptions_NonPositiveTimeout_ThrowsAtConstruction(int seconds)
     {
         var act = () => new WebVhHttpClientOptions { Timeout = TimeSpan.FromSeconds(seconds) };
+
+        act.Should().Throw<ArgumentOutOfRangeException>();
+    }
+
+    [Fact]
+    public void WebVhHttpClientOptions_TimeoutBeyondCancelAfterRange_ThrowsAtConstruction()
+    {
+        var act = () => new WebVhHttpClientOptions
+        {
+            Timeout = TimeSpan.FromMilliseconds((long)int.MaxValue + 1)
+        };
 
         act.Should().Throw<ArgumentOutOfRangeException>();
     }
@@ -384,5 +452,20 @@ public class DefaultWebVhHttpClientTests
         public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
         public override void SetLength(long value) => throw new NotSupportedException();
         public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+    }
+
+    private sealed class RecordingHandler : HttpMessageHandler
+    {
+        public int SendCount { get; private set; }
+
+        protected override Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            SendCount++;
+            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new ByteArrayContent([])
+            });
+        }
     }
 }

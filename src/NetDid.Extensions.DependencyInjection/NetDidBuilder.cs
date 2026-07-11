@@ -51,7 +51,9 @@ public sealed class NetDidBuilder
         // library-owned client: neutralize HttpClient.Timeout (100s framework
         // default), which would otherwise silently cap configured values above it.
         Services.AddHttpClient<DefaultWebVhHttpClient>()
-            .ConfigureHttpClient(c => c.Timeout = Timeout.InfiniteTimeSpan);
+            .ConfigureHttpClient(c => c.Timeout = Timeout.InfiniteTimeSpan)
+            .ConfigurePrimaryHttpMessageHandler(
+                DefaultWebVhHttpClient.CreateSecurePrimaryHandler);
         Services.AddSingleton<IWebVhHttpClient>(sp =>
             sp.GetRequiredService<DefaultWebVhHttpClient>());
         Services.AddSingleton<IDidMethod>(sp =>

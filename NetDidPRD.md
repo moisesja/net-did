@@ -1028,6 +1028,17 @@ The genesis entry shown below is the **final form** (after SCID placeholder repl
 
 Each entry's `versionId` has the format `<version-number>-<entry-hash>`, where the entry hash chains to the previous entry. For the genesis entry, the entry hash IS the SCID.
 
+`versionTime` is part of the hash- and proof-protected entry. NetDid formats it in UTC with
+the invariant Gregorian calendar, preserving fractional seconds when present while retaining
+the existing whole-second form when the fraction is zero. Parsing requires an explicit UTC `Z`
+or `+00:00` zone and version-time selection uses the same invariant interpretation. The exact
+parsed timestamp string is retained for hash/proof verification, so an intermediary cannot rewrite
+it to a normalized equivalent that was never signed. A resolver MUST NOT discard authenticated
+fractional precision before recomputing an entry hash or selecting a version, and an invalid
+`versionTime` resolution option MUST NOT silently fall back to the latest version. A fetched log
+entry whose `versionTime` is non-UTC or otherwise invalid MUST be reported as `invalidDidLog`, not
+as `notFound`.
+
 ### 7.5 Create
 
 The genesis entry uses a two-pass algorithm to resolve the inherent circularity: the SCID
@@ -1053,19 +1064,19 @@ well-known placeholder string (`{SCID}`) that stands in for the real SCID during
 
 ### 7.6 Resolve
 
-1. Transform the DID to an HTTPS URL: `did:webvh:<SCID>:<domain>` → `https://<domain>/.well-known/did.jsonl` (or path-based for non-root DIDs).
-2. Fetch `did.jsonl` via HTTP.
+1. Transform the DID to an HTTPS URL: `did:webvh:<SCID>:<domain>` → `https://<domain>/.well-known/did.jsonl` (or path-based for non-root DIDs). Reject loopback, unspecified, link-local, private, unique-local, and other non-public IP literals.
+2. Resolve the host and fetch `did.jsonl` via HTTP. The default transport vets every resolved address and pins the connection to a vetted public address so DNS rebinding cannot create a second, unchecked resolution. It rejects the entire answer set if any address is non-public, does not use a forward proxy, and does not follow redirects. A custom `IWebVhHttpClient` is responsible for enforcing an equivalent egress policy.
 3. Parse each JSON Lines entry sequentially.
 4. Validate the genesis entry: verify the SCID matches the entry hash.
 5. For each subsequent entry: verify the proof signature against an authorized update key, verify the hash chain links to the previous entry, verify parameter constraints (pre-rotation key commitments, witness thresholds).
 6. **Bind the DID's self-certifying SCID to the genesis (issue #82).** The SCID segment of the requested DID string MUST equal the genesis entry's SCID (`entries[0].Parameters.Scid`, already proven equal to the recomputed genesis hash by step 4). The target entry's `state.id` (an author-controlled field) matching `did` is necessary but **not** sufficient: without the SCID check, a host/CDN/MITM adversary can serve a self-consistent genesis signed by their own key with `state.id` set to the victim's DID and impersonate it, collapsing did:webvh's security to plain did:web. Reject with `invalidDidLog` on mismatch.
-7. If witnesses are configured, fetch `did-witness.json` and validate witness proofs meet the threshold.
+7. Determine the witness authority for every entry. Genesis is governed by the witness policy it declares. The first later entry that changes from no active witnesses to a positive policy is immediately governed by that new policy and MUST itself be witnessed. Once a positive policy is active, it governs the entry that lowers, removes, or replaces it, and the replacement takes effect only after that entry is published. If any entry through the requested version requires witnessing, fetch `did-witness.json` and validate cumulative witness coverage against those authorizing policies. Count a configured witness only after its proof verifies, bind its weight to the exact verified `did:key` signer (never a `verificationMethod` prefix), and count each signer at most once per required entry.
 8. Return the DID Document from the final valid entry. When `DidResolutionOptions.IncludeLog == true`, also surface the fetched log as `Artifacts["did.jsonl"]` (UTF-8 string, matching the Create/Update/Deactivate artifact convention) and the parsed chain as `Artifacts["log.entries"]` (`IReadOnlyList<LogEntry>`). The log is parsed and validated regardless; the flag only controls whether it is exposed to the caller.
 
 ### 7.7 Update
 
 1. Load the current DID log and validate the chain.
-2. **Bind the inputs to the target DID (issue #82).** The supplied `CurrentLogContent` must belong to the `did` being updated — its latest entry's `state.id` MUST equal `did`, its **genesis SCID MUST equal the SCID in `did`** (the same self-certification binding resolution enforces, so an attacker-owned log cannot authorize an update of the victim DID merely by claiming its id), and the log MUST NOT already be deactivated. If `NewDocument` is supplied, `NewDocument.id` MUST equal `did`. This guarantees Update cannot emit a log that Resolve would reject **on DID/SCID identity grounds** (other resolution checks — e.g. witness thresholds — are orthogonal: a witness-policy update still needs matching witness proofs published for the resulting log to resolve). Violations throw `ArgumentException`.
+2. **Bind the inputs to the target DID (issue #82).** The supplied `CurrentLogContent` must belong to the `did` being updated — its latest entry's `state.id` MUST equal `did`, its **genesis SCID MUST equal the SCID in `did`** (the same self-certification binding resolution enforces, so an attacker-owned log cannot authorize an update of the victim DID merely by claiming its id), and the log MUST NOT already be deactivated. If `NewDocument` is supplied, `NewDocument.id` MUST equal `did`. This guarantees Update cannot emit a log that Resolve would reject **on DID/SCID identity grounds**. Witness validation remains a publication/resolution concern: a transition is governed by the prior-effective witness policy described in §7.6, including a transition that weakens or removes that policy. Violations throw `ArgumentException`.
    - *Portability note:* net-did does not implement did:webvh portability (there is no `Portable` field in `DidWebVhParameterUpdates`). If portability is added later, the `state.id == did` / `NewDocument.id == did` binding needs a carve-out for the domain-change entry.
 3. Build a new log entry with the updated DID Document and/or parameters.
 4. If pre-rotation is active: the proof MUST be signed by a key committed to in the previous entry, and new pre-rotation commitments MUST be provided.
@@ -1127,7 +1138,23 @@ public interface IWebVhHttpClient
 }
 ```
 
-Default implementation uses `HttpClient`. Callers can inject their own for testing or custom auth.
+The default implementation uses a `SocketsHttpHandler` that disables redirects and proxies,
+resolves the destination inside its connection callback, rejects non-public or mixed public/private
+DNS answers, and connects directly to one of the vetted addresses. The same handler is installed by
+`AddDidWebVh()`. Callers can inject their own client for testing or custom authentication. An
+in-memory fake performs no network egress; a production custom transport that resolves untrusted
+DIDs assumes responsibility for equivalent redirect and destination-address controls.
+The mapper itself rejects localhost names and non-public IP literals in both Create and Resolve
+before any client is called. This is an intentional breaking security boundary and has no opt-out:
+local tests should use a public-looking host such as `example.com` with an in-memory fake that
+performs no egress. A trusted fixture transport may instead route an explicit permitted hostname to
+an allowlisted local endpoint. Supplying a custom client does not make `localhost` or private-IP
+DIDs valid. Production custom transports that resolve untrusted DIDs remain responsible for
+equivalent anti-SSRF and redirect controls; mandatory proxy deployments must define an equally
+explicit trusted-proxy policy. The default handler also intentionally rejects NAT64 destinations,
+so NAT64-dependent IPv6-only deployments need a custom client. Update and Deactivate perform no
+network access and can process caller-supplied legacy logs, but artifacts that retain a now-rejected
+private-host DID cannot be resolved by this version.
 
 `DefaultWebVhHttpClient` hardens fetches against hostile or misconfigured did:webvh hosts via
 `WebVhHttpClientOptions`:
@@ -1143,7 +1170,10 @@ Default implementation uses `HttpClient`. Callers can inject their own for testi
   is neutralized (`InfiniteTimeSpan`) so `Timeout` is the sole time authority and values above the
   100-second framework default are honored; a caller-injected `HttpClient` keeps its own `Timeout` as
   an independent cap. A timed-out fetch is a failed fetch (resolution reports `notFound`); cancellation
-  via the caller's own token still propagates as `OperationCanceledException` (issue #81 contract).
+  via the caller's own token still propagates as `OperationCanceledException` (issue #81 contract),
+  even when URI security preflight would otherwise reject the request. Finite timeout values are
+  validated at configuration time against `CancellationTokenSource.CancelAfter`'s portable
+  `Int32.MaxValue`-millisecond upper bound; larger values are rejected before any fetch starts.
 
 ---
 

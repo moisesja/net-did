@@ -14,6 +14,24 @@ namespace NetDid.Extensions.DependencyInjection.Tests;
 public class ServiceRegistrationTests
 {
     [Fact]
+    public void AddDidWebVh_ConfiguresSecurePrimaryHandler()
+    {
+        var services = new ServiceCollection();
+        services.AddNetDid(builder => builder.AddDidWebVh());
+        using var provider = services.BuildServiceProvider();
+        var factory = provider.GetRequiredService<IHttpMessageHandlerFactory>();
+
+        var handler = factory.CreateHandler(typeof(DefaultWebVhHttpClient).Name);
+        while (handler is DelegatingHandler delegating)
+            handler = delegating.InnerHandler;
+
+        var primary = handler.Should().BeOfType<SocketsHttpHandler>().Subject;
+        primary.AllowAutoRedirect.Should().BeFalse();
+        primary.UseProxy.Should().BeFalse();
+        primary.ConnectCallback.Should().NotBeNull();
+    }
+
+    [Fact]
     public async Task AddDidWebVh_FlowsCustomOptionsIntoClient()
     {
         // A 16-byte body must be rejected by a client built with a 4-byte

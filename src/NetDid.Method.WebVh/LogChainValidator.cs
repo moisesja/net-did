@@ -1,3 +1,4 @@
+using System.Globalization;
 using DataProofsDotnet.DataIntegrity;
 using NetDid.Core.Exceptions;
 using NetDid.Method.WebVh.Model;
@@ -124,7 +125,8 @@ internal sealed class LogChainValidator
 
         // Verify entry hash: recreate the entry with the previous versionId
         // as specified by the spec: versionId = "<versionNumber>-<previousVersionId>"
-        var entryForHashing = current with { VersionId = $"{expectedVersion}-{previous.VersionId}" };
+        var expectedVersionText = expectedVersion.ToString(CultureInfo.InvariantCulture);
+        var entryForHashing = current with { VersionId = $"{expectedVersionText}-{previous.VersionId}" };
         var entryJsonWithoutProof = LogEntrySerializer.SerializeWithoutProof(entryForHashing);
         var computedHash = ScidGenerator.ComputeEntryHash(entryJsonWithoutProof);
 
