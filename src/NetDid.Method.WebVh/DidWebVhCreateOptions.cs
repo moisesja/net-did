@@ -37,7 +37,7 @@ public sealed record DidWebVhCreateOptions : DidCreateOptions
     /// <summary>Witness DIDs (must be did:key DIDs).</summary>
     public IReadOnlyList<string>? WitnessDids { get; init; }
 
-    /// <summary>Minimum total weight of witness proofs required.</summary>
+    /// <summary>Minimum number of distinct verified witness approvals required.</summary>
     public int WitnessThreshold { get; init; } = 0;
 
     /// <summary>Witness proofs to include in the did-witness.json artifact.</summary>

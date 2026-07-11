@@ -116,11 +116,61 @@ public class LogEntrySerializerTests
         var json = LogEntrySerializer.Serialize(entry);
         json.Should().Contain("witness");
         json.Should().Contain("threshold");
+        json.Should().NotContain("weight", "did:webvh 1.0 no longer emits weighted policies");
 
         var parsed = LogEntrySerializer.DeserializeEntry(json);
         parsed.Parameters.Witness.Should().NotBeNull();
         parsed.Parameters.Witness!.Threshold.Should().Be(2);
         parsed.Parameters.Witness.Witnesses.Should().HaveCount(2);
+    }
+
+    [Fact]
+    public void DeserializeAndSerialize_PreservesLegacyWitnessWeightForHashing()
+    {
+        var entry = CreateSampleEntry();
+        entry = entry with
+        {
+            Parameters = new LogEntryParameters
+            {
+                Method = entry.Parameters.Method,
+                Scid = entry.Parameters.Scid,
+                UpdateKeys = entry.Parameters.UpdateKeys,
+                Witness = new WitnessConfig
+                {
+                    Threshold = 1,
+                    Witnesses = [new WitnessEntry { Id = "did:key:z6MkLegacy", Weight = 7 }]
+                }
+            }
+        };
+        var currentJson = LogEntrySerializer.Serialize(entry);
+        var legacyJson = currentJson.Replace(
+            "\"id\":\"did:key:z6MkLegacy\"",
+            "\"id\":\"did:key:z6MkLegacy\",\"weight\":7",
+            StringComparison.Ordinal);
+
+        var parsed = LogEntrySerializer.DeserializeEntry(legacyJson);
+
+        LogEntrySerializer.Serialize(parsed).Should().Be(legacyJson);
+    }
+
+    [Fact]
+    public void SerializeAndDeserialize_EmptyWitnessObject_PreservesDisableTransition()
+    {
+        var entry = CreateSampleEntry() with
+        {
+            Parameters = new LogEntryParameters
+            {
+                Witness = new WitnessConfig()
+            }
+        };
+
+        var json = LogEntrySerializer.Serialize(entry);
+        var parsed = LogEntrySerializer.DeserializeEntry(json);
+
+        json.Should().Contain("\"witness\":{}");
+        parsed.Parameters.Witness.Should().NotBeNull();
+        parsed.Parameters.Witness!.IsDisabled.Should().BeTrue();
+        LogEntrySerializer.Serialize(parsed).Should().Be(json);
     }
 
     [Fact]

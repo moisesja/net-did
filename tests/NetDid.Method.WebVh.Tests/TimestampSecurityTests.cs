@@ -164,6 +164,63 @@ public sealed class TimestampSecurityTests
         result.ResolutionMetadata.Error.Should().Be("invalidDidLog");
     }
 
+    [Theory]
+    [InlineData("null")]
+    [InlineData("123")]
+    [InlineData("true")]
+    [InlineData("{}")]
+    [InlineData("[]")]
+    public async Task Resolve_NonStringVersionTimeToken_ReturnsInvalidDidLog(string token)
+    {
+        var httpClient = new MockWebVhHttpClient();
+        var method = new DidWebVhMethod(httpClient);
+        var createResult = await method.CreateAsync(new DidWebVhCreateOptions
+        {
+            Domain = "example.com",
+            UpdateKey = CreateEd25519Signer()
+        });
+        var did = createResult.Did.Value;
+        var logContent = (string)createResult.Artifacts![DidWebVhArtifacts.DidJsonl];
+        using var log = JsonDocument.Parse(logContent);
+        var original = log.RootElement.GetProperty("versionTime").GetRawText();
+        var malformedLog = logContent.Replace(original, token, StringComparison.Ordinal);
+        httpClient.SetLogResponse(
+            DidUrlMapper.MapToLogUrl(did),
+            Encoding.UTF8.GetBytes(malformedLog));
+
+        var result = await method.ResolveAsync(did);
+
+        result.DidDocument.Should().BeNull();
+        result.ResolutionMetadata.Error.Should().Be("invalidDidLog");
+    }
+
+    [Fact]
+    public async Task Resolve_MissingVersionTime_ReturnsInvalidDidLog()
+    {
+        var httpClient = new MockWebVhHttpClient();
+        var method = new DidWebVhMethod(httpClient);
+        var createResult = await method.CreateAsync(new DidWebVhCreateOptions
+        {
+            Domain = "example.com",
+            UpdateKey = CreateEd25519Signer()
+        });
+        var did = createResult.Did.Value;
+        var logContent = (string)createResult.Artifacts![DidWebVhArtifacts.DidJsonl];
+        using var log = JsonDocument.Parse(logContent);
+        var versionTimeProperty =
+            $"\"versionTime\":{log.RootElement.GetProperty("versionTime").GetRawText()},";
+        var malformedLog = logContent.Replace(
+            versionTimeProperty, string.Empty, StringComparison.Ordinal);
+        httpClient.SetLogResponse(
+            DidUrlMapper.MapToLogUrl(did),
+            Encoding.UTF8.GetBytes(malformedLog));
+
+        var result = await method.ResolveAsync(did);
+
+        result.DidDocument.Should().BeNull();
+        result.ResolutionMetadata.Error.Should().Be("invalidDidLog");
+    }
+
     [Fact]
     public async Task Resolve_InvalidVersionTimeQuery_DoesNotFallBackToLatest()
     {
@@ -214,6 +271,25 @@ public sealed class TimestampSecurityTests
         var selected = DidWebVhMethod.FindTargetIndex(entries, new DidResolutionOptions
         {
             VersionTime = "2026-07-10T12:00:00.5Z"
+        });
+
+        selected.Should().Be(0);
+    }
+
+    [Fact]
+    public void FindTargetIndex_StopsBeforeNonMonotonicTailBeyondRequestedTime()
+    {
+        var first = new DateTimeOffset(2026, 7, 10, 10, 0, 0, TimeSpan.Zero);
+        var entries = new[]
+        {
+            CreateSelectionEntry("1-zFirst", first),
+            CreateSelectionEntry("2-zSecond", first.AddHours(10)),
+            CreateSelectionEntry("3-zInvalidTail", first.AddHours(5))
+        };
+
+        var selected = DidWebVhMethod.FindTargetIndex(entries, new DidResolutionOptions
+        {
+            VersionTime = "2026-07-10T17:00:00Z"
         });
 
         selected.Should().Be(0);

@@ -1004,11 +1004,10 @@ The genesis entry shown below is the **final form** (after SCID placeholder repl
   "versionId": "1-QmRwq46V...",
   "versionTime": "2026-03-01T00:00:00Z",
   "parameters": {
-    "method": "did:webvh:0.4",
+    "method": "did:webvh:1.0",
     "scid": "QmRwq46V...",
     "updateKeys": ["z6Mkf..."],
     "prerotation": false,
-    "witness": [],
     "deactivated": false
   },
   "state": {
@@ -1037,7 +1036,12 @@ it to a normalized equivalent that was never signed. A resolver MUST NOT discard
 fractional precision before recomputing an entry hash or selecting a version, and an invalid
 `versionTime` resolution option MUST NOT silently fall back to the latest version. A fetched log
 entry whose `versionTime` is non-UTC or otherwise invalid MUST be reported as `invalidDidLog`, not
-as `notFound`.
+as `notFound`. Adjacent entries MUST also be strictly increasing by parsed instant: every entry
+after genesis must have a `versionTime` later than its predecessor. Equal or decreasing values
+invalidate the chain even when their hashes and proofs are otherwise authentic. The comparison
+does not normalize, replace, or reserialize the authenticated wire token. Create emits the current
+UTC instant; Update and Deactivate choose an instant strictly later than the supplied log's latest
+entry, including when that entry is future-dated relative to the local clock.
 
 ### 7.5 Create
 
@@ -1068,10 +1072,23 @@ well-known placeholder string (`{SCID}`) that stands in for the real SCID during
 2. Resolve the host and fetch `did.jsonl` via HTTP. The default transport vets every resolved address and pins the connection to a vetted public address so DNS rebinding cannot create a second, unchecked resolution. It rejects the entire answer set if any address is non-public, does not use a forward proxy, and does not follow redirects. A custom `IWebVhHttpClient` is responsible for enforcing an equivalent egress policy.
 3. Parse each JSON Lines entry sequentially.
 4. Validate the genesis entry: verify the SCID matches the entry hash.
-5. For each subsequent entry: verify the proof signature against an authorized update key, verify the hash chain links to the previous entry, verify parameter constraints (pre-rotation key commitments, witness thresholds).
+5. For each subsequent entry: require `versionTime` to be strictly later than the previous entry, verify the proof signature against an authorized update key, verify the hash chain links to the previous entry, and verify parameter constraints (pre-rotation key commitments and witness policy shape).
 6. **Bind the DID's self-certifying SCID to the genesis (issue #82).** The SCID segment of the requested DID string MUST equal the genesis entry's SCID (`entries[0].Parameters.Scid`, already proven equal to the recomputed genesis hash by step 4). The target entry's `state.id` (an author-controlled field) matching `did` is necessary but **not** sufficient: without the SCID check, a host/CDN/MITM adversary can serve a self-consistent genesis signed by their own key with `state.id` set to the victim's DID and impersonate it, collapsing did:webvh's security to plain did:web. Reject with `invalidDidLog` on mismatch.
-7. Determine the witness authority for every entry. Genesis is governed by the witness policy it declares. The first later entry that changes from no active witnesses to a positive policy is immediately governed by that new policy and MUST itself be witnessed. Once a positive policy is active, it governs the entry that lowers, removes, or replaces it, and the replacement takes effect only after that entry is published. If any entry through the requested version requires witnessing, fetch `did-witness.json` and validate cumulative witness coverage against those authorizing policies. Count a configured witness only after its proof verifies, bind its weight to the exact verified `did:key` signer (never a `verificationMethod` prefix), and count each signer at most once per required entry.
-8. Return the DID Document from the final valid entry. When `DidResolutionOptions.IncludeLog == true`, also surface the fetched log as `Artifacts["did.jsonl"]` (UTF-8 string, matching the Create/Update/Deactivate artifact convention) and the parsed chain as `Artifacts["log.entries"]` (`IReadOnlyList<LogEntry>`). The log is parsed and validated regardless; the flag only controls whether it is exposed to the caller.
+7. Validate every explicitly declared witness policy before it can take effect, at genesis and on every later transition. The disabling form is the empty object `{}`. A configured policy MUST contain both `threshold` and a non-empty `witnesses` list; `threshold` MUST be in the inclusive range `1..count(distinct witness ids)`; every id MUST already be Unicode NFC-normalized, MUST be unique under ordinal comparison in that canonical form, MUST be a bare `did:key` DID, and MUST encode an Ed25519 key compatible with `eddsa-jcs-2022`. Missing fields, duplicate or non-canonical ids, zero/negative/out-of-range thresholds, malformed keys, and unsupported key types invalidate the log rather than being coerced to “no witnesses.”
+8. Determine the witness authority for every entry. Genesis is governed by the witness policy it declares. The first later entry that changes from no active witnesses to a configured policy is immediately governed by that new policy and MUST itself be witnessed. Once a policy is active, it governs the entry that lowers, removes, or replaces it, and the replacement takes effect only after that entry is published. If any entry through the requested version requires witnessing, fetch `did-witness.json` and validate cumulative witness coverage against those authorizing policies. Count a configured witness only after its proof verifies and binds to the exact configured `did:key` signer (never a `verificationMethod` prefix), and count each distinct signer at most once per required entry.
+9. Return the DID Document from the final valid entry. When `DidResolutionOptions.IncludeLog == true`, also surface the fetched log as `Artifacts["did.jsonl"]` (UTF-8 string, matching the Create/Update/Deactivate artifact convention) and the parsed chain as `Artifacts["log.entries"]` (`IReadOnlyList<LogEntry>`). The log is parsed and validated regardless; the flag only controls whether it is exposed to the caller.
+
+#### Witness weight compatibility and migration
+
+did:webvh 1.0 removed weighted approvals. `WitnessEntry.Weight` remains in the .NET model for
+source compatibility, but it is semantically inert and new log entries do not serialize a
+`weight` member. When NetDid parses a historical log that contains `weight`, it preserves and
+re-emits that exact member while reconstructing immutable entries for hash/proof verification;
+threshold evaluation still counts each distinct verified witness id as exactly one approval.
+Legacy policies whose threshold exceeds their number of distinct witness ids are invalid under
+did:webvh 1.0 and cannot be repaired in place because historical entries are immutable. Controllers
+must establish a conforming replacement history/policy appropriate to their deployment before
+upgrading; conforming legacy policies with `threshold <= count(distinct ids)` remain verifiable.
 
 ### 7.7 Update
 
@@ -2993,13 +3010,13 @@ Rust (zkryptium crate, Apache 2.0)
 
 #### Phase 3 Implementation Summary
 
-**did:webvh method** (47 dedicated tests + W3C conformance coverage):
+**did:webvh method** (dedicated tests + W3C conformance coverage):
 - Full CRUD lifecycle: Create, Resolve, Update, Deactivate with cryptographically chained JSON Lines log
 - SCID (Self-Certifying Identifier) generation via two-pass algorithm: JCS canonicalize → SHA-256 → multihash → base58btc multibase
 - Data Integrity Proofs (eddsa-jcs-2022) engine in NetDid.Core for reuse by future methods
 - Hash chain validation across log entries with entry hash linking
 - Pre-rotation manager with key commitment validation (SHA-256 hash commitments via nextKeyHashes)
-- Witness validation with configurable threshold and weighted witness proofs
+- Witness validation with validated policies and distinct verified-signer thresholds
 - did:web backwards compatibility: automatic did.json generation alongside did.jsonl
 - HTTP client abstraction (`IWebVhHttpClient`) with mock for testing
 - DID URL mapper: `did:webvh:<SCID>:<domain>` → `https://<domain>/.well-known/did.jsonl`

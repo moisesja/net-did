@@ -149,16 +149,23 @@ public static class LogEntrySerializer
     private static void WriteWitnessConfig(Utf8JsonWriter writer, WitnessConfig config)
     {
         writer.WriteStartObject();
-        writer.WriteNumber("threshold", config.Threshold);
-        if (config.Witnesses is { Count: > 0 })
+
+        var programmaticEmpty = !config.ThresholdPropertyPresent.HasValue && config.IsDisabled;
+        if (!programmaticEmpty && config.ThresholdPropertyPresent != false)
+            writer.WriteNumber("threshold", config.Threshold);
+
+        var writeWitnesses = config.WitnessesPropertyPresent == true
+            || (!config.WitnessesPropertyPresent.HasValue && config.Witnesses is not null);
+        if (writeWitnesses)
         {
             writer.WritePropertyName("witnesses");
             writer.WriteStartArray();
-            foreach (var w in config.Witnesses)
+            foreach (var w in config.Witnesses ?? [])
             {
                 writer.WriteStartObject();
                 writer.WriteString("id", w.Id);
-                writer.WriteNumber("weight", w.Weight);
+                if (w.LegacyWireWeight.HasValue)
+                    writer.WriteNumber("weight", w.LegacyWireWeight.Value);
                 writer.WriteEndObject();
             }
             writer.WriteEndArray();
@@ -189,8 +196,13 @@ public static class LogEntrySerializer
         var root = doc.RootElement;
 
         var versionId = root.GetProperty("versionId").GetString()!;
-        var versionTimeElement = root.GetProperty("versionTime");
-        var versionTime = versionTimeElement.GetString()!;
+        if (!root.TryGetProperty("versionTime", out var versionTimeElement)
+            || versionTimeElement.ValueKind != JsonValueKind.String
+            || versionTimeElement.GetString() is not { } versionTime)
+        {
+            throw new FormatException(
+                "did:webvh versionTime must be a non-null JSON string.");
+        }
         var parameters = ParseParameters(root.GetProperty("parameters"));
 
         // Parse state as a DID Document
@@ -263,23 +275,44 @@ public static class LogEntrySerializer
 
     private static WitnessConfig ParseWitnessConfig(JsonElement element)
     {
-        var threshold = element.GetProperty("threshold").GetInt32();
-        List<WitnessEntry>? witnesses = null;
-
-        if (element.TryGetProperty("witnesses", out var w))
+        try
         {
-            witnesses = w.EnumerateArray().Select(e => new WitnessEntry
+            var hasThreshold = element.TryGetProperty("threshold", out var thresholdElement);
+            var threshold = hasThreshold ? thresholdElement.GetInt32() : 0;
+            List<WitnessEntry>? witnesses = null;
+
+            var hasWitnesses = element.TryGetProperty("witnesses", out var w);
+            if (hasWitnesses)
             {
-                Id = e.GetProperty("id").GetString()!,
-                Weight = e.TryGetProperty("weight", out var wt) ? wt.GetInt32() : 1
-            }).ToList();
-        }
+                witnesses = w.EnumerateArray().Select(e =>
+                {
+                    var hasWeight = e.TryGetProperty("weight", out var wt);
+                    var weight = hasWeight ? wt.GetInt32() : 1;
+                    return new WitnessEntry
+                    {
+                        Id = e.GetProperty("id").GetString()!,
+                        Weight = weight,
+                        LegacyWireWeight = hasWeight ? weight : null
+                    };
+                }).ToList();
+            }
 
-        return new WitnessConfig
+            return new WitnessConfig
+            {
+                Threshold = threshold,
+                Witnesses = witnesses,
+                ThresholdPropertyPresent = hasThreshold,
+                WitnessesPropertyPresent = hasWitnesses
+            };
+        }
+        catch (Exception ex) when (ex is JsonException
+            or InvalidOperationException
+            or FormatException
+            or OverflowException
+            or KeyNotFoundException)
         {
-            Threshold = threshold,
-            Witnesses = witnesses
-        };
+            throw new FormatException("Invalid did:webvh witness configuration.", ex);
+        }
     }
 
     private static IReadOnlyList<DataIntegrityProofValue> ParseProofArray(JsonElement element)

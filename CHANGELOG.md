@@ -9,6 +9,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- **did:webvh log validation now requires strictly increasing `versionTime` values** (#87).
+  Every post-genesis entry must be later than its predecessor by parsed instant; equal and decreasing
+  timestamps invalidate even a correctly hashed and signed chain. Resolve maps fetched violations and
+  malformed/missing/non-string timestamp tokens to `invalidDidLog`, while Update and Deactivate reject
+  non-monotonic caller-supplied logs through the shared validator. Exact authenticated timestamp tokens
+  and fractional precision remain unchanged during hash/proof reconstruction. Historical resolution stops
+  before later timestamps outside the requested time and exposes metadata only from the validated prefix,
+  so a corrupt tail cannot inject an unvalidated `Updated` value. Writers advance future-dated inputs by
+  one tick when necessary and fail cleanly if `DateTimeOffset.MaxValue` cannot be advanced.
+
+- **Breaking security/spec alignment — did:webvh witness thresholds now count distinct verified ids** (#88).
+  Genesis and every later witness-policy declaration are validated before taking effect. `{}` is the only
+  disabling form; configured policies require a threshold from 1 through the number of distinct witnesses
+  and a non-empty list of unique, NFC-canonical, bare Ed25519 `did:key` DIDs. Missing/partial fields,
+  duplicates, malformed/unsupported keys, null entries, and zero or out-of-range thresholds fail closed;
+  fetched malformed policies resolve as `invalidDidLog`, and Create/Update reject them with
+  `ArgumentException`. Threshold evaluation counts each cryptographically verified configured signer once,
+  regardless of duplicate proofs or historical weight values, while preserving the existing activation,
+  replacement, lowering, and disabling transition rules.
+
+  `WitnessEntry.Weight` remains available for source compatibility but is now semantically inert and is
+  omitted from newly produced log entries. Parsed legacy `weight` members are retained only so immutable
+  historical entries can be reconstructed for hash/proof verification. Legacy policies remain usable when
+  `threshold <= count(distinct witness ids)`; weighted policies that relied on a threshold greater than the
+  distinct-id count are invalid under did:webvh 1.0 and must migrate to a conforming witness set/history
+  before upgrading.
+
 - **did:webvh fetches are now time-bounded (default 30 s) instead of inheriting the 100 s `HttpClient` default** (#80).
   `WebVhHttpClientOptions` gains a `Timeout` knob (default 30 seconds; `Timeout.InfiniteTimeSpan` disables) that
   `DefaultWebVhHttpClient` enforces per fetch with a linked cancellation token covering the *total* fetch — response
@@ -107,8 +134,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   than the DID Document, so a caller reading back `DidUpdateResult.DidDocument` could not otherwise tell a
   document-only edit apart from a (possibly smuggled) key rotation. The did:webvh driver reports `Changed` /
   `Unchanged` by comparing the effective `updateKeys` / `nextKeyHashes` / `prerotation` / `witness` configuration
-  before and after the update (`ttl` is excluded as a non-authority caching hint; the `witness` comparison is
-  order-sensitive because enforcement resolves a witness by first-id match). The default is **`Unknown` so absence
+  before and after the update (`ttl` is excluded as a non-authority caching hint; witness ids are compared as a
+  set because list order and legacy weights do not affect did:webvh 1.0 authorization). The default is **`Unknown` so absence
   of evidence fails closed** — a method that does not evaluate change evidence (including any third-party
   `IDidMethod`) leaves the value at `Unknown`, and a consumer enforcing a document-only postcondition must require
   `Unchanged` explicitly rather than treat "not reported" as "confirmed unchanged."
