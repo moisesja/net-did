@@ -2161,7 +2161,8 @@ public class DidWebVhMethodTests
         updateResult.UpdateKeyChange.Should().Be(AuthorizationChangeStatus.Changed);
         // Invariant: a key change is always an authorization change.
         updateResult.AuthorizationChange.Should().Be(AuthorizationChangeStatus.Changed);
-        // The full rotation postcondition a wallet needs: new key in, retired key out.
+        // Exclusive-rotation postcondition: the complete effective set equals the intended
+        // post-rotation set (which also implies the retired key is gone).
         updateResult.EffectiveUpdateKeys.Should().BeEquivalentTo([newKey.MultibasePublicKey]);
         updateResult.EffectiveUpdateKeys.Should().NotContain(signerA.MultibasePublicKey);
     }
@@ -2170,8 +2171,9 @@ public class DidWebVhMethodTests
     public async Task Issue91_Update_AdditiveKeyChange_OldKeyRetainsAuthority()
     {
         // "Changed" does NOT imply the previous key lost authority — an additive update trips
-        // UpdateKeyChange while the old key remains in the effective set. A rotation consumer
-        // must additionally check the retired key is absent from EffectiveUpdateKeys.
+        // UpdateKeyChange while the old key remains in the effective set. This is why an
+        // exclusive-rotation consumer must require EffectiveUpdateKeys to set-equal its
+        // intended post-rotation set; membership checks alone accept supersets like this one.
         var (method, _) = CreateMethod();
         var (didA, logA, signerA) = await CreateWebVhDidAsync(method, "alice");
         var newKey = CreateEd25519Signer();
@@ -2450,20 +2452,20 @@ public class DidWebVhMethodTests
     /// <summary>
     /// An <see cref="IReadOnlyList{T}"/> that yields different contents on successive
     /// enumerations: the first enumeration returns one list, all later enumerations another.
-    /// Models a caller-controlled dynamic collection attempting to show one key set to
+    /// Models a caller-controlled dynamic collection attempting to show one value set to
     /// validation/evidence and a different one to hashing/signing/serialization
     /// (PR #92 review, finding 2).
     /// </summary>
-    private sealed class FlippingStringList(
-        IReadOnlyList<string> firstEnumeration, IReadOnlyList<string> laterEnumerations)
-        : IReadOnlyList<string>
+    private sealed class FlippingList<T>(
+        IReadOnlyList<T> firstEnumeration, IReadOnlyList<T> laterEnumerations)
+        : IReadOnlyList<T>
     {
         private int _enumerations;
 
         public int Count => firstEnumeration.Count;
-        public string this[int index] => firstEnumeration[index];
+        public T this[int index] => firstEnumeration[index];
 
-        public IEnumerator<string> GetEnumerator()
+        public IEnumerator<T> GetEnumerator()
             => (++_enumerations == 1 ? firstEnumeration : laterEnumerations).GetEnumerator();
 
         System.Collections.IEnumerator System.Collections.IEnumerable.GetEnumerator()
@@ -2482,7 +2484,7 @@ public class DidWebVhMethodTests
         var (didA, logA, signerA) = await CreateWebVhDidAsync(method, "alice");
         var newKey = CreateEd25519Signer();
 
-        var flippingList = new FlippingStringList(
+        var flippingList = new FlippingList<string>(
             firstEnumeration: [newKey.MultibasePublicKey],
             laterEnumerations: [signerA.MultibasePublicKey]);
 
@@ -2533,6 +2535,117 @@ public class DidWebVhMethodTests
         var effective = new LogChainValidator(new EddsaJcs2022Cryptosuite()).ValidateChain(entries);
 
         updateResult.EffectiveUpdateKeys.Should().BeEquivalentTo(effective.UpdateKeys);
+    }
+
+    [Fact]
+    public async Task Issue91_Update_PreRotationExit_KeyEvidenceIsWithheld()
+    {
+        // Turning pre-rotation OFF is still a transition governed by the pre-rotation rules
+        // (the exiting entry must reveal a committed key), so the key evidence stays withheld
+        // for it: pre-rotation was in play in the prior effective state.
+        var (method, _) = CreateMethod();
+        var key1 = CreateEd25519Signer();
+        var key2 = CreateEd25519Signer();
+
+        var createResult = await method.CreateAsync(new DidWebVhCreateOptions
+        {
+            Domain = "example.com",
+            UpdateKey = key1,
+            EnablePreRotation = true,
+            PreRotationCommitments = [PreRotationManager.ComputeKeyCommitment(key2.MultibasePublicKey)]
+        });
+        var logContent = (string)createResult.Artifacts![DidWebVhArtifacts.DidJsonl];
+
+        var updateResult = await method.UpdateAsync(createResult.Did.Value, new DidWebVhUpdateOptions
+        {
+            CurrentLogContent = Encoding.UTF8.GetBytes(logContent),
+            SigningKey = key1,
+            ParameterUpdates = new DidWebVhParameterUpdates
+            {
+                UpdateKeys = [key2.MultibasePublicKey],
+                Prerotation = false,
+                NextKeyHashes = []
+            }
+        });
+
+        updateResult.UpdateKeyChange.Should().Be(AuthorizationChangeStatus.Unknown);
+        updateResult.EffectiveUpdateKeys.Should().BeNull();
+        updateResult.AuthorizationChange.Should().Be(AuthorizationChangeStatus.Changed);
+    }
+
+    [Fact]
+    public async Task Issue91_Update_DynamicNextKeyHashes_CannotDesyncArtifact()
+    {
+        // The snapshot must cover NextKeyHashes too: a dynamic list may not present one
+        // commitment set to the merge/serialization and another to any later stage.
+        var (method, _) = CreateMethod();
+        var (didA, logA, signerA) = await CreateWebVhDidAsync(method, "alice");
+        var honestKey = CreateEd25519Signer();
+        var otherKey = CreateEd25519Signer();
+        var honestCommitment = PreRotationManager.ComputeKeyCommitment(honestKey.MultibasePublicKey);
+        var otherCommitment = PreRotationManager.ComputeKeyCommitment(otherKey.MultibasePublicKey);
+
+        var updateResult = await method.UpdateAsync(didA, new DidWebVhUpdateOptions
+        {
+            CurrentLogContent = Encoding.UTF8.GetBytes(logA),
+            SigningKey = signerA,
+            ParameterUpdates = new DidWebVhParameterUpdates
+            {
+                Prerotation = true,
+                NextKeyHashes = new FlippingList<string>(
+                    firstEnumeration: [honestCommitment],
+                    laterEnumerations: [otherCommitment])
+            }
+        });
+
+        // Artifact and validated chain both carry the first (snapshotted) read.
+        var updatedLog = (string)updateResult.Artifacts![DidWebVhArtifacts.DidJsonl];
+        var entries = LogEntrySerializer.ParseJsonLines(Encoding.UTF8.GetBytes(updatedLog));
+        entries[^1].Parameters.NextKeyHashes.Should().BeEquivalentTo([honestCommitment]);
+
+        var effective = new LogChainValidator(new EddsaJcs2022Cryptosuite()).ValidateChain(entries);
+        effective.NextKeyHashes.Should().BeEquivalentTo([honestCommitment]);
+
+        // Pre-rotation is now in play, so the key evidence is withheld.
+        updateResult.UpdateKeyChange.Should().Be(AuthorizationChangeStatus.Unknown);
+        updateResult.EffectiveUpdateKeys.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task Issue91_Update_DynamicWitnessList_CannotDesyncArtifact()
+    {
+        // The snapshot must cover the witness list too: the policy that was validated must be
+        // the policy that is serialized.
+        var (method, _) = CreateMethod();
+        var (didA, logA, signerA) = await CreateWebVhDidAsync(method, "alice");
+        var honestWitness = CreateEd25519Signer();
+        var otherWitness = CreateEd25519Signer();
+        var honestEntry = new WitnessEntry { Id = $"did:key:{honestWitness.MultibasePublicKey}", Weight = 1 };
+        var otherEntry = new WitnessEntry { Id = $"did:key:{otherWitness.MultibasePublicKey}", Weight = 1 };
+
+        var updateResult = await method.UpdateAsync(didA, new DidWebVhUpdateOptions
+        {
+            CurrentLogContent = Encoding.UTF8.GetBytes(logA),
+            SigningKey = signerA,
+            ParameterUpdates = new DidWebVhParameterUpdates
+            {
+                Witness = new WitnessConfig
+                {
+                    Threshold = 1,
+                    Witnesses = new FlippingList<WitnessEntry>(
+                        firstEnumeration: [honestEntry],
+                        laterEnumerations: [otherEntry])
+                }
+            }
+        });
+
+        var updatedLog = (string)updateResult.Artifacts![DidWebVhArtifacts.DidJsonl];
+        var entries = LogEntrySerializer.ParseJsonLines(Encoding.UTF8.GetBytes(updatedLog));
+        var serializedWitnesses = entries[^1].Parameters.Witness!.Witnesses!;
+        serializedWitnesses.Should().ContainSingle().Which.Id.Should().Be(honestEntry.Id);
+
+        updateResult.AuthorizationChange.Should().Be(AuthorizationChangeStatus.Changed);
+        updateResult.UpdateKeyChange.Should().Be(AuthorizationChangeStatus.Unchanged);
     }
 
     [Fact]

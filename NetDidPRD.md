@@ -295,8 +295,9 @@ public sealed record DidUpdateResult
     /// keys that authorized this update (that was the previous effective set). null = the
     /// method does not report it (fail closed); did:webvh reports null whenever key
     /// pre-rotation is in play, since under pre-rotation the next entry is authorized by
-    /// its own pre-committed updateKeys (nextKeyHashes preimages) and no key list is
-    /// knowable at update time. empty = no keys authorized (DID frozen — explicitly
+    /// its own pre-committed updateKeys (nextKeyHashes preimages) and the driver cannot
+    /// derive the next signer list from the parameter-level evidence it has — nextKeyHashes
+    /// are hashes, not keys. empty = no keys authorized (DID frozen — explicitly
     /// permitted by did:webvh v1.0). For an exclusive rotation, compare the complete set
     /// against the intended post-rotation set; membership checks alone accept unexpected
     /// extra keys. (issue #91)

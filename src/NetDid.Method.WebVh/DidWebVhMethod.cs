@@ -428,7 +428,7 @@ public sealed class DidWebVhMethod : DidMethodBase
         // evaluates it, so it reports Changed or Unchanged (never Unknown). See issue #82.
         var newEffectiveParams = newParams.MergeWith(effectiveParams);
         var updateKeysUnchanged = StringSetEquals(effectiveParams.UpdateKeys, newEffectiveParams.UpdateKeys);
-        var authorizationChange = !updateKeysUnchanged || HasAuthorizationChange(effectiveParams, newEffectiveParams)
+        var authorizationChange = !updateKeysUnchanged || HasPolicyChange(effectiveParams, newEffectiveParams)
             ? AuthorizationChangeStatus.Changed
             : AuthorizationChangeStatus.Unchanged;
 
@@ -779,15 +779,14 @@ public sealed class DidWebVhMethod : DidMethodBase
     }
 
     /// <summary>
-    /// True when the effective authorization material differs between two parameter sets —
-    /// <c>updateKeys</c>, <c>prerotation</c>, <c>nextKeyHashes</c>, or <c>witness</c> config.
-    /// <c>ttl</c> is deliberately excluded (it is a caching hint, not authority). Drives
-    /// <see cref="DidUpdateResult.AuthorizationChange"/>.
+    /// True when the effective policy material — <c>prerotation</c>, <c>nextKeyHashes</c>, or
+    /// <c>witness</c> config — differs between two parameter sets. <c>ttl</c> is deliberately
+    /// excluded (it is a caching hint, not authority). Together with the <c>updateKeys</c> set
+    /// comparison computed at the call site, this drives
+    /// <see cref="DidUpdateResult.AuthorizationChange"/> (a change to either kind of material).
     /// </summary>
-    private static bool HasAuthorizationChange(LogEntryParameters before, LogEntryParameters after)
+    private static bool HasPolicyChange(LogEntryParameters before, LogEntryParameters after)
     {
-        if (!StringSetEquals(before.UpdateKeys, after.UpdateKeys))
-            return true;
         if ((before.Prerotation ?? false) != (after.Prerotation ?? false))
             return true;
         if (!StringSetEquals(before.NextKeyHashes, after.NextKeyHashes))

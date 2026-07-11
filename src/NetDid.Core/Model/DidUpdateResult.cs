@@ -52,7 +52,9 @@ public sealed record DidUpdateResult
     /// <c>null</c> when the method does not report it (treat as no evidence and fail closed).
     /// did:webvh reports <c>null</c> whenever key pre-rotation is in play: under pre-rotation the
     /// next entry is authorized by its own pre-committed <c>updateKeys</c> (the
-    /// <c>nextKeyHashes</c> preimages), so no key list is knowable at update time. An empty list
+    /// <c>nextKeyHashes</c> preimages), so the driver cannot derive the next signer list from the
+    /// parameter-level evidence available here — <c>nextKeyHashes</c> are hashes, not keys (the
+    /// controller holding the pre-committed keypairs may of course know them). An empty list
     /// means no keys are authorized, i.e. the DID can no longer be updated (a state did:webvh
     /// v1.0 explicitly permits for freezing a DID).
     /// </summary>
