@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.1.0] - 2026-07-11
+
 ### Security
 
 - **did:webvh log validation now requires strictly increasing `versionTime` values** (#87).
@@ -139,6 +141,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   of evidence fails closed** — a method that does not evaluate change evidence (including any third-party
   `IDidMethod`) leaves the value at `Unknown`, and a consumer enforcing a document-only postcondition must require
   `Unchanged` explicitly rather than treat "not reported" as "confirmed unchanged."
+
+### Changed
+
+- **Bumped `NetCrypto` `1.1.0` → `1.2.0`.** A backward-compatible refresh of the cryptography
+  provider; net-did's own public API is unchanged. The full test suite — Core, did:key, did:peer,
+  did:webvh (including Data Integrity), the DI extensions, and all W3C conformance assertions —
+  passes against 1.2.0 with a clean Release build (no warnings). Consumers using `NetCrypto` types
+  transitively pick up 1.2.0 automatically.
 
 ## [2.0.1] - 2026-06-14
 
