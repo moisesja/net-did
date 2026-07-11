@@ -1,5 +1,6 @@
 # Lessons
 
+- Do not ask for plan approval for PR reviews. Reviewing a PR is read-only analysis plus the explicitly requested GitHub review/comment action, not source implementation; inspect, validate, and post the review directly.
 - When the user corrects or narrows a request mid-thread, restate the corrected scope explicitly in the next work pass and revalidate only that scope before taking issue-tracker actions.
 - CLAUDE.md "Plan First" / "Verify Plan" means: for any non-trivial task (≥3 steps or architectural decisions), write the plan to `tasks/todo{timestamp}.md` AND present it to the user for approval BEFORE editing any source files. Writing the plan file is not the same as getting approval — use `EnterPlanMode` / `ExitPlanMode` (or an explicit "OK to proceed?" check) and wait for a yes. A user constraint like "stay on this branch" is a scope guardrail, not approval to skip the plan-review step.
 - A crypto→NetCrypto-style migration is a project-wide *public-API type-namespace swap* (`KeyType`/`ISigner` move from `NetDid.Core[.Crypto]` to `NetCrypto`), NOT a folder delete. The types flow through public DID-method signatures across src + samples + ALL test projects, so it must be one atomic pass — a piecemeal "Phase 1 warm-up" cannot compile in isolation: while net-did's types still exist, adding `using NetCrypto;` alongside `using NetDid.Core.Crypto;` makes `KeyType`/`DefaultKeyGenerator`/etc. ambiguous (CS0104). Correct order: delete the in-repo sources FIRST (removes the collision), THEN swap usings, THEN build-iterate.
@@ -20,3 +21,22 @@
 - Map malformed content only at the trust boundary that consumed it. A fetched did:webvh log with
   an invalid timestamp is `invalidDidLog`; catching that parse failure locally avoids relabeling
   unrelated format errors or changing Create/Update exception contracts.
+- "Take it as far as possible without prompting" does NOT extend to merging PRs into main.
+  Opening the PR is the autonomous boundary; the user reviews and merges (or explicitly says
+  "merge it" per-PR). Plan-approval of a step that says "merge on green CI" is still weaker
+  than the user's standing review gate — pause at the PR and hand off.
+- Writer/reader parity inside one library is NOT spec conformance. Before publishing a
+  security contract about a spec-governed format, verify the claim against the NORMATIVE
+  spec text (fetch the spec source; quote the rule). did:webvh v1.0 authorizes a
+  pre-rotation entry with the CURRENT entry's own updateKeys — the prior-keys rule only
+  holds when pre-rotation is inactive. NetDid deviated and my #91 evidence contract
+  ("keys authorized to sign the next entry") repeated the deviation as a promise (#93).
+- Treat caller-supplied interface-typed collections (IReadOnlyList<T> etc.) as adversarial
+  code at trust boundaries: an implementation can return different contents per
+  enumeration (TOCTOU). Snapshot ONCE at entry and use the private copy for validation,
+  comparison, hashing/signing, serialization, and reported evidence. A post-return
+  defensive copy alone only fixes the last read. Adversarial review must model hostile
+  implementations of interfaces, not just mutation of concrete List<T>.
+- Document security postconditions in their exclusive/complete form: membership checks
+  ("new key present, retired key absent") admit supersets with unexpected extra keys;
+  exclusive rotation requires set-equality against the intended post-rotation set.

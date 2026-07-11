@@ -393,14 +393,21 @@ public sealed class DidWebVhMethod : DidMethodBase
         if (effectiveParams.UpdateKeys?.Contains(signerMultibase) != true)
             throw new ArgumentException("SigningKey is not an authorized update key.");
 
+        // Build updated parameters (only include changed fields), snapshotting the caller's
+        // collections exactly once — every later read (pre-rotation validation, change
+        // comparison, hashing, signing, artifact serialization, reported evidence) uses this
+        // private copy, so a mutable or dynamic IReadOnlyList cannot present different contents
+        // to different stages of the operation.
+        var newParams = BuildUpdateParameters(updateOptions.ParameterUpdates);
+
         // If pre-rotation is active, new updateKeys MUST be provided
         if (effectiveParams.Prerotation == true && effectiveParams.NextKeyHashes is { Count: > 0 })
         {
-            if (updateOptions.ParameterUpdates?.UpdateKeys is not { Count: > 0 })
+            if (newParams.UpdateKeys is not { Count: > 0 })
                 throw new ArgumentException(
                     "Pre-rotation is active — updateKeys must be provided to rotate keys.");
 
-            foreach (var newKey in updateOptions.ParameterUpdates.UpdateKeys)
+            foreach (var newKey in newParams.UpdateKeys)
             {
                 PreRotationManager.ValidateKeyRotation(
                     newKey, effectiveParams.NextKeyHashes, entries.Count + 1);
@@ -412,8 +419,6 @@ public sealed class DidWebVhMethod : DidMethodBase
         // Build updated document
         var newDocument = updateOptions.NewDocument ?? previousEntry.State;
 
-        // Build updated parameters (only include changed fields)
-        var newParams = BuildUpdateParameters(updateOptions.ParameterUpdates);
         RequireValidWitnessPolicy(newParams.Witness, nameof(options));
 
         // Determine whether this update touched the method's authorization material, by
@@ -422,9 +427,34 @@ public sealed class DidWebVhMethod : DidMethodBase
         // authority (updateKeys etc.) never appears in the DID Document. This driver always
         // evaluates it, so it reports Changed or Unchanged (never Unknown). See issue #82.
         var newEffectiveParams = newParams.MergeWith(effectiveParams);
-        var authorizationChange = HasAuthorizationChange(effectiveParams, newEffectiveParams)
+        var updateKeysUnchanged = StringSetEquals(effectiveParams.UpdateKeys, newEffectiveParams.UpdateKeys);
+        var authorizationChange = !updateKeysUnchanged || HasPolicyChange(effectiveParams, newEffectiveParams)
             ? AuthorizationChangeStatus.Changed
             : AuthorizationChangeStatus.Unchanged;
+
+        // Key-specific evidence for rotation consumers (issue #91): whether the effective
+        // updateKeys set itself changed — a witness- or prerotation-only change must not read
+        // as a rotation — plus the key set a consumer can bind its new key to. Folding the set
+        // comparison into the coarse status above makes UpdateKeyChange == Changed structurally
+        // imply AuthorizationChange == Changed.
+        //
+        // Withheld (fail closed: Unknown / null) whenever key pre-rotation is in play before or
+        // after this update. did:webvh v1.0 authorizes a pre-rotation entry with the CURRENT
+        // entry's own updateKeys (constrained to the prior nextKeyHashes commitments), so the
+        // parameter-level updateKeys here are not "the keys authorized to sign the next entry";
+        // NetDid's pre-rotation authorization model is additionally non-conformant today (see
+        // issue #93) — publishing key evidence in that mode would be a false security contract.
+        var preRotationInPlay =
+            effectiveParams.Prerotation == true || effectiveParams.NextKeyHashes is { Count: > 0 } ||
+            newEffectiveParams.Prerotation == true || newEffectiveParams.NextKeyHashes is { Count: > 0 };
+        var updateKeyChange = preRotationInPlay
+            ? AuthorizationChangeStatus.Unknown
+            : updateKeysUnchanged ? AuthorizationChangeStatus.Unchanged : AuthorizationChangeStatus.Changed;
+        // Read-only copy: the reported evidence must not be mutable after return, whether via
+        // the caller's original list or a consumer downcast.
+        IReadOnlyList<string>? effectiveUpdateKeys = null;
+        if (!preRotationInPlay && newEffectiveParams.UpdateKeys is { } authorizedKeys)
+            effectiveUpdateKeys = Array.AsReadOnly(authorizedKeys.ToArray());
 
         // Build new entry — hash includes previous versionId per spec
         var versionNumber = entries.Count + 1;
@@ -474,7 +504,9 @@ public sealed class DidWebVhMethod : DidMethodBase
         {
             DidDocument = newDocument,
             Artifacts = updateArtifacts,
-            AuthorizationChange = authorizationChange
+            AuthorizationChange = authorizationChange,
+            UpdateKeyChange = updateKeyChange,
+            EffectiveUpdateKeys = effectiveUpdateKeys
         };
     }
 
@@ -671,6 +703,14 @@ public sealed class DidWebVhMethod : DidMethodBase
         };
     }
 
+    /// <summary>
+    /// Translates the caller's requested updates into a new entry's parameter delta, defensively
+    /// copying every collection. <see cref="IReadOnlyList{T}"/> is a read contract, not an
+    /// immutability guarantee: without the copies, a mutable or dynamic implementation could show
+    /// one key set to validation and the change comparison, another to hashing/signing and the
+    /// serialized artifact, and a third to the reported evidence — yielding a chain-valid log
+    /// whose <see cref="DidUpdateResult"/> evidence describes a rotation that never happened.
+    /// </summary>
     private static LogEntryParameters BuildUpdateParameters(DidWebVhParameterUpdates? updates)
     {
         if (updates is null)
@@ -678,11 +718,31 @@ public sealed class DidWebVhMethod : DidMethodBase
 
         return new LogEntryParameters
         {
-            UpdateKeys = updates.UpdateKeys,
+            UpdateKeys = updates.UpdateKeys?.ToArray(),
             Prerotation = updates.Prerotation,
-            NextKeyHashes = updates.NextKeyHashes,
-            Witness = updates.Witness,
+            NextKeyHashes = updates.NextKeyHashes?.ToArray(),
+            Witness = SnapshotWitnessConfig(updates.Witness),
             Ttl = updates.Ttl
+        };
+    }
+
+    /// <summary>
+    /// Copies a caller-supplied witness policy so its entry list cannot change between
+    /// validation and serialization. <see cref="WitnessEntry"/> itself is sealed with init-only
+    /// members, so copying the list suffices; the internal wire-presence flags are preserved so
+    /// disabled-policy detection behaves identically to the original instance.
+    /// </summary>
+    private static WitnessConfig? SnapshotWitnessConfig(WitnessConfig? witness)
+    {
+        if (witness is null)
+            return null;
+
+        return new WitnessConfig
+        {
+            Threshold = witness.Threshold,
+            Witnesses = witness.Witnesses?.ToArray(),
+            ThresholdPropertyPresent = witness.ThresholdPropertyPresent,
+            WitnessesPropertyPresent = witness.WitnessesPropertyPresent
         };
     }
 
@@ -719,15 +779,14 @@ public sealed class DidWebVhMethod : DidMethodBase
     }
 
     /// <summary>
-    /// True when the effective authorization material differs between two parameter sets —
-    /// <c>updateKeys</c>, <c>prerotation</c>, <c>nextKeyHashes</c>, or <c>witness</c> config.
-    /// <c>ttl</c> is deliberately excluded (it is a caching hint, not authority). Drives
-    /// <see cref="DidUpdateResult.AuthorizationChange"/>.
+    /// True when the effective policy material — <c>prerotation</c>, <c>nextKeyHashes</c>, or
+    /// <c>witness</c> config — differs between two parameter sets. <c>ttl</c> is deliberately
+    /// excluded (it is a caching hint, not authority). Together with the <c>updateKeys</c> set
+    /// comparison computed at the call site, this drives
+    /// <see cref="DidUpdateResult.AuthorizationChange"/> (a change to either kind of material).
     /// </summary>
-    private static bool HasAuthorizationChange(LogEntryParameters before, LogEntryParameters after)
+    private static bool HasPolicyChange(LogEntryParameters before, LogEntryParameters after)
     {
-        if (!StringSetEquals(before.UpdateKeys, after.UpdateKeys))
-            return true;
         if ((before.Prerotation ?? false) != (after.Prerotation ?? false))
             return true;
         if (!StringSetEquals(before.NextKeyHashes, after.NextKeyHashes))

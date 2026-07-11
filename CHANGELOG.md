@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`DidUpdateResult` now exposes key-specific rotation evidence** (#91). New additive properties:
+  `UpdateKeyChange` (`AuthorizationChangeStatus`, default `Unknown` — fail closed) reports whether the
+  effective set of authorized update keys changed, compared order-insensitively before vs. after the
+  update; unlike the coarse `AuthorizationChange`, a witness-config-only change does not trip it.
+  `EffectiveUpdateKeys` (`IReadOnlyList<string>?`) carries a read-only copy of the keys authorized to
+  sign the *next* log entry (for did:webvh, the effective `updateKeys` of the new latest entry;
+  multibase) — `null` means the method reports no evidence, empty means no keys are authorized (a
+  frozen DID, explicitly permitted by did:webvh v1.0). A rotation consumer requires
+  `UpdateKeyChange == Changed` and, for an exclusive rotation, `EffectiveUpdateKeys` set-equal to its
+  intended post-rotation key set — membership checks alone would accept unexpected extra keys.
+  `AuthorizationChange` semantics are unchanged.
+  - The did:webvh driver **withholds the key evidence (fail closed: `Unknown` / `null`) whenever key
+    pre-rotation is in play** before or after the update: under pre-rotation, did:webvh v1.0 authorizes
+    an entry with the *current* entry's own pre-committed `updateKeys`, so the parameter-level key set
+    does not name the next entry's signers; NetDid's pre-rotation authorization model is additionally
+    non-conformant with v1.0 today (#93). Evidence for pre-rotation DIDs will be re-enabled when #93 is
+    fixed.
+  - Update hardening: all caller-supplied parameter collections (`UpdateKeys`, `NextKeyHashes`, witness
+    list) are snapshotted exactly once at the start of `UpdateAsync`, so pre-rotation validation, the
+    change comparison, hashing/signing, the serialized `did.jsonl`, and the reported evidence always
+    observe identical values — a mutable or dynamic `IReadOnlyList` can no longer present different
+    contents to different stages of the operation (TOCTOU).
+
 ## [2.1.0] - 2026-07-11
 
 ### Security
