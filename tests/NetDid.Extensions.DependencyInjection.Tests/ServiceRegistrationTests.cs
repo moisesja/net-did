@@ -56,6 +56,25 @@ public class ServiceRegistrationTests
         result.Should().BeNull();
     }
 
+    [Fact]
+    public void AddDidWebVh_NeutralizesHttpClientTimeout()
+    {
+        // The factory-built typed client must carry Timeout = infinite so that
+        // WebVhHttpClientOptions.Timeout is the sole time authority — otherwise
+        // HttpClient.Timeout's 100s framework default would silently cap any
+        // configured value above it.
+        var services = new ServiceCollection();
+        services.AddNetDid(builder => builder.AddDidWebVh());
+        var provider = services.BuildServiceProvider();
+
+        // Typed clients register under the type's name; CreateClient applies
+        // every ConfigureHttpClient action from AddDidWebVh.
+        var factory = provider.GetRequiredService<IHttpClientFactory>();
+        var http = factory.CreateClient(nameof(DefaultWebVhHttpClient));
+
+        http.Timeout.Should().Be(Timeout.InfiniteTimeSpan);
+    }
+
     private sealed class FixedBodyHandler(byte[] body) : HttpMessageHandler
     {
         protected override Task<HttpResponseMessage> SendAsync(

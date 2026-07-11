@@ -17,7 +17,12 @@ public sealed class DefaultWebVhHttpClient : IWebVhHttpClient, IDisposable
         WebVhHttpClientOptions? options = null)
     {
         _ownsHttpClient = httpClient is null;
-        _httpClient = httpClient ?? new HttpClient();
+        // For an owned client, options.Timeout is the sole time authority:
+        // HttpClient.Timeout (100s framework default) enforces itself
+        // independently and would silently cap any configured value above it,
+        // so neutralize it. An injected client's Timeout is left untouched as
+        // the caller's own independent bound.
+        _httpClient = httpClient ?? new HttpClient { Timeout = Timeout.InfiniteTimeSpan };
         _options = options ?? new WebVhHttpClientOptions();
     }
 

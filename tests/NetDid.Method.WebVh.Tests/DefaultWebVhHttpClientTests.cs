@@ -1,4 +1,5 @@
 using System.Net;
+using System.Reflection;
 using System.Text;
 using FluentAssertions;
 using NetDid.Method.WebVh;
@@ -203,6 +204,38 @@ public class DefaultWebVhHttpClientTests
         };
 
         options.Timeout.Should().Be(System.Threading.Timeout.InfiniteTimeSpan);
+    }
+
+    [Fact]
+    public void OwnedHttpClient_NeutralizesHttpClientTimeout()
+    {
+        // HttpClient.Timeout (100s framework default) enforces itself
+        // independently of the per-fetch token, so it would silently cap any
+        // options.Timeout above 100s. For the client the library constructs
+        // itself, options.Timeout must be the sole time authority. Reflection,
+        // because the owned client is deliberately not exposed.
+        using var client = new DefaultWebVhHttpClient();
+
+        var http = (HttpClient)typeof(DefaultWebVhHttpClient)
+            .GetField("_httpClient", BindingFlags.NonPublic | BindingFlags.Instance)!
+            .GetValue(client)!;
+
+        http.Timeout.Should().Be(System.Threading.Timeout.InfiniteTimeSpan);
+    }
+
+    [Fact]
+    public void InjectedHttpClient_TimeoutIsLeftUntouched()
+    {
+        // A caller-injected client keeps its own Timeout as an independent
+        // bound — the library must not mutate configuration it does not own.
+        using var injected = new HttpClient(new StubHttpHandler(new byte[0], 0))
+        {
+            Timeout = TimeSpan.FromSeconds(7)
+        };
+
+        using var client = new DefaultWebVhHttpClient(injected);
+
+        injected.Timeout.Should().Be(TimeSpan.FromSeconds(7));
     }
 
     [Fact]

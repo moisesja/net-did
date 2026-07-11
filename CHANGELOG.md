@@ -18,7 +18,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   fetch open indefinitely, because under `HttpCompletionOption.ResponseHeadersRead` the `HttpClient.Timeout` stops
   applying once headers arrive. The per-fetch token closes both windows in both construction paths (bare
   `new HttpClient()` fallback and the DI-registered typed client, which already receives the registered options
-  singleton). A timed-out fetch normalizes to a failed fetch (resolution reports `notFound`), preserving the #81
+  singleton). On both library-constructed clients `HttpClient.Timeout` is neutralized (`InfiniteTimeSpan`) so the
+  knob turns in both directions: without this, `HttpClient.Timeout` enforces its 100 s default independently and a
+  configured `Timeout` above 100 s would silently still cap at 100 s. A caller-injected `HttpClient` keeps its own
+  `Timeout` as an independent cap. A timed-out fetch normalizes to a failed fetch (resolution reports `notFound`), preserving the #81
   contract: only genuine caller-token cancellation propagates as `OperationCanceledException`. `Timeout` is validated
   at construction (`ArgumentOutOfRangeException` unless positive or `InfiniteTimeSpan`): zero would otherwise silently
   cancel every fetch (all resolutions `notFound` with nothing logged) and a negative value would throw from

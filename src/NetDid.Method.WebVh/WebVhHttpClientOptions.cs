@@ -28,10 +28,15 @@ public sealed record WebVhHttpClientOptions
     /// <c>notFound</c>); cancellation requested by the caller's own token is
     /// unaffected and still propagates. Must be positive, or
     /// <see cref="System.Threading.Timeout.InfiniteTimeSpan"/> to disable.
-    /// Disabling removes the body-read bound entirely: only
-    /// <see cref="HttpClient.Timeout"/> (100 seconds unless configured) still
-    /// bounds time-to-headers, and nothing bounds a host that drips the body
-    /// slowly — a hostile host can then pin a fetch indefinitely.
+    /// For clients the library constructs itself (the parameterless
+    /// <see cref="DefaultWebVhHttpClient"/> fallback and the
+    /// <c>AddDidWebVh</c> registration) this is the sole time bound —
+    /// <see cref="HttpClient.Timeout"/> is neutralized so values above its
+    /// 100-second framework default are honored, and disabling therefore
+    /// removes ALL time bounds, letting a hostile host pin a fetch
+    /// indefinitely. A caller-injected <see cref="HttpClient"/> keeps its own
+    /// <see cref="HttpClient.Timeout"/> as an independent cap on
+    /// time-to-headers.
     /// </summary>
     public TimeSpan Timeout
     {
