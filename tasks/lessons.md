@@ -7,3 +7,10 @@
 - When a test reaches an `internal` method that moved to NetCrypto (e.g. `DefaultCryptoProvider.DecompressEcPoint`), don't delete the whole test — re-express it against a public path. `JwkConverter.ToPublicJwk(keyType, compressedKey)` expands a compressed SEC1 point to X/Y; `Base64UrlEncoder.DecodeBytes(jwk.X/.Y)` recovers the coordinate bytes.
 - Conformant Data Integrity (`eddsa-jcs-2022`, DataProofsDotnet) signs `SHA-256(JCS(proofConfig)) ‖ SHA-256(JCS(document))` — the **proofConfig (verificationMethod, created, proofPurpose, type, cryptosuite) is part of the signed bytes**, unlike net-did's old document-only signing. Consequences when migrating: (1) a proof field like `verificationMethod` can no longer be edited after signing (a test that stripped the `#fragment` post-hoc had to re-sign with the stripped form instead); (2) on verify, pass the wire `created` string **verbatim** (no `DateTimeOffset.Parse`/reformat) or the recomputed proofConfig won't match; (3) `CreateProofAsync` **requires** `proofOptions.VerificationMethod` (net-did used to auto-derive it) — set `did:key:{mb}#{mb}` explicitly.
 - The DID-method-aware proof-signer parser (did:key URL → multibase, with the DID==fragment anti-spoof check) has **no home upstream** — DataProofsDotnet's dependency direction forbids DID parsing. Keep it in net-did (relocated to an internal `NetDid.Method.WebVh` helper) and feed the extracted multibase to `PublicKeyMaterial.FromMultikey`.
+- A timeout/limit knob layered on top of a framework default must turn in BOTH directions.
+  `HttpClient.Timeout` (100s default) enforces itself via its own internal linked token, so a
+  per-request CTS knob can shorten but never lengthen the effective timeout — a configured value
+  above 100s silently still caps at 100s. When adding such a knob, neutralize the hidden default on
+  resources the library owns (`Timeout.InfiniteTimeSpan` on both the owned fallback client and the
+  DI `ConfigureHttpClient` path), leave caller-injected resources untouched, and add a test for the
+  raise-above-default direction, not just the lowering one.

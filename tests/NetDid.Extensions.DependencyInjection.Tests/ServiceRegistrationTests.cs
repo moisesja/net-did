@@ -33,6 +33,48 @@ public class ServiceRegistrationTests
         result.Should().BeNull();
     }
 
+    [Fact]
+    public async Task AddDidWebVh_FlowsCustomTimeoutIntoClient()
+    {
+        // A handler that never responds must be abandoned once the configured
+        // Timeout elapses, proving the timeout passed to AddDidWebVh reaches
+        // the typed client through the IHttpClientFactory (issue #80).
+        var services = new ServiceCollection();
+        services.AddNetDid(builder =>
+            builder.AddDidWebVh(new WebVhHttpClientOptions
+            {
+                Timeout = TimeSpan.FromMilliseconds(100)
+            }));
+        services.AddHttpClient<DefaultWebVhHttpClient>()
+            .ConfigurePrimaryHttpMessageHandler(() => new NeverRespondingHandler());
+        var provider = services.BuildServiceProvider();
+
+        var client = provider.GetRequiredService<IWebVhHttpClient>();
+        var result = await client.FetchDidLogAsync(
+            new Uri("https://example.com/.well-known/did.jsonl"));
+
+        result.Should().BeNull();
+    }
+
+    [Fact]
+    public void AddDidWebVh_NeutralizesHttpClientTimeout()
+    {
+        // The factory-built typed client must carry Timeout = infinite so that
+        // WebVhHttpClientOptions.Timeout is the sole time authority — otherwise
+        // HttpClient.Timeout's 100s framework default would silently cap any
+        // configured value above it.
+        var services = new ServiceCollection();
+        services.AddNetDid(builder => builder.AddDidWebVh());
+        var provider = services.BuildServiceProvider();
+
+        // Typed clients register under the type's name; CreateClient applies
+        // every ConfigureHttpClient action from AddDidWebVh.
+        var factory = provider.GetRequiredService<IHttpClientFactory>();
+        var http = factory.CreateClient(nameof(DefaultWebVhHttpClient));
+
+        http.Timeout.Should().Be(Timeout.InfiniteTimeSpan);
+    }
+
     private sealed class FixedBodyHandler(byte[] body) : HttpMessageHandler
     {
         protected override Task<HttpResponseMessage> SendAsync(
@@ -41,6 +83,16 @@ public class ServiceRegistrationTests
             {
                 Content = new ByteArrayContent(body)
             });
+    }
+
+    private sealed class NeverRespondingHandler : HttpMessageHandler
+    {
+        protected override async Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+            throw new InvalidOperationException("unreachable");
+        }
     }
 
     [Fact]

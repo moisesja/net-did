@@ -1,4 +1,5 @@
 using System.Net;
+using System.Reflection;
 using System.Text;
 using FluentAssertions;
 using NetDid.Method.WebVh;
@@ -176,6 +177,123 @@ public class DefaultWebVhHttpClientTests
         defaults.MaxWitnessFileBytes.Should().Be(1L * 1024 * 1024);
     }
 
+    // --- timeout enforcement (issue #80) ---
+
+    [Fact]
+    public void WebVhHttpClientOptions_DefaultTimeout_IsThirtySeconds()
+    {
+        new WebVhHttpClientOptions().Timeout.Should().Be(TimeSpan.FromSeconds(30));
+    }
+
+    [Theory]
+    [InlineData(0)]     // zero would silently cancel every fetch
+    [InlineData(-5)]    // negative would throw from CancelAfter at fetch time
+    public void WebVhHttpClientOptions_NonPositiveTimeout_ThrowsAtConstruction(int seconds)
+    {
+        var act = () => new WebVhHttpClientOptions { Timeout = TimeSpan.FromSeconds(seconds) };
+
+        act.Should().Throw<ArgumentOutOfRangeException>();
+    }
+
+    [Fact]
+    public void WebVhHttpClientOptions_InfiniteTimeout_IsAccepted()
+    {
+        var options = new WebVhHttpClientOptions
+        {
+            Timeout = System.Threading.Timeout.InfiniteTimeSpan
+        };
+
+        options.Timeout.Should().Be(System.Threading.Timeout.InfiniteTimeSpan);
+    }
+
+    [Fact]
+    public void OwnedHttpClient_NeutralizesHttpClientTimeout()
+    {
+        // HttpClient.Timeout (100s framework default) enforces itself
+        // independently of the per-fetch token, so it would silently cap any
+        // options.Timeout above 100s. For the client the library constructs
+        // itself, options.Timeout must be the sole time authority. Reflection,
+        // because the owned client is deliberately not exposed.
+        using var client = new DefaultWebVhHttpClient();
+
+        var http = (HttpClient)typeof(DefaultWebVhHttpClient)
+            .GetField("_httpClient", BindingFlags.NonPublic | BindingFlags.Instance)!
+            .GetValue(client)!;
+
+        http.Timeout.Should().Be(System.Threading.Timeout.InfiniteTimeSpan);
+    }
+
+    [Fact]
+    public void InjectedHttpClient_TimeoutIsLeftUntouched()
+    {
+        // A caller-injected client keeps its own Timeout as an independent
+        // bound — the library must not mutate configuration it does not own.
+        using var injected = new HttpClient(new StubHttpHandler(new byte[0], 0))
+        {
+            Timeout = TimeSpan.FromSeconds(7)
+        };
+
+        using var client = new DefaultWebVhHttpClient(injected);
+
+        injected.Timeout.Should().Be(TimeSpan.FromSeconds(7));
+    }
+
+    [Fact]
+    public async Task FetchDidLog_HostWithholdsHeadersBeyondTimeout_ReturnsNull()
+    {
+        // Slowloris-style host: handshake succeeds, response headers never arrive.
+        var options = new WebVhHttpClientOptions { Timeout = TimeSpan.FromMilliseconds(100) };
+        var client = BuildClient(new NeverRespondingHttpHandler(), options);
+
+        var result = await client.FetchDidLogAsync(LogUrl);
+
+        result.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task FetchDidLog_HostStallsBodyBeyondTimeout_ReturnsNull()
+    {
+        // Headers arrive promptly but the body never does. HttpClient.Timeout
+        // does not cover this phase under ResponseHeadersRead, so it is the
+        // per-fetch timeout that must abort the read.
+        var options = new WebVhHttpClientOptions { Timeout = TimeSpan.FromMilliseconds(100) };
+        var handler = new StubHttpHandler(new byte[0], declaredContentLength: null)
+        {
+            BodyStreamOverride = new StallingStream()
+        };
+        var client = BuildClient(handler, options);
+
+        var result = await client.FetchDidLogAsync(LogUrl);
+
+        result.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task FetchWitnessFile_HostWithholdsHeadersBeyondTimeout_ReturnsNull()
+    {
+        var options = new WebVhHttpClientOptions { Timeout = TimeSpan.FromMilliseconds(100) };
+        var client = BuildClient(new NeverRespondingHttpHandler(), options);
+
+        var result = await client.FetchWitnessFileAsync(WitnessUrl);
+
+        result.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task FetchDidLog_CallerCancellation_PropagatesInsteadOfReturningNull()
+    {
+        // The per-fetch timeout must not mask genuine cooperative cancellation
+        // (the #81 contract): a cancelled caller token surfaces as
+        // OperationCanceledException, never as a null "not found" fetch.
+        var options = new WebVhHttpClientOptions { Timeout = TimeSpan.FromSeconds(10) };
+        var client = BuildClient(new NeverRespondingHttpHandler(), options);
+        using var callerCts = new CancellationTokenSource(TimeSpan.FromMilliseconds(50));
+
+        var act = () => client.FetchDidLogAsync(LogUrl, callerCts.Token);
+
+        await act.Should().ThrowAsync<OperationCanceledException>();
+    }
+
     // --- helpers ---
 
     /// <summary>
@@ -196,6 +314,9 @@ public class DefaultWebVhHttpClientTests
             _statusCode = statusCode;
         }
 
+        /// <summary>When set, serves this stream as the body instead of the byte array.</summary>
+        public Stream? BodyStreamOverride { get; init; }
+
         protected override Task<HttpResponseMessage> SendAsync(
             HttpRequestMessage request, CancellationToken cancellationToken)
         {
@@ -203,7 +324,7 @@ public class DefaultWebVhHttpClientTests
             if (_declaredContentLength is null)
             {
                 // StreamContent doesn't auto-set Content-Length, so the client must rely on streaming.
-                content = new StreamContent(new MemoryStream(_body));
+                content = new StreamContent(BodyStreamOverride ?? new MemoryStream(_body));
             }
             else
             {
@@ -220,5 +341,48 @@ public class DefaultWebVhHttpClientTests
         protected override Task<HttpResponseMessage> SendAsync(
             HttpRequestMessage request, CancellationToken cancellationToken)
             => throw new HttpRequestException("simulated network failure");
+    }
+
+    /// <summary>
+    /// Simulates a host that completes the handshake but never sends response
+    /// headers: completes only via the request's cancellation token.
+    /// </summary>
+    private sealed class NeverRespondingHttpHandler : HttpMessageHandler
+    {
+        protected override async Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            await Task.Delay(System.Threading.Timeout.InfiniteTimeSpan, cancellationToken);
+            throw new InvalidOperationException("unreachable");
+        }
+    }
+
+    /// <summary>
+    /// A non-seekable body stream that never yields data: reads block until
+    /// the read's cancellation token fires.
+    /// </summary>
+    private sealed class StallingStream : Stream
+    {
+        public override async ValueTask<int> ReadAsync(
+            Memory<byte> buffer, CancellationToken cancellationToken = default)
+        {
+            await Task.Delay(System.Threading.Timeout.InfiniteTimeSpan, cancellationToken);
+            return 0;
+        }
+
+        public override bool CanRead => true;
+        public override bool CanSeek => false;
+        public override bool CanWrite => false;
+        public override long Length => throw new NotSupportedException();
+        public override long Position
+        {
+            get => throw new NotSupportedException();
+            set => throw new NotSupportedException();
+        }
+        public override void Flush() { }
+        public override int Read(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+        public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+        public override void SetLength(long value) => throw new NotSupportedException();
+        public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
     }
 }

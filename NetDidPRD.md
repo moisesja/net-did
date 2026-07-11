@@ -1129,6 +1129,22 @@ public interface IWebVhHttpClient
 
 Default implementation uses `HttpClient`. Callers can inject their own for testing or custom auth.
 
+`DefaultWebVhHttpClient` hardens fetches against hostile or misconfigured did:webvh hosts via
+`WebVhHttpClientOptions`:
+
+- **Size**: `MaxDidLogBytes` (default 5 MiB) and `MaxWitnessFileBytes` (default 1 MiB) cap response
+  bodies. Oversized declared `Content-Length` is rejected before the body is read; bodies without
+  `Content-Length` are streamed and aborted once the cap is crossed.
+- **Time**: `Timeout` (default 30 seconds) bounds the total wall-clock time of each fetch — response
+  headers *and* body read — enforced with a per-fetch linked cancellation token, so it applies
+  regardless of how the `HttpClient` was constructed and covers the body-read phase that
+  `HttpClient.Timeout` does not cover under `ResponseHeadersRead` (issue #80). On clients the library
+  constructs itself (the parameterless fallback and the `AddDidWebVh` registration), `HttpClient.Timeout`
+  is neutralized (`InfiniteTimeSpan`) so `Timeout` is the sole time authority and values above the
+  100-second framework default are honored; a caller-injected `HttpClient` keeps its own `Timeout` as
+  an independent cap. A timed-out fetch is a failed fetch (resolution reports `notFound`); cancellation
+  via the caller's own token still propagates as `OperationCanceledException` (issue #81 contract).
+
 ---
 
 ## 8. DID Method: did:ethr

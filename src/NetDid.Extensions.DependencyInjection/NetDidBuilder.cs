@@ -47,7 +47,11 @@ public sealed class NetDidBuilder
     public NetDidBuilder AddDidWebVh(WebVhHttpClientOptions? httpClientOptions = null)
     {
         Services.AddSingleton(httpClientOptions ?? new WebVhHttpClientOptions());
-        Services.AddHttpClient<DefaultWebVhHttpClient>();
+        // WebVhHttpClientOptions.Timeout is the sole time authority for this
+        // library-owned client: neutralize HttpClient.Timeout (100s framework
+        // default), which would otherwise silently cap configured values above it.
+        Services.AddHttpClient<DefaultWebVhHttpClient>()
+            .ConfigureHttpClient(c => c.Timeout = Timeout.InfiniteTimeSpan);
         Services.AddSingleton<IWebVhHttpClient>(sp =>
             sp.GetRequiredService<DefaultWebVhHttpClient>());
         Services.AddSingleton<IDidMethod>(sp =>
