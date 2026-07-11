@@ -333,6 +333,15 @@ var updateResult = await didWebVh.UpdateAsync(result.Did.Value, new DidWebVhUpda
 // Re-host the updated did.jsonl
 ```
 
+The result carries authorization-change evidence for method-agnostic callers.
+`AuthorizationChange` reports whether *any* authorization material changed
+(`updateKeys` / `nextKeyHashes` / `prerotation` / witness config); `UpdateKeyChange`
+reports whether the effective `updateKeys` set itself changed, and
+`EffectiveUpdateKeys` lists the keys authorized to sign the *next* log entry. A
+key-rotation postcondition is: `UpdateKeyChange == Changed`, the new key present in
+`EffectiveUpdateKeys`, and the retired key absent from it. Both statuses default to
+`Unknown` so a method that reports no evidence fails closed.
+
 ### Pre-rotation (key commitment)
 
 ```csharp

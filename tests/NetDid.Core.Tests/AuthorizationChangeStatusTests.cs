@@ -53,4 +53,26 @@ public class AuthorizationChangeStatusTests
 
         result.AuthorizationChange.Should().Be(AuthorizationChangeStatus.Unknown);
     }
+
+    [Fact]
+    public async Task Update_WhenMethodDoesNotReportKeyEvidence_FailsClosed()
+    {
+        var method = new NonReportingMethod();
+
+        var result = await method.UpdateAsync("did:example:123", new UpdateOptions());
+
+        // Issue #91: same fail-closed contract for the key-specific evidence — "not reported"
+        // must never read as "confirmed unrotated" or as an authorized key set.
+        result.UpdateKeyChange.Should().Be(AuthorizationChangeStatus.Unknown);
+        result.EffectiveUpdateKeys.Should().BeNull();
+    }
+
+    [Fact]
+    public void DidUpdateResult_Default_KeyEvidence_FailsClosed()
+    {
+        var result = new DidUpdateResult { DidDocument = new DidDocument { Id = new Did("did:example:1") } };
+
+        result.UpdateKeyChange.Should().Be(AuthorizationChangeStatus.Unknown);
+        result.EffectiveUpdateKeys.Should().BeNull();
+    }
 }

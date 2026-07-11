@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`DidUpdateResult` now exposes key-specific rotation evidence** (#91). New additive properties:
+  `UpdateKeyChange` (`AuthorizationChangeStatus`, default `Unknown` — fail closed) reports whether the
+  effective set of authorized update keys changed, compared order-insensitively before vs. after the
+  update; unlike the coarse `AuthorizationChange`, a policy-only change (witness config, `prerotation`,
+  `nextKeyHashes`) does not trip it. `EffectiveUpdateKeys` (`IReadOnlyList<string>?`) carries a defensive
+  copy of the keys authorized to sign the *next* log entry (for did:webvh, the effective `updateKeys` of
+  the new latest entry; multibase) — `null` means the method reports no evidence, empty means no keys are
+  authorized (the DID can no longer be updated). Together these let a method-agnostic rotation consumer
+  prove the active update key actually rotated (`UpdateKeyChange == Changed`, new key present in
+  `EffectiveUpdateKeys`, retired key absent) and bind its own new key to the new authority, instead of
+  trusting the coarse `Changed` that a witness-only change can also produce. The did:webvh driver always
+  reports both; `AuthorizationChange` semantics are unchanged.
+
 ## [2.1.0] - 2026-07-11
 
 ### Security

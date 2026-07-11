@@ -422,7 +422,15 @@ public sealed class DidWebVhMethod : DidMethodBase
         // authority (updateKeys etc.) never appears in the DID Document. This driver always
         // evaluates it, so it reports Changed or Unchanged (never Unknown). See issue #82.
         var newEffectiveParams = newParams.MergeWith(effectiveParams);
-        var authorizationChange = HasAuthorizationChange(effectiveParams, newEffectiveParams)
+        // Key-specific evidence for rotation consumers (issue #91): whether the effective
+        // updateKeys set itself changed — a witness/prerotation-only change must not read as
+        // a rotation. Computed once and folded into the coarse status so that
+        // UpdateKeyChange == Changed structurally implies AuthorizationChange == Changed.
+        var updateKeysUnchanged = StringSetEquals(effectiveParams.UpdateKeys, newEffectiveParams.UpdateKeys);
+        var updateKeyChange = updateKeysUnchanged
+            ? AuthorizationChangeStatus.Unchanged
+            : AuthorizationChangeStatus.Changed;
+        var authorizationChange = !updateKeysUnchanged || HasAuthorizationChange(effectiveParams, newEffectiveParams)
             ? AuthorizationChangeStatus.Changed
             : AuthorizationChangeStatus.Unchanged;
 
@@ -474,7 +482,12 @@ public sealed class DidWebVhMethod : DidMethodBase
         {
             DidDocument = newDocument,
             Artifacts = updateArtifacts,
-            AuthorizationChange = authorizationChange
+            AuthorizationChange = authorizationChange,
+            UpdateKeyChange = updateKeyChange,
+            // Read-only copy: the merged list may alias the caller's ParameterUpdates.UpdateKeys,
+            // and the reported evidence must not drift if the caller mutates it after return (nor
+            // be mutable via a downcast by a downstream consumer).
+            EffectiveUpdateKeys = newEffectiveParams.UpdateKeys is { } keys ? Array.AsReadOnly(keys.ToArray()) : null
         };
     }
 

@@ -275,8 +275,26 @@ public sealed record DidUpdateResult
     /// reading back DidDocument cannot otherwise distinguish a document edit from a key
     /// rotation. Defaults to Unknown so absence of evidence fails closed: a caller enforcing
     /// a document-only postcondition must require Unchanged (never treat "not reported" as
-    /// "confirmed unchanged").
+    /// "confirmed unchanged"). Deliberately coarse: a policy-only change (witness /
+    /// pre-rotation commitments) also reports Changed — use UpdateKeyChange /
+    /// EffectiveUpdateKeys to reason about key rotation specifically (issue #91).
     public AuthorizationChangeStatus AuthorizationChange { get; init; }
+
+    /// Whether the effective set of authorized update keys changed (did:webvh: effective
+    /// updateKeys, compared order-insensitively before vs. after). Policy-only changes do
+    /// not trip this. Defaults to Unknown (fail closed). Changed does not imply the old key
+    /// lost authority (updates can add keys): a key-rotation postcondition is
+    /// UpdateKeyChange == Changed AND new key ∈ EffectiveUpdateKeys AND retired key ∉
+    /// EffectiveUpdateKeys. (issue #91)
+    public AuthorizationChangeStatus UpdateKeyChange { get; init; }
+
+    /// The public keys authorized to sign the NEXT log entry (update or deactivation) —
+    /// for did:webvh, the effective updateKeys of the new latest entry (multibase). NOT the
+    /// keys that authorized this update (that was the previous effective set). null = the
+    /// method does not report it (fail closed); empty = no keys authorized (DID frozen).
+    /// Lets a method-agnostic consumer confirm the key set actually changed and bind its
+    /// own new key to the new authority. (issue #91)
+    public IReadOnlyList<string>? EffectiveUpdateKeys { get; init; }
 }
 
 /// Tri-state so that a method which does not evaluate change evidence fails closed.
@@ -1101,7 +1119,7 @@ upgrading; conforming legacy policies with `threshold <= count(distinct ids)` re
 6. Sign with an authorized update key.
 7. Append to `did.jsonl`.
 8. If witnesses are configured, collect witness signatures into `did-witness.json`.
-9. Return the new log entry for the caller to publish, with `DidUpdateResult.AuthorizationChange` set to `Changed`/`Unchanged` according to whether the update altered the authorization material (`updateKeys` / `nextKeyHashes` / `prerotation` / `witness`) so a method-agnostic caller can enforce a document-only postcondition. (The type defaults to `Unknown` for methods that do not report evidence, so the postcondition fails closed.)
+9. Return the new log entry for the caller to publish, with `DidUpdateResult.AuthorizationChange` set to `Changed`/`Unchanged` according to whether the update altered the authorization material (`updateKeys` / `nextKeyHashes` / `prerotation` / `witness`) so a method-agnostic caller can enforce a document-only postcondition. (The type defaults to `Unknown` for methods that do not report evidence, so the postcondition fails closed.) Additionally (issue #91), the driver reports key-specific rotation evidence: `UpdateKeyChange` is `Changed`/`Unchanged` according to whether the **effective `updateKeys` set** itself changed (order-insensitive set comparison — a witness- or pre-rotation-only change reports `AuthorizationChange = Changed` but `UpdateKeyChange = Unchanged`), and `EffectiveUpdateKeys` carries a defensive copy of the new latest entry's effective `updateKeys` — the keys authorized to sign the *next* log entry (update or deactivation). This lets a method-agnostic rotation consumer prove the active key actually rotated (`UpdateKeyChange == Changed`, new key present in `EffectiveUpdateKeys`, retired key absent) rather than trusting the coarse `Changed`.
 
 ### 7.8 Deactivate
 
