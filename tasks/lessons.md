@@ -14,3 +14,9 @@
   resources the library owns (`Timeout.InfiniteTimeSpan` on both the owned fallback client and the
   DI `ConfigureHttpClient` path), leave caller-injected resources untouched, and add a test for the
   raise-above-default direction, not just the lowering one.
+- Security restrictions that intentionally remove a previously tested workflow are breaking
+  changes even when they are secure-by-default fixes. Document every affected public path, whether
+  customization can bypass the restriction, and the supported replacement workflow.
+- Map malformed content only at the trust boundary that consumed it. A fetched did:webvh log with
+  an invalid timestamp is `invalidDidLog`; catching that parse failure locally avoids relabeling
+  unrelated format errors or changing Create/Update exception contracts.

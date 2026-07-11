@@ -22,13 +22,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   knob turns in both directions: without this, `HttpClient.Timeout` enforces its 100 s default independently and a
   configured `Timeout` above 100 s would silently still cap at 100 s. A caller-injected `HttpClient` keeps its own
   `Timeout` as an independent cap. A timed-out fetch normalizes to a failed fetch (resolution reports `notFound`), preserving the #81
-  contract: only genuine caller-token cancellation propagates as `OperationCanceledException`. `Timeout` is validated
-  at construction (`ArgumentOutOfRangeException` unless positive or `InfiniteTimeSpan`): zero would otherwise silently
-  cancel every fetch (all resolutions `notFound` with nothing logged) and a negative value would throw from
-  `CancelAfter` at fetch time — both flagged by an adversarial review of the fix. Consumers needing different HTTP
+  contract: only genuine caller-token cancellation propagates as `OperationCanceledException`, including when URI
+  security preflight would reject the request before dispatch. `Timeout` is validated at construction
+  (`ArgumentOutOfRangeException` unless positive, within `CancelAfter`'s portable `Int32.MaxValue`-millisecond range,
+  or `InfiniteTimeSpan`): zero would otherwise silently cancel every fetch, while negative or overly large values
+  would throw from `CancelAfter` at fetch time — all flagged by adversarial review. Consumers needing different HTTP
   behavior can still inject their own configured `HttpClient`/`IWebVhHttpClient`.
 
-- **Remediated all five `did:webvh` findings in GHSA-3vhp-h4rr-r254.** Witness authorization now
+- **Breaking security change — remediated all five `did:webvh` findings in GHSA-3vhp-h4rr-r254.**
+  Create and Resolve now reject localhost names and loopback, private, link-local, unspecified, and
+  other non-public IP literals at DID-to-URL mapping time. This intentionally removes prior support
+  for DIDs anchored at `localhost` or private IP literals, and injecting a custom
+  `IWebVhHttpClient` does not bypass the mapper-level rejection. Local integration tests should use
+  a public-looking domain such as `example.com` with a fake `IWebVhHttpClient`; applications that
+  require an internal test endpoint must keep the DID host public-looking and map it inside their
+  custom client.
+  Witness authorization now
   evaluates each transition against the correct policy: genesis and the first activation use the
   policy they declare, while an already-active policy governs the entry that lowers, replaces, or
   disables it. Invalid early proofs no longer consume a witness's vote, weights are bound to the
@@ -45,8 +54,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `versionTime` and proof `created` values use invariant UTC Gregorian formatting, retain fractional
   precision without changing existing whole-second output, and preserve the exact parsed JSON token
   during hash/proof verification. Cross-culture parsing is invariant, fractional or lexical mirror
-  rewrites invalidate the chain, fractional precision drives historical selection, and malformed
-  `versionTime` queries no longer silently fall back to the latest version.
+  rewrites invalidate the chain, fractional precision drives historical selection, malformed
+  `versionTime` queries no longer silently fall back to the latest version, and fetched log entries
+  with a non-UTC or otherwise invalid `versionTime` resolve as `invalidDidLog` rather than the
+  misleading `notFound`. The default transport intentionally rejects NAT64 address ranges and
+  disables forward proxies; NAT64-dependent IPv6-only or mandatory-egress-proxy deployments must
+  supply a custom `IWebVhHttpClient` and explicitly own the resulting egress policy. Update and
+  Deactivate do not perform network access and can still process caller-supplied legacy logs, but
+  artifacts retaining a now-rejected private-host DID cannot be resolved by this version.
 - **did:webvh resolution now binds the DID's self-certifying SCID to the genesis entry** (#82). Resolution previously
   anchored identity only on the latest entry's `state.id` — an attacker-controllable document field — and validated the
   genesis SCID for internal self-consistency only. It never compared the SCID embedded in the requested DID string

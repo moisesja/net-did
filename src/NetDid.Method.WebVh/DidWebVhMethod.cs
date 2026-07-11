@@ -190,8 +190,26 @@ public sealed class DidWebVhMethod : DidMethodBase
             if (logContent is null || logContent.Length == 0)
                 return DidResolutionResult.NotFound(did);
 
-            // Parse entries
-            var entries = LogEntrySerializer.ParseJsonLines(logContent);
+            // Parse entries. A syntactically valid fetched log with a spec-invalid
+            // timestamp is an invalid DID log, not evidence that the DID was absent.
+            IReadOnlyList<LogEntry> entries;
+            try
+            {
+                entries = LogEntrySerializer.ParseJsonLines(logContent);
+            }
+            catch (FormatException ex)
+            {
+                _logger.LogWarning(ex, "DID log contains an invalid versionTime for {Did}", did);
+                return new DidResolutionResult
+                {
+                    DidDocument = null,
+                    ResolutionMetadata = new DidResolutionMetadata
+                    {
+                        Error = "invalidDidLog"
+                    }
+                };
+            }
+
             if (entries.Count == 0)
                 return DidResolutionResult.NotFound(did);
 

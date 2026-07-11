@@ -20,6 +20,9 @@ internal sealed class WitnessValidator
     /// <summary>
     /// Validate witness proofs for a log entry.
     /// Returns true if the total weight of valid witness proofs meets the threshold.
+    /// This entry-local helper is retained for direct validation and focused tests;
+    /// production resolution uses <see cref="ValidateAllWitnesses"/> so later proofs
+    /// can provide cumulative coverage for earlier governed entries.
     /// </summary>
     public bool ValidateWitnesses(
         WitnessFile witnessFile,

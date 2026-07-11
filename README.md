@@ -276,7 +276,7 @@ var updateKey = keyGen.Generate(KeyType.Ed25519);
 var signer = new KeyPairSigner(updateKey, crypto);
 
 var httpClient = new DefaultWebVhHttpClient();
-var didWebVh = new DidWebVhMethod(httpClient, crypto);
+var didWebVh = new DidWebVhMethod(httpClient);
 
 var result = await didWebVh.CreateAsync(new DidWebVhCreateOptions
 {

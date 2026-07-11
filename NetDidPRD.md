@@ -1035,7 +1035,9 @@ or `+00:00` zone and version-time selection uses the same invariant interpretati
 parsed timestamp string is retained for hash/proof verification, so an intermediary cannot rewrite
 it to a normalized equivalent that was never signed. A resolver MUST NOT discard authenticated
 fractional precision before recomputing an entry hash or selecting a version, and an invalid
-`versionTime` resolution option MUST NOT silently fall back to the latest version.
+`versionTime` resolution option MUST NOT silently fall back to the latest version. A fetched log
+entry whose `versionTime` is non-UTC or otherwise invalid MUST be reported as `invalidDidLog`, not
+as `notFound`.
 
 ### 7.5 Create
 
@@ -1139,8 +1141,20 @@ public interface IWebVhHttpClient
 The default implementation uses a `SocketsHttpHandler` that disables redirects and proxies,
 resolves the destination inside its connection callback, rejects non-public or mixed public/private
 DNS answers, and connects directly to one of the vetted addresses. The same handler is installed by
-`AddDidWebVh()`. Callers can inject their own client for testing or custom authentication, but a
-custom transport assumes responsibility for equivalent redirect and destination-address controls.
+`AddDidWebVh()`. Callers can inject their own client for testing or custom authentication. An
+in-memory fake performs no network egress; a production custom transport that resolves untrusted
+DIDs assumes responsibility for equivalent redirect and destination-address controls.
+The mapper itself rejects localhost names and non-public IP literals in both Create and Resolve
+before any client is called. This is an intentional breaking security boundary and has no opt-out:
+local tests should use a public-looking host such as `example.com` with an in-memory fake that
+performs no egress. A trusted fixture transport may instead route an explicit permitted hostname to
+an allowlisted local endpoint. Supplying a custom client does not make `localhost` or private-IP
+DIDs valid. Production custom transports that resolve untrusted DIDs remain responsible for
+equivalent anti-SSRF and redirect controls; mandatory proxy deployments must define an equally
+explicit trusted-proxy policy. The default handler also intentionally rejects NAT64 destinations,
+so NAT64-dependent IPv6-only deployments need a custom client. Update and Deactivate perform no
+network access and can process caller-supplied legacy logs, but artifacts that retain a now-rejected
+private-host DID cannot be resolved by this version.
 
 `DefaultWebVhHttpClient` hardens fetches against hostile or misconfigured did:webvh hosts via
 `WebVhHttpClientOptions`:
@@ -1156,7 +1170,10 @@ custom transport assumes responsibility for equivalent redirect and destination-
   is neutralized (`InfiniteTimeSpan`) so `Timeout` is the sole time authority and values above the
   100-second framework default are honored; a caller-injected `HttpClient` keeps its own `Timeout` as
   an independent cap. A timed-out fetch is a failed fetch (resolution reports `notFound`); cancellation
-  via the caller's own token still propagates as `OperationCanceledException` (issue #81 contract).
+  via the caller's own token still propagates as `OperationCanceledException` (issue #81 contract),
+  even when URI security preflight would otherwise reject the request. Finite timeout values are
+  validated at configuration time against `CancellationTokenSource.CancelAfter`'s portable
+  `Int32.MaxValue`-millisecond upper bound; larger values are rejected before any fetch starts.
 
 ---
 

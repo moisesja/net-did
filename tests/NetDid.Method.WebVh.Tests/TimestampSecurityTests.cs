@@ -133,6 +133,38 @@ public sealed class TimestampSecurityTests
     }
 
     [Fact]
+    public async Task Resolve_NonUtcLogVersionTime_ReturnsInvalidDidLog()
+    {
+        var httpClient = new MockWebVhHttpClient();
+        var method = new DidWebVhMethod(httpClient);
+        var createResult = await method.CreateAsync(new DidWebVhCreateOptions
+        {
+            Domain = "example.com",
+            UpdateKey = CreateEd25519Signer()
+        });
+        var did = createResult.Did.Value;
+        var logContent = (string)createResult.Artifacts![DidWebVhArtifacts.DidJsonl];
+
+        using var log = JsonDocument.Parse(logContent);
+        var original = log.RootElement.GetProperty("versionTime").GetString()!;
+        var nonUtc = original[..^1] + "+02:00";
+        var malformedLog = logContent.Replace(
+            $"\"versionTime\":\"{original}\"",
+            $"\"versionTime\":\"{nonUtc}\"",
+            StringComparison.Ordinal);
+
+        malformedLog.Should().NotBe(logContent);
+        httpClient.SetLogResponse(
+            DidUrlMapper.MapToLogUrl(did),
+            Encoding.UTF8.GetBytes(malformedLog));
+
+        var result = await method.ResolveAsync(did);
+
+        result.DidDocument.Should().BeNull();
+        result.ResolutionMetadata.Error.Should().Be("invalidDidLog");
+    }
+
+    [Fact]
     public async Task Resolve_InvalidVersionTimeQuery_DoesNotFallBackToLatest()
     {
         var httpClient = new MockWebVhHttpClient();

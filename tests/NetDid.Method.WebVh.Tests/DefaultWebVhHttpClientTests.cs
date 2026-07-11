@@ -202,6 +202,21 @@ public class DefaultWebVhHttpClientTests
     }
 
     [Fact]
+    public async Task FetchDidLog_AlreadyCancelledUnsafeRequest_PropagatesWithoutDispatch()
+    {
+        var handler = new RecordingHandler();
+        var client = BuildClient(handler);
+        using var callerCts = new CancellationTokenSource();
+        callerCts.Cancel();
+
+        var act = () => client.FetchDidLogAsync(
+            new Uri("http://localhost/.well-known/did.jsonl"), callerCts.Token);
+
+        await act.Should().ThrowAsync<OperationCanceledException>();
+        handler.SendCount.Should().Be(0);
+    }
+
+    [Fact]
     public void CreateSecurePrimaryHandler_DisablesRedirectsAndProxies()
     {
         using var handler = DefaultWebVhHttpClient.CreateSecurePrimaryHandler();
@@ -233,6 +248,17 @@ public class DefaultWebVhHttpClientTests
     public void WebVhHttpClientOptions_NonPositiveTimeout_ThrowsAtConstruction(int seconds)
     {
         var act = () => new WebVhHttpClientOptions { Timeout = TimeSpan.FromSeconds(seconds) };
+
+        act.Should().Throw<ArgumentOutOfRangeException>();
+    }
+
+    [Fact]
+    public void WebVhHttpClientOptions_TimeoutBeyondCancelAfterRange_ThrowsAtConstruction()
+    {
+        var act = () => new WebVhHttpClientOptions
+        {
+            Timeout = TimeSpan.FromMilliseconds((long)int.MaxValue + 1)
+        };
 
         act.Should().Throw<ArgumentOutOfRangeException>();
     }

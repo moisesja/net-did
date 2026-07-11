@@ -71,6 +71,10 @@ public sealed class DefaultWebVhHttpClient : IWebVhHttpClient, IDisposable
 
     private async Task<byte[]?> FetchBoundedAsync(Uri url, long maxBytes, CancellationToken ct)
     {
+        // Cancellation is the caller's control signal and must win even when the
+        // URI would otherwise fail the synchronous security preflight.
+        ct.ThrowIfCancellationRequested();
+
         if (!IsSafeRequestUri(url))
             return null;
 

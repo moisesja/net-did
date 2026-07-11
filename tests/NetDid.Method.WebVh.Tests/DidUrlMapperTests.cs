@@ -1,4 +1,5 @@
 using FluentAssertions;
+using NetCrypto;
 using NetDid.Method.WebVh;
 
 namespace NetDid.Method.WebVh.Tests;
@@ -124,6 +125,37 @@ public class DidUrlMapperTests
         url.Should().Be(new Uri("https://example.com/users/alice/did.jsonl"));
     }
 
+    [Fact]
+    public async Task Create_LocalhostDomain_ThrowsBeforeProducingArtifacts()
+    {
+        var client = new RecordingWebVhHttpClient();
+        var method = new DidWebVhMethod(client);
+        var keyPair = new DefaultKeyGenerator().Generate(KeyType.Ed25519);
+        var signer = new KeyPairSigner(keyPair, new DefaultCryptoProvider());
+
+        var act = () => method.CreateAsync(new DidWebVhCreateOptions
+        {
+            Domain = "localhost",
+            UpdateKey = signer
+        });
+
+        await act.Should().ThrowAsync<ArgumentException>();
+        client.FetchCount.Should().Be(0);
+    }
+
+    [Fact]
+    public async Task Resolve_LocalhostDid_ReturnsNotFoundWithoutCallingCustomClient()
+    {
+        var client = new RecordingWebVhHttpClient();
+        var method = new DidWebVhMethod(client);
+
+        var result = await method.ResolveAsync("did:webvh:QmTest:localhost");
+
+        result.DidDocument.Should().BeNull();
+        result.ResolutionMetadata.Error.Should().Be("notFound");
+        client.FetchCount.Should().Be(0);
+    }
+
     [Theory]
     [InlineData("did:webvh:QmTest:localhost")]
     [InlineData("did:webvh:QmTest:sub.localhost")]
@@ -148,5 +180,22 @@ public class DidUrlMapperTests
         var act = () => DidUrlMapper.MapToLogUrl(did);
 
         act.Should().Throw<ArgumentException>();
+    }
+
+    private sealed class RecordingWebVhHttpClient : IWebVhHttpClient
+    {
+        public int FetchCount { get; private set; }
+
+        public Task<byte[]?> FetchDidLogAsync(Uri logUrl, CancellationToken ct = default)
+        {
+            FetchCount++;
+            return Task.FromResult<byte[]?>(null);
+        }
+
+        public Task<byte[]?> FetchWitnessFileAsync(Uri witnessUrl, CancellationToken ct = default)
+        {
+            FetchCount++;
+            return Task.FromResult<byte[]?>(null);
+        }
     }
 }
