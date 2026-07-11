@@ -1,5 +1,7 @@
 using System.Globalization;
+using DataProofsDotnet;
 using DataProofsDotnet.DataIntegrity;
+using NetCrypto;
 using NetDid.Core.Exceptions;
 using NetDid.Method.WebVh.Model;
 
@@ -83,6 +85,15 @@ internal sealed class LogChainValidator
                 $"Genesis entry version must be 1, got {genesis.VersionNumber}.");
 
         ValidateWitnessPolicy(genesis.Parameters.Witness, 1);
+        if (genesis.Parameters.Watchers is { } genesisWatchers)
+            ValidateWatchers(genesisWatchers, 1);
+
+        if (!string.Equals(
+                genesis.Parameters.Method,
+                DidWebVhMethod.MethodVersion,
+                StringComparison.Ordinal))
+            throw new LogChainValidationException(1,
+                $"Unsupported did:webvh method version '{genesis.Parameters.Method}'.");
 
         // SCID must be set
         if (string.IsNullOrEmpty(genesis.Parameters.Scid))
@@ -105,8 +116,15 @@ internal sealed class LogChainValidator
             throw new LogChainValidationException(1,
                 "Genesis entry hash does not match computed hash (SCID verification failed).");
 
-        // Verify proof
-        ValidateProof(genesis, genesis.Parameters.UpdateKeys, 1);
+        // Genesis is always authorized by its own explicitly declared update keys.
+        var genesisUpdateKeys = genesis.Parameters.UpdateKeys;
+        if (genesisUpdateKeys is not { Count: > 0 })
+            throw new LogChainValidationException(1,
+                "Genesis entry must define at least one updateKey.");
+
+        ValidateUpdateKeys(genesisUpdateKeys, 1);
+
+        ValidateProof(genesis, genesisUpdateKeys, 1);
     }
 
     private void ValidateSubsequentEntry(
@@ -127,6 +145,15 @@ internal sealed class LogChainValidator
 
         ValidateVersionTime(previous.VersionTime, current.VersionTime, expectedVersion);
         ValidateWitnessPolicy(current.Parameters.Witness, expectedVersion);
+        if (current.Parameters.Watchers is { } currentWatchers)
+            ValidateWatchers(currentWatchers, expectedVersion);
+
+        if (current.Parameters.Method is not null && !string.Equals(
+                current.Parameters.Method,
+                DidWebVhMethod.MethodVersion,
+                StringComparison.Ordinal))
+            throw new LogChainValidationException(expectedVersion,
+                $"Unsupported did:webvh method version '{current.Parameters.Method}'.");
 
         // Verify entry hash: recreate the entry with the previous versionId
         // as specified by the spec: versionId = "<versionNumber>-<previousVersionId>"
@@ -139,18 +166,29 @@ internal sealed class LogChainValidator
             throw new LogChainValidationException(expectedVersion,
                 $"Entry hash mismatch at version {expectedVersion}.");
 
-        // Verify proof is signed by an authorized update key from the PREVIOUS effective params
-        var authorizedKeys = effectiveParams.UpdateKeys
-            ?? throw new LogChainValidationException(expectedVersion,
-                $"No updateKeys defined at version {expectedVersion - 1}.");
+        if (current.Parameters.UpdateKeys is { } currentUpdateKeys)
+            ValidateUpdateKeys(currentUpdateKeys, expectedVersion);
+
+        IReadOnlyList<string> authorizedKeys;
+        if (effectiveParams.NextKeyHashes is { Count: > 0 } previousNextKeyHashes)
+        {
+            // Pre-rotation was activated by the previous effective parameters. The current
+            // entry must reveal committed keys explicitly, carry the next commitment array
+            // explicitly (including [] to turn pre-rotation off), and be authorized by one of
+            // its own revealed keys.
+            authorizedKeys = ValidatePreRotation(
+                current, previousNextKeyHashes, expectedVersion);
+        }
+        else
+        {
+            // Without pre-rotation, the most recent prior updateKeys authorize this entry.
+            authorizedKeys = effectiveParams.UpdateKeys is { Count: > 0 } previousUpdateKeys
+                ? previousUpdateKeys
+                : throw new LogChainValidationException(expectedVersion,
+                    $"No updateKeys authorize version {expectedVersion}.");
+        }
 
         ValidateProof(current, authorizedKeys, expectedVersion);
-
-        // If pre-rotation was active in previous entry, validate key rotation
-        if (effectiveParams.Prerotation == true && effectiveParams.NextKeyHashes is { Count: > 0 })
-        {
-            ValidatePreRotation(current, effectiveParams.NextKeyHashes, expectedVersion);
-        }
     }
 
     /// <summary>
@@ -205,22 +243,72 @@ internal sealed class LogChainValidator
             $"No valid proof from an authorized update key at version {version}.");
     }
 
-    private static void ValidatePreRotation(
+    private static IReadOnlyList<string> ValidatePreRotation(
         LogEntry current,
         IReadOnlyList<string> previousNextKeyHashes,
         int version)
     {
-        // Pre-rotation requires that this entry introduces new updateKeys
-        // that match the previously committed nextKeyHashes.
-        // If no new updateKeys are provided, the entry is invalid under pre-rotation.
+        // Omission cannot inherit either field while pre-rotation is active. An explicit empty
+        // nextKeyHashes array is valid and deactivates pre-rotation after this entry.
         if (current.Parameters.UpdateKeys is not { Count: > 0 })
             throw new LogChainValidationException(version,
-                $"Pre-rotation is active but version {version} does not introduce new updateKeys. " +
-                "When pre-rotation is enabled, every update must rotate keys.");
+                $"Pre-rotation is active but version {version} does not explicitly define " +
+                "at least one updateKey.");
 
-        foreach (var newKey in current.Parameters.UpdateKeys)
+        if (current.Parameters.NextKeyHashes is null)
+            throw new LogChainValidationException(version,
+                $"Pre-rotation is active but version {version} does not explicitly define " +
+                "nextKeyHashes.");
+
+        foreach (var currentKey in current.Parameters.UpdateKeys)
         {
-            PreRotationManager.ValidateKeyRotation(newKey, previousNextKeyHashes, version);
+            PreRotationManager.ValidateKeyRotation(currentKey, previousNextKeyHashes, version);
+        }
+
+        return current.Parameters.UpdateKeys;
+    }
+
+    /// <summary>
+    /// Enforces the v1.0 authorization-key algorithm policy for every declared update key, not
+    /// only the proof signer. Without this full-set validation, a committed malformed or
+    /// unsupported extra value could enter the effective authorization set.
+    /// </summary>
+    internal static void ValidateUpdateKeys(IReadOnlyList<string> updateKeys, int version)
+    {
+        foreach (var updateKey in updateKeys)
+        {
+            var isValidEd25519Multikey = false;
+            try
+            {
+                isValidEd25519Multikey =
+                    PublicKeyMaterial.FromMultikey(updateKey).KeyType == KeyType.Ed25519;
+            }
+            catch
+            {
+                // Converted to the trust-boundary validation error below.
+            }
+
+            if (!isValidEd25519Multikey)
+                throw new LogChainValidationException(version,
+                    $"updateKeys at version {version} contains a value that is not a valid " +
+                    "Ed25519 Multikey.");
+        }
+    }
+
+    /// <summary>Validates watcher endpoints as absolute HTTP(S) URLs.</summary>
+    internal static void ValidateWatchers(IReadOnlyList<string> watchers, int version)
+    {
+        foreach (var watcher in watchers)
+        {
+            if (string.IsNullOrWhiteSpace(watcher)
+                || !Uri.TryCreate(watcher, UriKind.Absolute, out var uri)
+                || (uri.Scheme != Uri.UriSchemeHttps && uri.Scheme != Uri.UriSchemeHttp)
+                || string.IsNullOrEmpty(uri.Host)
+                || !string.IsNullOrEmpty(uri.UserInfo))
+            {
+                throw new LogChainValidationException(version,
+                    $"watchers at version {version} contains an invalid HTTP(S) URL.");
+            }
         }
     }
 }

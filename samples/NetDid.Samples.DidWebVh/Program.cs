@@ -121,6 +121,7 @@ Console.WriteLine("=== did:webvh — Key Rotation with Pre-Rotation ===");
 var rotationKey1 = keyGen.Generate(KeyType.Ed25519);
 var rotationSigner1 = new KeyPairSigner(rotationKey1, crypto);
 var rotationKey2 = keyGen.Generate(KeyType.Ed25519);
+var rotationSigner2 = new KeyPairSigner(rotationKey2, crypto);
 var commitment2 = PreRotationManager.ComputeKeyCommitment(rotationKey2.MultibasePublicKey);
 
 // Create with pre-rotation enabled
@@ -129,28 +130,26 @@ var preRotResult = await didWebVh.CreateAsync(new DidWebVhCreateOptions
     Domain = "example.com",
     Path = "users/alice",
     UpdateKey = rotationSigner1,
-    EnablePreRotation = true,
     PreRotationCommitments = [commitment2]
 });
 
 Console.WriteLine($"  Created: {preRotResult.Did}");
 var preRotLog = (string)preRotResult.Artifacts!["did.jsonl"];
 var preRotEntries = LogEntrySerializer.ParseJsonLines(Encoding.UTF8.GetBytes(preRotLog));
-Console.WriteLine($"  Pre-rotation: {preRotEntries[0].Parameters.Prerotation}");
+Console.WriteLine($"  Pre-rotation: {preRotEntries[0].Parameters.NextKeyHashes is { Count: > 0 }}");
 Console.WriteLine($"  Committed next key hash: {preRotEntries[0].Parameters.NextKeyHashes![0][..20]}...");
 
-// Rotate to key2 (signed by key1, which is still the authorized key)
+// Rotate to key2 (signed by key2, the pre-committed key revealed in this entry)
 var rotationKey3 = keyGen.Generate(KeyType.Ed25519);
 var commitment3 = PreRotationManager.ComputeKeyCommitment(rotationKey3.MultibasePublicKey);
 
 var rotateResult = await didWebVh.UpdateAsync(preRotResult.Did.Value, new DidWebVhUpdateOptions
 {
     CurrentLogContent = Encoding.UTF8.GetBytes(preRotLog),
-    SigningKey = rotationSigner1,
+    SigningKey = rotationSigner2,
     ParameterUpdates = new DidWebVhParameterUpdates
     {
         UpdateKeys = [rotationKey2.MultibasePublicKey],
-        Prerotation = true,
         NextKeyHashes = [commitment3]
     }
 });

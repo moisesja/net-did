@@ -13,7 +13,11 @@ public sealed record DidWebVhDeactivateOptions : DidDeactivateOptions
     /// <summary>The existing did.jsonl content (bytes).</summary>
     public required byte[] CurrentLogContent { get; init; }
 
-    /// <summary>The Ed25519 signer for an authorized update key (HSM-safe).</summary>
+    /// <summary>
+    /// The Ed25519 signer for an authorized update key (HSM-safe). When pre-rotation is active,
+    /// this must be a key committed by the prior nextKeyHashes; the deactivation entry reveals it
+    /// and explicitly ends pre-rotation.
+    /// </summary>
     public required ISigner SigningKey { get; init; }
 
     /// <summary>Witness proofs to include in the did-witness.json artifact.</summary>

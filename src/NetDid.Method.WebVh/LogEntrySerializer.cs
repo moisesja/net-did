@@ -121,8 +121,6 @@ public static class LogEntrySerializer
                 writer.WriteStringValue(key);
             writer.WriteEndArray();
         }
-        if (parameters.Prerotation.HasValue)
-            writer.WriteBoolean("prerotation", parameters.Prerotation.Value);
         if (parameters.Deactivated.HasValue)
             writer.WriteBoolean("deactivated", parameters.Deactivated.Value);
         if (parameters.NextKeyHashes is not null)
@@ -131,6 +129,14 @@ public static class LogEntrySerializer
             writer.WriteStartArray();
             foreach (var hash in parameters.NextKeyHashes)
                 writer.WriteStringValue(hash);
+            writer.WriteEndArray();
+        }
+        if (parameters.Watchers is not null)
+        {
+            writer.WritePropertyName("watchers");
+            writer.WriteStartArray();
+            foreach (var watcher in parameters.Watchers)
+                writer.WriteStringValue(watcher);
             writer.WriteEndArray();
         }
         if (parameters.Portable.HasValue)
@@ -195,6 +201,13 @@ public static class LogEntrySerializer
         using var doc = JsonDocument.Parse(json);
         var root = doc.RootElement;
 
+        foreach (var property in root.EnumerateObject())
+        {
+            if (property.Name is not ("versionId" or "versionTime" or "parameters" or "state" or "proof"))
+                throw new FormatException(
+                    $"Unknown did:webvh log-entry property '{property.Name}'.");
+        }
+
         var versionId = root.GetProperty("versionId").GetString()!;
         if (!root.TryGetProperty("versionTime", out var versionTimeElement)
             || versionTimeElement.ValueKind != JsonValueKind.String
@@ -233,9 +246,9 @@ public static class LogEntrySerializer
         string? method = null;
         string? scid = null;
         IReadOnlyList<string>? updateKeys = null;
-        bool? prerotation = null;
         bool? deactivated = null;
         IReadOnlyList<string>? nextKeyHashes = null;
+        IReadOnlyList<string>? watchers = null;
         bool? portable = null;
         int? ttl = null;
         WitnessConfig? witness = null;
@@ -246,12 +259,38 @@ public static class LogEntrySerializer
             scid = s.GetString();
         if (element.TryGetProperty("updateKeys", out var uk))
             updateKeys = uk.EnumerateArray().Select(e => e.GetString()!).ToList();
-        if (element.TryGetProperty("prerotation", out var pr))
-            prerotation = pr.GetBoolean();
+        foreach (var property in element.EnumerateObject())
+        {
+            if (property.Name == "prerotation")
+                throw new FormatException(
+                    "The 'prerotation' parameter was removed before did:webvh v1.0; " +
+                    "pre-rotation is controlled by nextKeyHashes.");
+
+            if (property.Name is not ("method" or "scid" or "updateKeys" or "deactivated" or
+                    "nextKeyHashes" or "watchers" or "portable" or "ttl" or "witness"))
+                throw new FormatException(
+                    $"Unknown did:webvh v1.0 parameter '{property.Name}'.");
+        }
         if (element.TryGetProperty("deactivated", out var d))
             deactivated = d.GetBoolean();
         if (element.TryGetProperty("nextKeyHashes", out var nkh))
             nextKeyHashes = nkh.EnumerateArray().Select(e => e.GetString()!).ToList();
+        if (element.TryGetProperty("watchers", out var wa))
+        {
+            if (wa.ValueKind != JsonValueKind.Array)
+                throw new FormatException("The did:webvh watchers parameter must be an array.");
+
+            var parsedWatchers = new List<string>();
+            foreach (var watcher in wa.EnumerateArray())
+            {
+                if (watcher.ValueKind != JsonValueKind.String || watcher.GetString() is not { } value)
+                    throw new FormatException(
+                        "Every did:webvh watchers entry must be a non-null string.");
+                parsedWatchers.Add(value);
+            }
+
+            watchers = parsedWatchers;
+        }
         if (element.TryGetProperty("portable", out var p))
             portable = p.GetBoolean();
         if (element.TryGetProperty("ttl", out var t))
@@ -264,9 +303,9 @@ public static class LogEntrySerializer
             Method = method,
             Scid = scid,
             UpdateKeys = updateKeys,
-            Prerotation = prerotation,
             Deactivated = deactivated,
             NextKeyHashes = nextKeyHashes,
+            Watchers = watchers,
             Portable = portable,
             Ttl = ttl,
             Witness = witness

@@ -147,13 +147,12 @@ public class DidWebVhMethodTests
         {
             Domain = "example.com",
             UpdateKey = signer,
-            EnablePreRotation = true,
             PreRotationCommitments = [commitment]
         });
 
         var logContent = (string)result.Artifacts![DidWebVhArtifacts.DidJsonl];
         var entries = LogEntrySerializer.ParseJsonLines(Encoding.UTF8.GetBytes(logContent));
-        entries[0].Parameters.Prerotation.Should().BeTrue();
+        logContent.Should().NotContain("\"prerotation\"");
         entries[0].Parameters.NextKeyHashes.Should().Contain(commitment);
     }
 
@@ -478,8 +477,39 @@ public class DidWebVhMethodTests
         httpClient.SetLogResponse(logUrl, Encoding.UTF8.GetBytes(updatedLog));
 
         var resolveResult = await method.ResolveAsync(did);
-        resolveResult.DidDocument.Should().NotBeNull();
+        resolveResult.DidDocument.Should().BeNull();
         resolveResult.DocumentMetadata!.Deactivated.Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task Resolve_PriorVersionOfDeactivatedDid_ReturnsDocumentWithDeactivatedMetadata()
+    {
+        var (method, httpClient) = CreateMethod();
+        var signer = CreateEd25519Signer();
+        var created = await method.CreateAsync(new DidWebVhCreateOptions
+        {
+            Domain = "example.com",
+            UpdateKey = signer
+        });
+        var initialLog = Encoding.UTF8.GetBytes(
+            (string)created.Artifacts![DidWebVhArtifacts.DidJsonl]);
+        var genesisVersionId = LogEntrySerializer.ParseJsonLines(initialLog)[0].VersionId;
+        var deactivated = await method.DeactivateAsync(created.Did.Value, new DidWebVhDeactivateOptions
+        {
+            CurrentLogContent = initialLog,
+            SigningKey = signer
+        });
+        httpClient.SetLogResponse(
+            DidUrlMapper.MapToLogUrl(created.Did.Value),
+            Encoding.UTF8.GetBytes((string)deactivated.Artifacts![DidWebVhArtifacts.DidJsonl]));
+
+        var resolved = await method.ResolveAsync(created.Did.Value, new DidWebVhResolveOptions
+        {
+            VersionId = genesisVersionId
+        });
+
+        resolved.DidDocument.Should().NotBeNull();
+        resolved.DocumentMetadata!.Deactivated.Should().BeTrue();
     }
 
     [Fact]
@@ -524,26 +554,24 @@ public class DidWebVhMethodTests
         {
             Domain = "example.com",
             UpdateKey = key1,
-            EnablePreRotation = true,
             PreRotationCommitments = [commitment2]
         });
 
         var logContent = (string)createResult.Artifacts![DidWebVhArtifacts.DidJsonl];
         var did = createResult.Did.Value;
 
-        // Rotate to key2 — signed by key1 (the current authorized key),
-        // with key2 becoming the new updateKey (validator checks commitment)
+        // Rotate to key2 — the previously committed key both appears in this entry's
+        // updateKeys and signs the entry, as required by did:webvh v1.0.
         var key3 = CreateEd25519Signer();
         var commitment3 = PreRotationManager.ComputeKeyCommitment(key3.MultibasePublicKey);
 
         var updateResult = await method.UpdateAsync(did, new DidWebVhUpdateOptions
         {
             CurrentLogContent = Encoding.UTF8.GetBytes(logContent),
-            SigningKey = key1,
+            SigningKey = key2,
             ParameterUpdates = new DidWebVhParameterUpdates
             {
                 UpdateKeys = [key2.MultibasePublicKey],
-                Prerotation = true,
                 NextKeyHashes = [commitment3]
             }
         });
@@ -1238,7 +1266,6 @@ public class DidWebVhMethodTests
         {
             Domain = "example.com",
             UpdateKey = key1,
-            EnablePreRotation = true,
             PreRotationCommitments = [commitment2]
         });
 
@@ -1272,7 +1299,6 @@ public class DidWebVhMethodTests
         {
             Domain = "example.com",
             UpdateKey = key1,
-            EnablePreRotation = true,
             PreRotationCommitments = [commitment2]
         });
 
@@ -1286,12 +1312,11 @@ public class DidWebVhMethodTests
         var updateResult = await method.UpdateAsync(did, new DidWebVhUpdateOptions
         {
             CurrentLogContent = Encoding.UTF8.GetBytes(logContent),
-            SigningKey = key1,
+            SigningKey = key2,
             ParameterUpdates = new DidWebVhParameterUpdates
             {
                 Ttl = 300,
                 UpdateKeys = [key2.MultibasePublicKey],
-                Prerotation = true,
                 NextKeyHashes = [commitment3]
             }
         });
@@ -1634,7 +1659,6 @@ public class DidWebVhMethodTests
         {
             Domain = "example.com",
             UpdateKey = key1,
-            EnablePreRotation = true,
             PreRotationCommitments = [commitment2]
         });
 
@@ -1650,11 +1674,10 @@ public class DidWebVhMethodTests
         var updateResult = await method.UpdateAsync(did, new DidWebVhUpdateOptions
         {
             CurrentLogContent = Encoding.UTF8.GetBytes(logContent),
-            SigningKey = key1,
+            SigningKey = key2,
             ParameterUpdates = new DidWebVhParameterUpdates
             {
                 UpdateKeys = [key2.MultibasePublicKey],
-                Prerotation = true,
                 NextKeyHashes = [commitment3]
             }
         });
@@ -2090,7 +2113,7 @@ public class DidWebVhMethodTests
     }
 
     [Fact]
-    public async Task Issue82_Update_PrerotationAndNextKeyHashes_ReportsChanged()
+    public async Task Issue82_Update_NextKeyHashesActivation_ReportsChanged()
     {
         var (method, _) = CreateMethod();
         var (didA, logA, signerA) = await CreateWebVhDidAsync(method, "alice");
@@ -2103,7 +2126,6 @@ public class DidWebVhMethodTests
             SigningKey = signerA,
             ParameterUpdates = new DidWebVhParameterUpdates
             {
-                Prerotation = true,
                 NextKeyHashes = [commitment]
             }
         });
@@ -2223,7 +2245,7 @@ public class DidWebVhMethodTests
     }
 
     [Fact]
-    public async Task Issue91_Update_PrerotationTransition_KeyEvidenceIsWithheld()
+    public async Task Issue91_Update_PreRotationActivation_KeyEvidenceIsWithheld()
     {
         // Enabling pre-rotation makes the parameter-level updateKeys stop naming the next
         // entry's signers (did:webvh v1.0 authorizes a pre-rotation entry with its OWN
@@ -2240,7 +2262,6 @@ public class DidWebVhMethodTests
             SigningKey = signerA,
             ParameterUpdates = new DidWebVhParameterUpdates
             {
-                Prerotation = true,
                 NextKeyHashes = [commitment]
             }
         });
@@ -2327,11 +2348,10 @@ public class DidWebVhMethodTests
     [Fact]
     public async Task Issue91_Update_PreRotationActive_KeyEvidenceIsWithheld()
     {
-        // While pre-rotation is active, the key evidence is withheld even for a genuine
-        // committed-key rotation: NetDid's pre-rotation authorization model deviates from
-        // did:webvh v1.0 (issue #93), and under the v1.0 model the new entry's updateKeys do
-        // not name the next entry's signers. Publishing evidence here would be a false
-        // security contract, so the driver fails closed.
+        // While the resulting state keeps pre-rotation active, the key evidence is withheld even
+        // for a genuine committed-key rotation: the new nextKeyHashes do not reveal the concrete
+        // keys that may sign the next entry. Publishing evidence here would be a false security
+        // contract, so the driver fails closed.
         var (method, _) = CreateMethod();
         var key1 = CreateEd25519Signer();
         var key2 = CreateEd25519Signer();
@@ -2341,7 +2361,6 @@ public class DidWebVhMethodTests
         {
             Domain = "example.com",
             UpdateKey = key1,
-            EnablePreRotation = true,
             PreRotationCommitments = [PreRotationManager.ComputeKeyCommitment(key2.MultibasePublicKey)]
         });
         var logContent = (string)createResult.Artifacts![DidWebVhArtifacts.DidJsonl];
@@ -2349,11 +2368,10 @@ public class DidWebVhMethodTests
         var updateResult = await method.UpdateAsync(createResult.Did.Value, new DidWebVhUpdateOptions
         {
             CurrentLogContent = Encoding.UTF8.GetBytes(logContent),
-            SigningKey = key1,
+            SigningKey = key2,
             ParameterUpdates = new DidWebVhParameterUpdates
             {
                 UpdateKeys = [key2.MultibasePublicKey],
-                Prerotation = true,
                 NextKeyHashes = [PreRotationManager.ComputeKeyCommitment(key3.MultibasePublicKey)]
             }
         });
@@ -2378,7 +2396,6 @@ public class DidWebVhMethodTests
         {
             Domain = "example.com",
             UpdateKey = key1,
-            EnablePreRotation = true,
             PreRotationCommitments = [commitment1]
         });
         var logContent = (string)createResult.Artifacts![DidWebVhArtifacts.DidJsonl];
@@ -2390,7 +2407,6 @@ public class DidWebVhMethodTests
             ParameterUpdates = new DidWebVhParameterUpdates
             {
                 UpdateKeys = [key1.MultibasePublicKey],
-                Prerotation = true,
                 NextKeyHashes = [commitment1]
             }
         });
@@ -2538,11 +2554,11 @@ public class DidWebVhMethodTests
     }
 
     [Fact]
-    public async Task Issue91_Update_PreRotationExit_KeyEvidenceIsWithheld()
+    public async Task Issue91_Update_PreRotationExit_ReportsNextAuthorizedKeys()
     {
-        // Turning pre-rotation OFF is still a transition governed by the pre-rotation rules
-        // (the exiting entry must reveal a committed key), so the key evidence stays withheld
-        // for it: pre-rotation was in play in the prior effective state.
+        // Turning pre-rotation OFF is still governed by the pre-rotation rules, but the
+        // resulting state is ordinary mode. Its effective updateKeys therefore authorize the
+        // next entry and can be reported.
         var (method, _) = CreateMethod();
         var key1 = CreateEd25519Signer();
         var key2 = CreateEd25519Signer();
@@ -2551,7 +2567,6 @@ public class DidWebVhMethodTests
         {
             Domain = "example.com",
             UpdateKey = key1,
-            EnablePreRotation = true,
             PreRotationCommitments = [PreRotationManager.ComputeKeyCommitment(key2.MultibasePublicKey)]
         });
         var logContent = (string)createResult.Artifacts![DidWebVhArtifacts.DidJsonl];
@@ -2559,17 +2574,16 @@ public class DidWebVhMethodTests
         var updateResult = await method.UpdateAsync(createResult.Did.Value, new DidWebVhUpdateOptions
         {
             CurrentLogContent = Encoding.UTF8.GetBytes(logContent),
-            SigningKey = key1,
+            SigningKey = key2,
             ParameterUpdates = new DidWebVhParameterUpdates
             {
                 UpdateKeys = [key2.MultibasePublicKey],
-                Prerotation = false,
                 NextKeyHashes = []
             }
         });
 
-        updateResult.UpdateKeyChange.Should().Be(AuthorizationChangeStatus.Unknown);
-        updateResult.EffectiveUpdateKeys.Should().BeNull();
+        updateResult.UpdateKeyChange.Should().Be(AuthorizationChangeStatus.Changed);
+        updateResult.EffectiveUpdateKeys.Should().BeEquivalentTo([key2.MultibasePublicKey]);
         updateResult.AuthorizationChange.Should().Be(AuthorizationChangeStatus.Changed);
     }
 
@@ -2591,7 +2605,6 @@ public class DidWebVhMethodTests
             SigningKey = signerA,
             ParameterUpdates = new DidWebVhParameterUpdates
             {
-                Prerotation = true,
                 NextKeyHashes = new FlippingList<string>(
                     firstEnumeration: [honestCommitment],
                     laterEnumerations: [otherCommitment])

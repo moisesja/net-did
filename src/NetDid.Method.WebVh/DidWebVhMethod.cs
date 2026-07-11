@@ -113,6 +113,8 @@ public sealed class DidWebVhMethod : DidMethodBase
         // Step 3: Build the genesis log entry with safe placeholder
         var genesisParams = BuildGenesisParameters(createOptions, ScidGenerator.SafePlaceholder);
         RequireValidWitnessPolicy(genesisParams.Witness, nameof(options));
+        if (genesisParams.Watchers is { } genesisWatchers)
+            LogChainValidator.ValidateWatchers(genesisWatchers, 1);
         var genesisEntry = new LogEntry
         {
             VersionId = $"1-{ScidGenerator.SafePlaceholder}",
@@ -191,8 +193,9 @@ public sealed class DidWebVhMethod : DidMethodBase
             if (logContent is null || logContent.Length == 0)
                 return DidResolutionResult.NotFound(did);
 
-            // Parse entries. A syntactically valid fetched log with a spec-invalid
-            // timestamp is an invalid DID log, not evidence that the DID was absent.
+            // Parse entries. A syntactically valid fetched log with a spec-invalid value
+            // (for example a malformed timestamp or removed v1.0 parameter) is an invalid
+            // DID log, not evidence that the DID was absent.
             IReadOnlyList<LogEntry> entries;
             try
             {
@@ -200,7 +203,7 @@ public sealed class DidWebVhMethod : DidMethodBase
             }
             catch (FormatException ex)
             {
-                _logger.LogWarning(ex, "DID log contains an invalid versionTime for {Did}", did);
+                _logger.LogWarning(ex, "DID log contains invalid did:webvh data for {Did}", did);
                 return new DidResolutionResult
                 {
                     DidDocument = null,
@@ -261,6 +264,7 @@ public sealed class DidWebVhMethod : DidMethodBase
             // use the policy they declare; after activation, the prior effective policy governs
             // the transition. In particular, an entry cannot disable or replace the requirement
             // that authorizes that entry itself.
+            WitnessFile? witnessFile = null;
             bool anyEntryRequiresWitness = WitnessValidator.RequiresWitness(
                 perEntryParams, targetIndex);
             if (anyEntryRequiresWitness)
@@ -281,7 +285,7 @@ public sealed class DidWebVhMethod : DidMethodBase
                     };
                 }
 
-                var witnessFile = WitnessValidator.ParseWitnessFile(witnessContent);
+                witnessFile = WitnessValidator.ParseWitnessFile(witnessContent);
                 if (witnessFile is null)
                 {
                     return new DidResolutionResult
@@ -307,8 +311,51 @@ public sealed class DidWebVhMethod : DidMethodBase
                 }
             }
 
-            // Check if deactivated
+            // A directly requested deactivation entry suppresses the DID Document. For a prior
+            // version of a DID that was validly deactivated later, retain that historical
+            // document but mark its metadata deactivated as required by did:webvh v1.0. A parsed
+            // tail that fails chain, identity, or witness validation never contaminates a valid
+            // historical resolution.
             var isDeactivated = effectiveParams.Deactivated == true;
+            var deactivatedForMetadata = isDeactivated;
+            if (!isDeactivated && targetIndex < entries.Count - 1)
+            {
+                try
+                {
+                    var fullPerEntryParams = _chainValidator.ValidateChainWithPerEntryParams(
+                        entries, entries.Count);
+                    if (fullPerEntryParams[^1].Deactivated == true &&
+                        HasConsistentScid(entries, entries[0].Parameters.Scid))
+                    {
+                        var fullChainWitnessesValid = true;
+                        if (WitnessValidator.RequiresWitness(fullPerEntryParams, entries.Count - 1))
+                        {
+                            if (witnessFile is null)
+                            {
+                                var witnessUrl = DidUrlMapper.MapToWitnessUrl(did);
+                                var witnessContent = await _httpClient.FetchWitnessFileAsync(witnessUrl, ct);
+                                witnessFile = witnessContent is null
+                                    ? null
+                                    : WitnessValidator.ParseWitnessFile(witnessContent);
+                            }
+
+                            fullChainWitnessesValid = witnessFile is not null &&
+                                _witnessValidator.ValidateAllWitnesses(
+                                    witnessFile,
+                                    entries,
+                                    entries.Count - 1,
+                                    fullPerEntryParams.ToList());
+                        }
+
+                        deactivatedForMetadata = fullChainWitnessesValid;
+                    }
+                }
+                catch (Core.Exceptions.LogChainValidationException)
+                {
+                    // Historical resolution intentionally remains valid when a later tail is
+                    // corrupt; without a fully verified deactivation, do not assert metadata.
+                }
+            }
 
             IReadOnlyDictionary<string, object>? artifacts = null;
             if (options?.IncludeLog == true)
@@ -322,7 +369,7 @@ public sealed class DidWebVhMethod : DidMethodBase
 
             return new DidResolutionResult
             {
-                DidDocument = targetEntry.State,
+                DidDocument = isDeactivated ? null : targetEntry.State,
                 ResolutionMetadata = new DidResolutionMetadata
                 {
                     ContentType = DidContentTypes.JsonLd
@@ -333,7 +380,7 @@ public sealed class DidWebVhMethod : DidMethodBase
                     Updated = targetIndex > 0 ? targetEntry.VersionTime : null,
                     VersionId = targetEntry.VersionId,
                     VersionTime = targetEntry.VersionTime,
-                    Deactivated = isDeactivated ? true : null
+                    Deactivated = deactivatedForMetadata ? true : null
                 },
                 Artifacts = artifacts
             };
@@ -388,11 +435,6 @@ public sealed class DidWebVhMethod : DidMethodBase
             throw new ArgumentException(
                 $"NewDocument.Id must equal the DID being updated ('{did}').", nameof(options));
 
-        // Verify signing key is authorized
-        var signerMultibase = updateOptions.SigningKey.MultibasePublicKey;
-        if (effectiveParams.UpdateKeys?.Contains(signerMultibase) != true)
-            throw new ArgumentException("SigningKey is not an authorized update key.");
-
         // Build updated parameters (only include changed fields), snapshotting the caller's
         // collections exactly once — every later read (pre-rotation validation, change
         // comparison, hashing, signing, artifact serialization, reported evidence) uses this
@@ -400,19 +442,45 @@ public sealed class DidWebVhMethod : DidMethodBase
         // to different stages of the operation.
         var newParams = BuildUpdateParameters(updateOptions.ParameterUpdates);
 
-        // If pre-rotation is active, new updateKeys MUST be provided
-        if (effectiveParams.Prerotation == true && effectiveParams.NextKeyHashes is { Count: > 0 })
+        if (newParams.UpdateKeys is { } declaredUpdateKeys)
+            LogChainValidator.ValidateUpdateKeys(declaredUpdateKeys, entries.Count + 1);
+        if (newParams.Watchers is { } declaredWatchers)
+            LogChainValidator.ValidateWatchers(declaredWatchers, entries.Count + 1);
+
+        // Select the keys that authorize this entry from the previous pre-rotation state.
+        // A prior non-empty nextKeyHashes activates pre-rotation for this entry, which must
+        // explicitly reveal committed updateKeys, explicitly carry its next commitments
+        // (including [] to turn pre-rotation off), and sign with one of its own revealed keys.
+        // Otherwise the previous effective updateKeys authorize the entry.
+        IReadOnlyList<string> authorizedKeys;
+        if (effectiveParams.NextKeyHashes is { Count: > 0 } previousNextKeyHashes)
         {
             if (newParams.UpdateKeys is not { Count: > 0 })
                 throw new ArgumentException(
-                    "Pre-rotation is active — updateKeys must be provided to rotate keys.");
+                    "Pre-rotation is active — updateKeys must be explicitly provided.");
 
-            foreach (var newKey in newParams.UpdateKeys)
+            if (newParams.NextKeyHashes is null)
+                throw new ArgumentException(
+                    "Pre-rotation is active — nextKeyHashes must be explicitly provided.");
+
+            foreach (var currentKey in newParams.UpdateKeys)
             {
                 PreRotationManager.ValidateKeyRotation(
-                    newKey, effectiveParams.NextKeyHashes, entries.Count + 1);
+                    currentKey, previousNextKeyHashes, entries.Count + 1);
             }
+
+            authorizedKeys = newParams.UpdateKeys;
         }
+        else
+        {
+            authorizedKeys = effectiveParams.UpdateKeys is { Count: > 0 } previousUpdateKeys
+                ? previousUpdateKeys
+                : throw new ArgumentException("No update key is authorized to append an entry.");
+        }
+
+        var signerMultibase = updateOptions.SigningKey.MultibasePublicKey;
+        if (!authorizedKeys.Contains(signerMultibase, StringComparer.Ordinal))
+            throw new ArgumentException("SigningKey is not an authorized update key.");
 
         var previousEntry = entries[^1];
 
@@ -433,28 +501,25 @@ public sealed class DidWebVhMethod : DidMethodBase
             : AuthorizationChangeStatus.Unchanged;
 
         // Key-specific evidence for rotation consumers (issue #91): whether the effective
-        // updateKeys set itself changed — a witness- or prerotation-only change must not read
+        // updateKeys set itself changed — a witness- or pre-rotation-policy-only change must not read
         // as a rotation — plus the key set a consumer can bind its new key to. Folding the set
         // comparison into the coarse status above makes UpdateKeyChange == Changed structurally
         // imply AuthorizationChange == Changed.
         //
-        // Withheld (fail closed: Unknown / null) whenever key pre-rotation is in play before or
-        // after this update. did:webvh v1.0 authorizes a pre-rotation entry with the CURRENT
-        // entry's own updateKeys (constrained to the prior nextKeyHashes commitments), so the
-        // parameter-level updateKeys here are not "the keys authorized to sign the next entry";
-        // NetDid's pre-rotation authorization model is additionally non-conformant today (see
-        // issue #93) — publishing key evidence in that mode would be a false security contract.
-        var preRotationInPlay =
-            effectiveParams.Prerotation == true || effectiveParams.NextKeyHashes is { Count: > 0 } ||
-            newEffectiveParams.Prerotation == true || newEffectiveParams.NextKeyHashes is { Count: > 0 };
-        var updateKeyChange = preRotationInPlay
+        // Withheld (fail closed: Unknown / null) when the resulting state keeps pre-rotation
+        // active: nextKeyHashes names only hashes, so the concrete keys authorized to sign the
+        // next entry are unknowable here. An entry that explicitly sets nextKeyHashes to [] is
+        // itself governed by pre-rotation, but its resulting state returns to ordinary mode; its
+        // current effective updateKeys therefore do authorize the next entry and can be reported.
+        var preRotationActiveAfterUpdate = newEffectiveParams.NextKeyHashes is { Count: > 0 };
+        var updateKeyChange = preRotationActiveAfterUpdate
             ? AuthorizationChangeStatus.Unknown
             : updateKeysUnchanged ? AuthorizationChangeStatus.Unchanged : AuthorizationChangeStatus.Changed;
         // Read-only copy: the reported evidence must not be mutable after return, whether via
         // the caller's original list or a consumer downcast.
         IReadOnlyList<string>? effectiveUpdateKeys = null;
-        if (!preRotationInPlay && newEffectiveParams.UpdateKeys is { } authorizedKeys)
-            effectiveUpdateKeys = Array.AsReadOnly(authorizedKeys.ToArray());
+        if (!preRotationActiveAfterUpdate && newEffectiveParams.UpdateKeys is { } nextAuthorizedKeys)
+            effectiveUpdateKeys = Array.AsReadOnly(nextAuthorizedKeys.ToArray());
 
         // Build new entry — hash includes previous versionId per spec
         var versionNumber = entries.Count + 1;
@@ -526,22 +591,40 @@ public sealed class DidWebVhMethod : DidMethodBase
         // Bind the supplied log to the target DID (see issue #82 and UpdateCoreAsync).
         RequireAppendableLogForDid(entries, effectiveParams, did);
 
-        // Verify signing key is authorized
         var signerMultibase = deactivateOptions.SigningKey.MultibasePublicKey;
-        if (effectiveParams.UpdateKeys?.Contains(signerMultibase) != true)
-            throw new ArgumentException("SigningKey is not an authorized update key.");
 
         var previousEntry = entries[^1];
+
+        LogEntryParameters deactivationParams;
+        if (effectiveParams.NextKeyHashes is { Count: > 0 } previousNextKeyHashes)
+        {
+            // The entry that turns pre-rotation off is still governed by pre-rotation. Reveal
+            // the supplied committed key explicitly, end pre-rotation with [], and authorize
+            // this deactivation entry with that current key.
+            PreRotationManager.ValidateKeyRotation(
+                signerMultibase, previousNextKeyHashes, entries.Count + 1);
+            deactivationParams = new LogEntryParameters
+            {
+                UpdateKeys = [signerMultibase],
+                NextKeyHashes = [],
+                Deactivated = true
+            };
+        }
+        else
+        {
+            if (effectiveParams.UpdateKeys?.Contains(signerMultibase, StringComparer.Ordinal) != true)
+                throw new ArgumentException("SigningKey is not an authorized update key.");
+
+            deactivationParams = new LogEntryParameters
+            {
+                Deactivated = true
+            };
+        }
 
         // Build deactivation entry with minimal document
         var versionNumber = entries.Count + 1;
         var versionNumberText = versionNumber.ToString(CultureInfo.InvariantCulture);
         var minimalDoc = new DidDocument { Id = new Did(did) };
-
-        var deactivationParams = new LogEntryParameters
-        {
-            Deactivated = true
-        };
 
         var deactivationEntry = new LogEntry
         {
@@ -696,8 +779,8 @@ public sealed class DidWebVhMethod : DidMethodBase
             Method = MethodVersion,
             Scid = scidPlaceholder,
             UpdateKeys = [options.UpdateKey.MultibasePublicKey],
-            Prerotation = options.EnablePreRotation ? true : null,
             NextKeyHashes = options.PreRotationCommitments,
+            Watchers = options.Watchers?.ToArray(),
             Deactivated = false,
             Witness = witness
         };
@@ -719,8 +802,8 @@ public sealed class DidWebVhMethod : DidMethodBase
         return new LogEntryParameters
         {
             UpdateKeys = updates.UpdateKeys?.ToArray(),
-            Prerotation = updates.Prerotation,
             NextKeyHashes = updates.NextKeyHashes?.ToArray(),
+            Watchers = updates.Watchers?.ToArray(),
             Witness = SnapshotWitnessConfig(updates.Witness),
             Ttl = updates.Ttl
         };
@@ -779,21 +862,45 @@ public sealed class DidWebVhMethod : DidMethodBase
     }
 
     /// <summary>
-    /// True when the effective policy material — <c>prerotation</c>, <c>nextKeyHashes</c>, or
-    /// <c>witness</c> config — differs between two parameter sets. <c>ttl</c> is deliberately
+    /// True when the effective policy material — <c>nextKeyHashes</c> or <c>witness</c> config —
+    /// differs between two parameter sets. <c>ttl</c> is deliberately
     /// excluded (it is a caching hint, not authority). Together with the <c>updateKeys</c> set
     /// comparison computed at the call site, this drives
     /// <see cref="DidUpdateResult.AuthorizationChange"/> (a change to either kind of material).
     /// </summary>
     private static bool HasPolicyChange(LogEntryParameters before, LogEntryParameters after)
     {
-        if ((before.Prerotation ?? false) != (after.Prerotation ?? false))
-            return true;
         if (!StringSetEquals(before.NextKeyHashes, after.NextKeyHashes))
             return true;
         if (!WitnessConfigEquals(before.Witness, after.Witness))
             return true;
         return false;
+    }
+
+    private static bool HasConsistentScid(
+        IReadOnlyList<LogEntry> entries,
+        string? expectedScid)
+    {
+        if (string.IsNullOrEmpty(expectedScid))
+            return false;
+
+        foreach (var entry in entries)
+        {
+            try
+            {
+                if (!string.Equals(
+                        DidUrlMapper.ExtractScid(entry.State.Id.Value),
+                        expectedScid,
+                        StringComparison.Ordinal))
+                    return false;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     /// <summary>Order-insensitive, ordinal set equality; a null list is treated as empty.</summary>
