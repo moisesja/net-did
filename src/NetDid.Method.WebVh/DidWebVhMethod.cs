@@ -112,6 +112,7 @@ public sealed class DidWebVhMethod : DidMethodBase
 
         // Step 3: Build the genesis log entry with safe placeholder
         var genesisParams = BuildGenesisParameters(createOptions, ScidGenerator.SafePlaceholder);
+        RequireValidWitnessPolicy(genesisParams.Witness, nameof(options));
         var genesisEntry = new LogEntry
         {
             VersionId = $"1-{ScidGenerator.SafePlaceholder}",
@@ -329,7 +330,7 @@ public sealed class DidWebVhMethod : DidMethodBase
                 DocumentMetadata = new DidDocumentMetadata
                 {
                     Created = entries[0].VersionTime,
-                    Updated = entries.Count > 1 ? entries[^1].VersionTime : null,
+                    Updated = targetIndex > 0 ? targetEntry.VersionTime : null,
                     VersionId = targetEntry.VersionId,
                     VersionTime = targetEntry.VersionTime,
                     Deactivated = isDeactivated ? true : null
@@ -413,6 +414,7 @@ public sealed class DidWebVhMethod : DidMethodBase
 
         // Build updated parameters (only include changed fields)
         var newParams = BuildUpdateParameters(updateOptions.ParameterUpdates);
+        RequireValidWitnessPolicy(newParams.Witness, nameof(options));
 
         // Determine whether this update touched the method's authorization material, by
         // comparing the effective parameters before and after the merge. Surfaced on the
@@ -430,7 +432,7 @@ public sealed class DidWebVhMethod : DidMethodBase
         var newEntry = new LogEntry
         {
             VersionId = $"{versionNumberText}-{previousEntry.VersionId}",
-            VersionTime = DateTimeOffset.UtcNow,
+            VersionTime = GetNextVersionTime(previousEntry.VersionTime),
             Parameters = newParams,
             State = newDocument
         };
@@ -512,7 +514,7 @@ public sealed class DidWebVhMethod : DidMethodBase
         var deactivationEntry = new LogEntry
         {
             VersionId = $"{versionNumberText}-{previousEntry.VersionId}",
-            VersionTime = DateTimeOffset.UtcNow,
+            VersionTime = GetNextVersionTime(previousEntry.VersionTime),
             Parameters = deactivationParams,
             State = minimalDoc
         };
@@ -557,6 +559,26 @@ public sealed class DidWebVhMethod : DidMethodBase
     }
 
     // --- Private helpers ---
+
+    private static DateTimeOffset GetNextVersionTime(DateTimeOffset previous)
+    {
+        var now = DateTimeOffset.UtcNow;
+        if (now > previous)
+            return now;
+
+        if (previous.UtcTicks == DateTimeOffset.MaxValue.UtcTicks)
+            throw new ArgumentException(
+                "The supplied DID log's latest versionTime cannot be advanced.");
+
+        return previous.AddTicks(1);
+    }
+
+    private static void RequireValidWitnessPolicy(WitnessConfig? config, string parameterName)
+    {
+        var error = WitnessPolicyValidator.GetValidationError(config);
+        if (error is not null)
+            throw new ArgumentException(error, parameterName);
+    }
 
     private static string BuildDidTemplate(string domain, string? path, string placeholder)
     {
@@ -624,12 +646,12 @@ public sealed class DidWebVhMethod : DidMethodBase
         string scidPlaceholder)
     {
         WitnessConfig? witness = null;
-        if (options.WitnessDids is { Count: > 0 })
+        if (options.WitnessDids is { Count: > 0 } || options.WitnessThreshold != 0)
         {
             witness = new WitnessConfig
             {
                 Threshold = options.WitnessThreshold,
-                Witnesses = options.WitnessDids.Select(id => new WitnessEntry
+                Witnesses = options.WitnessDids?.Select(id => new WitnessEntry
                 {
                     Id = id,
                     Weight = 1
@@ -724,12 +746,9 @@ public sealed class DidWebVhMethod : DidMethodBase
     }
 
     /// <summary>
-    /// Value equality for witness configuration: same threshold and the same ordered sequence of
-    /// (witness id, weight) entries. Null and an empty/thresholdless config are equivalent.
-    /// The comparison is <b>order-sensitive</b>: witness enforcement resolves a proof to a witness
-    /// by the first id match (<see cref="WitnessValidator"/>), so reordering entries — including
-    /// duplicate ids carrying different weights — changes the effective policy and must be reported
-    /// as an authorization change. Uses typed field equality (no string delimiter).
+    /// Value equality for witness configuration under did:webvh 1.0: same threshold and same set
+    /// of witness ids. Ordering and legacy weight values are semantically inert. Null and the empty
+    /// disabling configuration are equivalent.
     /// </summary>
     private static bool WitnessConfigEquals(WitnessConfig? a, WitnessConfig? b)
     {
@@ -738,19 +757,13 @@ public sealed class DidWebVhMethod : DidMethodBase
         if ((a?.Threshold ?? 0) != (b?.Threshold ?? 0))
             return false;
 
-        var entriesA = a?.Witnesses ?? [];
-        var entriesB = b?.Witnesses ?? [];
-        if (entriesA.Count != entriesB.Count)
-            return false;
-
-        for (int i = 0; i < entriesA.Count; i++)
-        {
-            if (!string.Equals(entriesA[i].Id, entriesB[i].Id, StringComparison.Ordinal)
-                || entriesA[i].Weight != entriesB[i].Weight)
-                return false;
-        }
-
-        return true;
+        var idsA = (a?.Witnesses ?? [])
+            .Select(entry => entry.Id.Normalize(NormalizationForm.FormC))
+            .ToHashSet(StringComparer.Ordinal);
+        var idsB = (b?.Witnesses ?? [])
+            .Select(entry => entry.Id.Normalize(NormalizationForm.FormC))
+            .ToHashSet(StringComparer.Ordinal);
+        return idsA.SetEquals(idsB);
     }
 
     /// <summary>
@@ -787,6 +800,8 @@ public sealed class DidWebVhMethod : DidMethodBase
             {
                 if (entries[i].VersionTime <= versionTime)
                     bestIndex = i;
+                else
+                    break;
             }
             return bestIndex; // -1 if no entry found before the specified time
         }

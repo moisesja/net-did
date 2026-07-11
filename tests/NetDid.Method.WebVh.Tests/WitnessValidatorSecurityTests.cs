@@ -22,7 +22,7 @@ public class WitnessValidatorSecurityTests
     {
         var witnessSigner = CreateSigner();
         var requiredPolicy = PolicyFor(witnessSigner, threshold: 1);
-        var disabledPolicy = new WitnessConfig { Threshold = 0, Witnesses = [] };
+        var disabledPolicy = new WitnessConfig();
         var entries = new[]
         {
             CreateEntry(1, requiredPolicy),
@@ -226,6 +226,33 @@ public class WitnessValidatorSecurityTests
                 entry,
                 policy)
             .Should().BeFalse("repeating one valid proof cannot multiply that witness's weight");
+    }
+
+    [Fact]
+    public async Task ValidateWitnesses_LegacyWeight_DoesNotReplaceDistinctSignerApproval()
+    {
+        var witnessOne = CreateSigner();
+        var witnessTwo = CreateSigner();
+        var policy = new WitnessConfig
+        {
+            Threshold = 2,
+            Witnesses =
+            [
+                new WitnessEntry { Id = DidFor(witnessOne), Weight = 100 },
+                WitnessFor(witnessTwo)
+            ]
+        };
+        var entry = CreateEntry(1, policy);
+        var proofOne = await SignEntryAsync(entry, witnessOne);
+        var proofTwo = await SignEntryAsync(entry, witnessTwo);
+        var validator = new WitnessValidator(_suite);
+
+        validator.ValidateWitnesses(
+                WitnessFileFor((entry, new[] { proofOne })), entry, policy)
+            .Should().BeFalse("one verified witness is one approval regardless of legacy weight");
+        validator.ValidateWitnesses(
+                WitnessFileFor((entry, new[] { proofOne, proofTwo })), entry, policy)
+            .Should().BeTrue("two distinct verified witnesses satisfy threshold two");
     }
 
     private ISigner CreateSigner()

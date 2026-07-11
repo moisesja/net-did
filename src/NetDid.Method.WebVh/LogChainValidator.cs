@@ -82,6 +82,8 @@ internal sealed class LogChainValidator
             throw new LogChainValidationException(1,
                 $"Genesis entry version must be 1, got {genesis.VersionNumber}.");
 
+        ValidateWitnessPolicy(genesis.Parameters.Witness, 1);
+
         // SCID must be set
         if (string.IsNullOrEmpty(genesis.Parameters.Scid))
             throw new LogChainValidationException(1,
@@ -123,6 +125,9 @@ internal sealed class LogChainValidator
             throw new LogChainValidationException(expectedVersion,
                 $"Expected version {expectedVersion}, got {current.VersionNumber}.");
 
+        ValidateVersionTime(previous.VersionTime, current.VersionTime, expectedVersion);
+        ValidateWitnessPolicy(current.Parameters.Witness, expectedVersion);
+
         // Verify entry hash: recreate the entry with the previous versionId
         // as specified by the spec: versionId = "<versionNumber>-<previousVersionId>"
         var expectedVersionText = expectedVersion.ToString(CultureInfo.InvariantCulture);
@@ -146,6 +151,25 @@ internal sealed class LogChainValidator
         {
             ValidatePreRotation(current, effectiveParams.NextKeyHashes, expectedVersion);
         }
+    }
+
+    /// <summary>
+    /// Ensures adjacent entries use strictly increasing instants. This compares the already
+    /// parsed values only; serialization continues to use each entry's authenticated wire token.
+    /// </summary>
+    internal static void ValidateVersionTime(
+        DateTimeOffset previous, DateTimeOffset current, int version)
+    {
+        if (current <= previous)
+            throw new LogChainValidationException(version,
+                $"versionTime at version {version} must be strictly later than version {version - 1}.");
+    }
+
+    private static void ValidateWitnessPolicy(WitnessConfig? config, int version)
+    {
+        var error = WitnessPolicyValidator.GetValidationError(config);
+        if (error is not null)
+            throw new LogChainValidationException(version, error);
     }
 
     private void ValidateProof(LogEntry entry, IReadOnlyList<string>? authorizedKeys, int version)

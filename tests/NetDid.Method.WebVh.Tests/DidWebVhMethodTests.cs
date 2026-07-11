@@ -800,7 +800,7 @@ public class DidWebVhMethodTests
     {
         var (method, httpClient) = CreateMethod();
         var signer = CreateEd25519Signer();
-        var witnessDid = "did:key:z6MkWitnessKey";
+        var witnessDid = $"did:key:{CreateEd25519Signer().MultibasePublicKey}";
 
         var createResult = await method.CreateAsync(new DidWebVhCreateOptions
         {
@@ -826,7 +826,7 @@ public class DidWebVhMethodTests
     {
         var (method, httpClient) = CreateMethod();
         var signer = CreateEd25519Signer();
-        var witnessDid = "did:key:z6MkWitnessKey";
+        var witnessDid = $"did:key:{CreateEd25519Signer().MultibasePublicKey}";
 
         var createResult = await method.CreateAsync(new DidWebVhCreateOptions
         {
@@ -1317,6 +1317,7 @@ public class DidWebVhMethodTests
     {
         var (method, _) = CreateMethod();
         var signer = CreateEd25519Signer();
+        var witnessDid = $"did:key:{CreateEd25519Signer().MultibasePublicKey}";
 
         var witnessProofs = new List<WitnessProofEntry>
         {
@@ -1342,7 +1343,7 @@ public class DidWebVhMethodTests
         {
             Domain = "example.com",
             UpdateKey = signer,
-            WitnessDids = ["did:key:z6MkTest"],
+            WitnessDids = [witnessDid],
             WitnessThreshold = 1,
             WitnessProofs = witnessProofs
         });
@@ -1506,13 +1507,14 @@ public class DidWebVhMethodTests
     {
         var (method, _) = CreateMethod();
         var signer = CreateEd25519Signer();
+        var witnessDid = $"did:key:{CreateEd25519Signer().MultibasePublicKey}";
 
         // Create
         var createResult = await method.CreateAsync(new DidWebVhCreateOptions
         {
             Domain = "example.com",
             UpdateKey = signer,
-            WitnessDids = ["did:key:z6MkTest"],
+            WitnessDids = [witnessDid],
             WitnessThreshold = 1,
             WitnessProofs =
             [
@@ -2134,18 +2136,13 @@ public class DidWebVhMethodTests
     }
 
     [Fact]
-    public async Task Issue82_Update_WitnessReorderWithDuplicateIds_ReportsChanged()
+    public async Task Update_DuplicateWitnessIds_AreRejected()
     {
-        // Regression for the review's WitnessConfigEquals false-negative: witness enforcement
-        // resolves a proof to a witness by the FIRST id match, so reordering duplicate ids with
-        // different weights changes the effective policy even though the multiset is identical.
-        // An order-insensitive comparison would report Unchanged and mask a real authority change.
         var (method, _) = CreateMethod();
         var (didA, logA, signerA) = await CreateWebVhDidAsync(method, "alice");
         var wid = $"did:key:{CreateEd25519Signer().MultibasePublicKey}";
 
-        // Establish a witness policy carrying a duplicate id (weights 1 then 100).
-        var u1 = await method.UpdateAsync(didA, new DidWebVhUpdateOptions
+        Func<Task> act = () => method.UpdateAsync(didA, new DidWebVhUpdateOptions
         {
             CurrentLogContent = Encoding.UTF8.GetBytes(logA),
             SigningKey = signerA,
@@ -2153,7 +2150,7 @@ public class DidWebVhMethodTests
             {
                 Witness = new WitnessConfig
                 {
-                    Threshold = 50,
+                    Threshold = 1,
                     Witnesses =
                     [
                         new WitnessEntry { Id = wid, Weight = 1 },
@@ -2162,28 +2159,9 @@ public class DidWebVhMethodTests
                 }
             }
         });
-        var log1 = (string)u1.Artifacts![DidWebVhArtifacts.DidJsonl];
 
-        // Reorder only — same multiset of (id, weight), different effective policy.
-        var u2 = await method.UpdateAsync(didA, new DidWebVhUpdateOptions
-        {
-            CurrentLogContent = Encoding.UTF8.GetBytes(log1),
-            SigningKey = signerA,
-            ParameterUpdates = new DidWebVhParameterUpdates
-            {
-                Witness = new WitnessConfig
-                {
-                    Threshold = 50,
-                    Witnesses =
-                    [
-                        new WitnessEntry { Id = wid, Weight = 100 },
-                        new WitnessEntry { Id = wid, Weight = 1 }
-                    ]
-                }
-            }
-        });
-
-        u2.AuthorizationChange.Should().Be(AuthorizationChangeStatus.Changed);
+        await act.Should().ThrowAsync<ArgumentException>()
+            .WithMessage("*duplicated*");
     }
 
     // ----------------------------------------------------------------

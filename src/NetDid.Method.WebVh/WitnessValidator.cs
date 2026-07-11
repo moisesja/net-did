@@ -19,7 +19,7 @@ internal sealed class WitnessValidator
 
     /// <summary>
     /// Validate witness proofs for a log entry.
-    /// Returns true if the total weight of valid witness proofs meets the threshold.
+    /// Returns true if the count of distinct valid witness proofs meets the threshold.
     /// This entry-local helper is retained for direct validation and focused tests;
     /// production resolution uses <see cref="ValidateAllWitnesses"/> so later proofs
     /// can provide cumulative coverage for earlier governed entries.
@@ -29,8 +29,10 @@ internal sealed class WitnessValidator
         LogEntry entry,
         WitnessConfig witnessConfig)
     {
-        if (witnessConfig.Threshold <= 0)
-            return true; // No witness requirement
+        if (WitnessPolicyValidator.GetValidationError(witnessConfig) is not null)
+            return false;
+        if (witnessConfig.IsDisabled)
+            return true;
 
         // Find the witness proof entry matching this log version
         var proofEntry = witnessFile.Entries.FirstOrDefault(e => e.VersionId == entry.VersionId);
@@ -40,7 +42,7 @@ internal sealed class WitnessValidator
         // The data that witnesses signed is the log entry without proof
         var entryJsonWithoutProof = LogEntrySerializer.SerializeWithoutProof(entry);
 
-        var totalWeight = 0;
+        var approvalCount = 0;
         var countedSignerKeys = new HashSet<string>(StringComparer.Ordinal);
 
         foreach (var witnessProof in proofEntry.Proofs)
@@ -54,10 +56,10 @@ internal sealed class WitnessValidator
             if (witness is null || !countedSignerKeys.Add(signerKey))
                 continue;
 
-            totalWeight += witness.Weight;
+            approvalCount++;
         }
 
-        return totalWeight >= witnessConfig.Threshold;
+        return approvalCount >= witnessConfig.Threshold;
     }
 
     /// <summary>
@@ -115,10 +117,12 @@ internal sealed class WitnessValidator
         int upToIndex,
         WitnessConfig witnessConfig)
     {
-        if (witnessConfig.Threshold <= 0)
+        if (WitnessPolicyValidator.GetValidationError(witnessConfig) is not null)
+            return false;
+        if (witnessConfig.IsDisabled)
             return true;
 
-        var totalWeight = 0;
+        var approvalCount = 0;
         var countedSignerKeys = new HashSet<string>(StringComparer.Ordinal);
 
         // Check proofs from this version through the latest validated version
@@ -134,8 +138,8 @@ internal sealed class WitnessValidator
             foreach (var witnessProof in proofEntry.Proofs)
             {
                 // A malformed proof must not consume the witness's one counted vote. Derive the
-                // signer only from a successfully verified proof, then bind its configured weight
-                // to that exact did:key rather than to a verificationMethod string prefix.
+                // signer only from a successfully verified proof, then bind one approval to that
+                // exact configured did:key rather than to a verificationMethod string prefix.
                 var signerKey = WebVhProofVerifier.VerifyAndExtractSigner(_suite, entryJson, witnessProof);
                 if (signerKey is null)
                     continue;
@@ -144,11 +148,11 @@ internal sealed class WitnessValidator
                 if (witness is null || !countedSignerKeys.Add(signerKey))
                     continue;
 
-                totalWeight += witness.Weight;
+                approvalCount++;
             }
         }
 
-        return totalWeight >= witnessConfig.Threshold;
+        return approvalCount >= witnessConfig.Threshold;
     }
 
     private static WitnessConfig? GetAuthorizingWitnessConfig(
