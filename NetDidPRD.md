@@ -282,18 +282,24 @@ public sealed record DidUpdateResult
 
     /// Whether the effective set of authorized update keys changed (did:webvh: effective
     /// updateKeys, compared order-insensitively before vs. after). Policy-only changes do
-    /// not trip this. Defaults to Unknown (fail closed). Changed does not imply the old key
-    /// lost authority (updates can add keys): a key-rotation postcondition is
-    /// UpdateKeyChange == Changed AND new key ∈ EffectiveUpdateKeys AND retired key ∉
-    /// EffectiveUpdateKeys. (issue #91)
+    /// not trip this. Defaults to Unknown (fail closed); did:webvh also reports Unknown
+    /// whenever key pre-rotation is in play, because there the parameter-level key set does
+    /// not determine signing authority (see issue #93). Changed does not imply the old key
+    /// lost authority (updates can add keys, including unexpected ones): an exclusive
+    /// key-rotation postcondition is UpdateKeyChange == Changed AND EffectiveUpdateKeys
+    /// set-equals the intended post-rotation key set. (issue #91)
     public AuthorizationChangeStatus UpdateKeyChange { get; init; }
 
     /// The public keys authorized to sign the NEXT log entry (update or deactivation) —
     /// for did:webvh, the effective updateKeys of the new latest entry (multibase). NOT the
     /// keys that authorized this update (that was the previous effective set). null = the
-    /// method does not report it (fail closed); empty = no keys authorized (DID frozen).
-    /// Lets a method-agnostic consumer confirm the key set actually changed and bind its
-    /// own new key to the new authority. (issue #91)
+    /// method does not report it (fail closed); did:webvh reports null whenever key
+    /// pre-rotation is in play, since under pre-rotation the next entry is authorized by
+    /// its own pre-committed updateKeys (nextKeyHashes preimages) and no key list is
+    /// knowable at update time. empty = no keys authorized (DID frozen — explicitly
+    /// permitted by did:webvh v1.0). For an exclusive rotation, compare the complete set
+    /// against the intended post-rotation set; membership checks alone accept unexpected
+    /// extra keys. (issue #91)
     public IReadOnlyList<string>? EffectiveUpdateKeys { get; init; }
 }
 
@@ -1119,7 +1125,7 @@ upgrading; conforming legacy policies with `threshold <= count(distinct ids)` re
 6. Sign with an authorized update key.
 7. Append to `did.jsonl`.
 8. If witnesses are configured, collect witness signatures into `did-witness.json`.
-9. Return the new log entry for the caller to publish, with `DidUpdateResult.AuthorizationChange` set to `Changed`/`Unchanged` according to whether the update altered the authorization material (`updateKeys` / `nextKeyHashes` / `prerotation` / `witness`) so a method-agnostic caller can enforce a document-only postcondition. (The type defaults to `Unknown` for methods that do not report evidence, so the postcondition fails closed.) Additionally (issue #91), the driver reports key-specific rotation evidence: `UpdateKeyChange` is `Changed`/`Unchanged` according to whether the **effective `updateKeys` set** itself changed (order-insensitive set comparison — a witness- or pre-rotation-only change reports `AuthorizationChange = Changed` but `UpdateKeyChange = Unchanged`), and `EffectiveUpdateKeys` carries a defensive copy of the new latest entry's effective `updateKeys` — the keys authorized to sign the *next* log entry (update or deactivation). This lets a method-agnostic rotation consumer prove the active key actually rotated (`UpdateKeyChange == Changed`, new key present in `EffectiveUpdateKeys`, retired key absent) rather than trusting the coarse `Changed`.
+9. Return the new log entry for the caller to publish, with `DidUpdateResult.AuthorizationChange` set to `Changed`/`Unchanged` according to whether the update altered the authorization material (`updateKeys` / `nextKeyHashes` / `prerotation` / `witness`) so a method-agnostic caller can enforce a document-only postcondition. (The type defaults to `Unknown` for methods that do not report evidence, so the postcondition fails closed.) Additionally (issue #91), the driver reports key-specific rotation evidence: `UpdateKeyChange` is `Changed`/`Unchanged` according to whether the **effective `updateKeys` set** itself changed (order-insensitive set comparison — a witness-only change reports `AuthorizationChange = Changed` but `UpdateKeyChange = Unchanged`), and `EffectiveUpdateKeys` carries a read-only copy of the new latest entry's effective `updateKeys` — the keys authorized to sign the *next* log entry (update or deactivation). This lets a method-agnostic rotation consumer prove the active key set actually rotated rather than trusting the coarse `Changed`; for an **exclusive** rotation the consumer must require `EffectiveUpdateKeys` to set-equal its intended post-rotation key set (membership checks alone accept unexpected extra keys). The key evidence is **withheld — fail closed (`UpdateKeyChange = Unknown`, `EffectiveUpdateKeys = null`) — whenever key pre-rotation is in play** before or after the update: did:webvh v1.0 authorizes a pre-rotation entry with the *current* entry's own pre-committed `updateKeys`, so the parameter-level key set does not name the next entry's signers (and NetDid's pre-rotation authorization model is non-conformant today — issue #93). All caller-supplied parameter collections are snapshotted exactly once at the start of the update, so validation, hashing/signing, the serialized artifact, and the reported evidence always observe identical values even if the caller's collections mutate mid-operation.
 
 ### 7.8 Deactivate
 

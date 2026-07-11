@@ -25,12 +25,17 @@ public sealed record DidUpdateResult
     /// Whether this update changed the effective set of authorized update keys (for did:webvh:
     /// the effective <c>updateKeys</c>), compared as an order-insensitive set before vs. after the
     /// update. Unlike <see cref="AuthorizationChange"/>, a policy-only change (witness config,
-    /// <c>prerotation</c>, <c>nextKeyHashes</c>) does not trip this. The default is
+    /// pre-rotation commitments) does not trip this. The default is
     /// <see cref="AuthorizationChangeStatus.Unknown"/> so that a method which does not report the
-    /// evidence fails closed. Note that <see cref="AuthorizationChangeStatus.Changed"/> does not by
-    /// itself imply the previous key lost authority — an update can add keys. A caller enforcing a
-    /// key-rotation postcondition must require <c>Changed</c> here, the new key present in
-    /// <see cref="EffectiveUpdateKeys"/>, and the retired key absent from it.
+    /// evidence fails closed; a method also withholds it (reports <c>Unknown</c>) in states where
+    /// the parameter-level key set does not determine signing authority — did:webvh does so
+    /// whenever key pre-rotation is in play (see <see cref="EffectiveUpdateKeys"/>).
+    /// Note that <see cref="AuthorizationChangeStatus.Changed"/> does not by itself imply the
+    /// previous key lost authority — an update can add keys, including keys the caller did not
+    /// expect. A caller enforcing an exclusive key-rotation postcondition must require
+    /// <c>Changed</c> here and require <see cref="EffectiveUpdateKeys"/> to set-equal its intended
+    /// post-rotation key set; membership checks alone (new key present, retired key absent) accept
+    /// an effective set that also contains unexpected additional keys.
     /// </summary>
     public AuthorizationChangeStatus UpdateKeyChange { get; init; }
 
@@ -39,11 +44,17 @@ public sealed record DidUpdateResult
     /// the new latest log entry) authorized to sign the NEXT log entry — update or deactivation —
     /// after this one. These are not necessarily the keys that authorized the update being
     /// reported; that was the previous effective set. Lets a method-agnostic caller (a) confirm the
-    /// active update-key set actually changed and (b) bind its own new key to the new authority.
-    /// Entries use the reporting method's own canonical key representation (did:webvh: multibase);
-    /// a consumer's membership check must compare keys in the same form the method reports.
-    /// <c>null</c> when the method does not report it (treat as no evidence and fail closed); an
-    /// empty list means no keys are authorized, i.e. the DID can no longer be updated.
+    /// active update-key set actually changed and (b) bind its own new key to the new authority —
+    /// for an exclusive rotation, compare this complete set against the intended post-rotation set
+    /// rather than checking membership only. Entries use the reporting method's own canonical key
+    /// representation (did:webvh: multibase); a consumer's comparison must use the same form the
+    /// method reports.
+    /// <c>null</c> when the method does not report it (treat as no evidence and fail closed).
+    /// did:webvh reports <c>null</c> whenever key pre-rotation is in play: under pre-rotation the
+    /// next entry is authorized by its own pre-committed <c>updateKeys</c> (the
+    /// <c>nextKeyHashes</c> preimages), so no key list is knowable at update time. An empty list
+    /// means no keys are authorized, i.e. the DID can no longer be updated (a state did:webvh
+    /// v1.0 explicitly permits for freezing a DID).
     /// </summary>
     public IReadOnlyList<string>? EffectiveUpdateKeys { get; init; }
 }

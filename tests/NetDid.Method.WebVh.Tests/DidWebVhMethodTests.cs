@@ -2221,8 +2221,12 @@ public class DidWebVhMethodTests
     }
 
     [Fact]
-    public async Task Issue91_Update_PrerotationOnlyChange_ReportsUpdateKeyUnchanged()
+    public async Task Issue91_Update_PrerotationTransition_KeyEvidenceIsWithheld()
     {
+        // Enabling pre-rotation makes the parameter-level updateKeys stop naming the next
+        // entry's signers (did:webvh v1.0 authorizes a pre-rotation entry with its OWN
+        // pre-committed updateKeys), so the driver must fail the key evidence closed rather
+        // than publish a claim it cannot honor. See issue #93.
         var (method, _) = CreateMethod();
         var (didA, logA, signerA) = await CreateWebVhDidAsync(method, "alice");
         var nextKey = CreateEd25519Signer();
@@ -2239,9 +2243,10 @@ public class DidWebVhMethodTests
             }
         });
 
+        // The coarse status still reports honestly; the key-specific evidence fails closed.
         updateResult.AuthorizationChange.Should().Be(AuthorizationChangeStatus.Changed);
-        updateResult.UpdateKeyChange.Should().Be(AuthorizationChangeStatus.Unchanged);
-        updateResult.EffectiveUpdateKeys.Should().BeEquivalentTo([signerA.MultibasePublicKey]);
+        updateResult.UpdateKeyChange.Should().Be(AuthorizationChangeStatus.Unknown);
+        updateResult.EffectiveUpdateKeys.Should().BeNull();
     }
 
     [Fact]
@@ -2318,8 +2323,13 @@ public class DidWebVhMethodTests
     }
 
     [Fact]
-    public async Task Issue91_Update_PreRotationForcedRotation_ReportsChangedWithCommittedKey()
+    public async Task Issue91_Update_PreRotationActive_KeyEvidenceIsWithheld()
     {
+        // While pre-rotation is active, the key evidence is withheld even for a genuine
+        // committed-key rotation: NetDid's pre-rotation authorization model deviates from
+        // did:webvh v1.0 (issue #93), and under the v1.0 model the new entry's updateKeys do
+        // not name the next entry's signers. Publishing evidence here would be a false
+        // security contract, so the driver fails closed.
         var (method, _) = CreateMethod();
         var key1 = CreateEd25519Signer();
         var key2 = CreateEd25519Signer();
@@ -2346,17 +2356,18 @@ public class DidWebVhMethodTests
             }
         });
 
-        updateResult.UpdateKeyChange.Should().Be(AuthorizationChangeStatus.Changed);
-        updateResult.EffectiveUpdateKeys.Should().BeEquivalentTo([key2.MultibasePublicKey]);
-        updateResult.EffectiveUpdateKeys.Should().NotContain(key1.MultibasePublicKey);
+        updateResult.UpdateKeyChange.Should().Be(AuthorizationChangeStatus.Unknown);
+        updateResult.EffectiveUpdateKeys.Should().BeNull();
     }
 
     [Fact]
-    public async Task Issue91_Update_PreRotationRecommitSameKey_ReportsUpdateKeyUnchanged()
+    public async Task Issue91_Update_PreRotationRecommitSameKey_KeyEvidenceIsWithheld()
     {
         // A pre-rotation "rotation" that re-commits to the CURRENT key passes
-        // PreRotationManager.ValidateKeyRotation (hash-membership only) yet does not actually
-        // rotate authority. UpdateKeyChange exposes exactly this phantom rotation.
+        // PreRotationManager.ValidateKeyRotation (hash-membership only) without rotating
+        // authority. The evidence must not lend that phantom rotation any credibility:
+        // while pre-rotation is active the driver reports Unknown / null, and a fail-closed
+        // consumer records nothing.
         var (method, _) = CreateMethod();
         var key1 = CreateEd25519Signer();
         var commitment1 = PreRotationManager.ComputeKeyCommitment(key1.MultibasePublicKey);
@@ -2382,8 +2393,8 @@ public class DidWebVhMethodTests
             }
         });
 
-        updateResult.UpdateKeyChange.Should().Be(AuthorizationChangeStatus.Unchanged);
-        updateResult.EffectiveUpdateKeys.Should().BeEquivalentTo([key1.MultibasePublicKey]);
+        updateResult.UpdateKeyChange.Should().Be(AuthorizationChangeStatus.Unknown);
+        updateResult.EffectiveUpdateKeys.Should().BeNull();
     }
 
     [Fact]
@@ -2433,6 +2444,68 @@ public class DidWebVhMethodTests
         callerList.Clear();
         callerList.Add("z6MkAttackerControlledValueAfterTheFact");
 
+        updateResult.EffectiveUpdateKeys.Should().BeEquivalentTo([newKey.MultibasePublicKey]);
+    }
+
+    /// <summary>
+    /// An <see cref="IReadOnlyList{T}"/> that yields different contents on successive
+    /// enumerations: the first enumeration returns one list, all later enumerations another.
+    /// Models a caller-controlled dynamic collection attempting to show one key set to
+    /// validation/evidence and a different one to hashing/signing/serialization
+    /// (PR #92 review, finding 2).
+    /// </summary>
+    private sealed class FlippingStringList(
+        IReadOnlyList<string> firstEnumeration, IReadOnlyList<string> laterEnumerations)
+        : IReadOnlyList<string>
+    {
+        private int _enumerations;
+
+        public int Count => firstEnumeration.Count;
+        public string this[int index] => firstEnumeration[index];
+
+        public IEnumerator<string> GetEnumerator()
+            => (++_enumerations == 1 ? firstEnumeration : laterEnumerations).GetEnumerator();
+
+        System.Collections.IEnumerator System.Collections.IEnumerable.GetEnumerator()
+            => GetEnumerator();
+    }
+
+    [Fact]
+    public async Task Issue91_Update_DynamicKeyList_CannotDesyncEvidenceFromArtifact()
+    {
+        // A dynamic IReadOnlyList must not be able to present one key set to the change
+        // comparison / reported evidence and a different set to hashing, signing, and the
+        // serialized artifact. The driver snapshots the caller's collections exactly once, so
+        // the artifact, the validated chain, and the evidence all reflect the same (first)
+        // read — never a mix.
+        var (method, _) = CreateMethod();
+        var (didA, logA, signerA) = await CreateWebVhDidAsync(method, "alice");
+        var newKey = CreateEd25519Signer();
+
+        var flippingList = new FlippingStringList(
+            firstEnumeration: [newKey.MultibasePublicKey],
+            laterEnumerations: [signerA.MultibasePublicKey]);
+
+        var updateResult = await method.UpdateAsync(didA, new DidWebVhUpdateOptions
+        {
+            CurrentLogContent = Encoding.UTF8.GetBytes(logA),
+            SigningKey = signerA,
+            ParameterUpdates = new DidWebVhParameterUpdates
+            {
+                UpdateKeys = flippingList
+            }
+        });
+
+        // Everything is consistent with the single snapshot: the appended entry, the chain
+        // validator's view of it, and the reported evidence all carry the new key only.
+        var updatedLog = (string)updateResult.Artifacts![DidWebVhArtifacts.DidJsonl];
+        var entries = LogEntrySerializer.ParseJsonLines(Encoding.UTF8.GetBytes(updatedLog));
+        entries[^1].Parameters.UpdateKeys.Should().BeEquivalentTo([newKey.MultibasePublicKey]);
+
+        var effective = new LogChainValidator(new EddsaJcs2022Cryptosuite()).ValidateChain(entries);
+        effective.UpdateKeys.Should().BeEquivalentTo([newKey.MultibasePublicKey]);
+
+        updateResult.UpdateKeyChange.Should().Be(AuthorizationChangeStatus.Changed);
         updateResult.EffectiveUpdateKeys.Should().BeEquivalentTo([newKey.MultibasePublicKey]);
     }
 
