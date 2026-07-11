@@ -9,6 +9,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- **did:webvh fetches are now time-bounded (default 30 s) instead of inheriting the 100 s `HttpClient` default** (#80).
+  `WebVhHttpClientOptions` gains a `Timeout` knob (default 30 seconds; `Timeout.InfiniteTimeSpan` disables) that
+  `DefaultWebVhHttpClient` enforces per fetch with a linked cancellation token covering the *total* fetch — response
+  headers and body read. Previously a host that completed the TCP/TLS handshake and then withheld headers pinned each
+  resolution for the framework-default 100 seconds (a request-holding amplification vector for servers resolving
+  attacker-influenced DIDs), and — worse than the issue described — a host that dripped the body slowly could hold the
+  fetch open indefinitely, because under `HttpCompletionOption.ResponseHeadersRead` the `HttpClient.Timeout` stops
+  applying once headers arrive. The per-fetch token closes both windows in both construction paths (bare
+  `new HttpClient()` fallback and the DI-registered typed client, which already receives the registered options
+  singleton). A timed-out fetch normalizes to a failed fetch (resolution reports `notFound`), preserving the #81
+  contract: only genuine caller-token cancellation propagates as `OperationCanceledException`. `Timeout` is validated
+  at construction (`ArgumentOutOfRangeException` unless positive or `InfiniteTimeSpan`): zero would otherwise silently
+  cancel every fetch (all resolutions `notFound` with nothing logged) and a negative value would throw from
+  `CancelAfter` at fetch time — both flagged by an adversarial review of the fix. Consumers needing different HTTP
+  behavior can still inject their own configured `HttpClient`/`IWebVhHttpClient`.
+
 - **did:webvh resolution now binds the DID's self-certifying SCID to the genesis entry** (#82). Resolution previously
   anchored identity only on the latest entry's `state.id` — an attacker-controllable document field — and validated the
   genesis SCID for internal self-consistency only. It never compared the SCID embedded in the requested DID string

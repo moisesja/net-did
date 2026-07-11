@@ -29,10 +29,18 @@ public sealed class DefaultWebVhHttpClient : IWebVhHttpClient, IDisposable
 
     private async Task<byte[]?> FetchBoundedAsync(Uri url, long maxBytes, CancellationToken ct)
     {
+        // Bound the total fetch time (headers + body) with a linked token.
+        // HttpClient.Timeout is not enough here: with ResponseHeadersRead it
+        // stops applying once headers arrive, so a host that withholds headers
+        // or drips the body slowly could otherwise pin the caller for the full
+        // framework default of 100s — or indefinitely (issue #80).
+        using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        timeoutCts.CancelAfter(_options.Timeout);
+
         try
         {
             using var response = await _httpClient.GetAsync(
-                url, HttpCompletionOption.ResponseHeadersRead, ct);
+                url, HttpCompletionOption.ResponseHeadersRead, timeoutCts.Token);
 
             if (!response.IsSuccessStatusCode)
                 return null;
@@ -40,11 +48,19 @@ public sealed class DefaultWebVhHttpClient : IWebVhHttpClient, IDisposable
             if (response.Content.Headers.ContentLength is { } declared && declared > maxBytes)
                 return null;
 
-            await using var stream = await response.Content.ReadAsStreamAsync(ct);
-            return await ReadAtMostAsync(stream, maxBytes, ct);
+            await using var stream = await response.Content.ReadAsStreamAsync(timeoutCts.Token);
+            return await ReadAtMostAsync(stream, maxBytes, timeoutCts.Token);
         }
         catch (HttpRequestException)
         {
+            return null;
+        }
+        catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+        {
+            // Our per-fetch timeout (or HttpClient.Timeout on an injected
+            // client) fired without the caller's token being cancelled:
+            // normalize to a failed fetch, keeping the #81 contract that only
+            // genuine caller cancellation propagates.
             return null;
         }
     }

@@ -20,4 +20,27 @@ public sealed record WebVhHttpClientOptions
     /// Same enforcement as <see cref="MaxDidLogBytes"/>.
     /// </summary>
     public long MaxWitnessFileBytes { get; init; } = 1L * 1024 * 1024;
+
+    /// <summary>
+    /// Maximum wall-clock time for a single fetch, covering both response
+    /// headers and the full body read. Default: 30 seconds. A fetch that
+    /// exceeds this is treated as a failed fetch (the DID resolves as
+    /// <c>notFound</c>); cancellation requested by the caller's own token is
+    /// unaffected and still propagates. Must be positive, or
+    /// <see cref="System.Threading.Timeout.InfiniteTimeSpan"/> to disable.
+    /// Disabling removes the body-read bound entirely: only
+    /// <see cref="HttpClient.Timeout"/> (100 seconds unless configured) still
+    /// bounds time-to-headers, and nothing bounds a host that drips the body
+    /// slowly — a hostile host can then pin a fetch indefinitely.
+    /// </summary>
+    public TimeSpan Timeout
+    {
+        get => _timeout;
+        init => _timeout = value > TimeSpan.Zero || value == System.Threading.Timeout.InfiniteTimeSpan
+            ? value
+            : throw new ArgumentOutOfRangeException(nameof(Timeout), value,
+                "Timeout must be positive, or Timeout.InfiniteTimeSpan to disable.");
+    }
+
+    private readonly TimeSpan _timeout = TimeSpan.FromSeconds(30);
 }
