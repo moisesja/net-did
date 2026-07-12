@@ -85,7 +85,7 @@ Each method implements the standard DID CRUD lifecycle, but the mechanics differ
 
 **did:peer** — Create and resolve locally. Numalgo 0 is equivalent to did:key. Numalgo 2 encodes verification methods and services directly in the DID string using purpose-prefixed multibase keys and JSON-encoded service blocks. Numalgo 4 hashes a full input document into a short-form DID with a long-form for initial exchange. No network interaction for any numalgo.
 
-**did:webvh** — Full CRUD. "did:web + Verifiable History." Each update appends to a JSON Lines log file (`did.jsonl`) hosted at a web URL. The log is a cryptographically chained sequence of DID Document versions, anchored by a Self-Certifying Identifier (SCID) derived from the initial state. Resolution fetches the log and validates the entire chain. The DID can also be consumed as a plain `did:web` by legacy resolvers (backwards compatible). Supports pre-rotation keys, witnesses (did:key DIDs that co-sign updates), and watchers. Every version links back to its predecessor via a hash chain. Update authorization keys MUST rotate on every version when pre-rotation is active.
+**did:webvh** — Full CRUD. "did:web + Verifiable History." Each update appends to a JSON Lines log file (`did.jsonl`) hosted at a web URL. The log is a cryptographically chained sequence of DID Document versions, anchored by a Self-Certifying Identifier (SCID) derived from the initial state. Resolution fetches the log and validates the entire chain. The DID can also be consumed as a plain `did:web` by legacy resolvers (backwards compatible). Supports pre-rotation keys, witnesses (did:key DIDs that co-sign updates), and watchers. Every version links back to its predecessor via a hash chain. While pre-rotation is active, every entry MUST explicitly reveal update keys committed by the previous entry; reusing a revealed key is valid but strongly discouraged by v1.0.
 
 **did:ethr** — Full CRUD. Based on the ERC-1056 `EthereumDIDRegistry` smart contract deployed at a well-known address. Any Ethereum address is automatically a valid DID with no registration needed (identity creation is free). Updates are recorded as on-chain events: `changeOwner` for ownership transfer, `setAttribute` for adding service endpoints and additional keys, `addDelegate`/`revokeDelegate` for time-limited delegate keys. Resolution replays contract events (via `eth_getLogs`) to reconstruct the DID Document. Supports meta-transactions (signed by the identity key, submitted by a third-party relayer). The network identifier is part of the DID: `did:ethr:0x1:0xabc...` for mainnet, `did:ethr:sepolia:0xabc...` for testnet. Pluggable RPC endpoint means any EVM chain that an ERC-1056 registry deployed will work.
 
@@ -270,7 +270,7 @@ public sealed record DidUpdateResult
     public IReadOnlyDictionary<string, object>? Artifacts { get; init; }
 
     /// Whether the update changed the method's authorization material (did:webvh:
-    /// updateKeys / nextKeyHashes / prerotation / witness config). did:webvh keeps update
+    /// updateKeys / nextKeyHashes / witness config). did:webvh keeps update
     /// authority in the log parameters, not the DID Document, so a method-agnostic caller
     /// reading back DidDocument cannot otherwise distinguish a document edit from a key
     /// rotation. Defaults to Unknown so absence of evidence fails closed: a caller enforcing
@@ -283,7 +283,7 @@ public sealed record DidUpdateResult
     /// Whether the effective set of authorized update keys changed (did:webvh: effective
     /// updateKeys, compared order-insensitively before vs. after). Policy-only changes do
     /// not trip this. Defaults to Unknown (fail closed); did:webvh also reports Unknown
-    /// whenever key pre-rotation is in play, because there the parameter-level key set does
+    /// whenever the resulting state keeps key pre-rotation active, because there the parameter-level key set does
     /// not determine signing authority (see issue #93). Changed does not imply the old key
     /// lost authority (updates can add keys, including unexpected ones): an exclusive
     /// key-rotation postcondition is UpdateKeyChange == Changed AND EffectiveUpdateKeys
@@ -293,11 +293,12 @@ public sealed record DidUpdateResult
     /// The public keys authorized to sign the NEXT log entry (update or deactivation) —
     /// for did:webvh, the effective updateKeys of the new latest entry (multibase). NOT the
     /// keys that authorized this update (that was the previous effective set). null = the
-    /// method does not report it (fail closed); did:webvh reports null whenever key
-    /// pre-rotation is in play, since under pre-rotation the next entry is authorized by
+    /// method does not report it (fail closed); did:webvh reports null whenever the resulting
+    /// state keeps key pre-rotation active, since under pre-rotation the next entry is authorized by
     /// its own pre-committed updateKeys (nextKeyHashes preimages) and the driver cannot
     /// derive the next signer list from the parameter-level evidence it has — nextKeyHashes
-    /// are hashes, not keys. empty = no keys authorized (DID frozen — explicitly
+    /// are hashes, not keys. An entry that sets nextKeyHashes to [] ends pre-rotation after
+    /// that entry and restores concrete next-entry key evidence. empty = no keys authorized (DID frozen — explicitly
     /// permitted by did:webvh v1.0). For an exclusive rotation, compare the complete set
     /// against the intended post-rotation set; membership checks alone accept unexpected
     /// extra keys. (issue #91)
@@ -1032,7 +1033,6 @@ The genesis entry shown below is the **final form** (after SCID placeholder repl
     "method": "did:webvh:1.0",
     "scid": "QmRwq46V...",
     "updateKeys": ["z6Mkf..."],
-    "prerotation": false,
     "deactivated": false
   },
   "state": {
@@ -1043,7 +1043,7 @@ The genesis entry shown below is the **final form** (after SCID placeholder repl
       "type": "DataIntegrityProof",
       "cryptosuite": "eddsa-jcs-2022",
       "verificationMethod": "did:key:z6Mkf...#z6Mkf...",
-      "proofPurpose": "authentication",
+      "proofPurpose": "assertionMethod",
       "proofValue": "z5d..."
     }
   ]
@@ -1121,17 +1121,17 @@ upgrading; conforming legacy policies with `threshold <= count(distinct ids)` re
 2. **Bind the inputs to the target DID (issue #82).** The supplied `CurrentLogContent` must belong to the `did` being updated — its latest entry's `state.id` MUST equal `did`, its **genesis SCID MUST equal the SCID in `did`** (the same self-certification binding resolution enforces, so an attacker-owned log cannot authorize an update of the victim DID merely by claiming its id), and the log MUST NOT already be deactivated. If `NewDocument` is supplied, `NewDocument.id` MUST equal `did`. This guarantees Update cannot emit a log that Resolve would reject **on DID/SCID identity grounds**. Witness validation remains a publication/resolution concern: a transition is governed by the prior-effective witness policy described in §7.6, including a transition that weakens or removes that policy. Violations throw `ArgumentException`.
    - *Portability note:* net-did does not implement did:webvh portability (there is no `Portable` field in `DidWebVhParameterUpdates`). If portability is added later, the `state.id == did` / `NewDocument.id == did` binding needs a carve-out for the domain-change entry.
 3. Build a new log entry with the updated DID Document and/or parameters.
-4. If pre-rotation is active: the proof MUST be signed by a key committed to in the previous entry, and new pre-rotation commitments MUST be provided.
+4. Determine whether pre-rotation governs the new entry from the previous effective `nextKeyHashes`. If it is non-empty, the new entry MUST explicitly contain non-empty `updateKeys` and an explicit `nextKeyHashes` array (which MAY be `[]` to end pre-rotation); every current `updateKeys` member MUST match a previous commitment, and the proof MUST be signed by one of those current keys. Otherwise, the proof signer MUST be in the previous effective `updateKeys`; an entry that first sets non-empty `nextKeyHashes` is therefore still authorized by the prior keys.
 5. Chain the new entry to the previous one via hash.
 6. Sign with an authorized update key.
 7. Append to `did.jsonl`.
 8. If witnesses are configured, collect witness signatures into `did-witness.json`.
-9. Return the new log entry for the caller to publish, with `DidUpdateResult.AuthorizationChange` set to `Changed`/`Unchanged` according to whether the update altered the authorization material (`updateKeys` / `nextKeyHashes` / `prerotation` / `witness`) so a method-agnostic caller can enforce a document-only postcondition. (The type defaults to `Unknown` for methods that do not report evidence, so the postcondition fails closed.) Additionally (issue #91), the driver reports key-specific rotation evidence: `UpdateKeyChange` is `Changed`/`Unchanged` according to whether the **effective `updateKeys` set** itself changed (order-insensitive set comparison — a witness-only change reports `AuthorizationChange = Changed` but `UpdateKeyChange = Unchanged`), and `EffectiveUpdateKeys` carries a read-only copy of the new latest entry's effective `updateKeys` — the keys authorized to sign the *next* log entry (update or deactivation). This lets a method-agnostic rotation consumer prove the active key set actually rotated rather than trusting the coarse `Changed`; for an **exclusive** rotation the consumer must require `EffectiveUpdateKeys` to set-equal its intended post-rotation key set (membership checks alone accept unexpected extra keys). The key evidence is **withheld — fail closed (`UpdateKeyChange = Unknown`, `EffectiveUpdateKeys = null`) — whenever key pre-rotation is in play** before or after the update: did:webvh v1.0 authorizes a pre-rotation entry with the *current* entry's own pre-committed `updateKeys`, so the parameter-level key set does not name the next entry's signers (and NetDid's pre-rotation authorization model is non-conformant today — issue #93). All caller-supplied parameter collections are snapshotted exactly once at the start of the update, so validation, hashing/signing, the serialized artifact, and the reported evidence always observe identical values even if the caller's collections mutate mid-operation.
+9. Return the new log entry for the caller to publish, with `DidUpdateResult.AuthorizationChange` set to `Changed`/`Unchanged` according to whether the update altered the authorization material (`updateKeys` / `nextKeyHashes` / `witness`) so a method-agnostic caller can enforce a document-only postcondition. (The type defaults to `Unknown` for methods that do not report evidence, so the postcondition fails closed.) Additionally (issue #91), the driver reports key-specific rotation evidence: `UpdateKeyChange` is `Changed`/`Unchanged` according to whether the **effective `updateKeys` set** itself changed (order-insensitive set comparison — a witness-only change reports `AuthorizationChange = Changed` but `UpdateKeyChange = Unchanged`), and `EffectiveUpdateKeys` carries a read-only copy of the concrete keys authorized to sign the *next* log entry. The key evidence is withheld (`Unknown` / `null`) while the resulting state keeps pre-rotation active because `nextKeyHashes` contains hashes rather than the next keys. An entry that explicitly sets `nextKeyHashes: []` is still authorized under pre-rotation but returns the resulting state to ordinary authorization, so its effective `updateKeys` can again be reported as the next-entry signer set. All caller-supplied parameter collections are snapshotted exactly once at the start of the update, so validation, hashing/signing, the serialized artifact, and the reported evidence always observe identical values even if the caller's collections mutate mid-operation.
 
 ### 7.8 Deactivate
 
 1. Load and validate the current DID log, and **bind it to the target DID** (same latest-`state.id == did`, genesis-SCID, and not-already-deactivated checks as Update, issue #82).
-2. Create a new log entry with `parameters.deactivated = true`.
+2. Create a new log entry with `parameters.deactivated = true`. If the previous effective `nextKeyHashes` is non-empty, the deactivation entry is still governed by pre-rotation: it explicitly reveals the committed signing key in `updateKeys` and sets `nextKeyHashes: []`.
 3. The DID Document in the final state is empty (or minimal).
 4. Append to the log, sign, and publish.
 
@@ -1145,8 +1145,8 @@ public sealed record DidWebVhCreateOptions : DidCreateOptions
     public required ISigner UpdateKey { get; init; }       // signs genesis log entry (HSM-safe)
     public IReadOnlyList<VerificationMethod>? AdditionalVerificationMethods { get; init; }
     public IReadOnlyList<Service>? Services { get; init; }
-    public bool EnablePreRotation { get; init; } = false;
     public IReadOnlyList<string>? PreRotationCommitments { get; init; }  // hashes of next update keys
+    public IReadOnlyList<string>? Watchers { get; init; }  // watcher service URLs
     public IReadOnlyList<string>? WitnessDids { get; init; }  // must be did:key DIDs
     public int WitnessThreshold { get; init; } = 0;
 }

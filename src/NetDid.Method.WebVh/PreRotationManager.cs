@@ -12,8 +12,8 @@ namespace NetDid.Method.WebVh;
 ///   nextKeyHash = multibase(base58btc, multihash(SHA-256, UTF8(multibasePublicKey)))
 ///
 /// On update:
-///   - The new update key must match one of the committed nextKeyHashes
-///   - New nextKeyHashes must be provided for the next rotation
+///   - Every current update key must match one of the previous committed nextKeyHashes
+///   - nextKeyHashes must be explicit; a non-empty array continues and [] ends pre-rotation
 /// </summary>
 public static class PreRotationManager
 {
@@ -29,7 +29,7 @@ public static class PreRotationManager
     }
 
     /// <summary>
-    /// Validate that the signing key matches one of the committed key hashes.
+    /// Validate that an update key matches one of the committed key hashes.
     /// Throws LogChainValidationException if validation fails.
     /// </summary>
     public static void ValidateKeyRotation(

@@ -13,7 +13,11 @@ public sealed record DidWebVhUpdateOptions : DidUpdateOptions
     /// <summary>The existing did.jsonl content (bytes).</summary>
     public required byte[] CurrentLogContent { get; init; }
 
-    /// <summary>The Ed25519 signer for an authorized update key (HSM-safe).</summary>
+    /// <summary>
+    /// The Ed25519 signer for an authorized update key (HSM-safe). In ordinary mode this key must
+    /// be in the prior effective updateKeys; when pre-rotation governs the entry it must be in the
+    /// current explicit, previously committed UpdateKeys.
+    /// </summary>
     public required ISigner SigningKey { get; init; }
 
     /// <summary>The updated DID Document. If null, the previous document is preserved.</summary>
@@ -35,14 +39,23 @@ public sealed record DidWebVhUpdateOptions : DidUpdateOptions
 /// </summary>
 public sealed record DidWebVhParameterUpdates
 {
-    /// <summary>New update keys to authorize.</summary>
+    /// <summary>
+    /// New update keys to authorize. When the previous effective nextKeyHashes is non-empty,
+    /// this property is required, must be non-empty, and every member must match a previous
+    /// commitment; one member must also correspond to <see cref="DidWebVhUpdateOptions.SigningKey"/>.
+    /// </summary>
     public IReadOnlyList<string>? UpdateKeys { get; init; }
 
-    /// <summary>Enable or change pre-rotation.</summary>
-    public bool? Prerotation { get; init; }
-
-    /// <summary>New pre-rotation key commitments.</summary>
+    /// <summary>
+    /// New pre-rotation key commitments. A non-empty array activates pre-rotation for the next
+    /// entry; an explicit empty array deactivates it after the current entry is authorized. This
+    /// property is required (but may be empty) whenever the previous effective nextKeyHashes is
+    /// non-empty.
+    /// </summary>
     public IReadOnlyList<string>? NextKeyHashes { get; init; }
+
+    /// <summary>Update the watcher URL list; an empty array disables watchers.</summary>
+    public IReadOnlyList<string>? Watchers { get; init; }
 
     /// <summary>Update witness configuration.</summary>
     public WitnessConfig? Witness { get; init; }

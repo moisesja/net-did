@@ -7,7 +7,7 @@ public sealed record DidUpdateResult
 
     /// <summary>
     /// Whether this update changed the method's authorization material — for did:webvh:
-    /// <c>updateKeys</c>, <c>nextKeyHashes</c>, <c>prerotation</c>, or <c>witness</c> config.
+    /// <c>updateKeys</c>, <c>nextKeyHashes</c>, or <c>witness</c> config.
     /// did:webvh keeps its update authority in the log parameters rather than in the DID Document,
     /// so a method-agnostic caller reading back <see cref="DidDocument"/> cannot otherwise tell a
     /// document edit apart from a key rotation. The default is
@@ -29,7 +29,8 @@ public sealed record DidUpdateResult
     /// <see cref="AuthorizationChangeStatus.Unknown"/> so that a method which does not report the
     /// evidence fails closed; a method also withholds it (reports <c>Unknown</c>) in states where
     /// the parameter-level key set does not determine signing authority — did:webvh does so
-    /// whenever key pre-rotation is in play (see <see cref="EffectiveUpdateKeys"/>).
+    /// whenever the resulting state keeps key pre-rotation active (see
+    /// <see cref="EffectiveUpdateKeys"/>).
     /// Note that <see cref="AuthorizationChangeStatus.Changed"/> does not by itself imply the
     /// previous key lost authority — an update can add keys, including keys the caller did not
     /// expect. A caller enforcing an exclusive key-rotation postcondition must require
@@ -50,13 +51,15 @@ public sealed record DidUpdateResult
     /// representation (did:webvh: multibase); a consumer's comparison must use the same form the
     /// method reports.
     /// <c>null</c> when the method does not report it (treat as no evidence and fail closed).
-    /// did:webvh reports <c>null</c> whenever key pre-rotation is in play: under pre-rotation the
-    /// next entry is authorized by its own pre-committed <c>updateKeys</c> (the
+    /// did:webvh reports <c>null</c> whenever the resulting state keeps key pre-rotation active:
+    /// under pre-rotation the next entry is authorized by its own pre-committed <c>updateKeys</c> (the
     /// <c>nextKeyHashes</c> preimages), so the driver cannot derive the next signer list from the
     /// parameter-level evidence available here — <c>nextKeyHashes</c> are hashes, not keys (the
-    /// controller holding the pre-committed keypairs may of course know them). An empty list
-    /// means no keys are authorized, i.e. the DID can no longer be updated (a state did:webvh
-    /// v1.0 explicitly permits for freezing a DID).
+    /// controller holding the pre-committed keypairs may of course know them). An entry that
+    /// explicitly sets <c>nextKeyHashes</c> to <c>[]</c> ends pre-rotation after authorizing that
+    /// entry; its effective <c>updateKeys</c> then authorize the following entry and can be
+    /// reported. An empty list means no keys are authorized, i.e. the DID can no longer be
+    /// updated (a state did:webvh v1.0 explicitly permits for freezing a DID).
     /// </summary>
     public IReadOnlyList<string>? EffectiveUpdateKeys { get; init; }
 }

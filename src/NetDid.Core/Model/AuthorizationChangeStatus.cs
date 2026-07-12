@@ -3,8 +3,8 @@ namespace NetDid.Core.Model;
 /// <summary>
 /// Whether a <see cref="DidUpdateResult"/> reports a change to the piece of authorization state
 /// the carrying property describes: for <see cref="DidUpdateResult.AuthorizationChange"/>, any of
-/// the method's authorization material (did:webvh: <c>updateKeys</c> / <c>nextKeyHashes</c> /
-/// <c>prerotation</c> / <c>witness</c> config); for
+/// the method's authorization material (did:webvh: <c>updateKeys</c> /
+/// <c>nextKeyHashes</c> / <c>witness</c> config); for
 /// <see cref="DidUpdateResult.UpdateKeyChange"/>, specifically the effective set of authorized
 /// update keys.
 /// <para>

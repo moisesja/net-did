@@ -40,3 +40,9 @@
 - Document security postconditions in their exclusive/complete form: membership checks
   ("new key present, retired key absent") admit supersets with unexpected extra keys;
   exclusive rotation requires set-equality against the intended post-rotation set.
+- When the user confirms that the checkout or branch changed between planning and approval,
+  re-baseline branch, HEAD, status, and diff before editing; do not carry dirty-worktree
+  assumptions from the planning turn into implementation.
+- Before implementing significant or breaking work from `main`, create a dedicated issue branch
+  immediately after plan approval and before the first source edit; re-baselining `main` is not a
+  substitute for establishing the implementation branch.

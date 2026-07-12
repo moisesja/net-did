@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- **Breaking did:webvh v1.0 pre-rotation conformance fix** (#93). Pre-rotation is now activated
+  solely by a non-empty prior effective `nextKeyHashes`, as required by v1.0. An entry governed by
+  pre-rotation must explicitly carry non-empty `updateKeys` and an explicit `nextKeyHashes` array,
+  every member of its complete current key set must match a prior commitment, and its proof must be
+  signed by one of those current revealed keys. Ordinary entries remain authorized by the previous
+  effective `updateKeys`; consequently, the entry that first activates pre-rotation is still signed
+  by a prior key, while the entry that sets `nextKeyHashes: []` is still signed under pre-rotation
+  and only its successor returns to ordinary authorization. Writer and resolver now enforce the same
+  state machine, rejecting the old-key-signed chains NetDid previously emitted and accepted.
+  - The removed pre-v1.0 `prerotation` wire parameter is no longer emitted and is rejected in v1.0
+    logs. The redundant public `DidWebVhCreateOptions.EnablePreRotation` and
+    `DidWebVhParameterUpdates.Prerotation` switches were removed; callers activate or deactivate the
+    feature directly with non-empty or empty commitment arrays.
+  - Deactivation while pre-rotation is active now emits explicit committed `updateKeys` and
+    `nextKeyHashes: []`, and must be signed by the revealed committed key. Previously Deactivate
+    emitted only `deactivated: true` and signed with the prior key, producing an invalid v1.0 entry.
+    Resolving a deactivated DID now suppresses its DID Document, and resolving a valid prior version
+    reports later verified deactivation in document metadata.
+  - Key-rotation evidence remains fail-closed (`Unknown` / `null`) while the resulting state has
+    non-empty commitments, because hashes do not reveal the next signer keys. An entry that ends
+    pre-rotation can now report its effective `updateKeys`, which concretely authorize its successor.
+  - Validation now rejects unsupported `method` versions, unknown log-entry/parameter properties,
+    and every declared `updateKeys` value that is not a valid Ed25519 Multikey. The v1.0 `watchers`
+    parameter is preserved through parsing, hashing, proof verification, creation, and updates so
+    strict property validation does not reject a defined v1.0 field.
+
 ### Added
 
 - **`DidUpdateResult` now exposes key-specific rotation evidence** (#91). New additive properties:
@@ -20,12 +48,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `UpdateKeyChange == Changed` and, for an exclusive rotation, `EffectiveUpdateKeys` set-equal to its
   intended post-rotation key set — membership checks alone would accept unexpected extra keys.
   `AuthorizationChange` semantics are unchanged.
-  - The did:webvh driver **withholds the key evidence (fail closed: `Unknown` / `null`) whenever key
-    pre-rotation is in play** before or after the update: under pre-rotation, did:webvh v1.0 authorizes
-    an entry with the *current* entry's own pre-committed `updateKeys`, so the parameter-level key set
-    does not name the next entry's signers; NetDid's pre-rotation authorization model is additionally
-    non-conformant with v1.0 today (#93). Evidence for pre-rotation DIDs will be re-enabled when #93 is
-    fixed.
+  - The did:webvh driver **withholds the key evidence (fail closed: `Unknown` / `null`) while the
+    resulting state keeps key pre-rotation active**: the parameter-level `nextKeyHashes` do not reveal
+    the keys authorized to sign the next entry. An entry that ends pre-rotation with
+    `nextKeyHashes: []` can report its effective `updateKeys` because those keys concretely authorize
+    its successor (#93).
   - Update hardening: all caller-supplied parameter collections (`UpdateKeys`, `NextKeyHashes`, witness
     list) are snapshotted exactly once at the start of `UpdateAsync`, so pre-rotation validation, the
     change comparison, hashing/signing, the serialized `did.jsonl`, and the reported evidence always
@@ -160,7 +187,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `Changed`). did:webvh keeps update authority (`updateKeys` and related parameters) in the log parameters rather
   than the DID Document, so a caller reading back `DidUpdateResult.DidDocument` could not otherwise tell a
   document-only edit apart from a (possibly smuggled) key rotation. The did:webvh driver reports `Changed` /
-  `Unchanged` by comparing the effective `updateKeys` / `nextKeyHashes` / `prerotation` / `witness` configuration
+  `Unchanged` by comparing the effective `updateKeys` / `nextKeyHashes` / legacy `prerotation` / `witness` configuration
   before and after the update (`ttl` is excluded as a non-authority caching hint; witness ids are compared as a
   set because list order and legacy weights do not affect did:webvh 1.0 authorization). The default is **`Unknown` so absence
   of evidence fails closed** — a method that does not evaluate change evidence (including any third-party
