@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.2.0] - 2026-07-12
+
 ### Security
 
 - **Breaking did:webvh v1.0 pre-rotation conformance fix** (#93). Pre-rotation is now activated
@@ -18,22 +20,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   by a prior key, while the entry that sets `nextKeyHashes: []` is still signed under pre-rotation
   and only its successor returns to ordinary authorization. Writer and resolver now enforce the same
   state machine, rejecting the old-key-signed chains NetDid previously emitted and accepted.
-  - The removed pre-v1.0 `prerotation` wire parameter is no longer emitted and is rejected in v1.0
-    logs. The redundant public `DidWebVhCreateOptions.EnablePreRotation` and
-    `DidWebVhParameterUpdates.Prerotation` switches were removed; callers activate or deactivate the
-    feature directly with non-empty or empty commitment arrays.
-  - Deactivation while pre-rotation is active now emits explicit committed `updateKeys` and
-    `nextKeyHashes: []`, and must be signed by the revealed committed key. Previously Deactivate
-    emitted only `deactivated: true` and signed with the prior key, producing an invalid v1.0 entry.
-    Resolving a deactivated DID now suppresses its DID Document, and resolving a valid prior version
-    reports later verified deactivation in document metadata.
-  - Key-rotation evidence remains fail-closed (`Unknown` / `null`) while the resulting state has
-    non-empty commitments, because hashes do not reveal the next signer keys. An entry that ends
-    pre-rotation can now report its effective `updateKeys`, which concretely authorize its successor.
-  - Validation now rejects unsupported `method` versions, unknown log-entry/parameter properties,
-    and every declared `updateKeys` value that is not a valid Ed25519 Multikey. The v1.0 `watchers`
-    parameter is preserved through parsing, hashing, proof verification, creation, and updates so
-    strict property validation does not reject a defined v1.0 field.
+    - The removed pre-v1.0 `prerotation` wire parameter is no longer emitted and is rejected in v1.0
+      logs. The redundant public `DidWebVhCreateOptions.EnablePreRotation` and
+      `DidWebVhParameterUpdates.Prerotation` switches were removed; callers activate or deactivate the
+      feature directly with non-empty or empty commitment arrays.
+    - Deactivation while pre-rotation is active now emits explicit committed `updateKeys` and
+      `nextKeyHashes: []`, and must be signed by the revealed committed key. Previously Deactivate
+      emitted only `deactivated: true` and signed with the prior key, producing an invalid v1.0 entry.
+      Resolving a deactivated DID now suppresses its DID Document, and resolving a valid prior version
+      reports later verified deactivation in document metadata.
+    - Key-rotation evidence remains fail-closed (`Unknown` / `null`) while the resulting state has
+      non-empty commitments, because hashes do not reveal the next signer keys. An entry that ends
+      pre-rotation can now report its effective `updateKeys`, which concretely authorize its successor.
+    - Validation now rejects unsupported `method` versions, unknown log-entry/parameter properties,
+      and every declared `updateKeys` value that is not a valid Ed25519 Multikey. The v1.0 `watchers`
+      parameter is preserved through parsing, hashing, proof verification, creation, and updates so
+      strict property validation does not reject a defined v1.0 field.
 
 ### Changed
 
@@ -43,19 +45,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   by v1.0. Previously NetDid omitted the multihash digest-length byte and then added a multibase
   `z` prefix, producing values that were self-consistent only within NetDid and incompatible with
   conforming implementations.
-  - Genesis creation and validation now derive the SCID and first entry hash independently:
-    `versionId: "{SCID}"` is used for SCID generation, the substituted SCID is the predecessor for
-    the genesis entry-hash calculation, and the published value is `1-<entryHash>`. Previously
-    NetDid hashed `1-{SCID}`, published `1-<SCID>`, and incorrectly required both hashes to be equal.
-  - Update and deactivation entry hashes now use the previous entry's full published `versionId`
-    directly as the hash input's `versionId`. Previously NetDid prepended the new version number to
-    that predecessor value; writer and validator shared the defect, masking another interop failure.
-  - This intentionally changes every NetDid-generated did:webvh identifier, every entry
-    `versionId`, and every key commitment. Logs emitted by earlier versions used a non-v1.0 wire
-    format and are not accepted as v1.0 logs after upgrading; no production migration path is
-    provided because did:webvh has not yet had a production deployment in this project.
-  - Literal known-answer tests now pin the SCID, entry-hash, and key-commitment encodings and verify
-    the 34-byte multihash structure, so writer/resolver self-consistency cannot mask this regression.
+    - Genesis creation and validation now derive the SCID and first entry hash independently:
+      `versionId: "{SCID}"` is used for SCID generation, the substituted SCID is the predecessor for
+      the genesis entry-hash calculation, and the published value is `1-<entryHash>`. Previously
+      NetDid hashed `1-{SCID}`, published `1-<SCID>`, and incorrectly required both hashes to be equal.
+    - Update and deactivation entry hashes now use the previous entry's full published `versionId`
+      directly as the hash input's `versionId`. Previously NetDid prepended the new version number to
+      that predecessor value; writer and validator shared the defect, masking another interop failure.
+    - This intentionally changes every NetDid-generated did:webvh identifier, every entry
+      `versionId`, and every key commitment. Logs emitted by earlier versions used a non-v1.0 wire
+      format and are not accepted as v1.0 logs after upgrading; no production migration path is
+      provided because did:webvh has not yet had a production deployment in this project.
+    - Literal known-answer tests now pin the SCID, entry-hash, and key-commitment encodings and verify
+      the 34-byte multihash structure, so writer/resolver self-consistency cannot mask this regression.
 
 ### Added
 
@@ -64,22 +66,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   effective set of authorized update keys changed, compared order-insensitively before vs. after the
   update; unlike the coarse `AuthorizationChange`, a witness-config-only change does not trip it.
   `EffectiveUpdateKeys` (`IReadOnlyList<string>?`) carries a read-only copy of the keys authorized to
-  sign the *next* log entry (for did:webvh, the effective `updateKeys` of the new latest entry;
+  sign the _next_ log entry (for did:webvh, the effective `updateKeys` of the new latest entry;
   multibase) — `null` means the method reports no evidence, empty means no keys are authorized (a
   frozen DID, explicitly permitted by did:webvh v1.0). A rotation consumer requires
   `UpdateKeyChange == Changed` and, for an exclusive rotation, `EffectiveUpdateKeys` set-equal to its
   intended post-rotation key set — membership checks alone would accept unexpected extra keys.
   `AuthorizationChange` semantics are unchanged.
-  - The did:webvh driver **withholds the key evidence (fail closed: `Unknown` / `null`) while the
-    resulting state keeps key pre-rotation active**: the parameter-level `nextKeyHashes` do not reveal
-    the keys authorized to sign the next entry. An entry that ends pre-rotation with
-    `nextKeyHashes: []` can report its effective `updateKeys` because those keys concretely authorize
-    its successor (#93).
-  - Update hardening: all caller-supplied parameter collections (`UpdateKeys`, `NextKeyHashes`, witness
-    list) are snapshotted exactly once at the start of `UpdateAsync`, so pre-rotation validation, the
-    change comparison, hashing/signing, the serialized `did.jsonl`, and the reported evidence always
-    observe identical values — a mutable or dynamic `IReadOnlyList` can no longer present different
-    contents to different stages of the operation (TOCTOU).
+    - The did:webvh driver **withholds the key evidence (fail closed: `Unknown` / `null`) while the
+      resulting state keeps key pre-rotation active**: the parameter-level `nextKeyHashes` do not reveal
+      the keys authorized to sign the next entry. An entry that ends pre-rotation with
+      `nextKeyHashes: []` can report its effective `updateKeys` because those keys concretely authorize
+      its successor (#93).
+    - Update hardening: all caller-supplied parameter collections (`UpdateKeys`, `NextKeyHashes`, witness
+      list) are snapshotted exactly once at the start of `UpdateAsync`, so pre-rotation validation, the
+      change comparison, hashing/signing, the serialized `did.jsonl`, and the reported evidence always
+      observe identical values — a mutable or dynamic `IReadOnlyList` can no longer present different
+      contents to different stages of the operation (TOCTOU).
 
 ## [2.1.0] - 2026-07-11
 
@@ -105,16 +107,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   regardless of duplicate proofs or historical weight values, while preserving the existing activation,
   replacement, lowering, and disabling transition rules.
 
-  `WitnessEntry.Weight` remains available for source compatibility but is now semantically inert and is
-  omitted from newly produced log entries. Parsed legacy `weight` members are retained only so immutable
-  historical entries can be reconstructed for hash/proof verification. Legacy policies remain usable when
-  `threshold <= count(distinct witness ids)`; weighted policies that relied on a threshold greater than the
-  distinct-id count are invalid under did:webvh 1.0 and must migrate to a conforming witness set/history
-  before upgrading.
+    `WitnessEntry.Weight` remains available for source compatibility but is now semantically inert and is
+    omitted from newly produced log entries. Parsed legacy `weight` members are retained only so immutable
+    historical entries can be reconstructed for hash/proof verification. Legacy policies remain usable when
+    `threshold <= count(distinct witness ids)`; weighted policies that relied on a threshold greater than the
+    distinct-id count are invalid under did:webvh 1.0 and must migrate to a conforming witness set/history
+    before upgrading.
 
 - **did:webvh fetches are now time-bounded (default 30 s) instead of inheriting the 100 s `HttpClient` default** (#80).
   `WebVhHttpClientOptions` gains a `Timeout` knob (default 30 seconds; `Timeout.InfiniteTimeSpan` disables) that
-  `DefaultWebVhHttpClient` enforces per fetch with a linked cancellation token covering the *total* fetch — response
+  `DefaultWebVhHttpClient` enforces per fetch with a linked cancellation token covering the _total_ fetch — response
   headers and body read. Previously a host that completed the TCP/TLS handshake and then withheld headers pinned each
   resolution for the framework-default 100 seconds (a request-holding amplification vector for servers resolving
   attacker-influenced DIDs), and — worse than the issue described — a host that dripped the body slowly could hold the
@@ -170,7 +172,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   genesis SCID for internal self-consistency only. It never compared the SCID embedded in the requested DID string
   (`did:webvh:<SCID>:<domain>`) against the genesis entry's actual SCID. An attacker able to serve `did.jsonl` at the
   victim's URL (subdomain/host takeover, malicious CDN, or on-path MITM) could therefore serve a self-consistent genesis
-  signed by *their own* key, with `state.id` set to the victim's literal DID, and the resolver would return the
+  signed by _their own_ key, with `state.id` set to the victim's literal DID, and the resolver would return the
   attacker's document with attacker keys as the authoritative resolution of the victim's unchanged DID. This defeated
   the self-certifying property that is did:webvh's entire security gain over did:web. `ResolveCoreAsync` now rejects
   (`invalidDidLog`) any log whose genesis SCID differs from the SCID in the requested DID, and the same binding is
@@ -192,7 +194,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **did:webvh Update/Deactivate now bind their inputs to the target DID** (#82). `DidWebVhMethod.UpdateCoreAsync`
   and `DeactivateCoreAsync` previously validated the caller-supplied `CurrentLogContent` chain and authorized the
-  `SigningKey` against *that log's* `updateKeys` without checking that the log actually belonged to the `did` being
+  `SigningKey` against _that log's_ `updateKeys` without checking that the log actually belonged to the `did` being
   operated on, and Update accepted a `NewDocument` without checking `NewDocument.Id == did`. An "update of A" could
   therefore be driven entirely by B's log + B's key (returning a document claiming `Id = A`), and the driver could
   emit an appended log that its own resolver rejects (resolution enforces `state.id == did`) — publishing it would
