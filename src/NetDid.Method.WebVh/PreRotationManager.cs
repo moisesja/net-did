@@ -1,6 +1,4 @@
-using System.Security.Cryptography;
 using System.Text;
-using NetCid;
 using NetDid.Core.Exceptions;
 
 namespace NetDid.Method.WebVh;
@@ -9,7 +7,7 @@ namespace NetDid.Method.WebVh;
 /// Manages pre-rotation key commitments for did:webvh.
 ///
 /// Pre-rotation commits to future update keys via hash:
-///   nextKeyHash = multibase(base58btc, multihash(SHA-256, UTF8(multibasePublicKey)))
+///   nextKeyHash = base58btc(multihash(SHA-256, UTF8(multibasePublicKey)))
 ///
 /// On update:
 ///   - Every current update key must match one of the previous committed nextKeyHashes
@@ -23,9 +21,7 @@ public static class PreRotationManager
     public static string ComputeKeyCommitment(string multibasePublicKey)
     {
         var keyBytes = Encoding.UTF8.GetBytes(multibasePublicKey);
-        var hash = SHA256.HashData(keyBytes);
-        var multihash = Multicodec.Prefix(0x12, hash);
-        return Multibase.Encode(multihash, MultibaseEncoding.Base58Btc);
+        return WebVhHashEncoder.EncodeSha256(keyBytes);
     }
 
     /// <summary>

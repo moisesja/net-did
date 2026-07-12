@@ -213,7 +213,7 @@ public sealed class LogChainValidatorTimestampTests
 
         var entryForHashing = new LogEntry
         {
-            VersionId = $"2-{genesis.VersionId}",
+            VersionId = genesis.VersionId,
             VersionTime = versionTime,
             Parameters = secondParameters ?? new LogEntryParameters(),
             State = genesis.State

@@ -10,14 +10,16 @@ public class PreRotationManagerTests
     private readonly DefaultKeyGenerator _keyGen = new();
 
     [Fact]
-    public void ComputeKeyCommitment_Deterministic()
+    public void ComputeKeyCommitment_KnownAnswer_ProducesBareSha256Multihash()
     {
-        var keyPair = _keyGen.Generate(KeyType.Ed25519);
-        var commitment1 = PreRotationManager.ComputeKeyCommitment(keyPair.MultibasePublicKey);
-        var commitment2 = PreRotationManager.ComputeKeyCommitment(keyPair.MultibasePublicKey);
+        const string multikey = "z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK";
+        var commitment1 = PreRotationManager.ComputeKeyCommitment(multikey);
+        var commitment2 = PreRotationManager.ComputeKeyCommitment(multikey);
 
         commitment1.Should().Be(commitment2);
-        commitment1.Should().StartWith("z");
+        commitment1.Should().Be("QmWYHJqmhJHuzQHMQ33piy86hYQwwNBKEFmCKzRMTi7UHN");
+        commitment1.Should().HaveLength(46);
+        commitment1.Should().NotStartWith("z");
     }
 
     [Fact]

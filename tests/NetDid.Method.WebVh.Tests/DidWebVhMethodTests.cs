@@ -1,9 +1,12 @@
+using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using DataProofsDotnet.DataIntegrity;
 using FluentAssertions;
+using NetCid;
 using NetDid.Core;
 using NetCrypto;
+using NetDid.Core.Exceptions;
 using NetDid.Core.Model;
 using NetDid.Method.WebVh;
 using NetDid.Method.WebVh.Model;
@@ -117,7 +120,85 @@ public class DidWebVhMethodTests
         entries[0].VersionNumber.Should().Be(1);
         entries[0].Parameters.Method.Should().Be("did:webvh:1.0");
         entries[0].Parameters.Scid.Should().NotBeNullOrEmpty();
+        entries[0].Parameters.Scid.Should().NotBe(entries[0].EntryHash,
+            "did:webvh v1.0 derives the SCID and genesis entry hash in separate stages");
+        entries[0].Parameters.Scid.Should().HaveLength(46).And.NotStartWith("z");
+        entries[0].EntryHash.Should().HaveLength(46).And.NotStartWith("z");
+
+        var genesisForHashing = entries[0] with { VersionId = entries[0].Parameters.Scid! };
+        var genesisJsonForHashing = LogEntrySerializer.SerializeWithoutProof(genesisForHashing);
+        ScidGenerator.ComputeEntryHash(genesisJsonForHashing).Should().Be(entries[0].EntryHash);
+
+        var genesisTemplate = genesisJsonForHashing.Replace(
+            entries[0].Parameters.Scid!, ScidGenerator.Placeholder);
+        ScidGenerator.ComputeScid(genesisTemplate).Should().Be(entries[0].Parameters.Scid);
         entries[0].Proof.Should().HaveCount(1);
+    }
+
+    [Fact]
+    public async Task Create_LegacyGenesisUsingScidAsEntryHash_IsRejected()
+    {
+        var (method, _) = CreateMethod();
+        var signer = CreateEd25519Signer();
+        var result = await method.CreateAsync(new DidWebVhCreateOptions
+        {
+            Domain = "example.com",
+            UpdateKey = signer
+        });
+
+        var logContent = (string)result.Artifacts![DidWebVhArtifacts.DidJsonl];
+        var genesis = LogEntrySerializer.ParseJsonLines(Encoding.UTF8.GetBytes(logContent))[0];
+        var legacyGenesis = genesis with
+        {
+            VersionId = $"1-{genesis.Parameters.Scid}"
+        };
+
+        var act = () => new LogChainValidator(new EddsaJcs2022Cryptosuite())
+            .ValidateChain([legacyGenesis]);
+
+        act.Should().Throw<LogChainValidationException>()
+            .WithMessage("*Genesis entry hash*");
+    }
+
+    [Fact]
+    public async Task Create_LegacyCodecTaggedMultibaseEntryHash_IsRejected()
+    {
+        var (method, _) = CreateMethod();
+        var signer = CreateEd25519Signer();
+        var result = await method.CreateAsync(new DidWebVhCreateOptions
+        {
+            Domain = "example.com",
+            UpdateKey = signer
+        });
+
+        var logContent = (string)result.Artifacts![DidWebVhArtifacts.DidJsonl];
+        var genesis = LogEntrySerializer.ParseJsonLines(Encoding.UTF8.GetBytes(logContent))[0];
+        var genesisForHashing = genesis with
+        {
+            VersionId = genesis.Parameters.Scid!,
+            Proof = null
+        };
+        using var document = JsonDocument.Parse(
+            LogEntrySerializer.SerializeWithoutProof(genesisForHashing));
+        var canonicalBytes = JcsCanonicalizer.Canonicalize(document.RootElement);
+        var digest = SHA256.HashData(canonicalBytes);
+        var legacyEntryHash = Multibase.Encode(
+            Multicodec.Prefix(MultihashCode.Sha2_256, digest),
+            MultibaseEncoding.Base58Btc);
+        var legacyGenesis = genesisForHashing with
+        {
+            VersionId = $"1-{legacyEntryHash}"
+        };
+        legacyGenesis = legacyGenesis with
+        {
+            Proof = [await SignEntryAsync(legacyGenesis, signer)]
+        };
+
+        var act = () => new LogChainValidator(new EddsaJcs2022Cryptosuite())
+            .ValidateChain([legacyGenesis]);
+
+        act.Should().Throw<LogChainValidationException>()
+            .WithMessage("*Genesis entry hash*");
     }
 
     [Fact]
@@ -754,21 +835,58 @@ public class DidWebVhMethodTests
         var entries = LogEntrySerializer.ParseJsonLines(Encoding.UTF8.GetBytes(logContent));
         entries.Should().HaveCount(3);
 
-        // Verify each entry's hash is computed using the PREVIOUS entry's versionId
-        // by re-computing: set versionId to "{N}-{previous.VersionId}", hash, compare
+        // Verify each entry's hash is computed using exactly the PREVIOUS entry's full versionId.
         for (int i = 1; i < entries.Count; i++)
         {
             var current = entries[i];
             var previous = entries[i - 1];
             var version = i + 1;
 
-            var entryForHashing = current with { VersionId = $"{version}-{previous.VersionId}" };
+            var entryForHashing = current with { VersionId = previous.VersionId };
             var json = LogEntrySerializer.SerializeWithoutProof(entryForHashing);
             var computedHash = ScidGenerator.ComputeEntryHash(json);
 
             current.EntryHash.Should().Be(computedHash,
                 $"version {version} entry hash should chain to previous versionId");
         }
+    }
+
+    [Fact]
+    public async Task Issue14_CurrentVersionPrefixedToHashInput_IsRejected()
+    {
+        var (method, _) = CreateMethod();
+        var signer = CreateEd25519Signer();
+        var created = await method.CreateAsync(new DidWebVhCreateOptions
+        {
+            Domain = "example.com",
+            UpdateKey = signer
+        });
+
+        var logContent = (string)created.Artifacts![DidWebVhArtifacts.DidJsonl];
+        var genesis = LogEntrySerializer.ParseJsonLines(Encoding.UTF8.GetBytes(logContent))[0];
+        var nonConformantHashInput = new LogEntry
+        {
+            VersionId = $"2-{genesis.VersionId}",
+            VersionTime = genesis.VersionTime.AddTicks(1),
+            Parameters = new LogEntryParameters(),
+            State = genesis.State
+        };
+        var nonConformantHash = ScidGenerator.ComputeEntryHash(
+            LogEntrySerializer.SerializeWithoutProof(nonConformantHashInput));
+        var nonConformantEntry = nonConformantHashInput with
+        {
+            VersionId = $"2-{nonConformantHash}"
+        };
+        nonConformantEntry = nonConformantEntry with
+        {
+            Proof = [await SignEntryAsync(nonConformantEntry, signer)]
+        };
+
+        var act = () => new LogChainValidator(new EddsaJcs2022Cryptosuite())
+            .ValidateChain([genesis, nonConformantEntry]);
+
+        act.Should().Throw<LogChainValidationException>()
+            .WithMessage("*Entry hash mismatch at version 2*");
     }
 
     [Fact]
@@ -2759,7 +2877,7 @@ public class DidWebVhMethodTests
         };
         var entry = new LogEntry
         {
-            VersionId = $"1-{ScidGenerator.SafePlaceholder}",
+            VersionId = ScidGenerator.SafePlaceholder,
             VersionTime = DateTimeOffset.UtcNow,
             Parameters = parameters,
             State = doc
@@ -2769,8 +2887,12 @@ public class DidWebVhMethodTests
         var jsonWithPlaceholder = LogEntrySerializer.SerializeWithoutProof(entry)
             .Replace(ScidGenerator.SafePlaceholder, ScidGenerator.Placeholder);
         var scid = ScidGenerator.ComputeScid(jsonWithPlaceholder);
-        var finalEntry = LogEntrySerializer.DeserializeEntry(
-            ScidGenerator.ReplacePlaceholders(jsonWithPlaceholder, scid));
+        var jsonWithScid = ScidGenerator.ReplacePlaceholders(jsonWithPlaceholder, scid);
+        var entryHash = ScidGenerator.ComputeEntryHash(jsonWithScid);
+        var finalEntry = LogEntrySerializer.DeserializeEntry(jsonWithScid) with
+        {
+            VersionId = $"1-{entryHash}"
+        };
 
         finalEntry = finalEntry with { Proof = [await SignEntryAsync(finalEntry, attackerKey)] };
         return LogEntrySerializer.ToJsonLines([finalEntry]);

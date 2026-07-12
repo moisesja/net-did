@@ -100,21 +100,25 @@ internal sealed class LogChainValidator
             throw new LogChainValidationException(1,
                 "Genesis entry must have SCID in parameters.");
 
-        // Verify the SCID value in parameters matches the entry hash portion of versionId
-        if (genesis.Parameters.Scid != genesis.EntryHash)
-            throw new LogChainValidationException(1,
-                "SCID parameter does not match the genesis entry hash.");
-
-        // Verify SCID by reverse-substituting the SCID value back to {SCID} placeholders
-        // and recomputing the hash (two-pass verification per spec)
+        // The SCID and genesis entry hash are separate values. Reconstruct the preliminary
+        // post-SCID entry whose versionId is the SCID itself; it is the input to the genesis
+        // entry-hash calculation and to reverse-substitution for SCID verification.
         var scid = genesis.Parameters.Scid;
-        var entryJsonWithoutProof = LogEntrySerializer.SerializeWithoutProof(genesis);
-        var templateJson = entryJsonWithoutProof.Replace(scid, ScidGenerator.Placeholder);
+        var genesisForHashing = genesis with { VersionId = scid };
+        var entryJsonForHashing = LogEntrySerializer.SerializeWithoutProof(genesisForHashing);
+
+        var computedEntryHash = ScidGenerator.ComputeEntryHash(entryJsonForHashing);
+        if (computedEntryHash != genesis.EntryHash)
+            throw new LogChainValidationException(1,
+                "Genesis entry hash does not match computed hash.");
+
+        // Verify SCID by reverse-substituting every SCID occurrence with the spec placeholder.
+        var templateJson = entryJsonForHashing.Replace(scid, ScidGenerator.Placeholder);
         var computedScid = ScidGenerator.ComputeScid(templateJson);
 
         if (computedScid != scid)
             throw new LogChainValidationException(1,
-                "Genesis entry hash does not match computed hash (SCID verification failed).");
+                "Genesis SCID does not match computed hash (SCID verification failed).");
 
         // Genesis is always authorized by its own explicitly declared update keys.
         var genesisUpdateKeys = genesis.Parameters.UpdateKeys;
@@ -155,10 +159,9 @@ internal sealed class LogChainValidator
             throw new LogChainValidationException(expectedVersion,
                 $"Unsupported did:webvh method version '{current.Parameters.Method}'.");
 
-        // Verify entry hash: recreate the entry with the previous versionId
-        // as specified by the spec: versionId = "<versionNumber>-<previousVersionId>"
-        var expectedVersionText = expectedVersion.ToString(CultureInfo.InvariantCulture);
-        var entryForHashing = current with { VersionId = $"{expectedVersionText}-{previous.VersionId}" };
+        // Verify entry hash: the hash input's versionId is exactly the previous entry's
+        // full published versionId.
+        var entryForHashing = current with { VersionId = previous.VersionId };
         var entryJsonWithoutProof = LogEntrySerializer.SerializeWithoutProof(entryForHashing);
         var computedHash = ScidGenerator.ComputeEntryHash(entryJsonWithoutProof);
 

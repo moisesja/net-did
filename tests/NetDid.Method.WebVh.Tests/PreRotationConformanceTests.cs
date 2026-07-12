@@ -618,7 +618,7 @@ public class PreRotationConformanceTests
         var versionText = versionNumber.ToString(CultureInfo.InvariantCulture);
         var entryForHashing = new LogEntry
         {
-            VersionId = $"{versionText}-{previous.VersionId}",
+            VersionId = previous.VersionId,
             VersionTime = previous.VersionTime.AddTicks(1),
             Parameters = parameters,
             State = state ?? previous.State
