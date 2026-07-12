@@ -10,6 +10,20 @@ NetDid is an open-source .NET 10 library that provides a unified, specification-
 
 See [`NetDidPRD.md`](NetDidPRD.md) for requirements and architecture of the system. This document must be maintained as it will be the main source of truth for functionality details.
 
+## Workflow Skills
+
+This repo ships project skills in `.claude/skills/` that operationalize the principles in this file — they encode the exact commands, conventions, and hard-won `tasks/lessons.md` rules for this codebase. **Prefer invoking the skill over improvising the workflow.** The sections below state the *why*; these skills are the *how*.
+
+| Skill | Invoke when | Encodes |
+|---|---|---|
+| `net-did-fix` | fixing, implementing, or closing an issue/bug | full issue-fix cycle: assess-with-citations → branch → fail-first `IssueNN_*` tests → verify → adversarial → docs+CHANGELOG → PR (stop before merge) |
+| `net-did-verify` | before marking any change done or opening a PR | the "done" gate: 0-warning Release build, per-project test counts, W3C conformance green, samples end-to-end |
+| `net-did-release` | cutting a version / publishing to NuGet | semver → release branch → `NetDidVersion` bump → CHANGELOG stamp → tag `vX.Y.Z` → publish.yml → confirm on NuGet |
+| `adversarial-review` | after any security-sensitive change, before the PR | the mandated red-team pass encoding the `tasks/lessons.md` security rules |
+| `spec-conformance-audit` | auditing the code against the DID specs | audit → one GitHub issue per finding with normative-spec cross-check |
+
+`net-did-fix` is the orchestrator for issue/bug work and calls `net-did-verify` and `adversarial-review` at the right steps.
+
 ## Workflow Orchestration
 
 ### 1. Plan Mode Fault
@@ -25,7 +39,7 @@ See [`NetDidPRD.md`](NetDidPRD.md) for requirements and architecture of the syst
 - Offload research, exploration, and parallel analysis to subagents
 - For complex problems, throw more compute at it via subagents
 - One task per subagent for focused execution
-- Always use adversarial agents to attempt to exploit the code that is being generated. The adversarial agents must report in detail about any findings
+- Always use adversarial agents to attempt to exploit the code that is being generated. The adversarial agents must report in detail about any findings → run the **`adversarial-review`** skill, which drives this pass and carries the accumulated `tasks/lessons.md` rules
 
 ### 3. Self-Improvement Loop
 
@@ -36,6 +50,7 @@ See [`NetDidPRD.md`](NetDidPRD.md) for requirements and architecture of the syst
 
 ### 4. Verification Before Done
 
+- Run the **`net-did-verify`** skill — it is the concrete "done" gate for this repo
 - Never mark a task complete without proving it works
 - Diff behavior between main and your changes when relevant
 - Ask yourself: "Would a staff engineer approve this,"
@@ -56,6 +71,8 @@ See [`NetDidPRD.md`](NetDidPRD.md) for requirements and architecture of the syst
 - Go fix failing CI tests without being told how
 
 # Task Management
+
+For issue/bug work, the **`net-did-fix`** skill runs this whole sequence end-to-end; **`net-did-release`** covers step 7 when shipping a version. The steps below remain the canonical description of what those skills do.
 
 1. **Plan First**: Write plan to `tasks/todo{timestamp}.md` with checkable items
 2. **Verify Plan**: Check in before starting implementation

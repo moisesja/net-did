@@ -24,6 +24,10 @@ dotnet test
 
 All unit tests should pass with zero warnings.
 
+## Working with Claude Code
+
+If you use Claude Code, this repo ships workflow skills in `.claude/skills/` that automate the common flows — `net-did-fix` (issue/bug cycle), `net-did-verify` (the build/test/conformance "done" gate), `net-did-release` (version + NuGet publish), `adversarial-review` (security red-team pass), and `spec-conformance-audit`. See [`AGENTS.md`](AGENTS.md) for how they map to the project's principles. The accumulated do/don't rules live in [`tasks/lessons.md`](tasks/lessons.md).
+
 ## Project Structure
 
 ```

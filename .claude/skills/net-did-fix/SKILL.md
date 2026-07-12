@@ -47,7 +47,7 @@ Run the **`adversarial-review`** skill on the completed diff (mandatory per CLAU
 - Commit, push, open a PR with `Fixes #NN` in the body.
 - **Stop at the open PR.** Do not merge — the user reviews and merges, even under "take it as far as possible" (lessons + memory `feedback_pr-merge-review`). Merge only on an explicit per-PR "merge it".
 - Append a `## Review` section to the plan file: files changed, exact test counts, acceptance-criteria re-check, fail-first evidence, behavior diff vs. `main`, PR URL.
-- After a maintainer review round, address findings and record them (see `todo20260711-issue91.md` for the format).
+- After a maintainer review round, address every finding, then append a dated "Review round N" subsection to the plan file listing each finding, its severity, and how it was resolved (with the new/updated test that pins it).
 
 ## Guardrails (from lessons.md)
 - A user constraint like "stay on this branch" is a scope guardrail, **not** approval to skip plan review.
