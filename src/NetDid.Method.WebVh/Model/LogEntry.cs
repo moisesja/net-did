@@ -8,7 +8,7 @@ namespace NetDid.Method.WebVh.Model;
 /// </summary>
 public sealed record LogEntry
 {
-    /// <summary>Format: "{version-number}-{entry-hash}". For genesis: "1-{SCID}".</summary>
+    /// <summary>Format: "{version-number}-{entry-hash}".</summary>
     public required string VersionId { get; init; }
 
     /// <summary>ISO 8601 timestamp of this entry.</summary>

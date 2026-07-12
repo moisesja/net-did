@@ -364,7 +364,9 @@ var result = await didWebVh.CreateAsync(new DidWebVhCreateOptions
 
 Pre-rotation commits to the next update key hash at creation time. The next entry must explicitly
 place the committed key in `updateKeys`, carry `nextKeyHashes`, and be signed by that committed key.
-This prevents a compromised current key from rotating control to an uncommitted key.
+This prevents a compromised current key from rotating control to an uncommitted key. Commitments
+are did:webvh v1.0 bare-base58btc encodings of complete SHA-256 multihashes (`Qm...`, with no
+multibase `z` prefix).
 
 ### Deactivate
 

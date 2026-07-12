@@ -1002,7 +1002,11 @@ did:webvh:<SCID>:<domain>:<optional-path-segments>
 
 Example: `did:webvh:QmRwq46VkGuCEx4dyYxxexmig7Fwbqbm9AB73iKUAHjMZH:example.com`
 
-The SCID (Self-Certifying Identifier) is the multihash of the JCS-canonicalized genesis log entry (computed with `{SCID}` placeholders — see §7.5). This makes the DID self-certifying: the SCID cryptographically binds to the genesis state, and any tampering with the genesis entry invalidates the SCID.
+The SCID (Self-Certifying Identifier) is the SHA-256 multihash of the JCS-canonicalized
+preliminary genesis log entry (computed with `{SCID}` placeholders — see §7.5), encoded as
+**bare base58btc**. The 34-byte multihash wire value is `0x12 0x20 <32-byte digest>`; the text
+has no multibase `z` prefix. This makes the DID self-certifying: the SCID cryptographically binds
+to the genesis state, and any tampering with the genesis entry invalidates the SCID.
 
 ### 7.3 Legacy Fallback to did:web
 
@@ -1027,7 +1031,7 @@ The genesis entry shown below is the **final form** (after SCID placeholder repl
 
 ```json
 {
-  "versionId": "1-QmRwq46V...",
+  "versionId": "1-QmEntryHash...",
   "versionTime": "2026-03-01T00:00:00Z",
   "parameters": {
     "method": "did:webvh:1.0",
@@ -1050,7 +1054,10 @@ The genesis entry shown below is the **final form** (after SCID placeholder repl
 }
 ```
 
-Each entry's `versionId` has the format `<version-number>-<entry-hash>`, where the entry hash chains to the previous entry. For the genesis entry, the entry hash IS the SCID.
+Each entry's `versionId` has the format `<version-number>-<entry-hash>`, where the entry hash
+chains to the predecessor `versionId`. The SCID and genesis entry hash are distinct: the SCID is
+computed from the placeholder-bearing preliminary genesis, while the genesis entry hash is computed
+after SCID substitution with `versionId` temporarily set to the SCID.
 
 `versionTime` is part of the hash- and proof-protected entry. NetDid formats it in UTC with
 the invariant Gregorian calendar, preserving fractional seconds when present while retaining
@@ -1078,25 +1085,33 @@ well-known placeholder string (`{SCID}`) that stands in for the real SCID during
 2. Build the initial DID Document with desired verification methods and services. Use the
    literal placeholder `{SCID}` everywhere the SCID would appear (the DID `id` field,
    verification method `id` and `controller` values, etc.).
-3. Construct the genesis log entry with parameters: `scid` set to `{SCID}`, `updateKeys`,
-   optional pre-rotation commitment, optional witnesses. The `versionId` is `1-{SCID}`.
-4. JCS-canonicalize the genesis entry (with placeholders in place) and hash it (multihash,
-   base58btc-encoded) to produce the SCID value.
+3. Construct the preliminary genesis log entry with parameters: `scid` set to `{SCID}`, `updateKeys`,
+   optional pre-rotation commitment, optional witnesses. The preliminary `versionId` is the literal
+   `{SCID}` placeholder with no version-number prefix.
+4. JCS-canonicalize the preliminary genesis entry and SHA-256 hash it. Wrap the 32-byte digest as
+   the complete multihash `0x12 0x20 <digest>` and encode it as bare base58btc (no multibase `z`
+   prefix) to produce the SCID value.
 5. Replace every occurrence of the `{SCID}` placeholder in the log entry with the computed
    SCID value — in `parameters.scid`, `versionId`, the DID Document `id`, verification
    method IDs, controllers, and any other fields that reference the DID.
-6. Sign the finalized genesis log entry with the update key using Data Integrity Proof
+6. With the substituted SCID still serving as the preliminary `versionId`, JCS-canonicalize and
+   hash the entry again using the same complete-multihash and bare-base58btc encoding. This produces
+   a distinct genesis `entryHash`.
+7. Replace the preliminary `versionId` with `1-<entryHash>` and sign the finalized genesis log entry
+   with the update key using Data Integrity Proof
    (eddsa-jcs-2022). The proof is over the entry with the real SCID, not the placeholder.
-7. Return: the DID string, the DID Document, the `did.jsonl` content (single line), and a
+8. Return: the DID string, the DID Document, the `did.jsonl` content (single line), and a
    `did.json` file for did:web compatibility.
-8. The caller is responsible for publishing `did.jsonl` and `did.json` at the correct web URL.
+9. The caller is responsible for publishing `did.jsonl` and `did.json` at the correct web URL.
 
 ### 7.6 Resolve
 
 1. Transform the DID to an HTTPS URL: `did:webvh:<SCID>:<domain>` → `https://<domain>/.well-known/did.jsonl` (or path-based for non-root DIDs). Reject loopback, unspecified, link-local, private, unique-local, and other non-public IP literals.
 2. Resolve the host and fetch `did.jsonl` via HTTP. The default transport vets every resolved address and pins the connection to a vetted public address so DNS rebinding cannot create a second, unchecked resolution. It rejects the entire answer set if any address is non-public, does not use a forward proxy, and does not follow redirects. A custom `IWebVhHttpClient` is responsible for enforcing an equivalent egress policy.
 3. Parse each JSON Lines entry sequentially.
-4. Validate the genesis entry: verify the SCID matches the entry hash.
+4. Validate the genesis entry by independently reconstructing both hashes: restore the SCID as the
+   preliminary `versionId` and verify the published genesis entry hash, then restore `{SCID}` in all
+   SCID-bearing values and verify the SCID. The SCID and genesis entry hash MUST NOT be conflated.
 5. For each subsequent entry: require `versionTime` to be strictly later than the previous entry, verify the proof signature against an authorized update key, verify the hash chain links to the previous entry, and verify parameter constraints (pre-rotation key commitments and witness policy shape).
 6. **Bind the DID's self-certifying SCID to the genesis (issue #82).** The SCID segment of the requested DID string MUST equal the genesis entry's SCID (`entries[0].Parameters.Scid`, already proven equal to the recomputed genesis hash by step 4). The target entry's `state.id` (an author-controlled field) matching `did` is necessary but **not** sufficient: without the SCID check, a host/CDN/MITM adversary can serve a self-consistent genesis signed by their own key with `state.id` set to the victim's DID and impersonate it, collapsing did:webvh's security to plain did:web. Reject with `invalidDidLog` on mismatch.
 7. Validate every explicitly declared witness policy before it can take effect, at genesis and on every later transition. The disabling form is the empty object `{}`. A configured policy MUST contain both `threshold` and a non-empty `witnesses` list; `threshold` MUST be in the inclusive range `1..count(distinct witness ids)`; every id MUST already be Unicode NFC-normalized, MUST be unique under ordinal comparison in that canonical form, MUST be a bare `did:key` DID, and MUST encode an Ed25519 key compatible with `eddsa-jcs-2022`. Missing fields, duplicate or non-canonical ids, zero/negative/out-of-range thresholds, malformed keys, and unsupported key types invalidate the log rather than being coerced to “no witnesses.”
@@ -1122,7 +1137,12 @@ upgrading; conforming legacy policies with `threshold <= count(distinct ids)` re
    - *Portability note:* net-did does not implement did:webvh portability (there is no `Portable` field in `DidWebVhParameterUpdates`). If portability is added later, the `state.id == did` / `NewDocument.id == did` binding needs a carve-out for the domain-change entry.
 3. Build a new log entry with the updated DID Document and/or parameters.
 4. Determine whether pre-rotation governs the new entry from the previous effective `nextKeyHashes`. If it is non-empty, the new entry MUST explicitly contain non-empty `updateKeys` and an explicit `nextKeyHashes` array (which MAY be `[]` to end pre-rotation); every current `updateKeys` member MUST match a previous commitment, and the proof MUST be signed by one of those current keys. Otherwise, the proof signer MUST be in the previous effective `updateKeys`; an entry that first sets non-empty `nextKeyHashes` is therefore still authorized by the prior keys.
-5. Chain the new entry to the previous one via hash.
+   Each commitment is `base58btc(multihash(SHA-256, UTF8(multikey)))`: bare base58btc over the
+   complete `0x12 0x20 <32-byte digest>` multihash, without a multibase `z` prefix.
+5. Chain the new entry to the previous one by setting the hash-input entry's `versionId` to exactly
+   the previous entry's full published `versionId`, computing the entry hash, and only then publishing
+   the new `versionId` as `<new-version-number>-<entryHash>`. The new version number is not part of the
+   hash input.
 6. Sign with an authorized update key.
 7. Append to `did.jsonl`.
 8. If witnesses are configured, collect witness signatures into `did-witness.json`.
@@ -3037,7 +3057,7 @@ Rust (zkryptium crate, Apache 2.0)
 
 **did:webvh method** (dedicated tests + W3C conformance coverage):
 - Full CRUD lifecycle: Create, Resolve, Update, Deactivate with cryptographically chained JSON Lines log
-- SCID (Self-Certifying Identifier) generation via two-pass algorithm: JCS canonicalize → SHA-256 → multihash → base58btc multibase
+- SCID (Self-Certifying Identifier) generation via the v1.0 placeholder algorithm: JCS canonicalize → SHA-256 → complete multihash → bare base58btc, followed by a distinct genesis entry-hash pass after SCID substitution
 - Data Integrity Proofs (eddsa-jcs-2022) engine in NetDid.Core for reuse by future methods
 - Hash chain validation across log entries with entry hash linking
 - Pre-rotation manager with key commitment validation (SHA-256 hash commitments via nextKeyHashes)

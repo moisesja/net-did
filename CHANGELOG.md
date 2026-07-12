@@ -35,6 +35,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     parameter is preserved through parsing, hashing, proof verification, creation, and updates so
     strict property validation does not reject a defined v1.0 field.
 
+### Changed
+
+- **Breaking did:webvh v1.0 hash-wire and genesis-flow conformance fix** (#95). SCIDs,
+  `versionId` entry hashes, and pre-rotation `nextKeyHashes` commitments are now encoded as bare
+  base58btc strings over complete SHA-256 multihashes (`0x12 0x20 <32-byte digest>`), as required
+  by v1.0. Previously NetDid omitted the multihash digest-length byte and then added a multibase
+  `z` prefix, producing values that were self-consistent only within NetDid and incompatible with
+  conforming implementations.
+  - Genesis creation and validation now derive the SCID and first entry hash independently:
+    `versionId: "{SCID}"` is used for SCID generation, the substituted SCID is the predecessor for
+    the genesis entry-hash calculation, and the published value is `1-<entryHash>`. Previously
+    NetDid hashed `1-{SCID}`, published `1-<SCID>`, and incorrectly required both hashes to be equal.
+  - Update and deactivation entry hashes now use the previous entry's full published `versionId`
+    directly as the hash input's `versionId`. Previously NetDid prepended the new version number to
+    that predecessor value; writer and validator shared the defect, masking another interop failure.
+  - This intentionally changes every NetDid-generated did:webvh identifier, every entry
+    `versionId`, and every key commitment. Logs emitted by earlier versions used a non-v1.0 wire
+    format and are not accepted as v1.0 logs after upgrading; no production migration path is
+    provided because did:webvh has not yet had a production deployment in this project.
+  - Literal known-answer tests now pin the SCID, entry-hash, and key-commitment encodings and verify
+    the 34-byte multihash structure, so writer/resolver self-consistency cannot mask this regression.
+
 ### Added
 
 - **`DidUpdateResult` now exposes key-specific rotation evidence** (#91). New additive properties:

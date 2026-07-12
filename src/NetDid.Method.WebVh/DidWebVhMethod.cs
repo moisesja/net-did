@@ -117,7 +117,7 @@ public sealed class DidWebVhMethod : DidMethodBase
             LogChainValidator.ValidateWatchers(genesisWatchers, 1);
         var genesisEntry = new LogEntry
         {
-            VersionId = $"1-{ScidGenerator.SafePlaceholder}",
+            VersionId = ScidGenerator.SafePlaceholder,
             VersionTime = DateTimeOffset.UtcNow,
             Parameters = genesisParams,
             State = docTemplate
@@ -131,12 +131,14 @@ public sealed class DidWebVhMethod : DidMethodBase
         // Step 5: Compute SCID from JSON with {SCID} placeholders (per spec)
         var scid = ScidGenerator.ComputeScid(entryJsonWithPlaceholders);
 
-        // Step 6: Replace all {SCID} placeholders
+        // Step 6: Replace all {SCID} placeholders. At this stage versionId is the SCID itself,
+        // which is the predecessor value used to calculate the genesis entry hash.
         var entryJsonWithScid = ScidGenerator.ReplacePlaceholders(entryJsonWithPlaceholders, scid);
 
-        // Step 7: Parse back the entry with real SCID values
-        // versionId is now "1-{actualSCID}" — for genesis, the entry hash IS the SCID
-        var finalEntry = LogEntrySerializer.DeserializeEntry(entryJsonWithScid);
+        // Step 7: Calculate the distinct genesis entry hash, then publish 1-<entryHash>.
+        var genesisEntryForHashing = LogEntrySerializer.DeserializeEntry(entryJsonWithScid);
+        var entryHash = ScidGenerator.ComputeEntryHash(entryJsonWithScid);
+        var finalEntry = genesisEntryForHashing with { VersionId = $"1-{entryHash}" };
 
         // Step 8: Sign with Data Integrity Proof
         var proofJson = LogEntrySerializer.SerializeWithoutProof(finalEntry);
@@ -526,7 +528,7 @@ public sealed class DidWebVhMethod : DidMethodBase
         var versionNumberText = versionNumber.ToString(CultureInfo.InvariantCulture);
         var newEntry = new LogEntry
         {
-            VersionId = $"{versionNumberText}-{previousEntry.VersionId}",
+            VersionId = previousEntry.VersionId,
             VersionTime = GetNextVersionTime(previousEntry.VersionTime),
             Parameters = newParams,
             State = newDocument
@@ -628,7 +630,7 @@ public sealed class DidWebVhMethod : DidMethodBase
 
         var deactivationEntry = new LogEntry
         {
-            VersionId = $"{versionNumberText}-{previousEntry.VersionId}",
+            VersionId = previousEntry.VersionId,
             VersionTime = GetNextVersionTime(previousEntry.VersionTime),
             Parameters = deactivationParams,
             State = minimalDoc

@@ -1,4 +1,3 @@
-using System.Security.Cryptography;
 using System.Text.Json;
 using NetCid;
 
@@ -8,10 +7,10 @@ namespace NetDid.Method.WebVh;
 /// Generates the Self-Certifying Identifier (SCID) from a genesis log entry.
 ///
 /// Two-pass algorithm:
-/// 1. Build genesis entry with {SCID} placeholders
+/// 1. Build the preliminary genesis entry with versionId and all SCID-bearing values set to {SCID}
 /// 2. JCS-canonicalize the entry (with placeholders)
 /// 3. SHA-256 hash the canonical bytes
-/// 4. SCID = multibase(base58btc, multihash(0x12, hash))
+/// 4. SCID = base58btc(multihash(0x12, hash))
 /// 5. Replace all {SCID} placeholders with the computed SCID
 /// </summary>
 internal static class ScidGenerator
@@ -35,9 +34,7 @@ internal static class ScidGenerator
     {
         using var document = JsonDocument.Parse(genesisEntryJsonWithPlaceholders);
         var canonicalBytes = JcsCanonicalizer.Canonicalize(document.RootElement);
-        var hash = SHA256.HashData(canonicalBytes);
-        var multihash = Multicodec.Prefix(0x12, hash); // 0x12 = sha2-256
-        return Multibase.Encode(multihash, MultibaseEncoding.Base58Btc);
+        return WebVhHashEncoder.EncodeSha256(canonicalBytes);
     }
 
     /// <summary>
@@ -57,8 +54,6 @@ internal static class ScidGenerator
     {
         using var document = JsonDocument.Parse(entryJsonWithoutProof);
         var canonicalBytes = JcsCanonicalizer.Canonicalize(document.RootElement);
-        var hash = SHA256.HashData(canonicalBytes);
-        var multihash = Multicodec.Prefix(0x12, hash);
-        return Multibase.Encode(multihash, MultibaseEncoding.Base58Btc);
+        return WebVhHashEncoder.EncodeSha256(canonicalBytes);
     }
 }
