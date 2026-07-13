@@ -29,7 +29,15 @@ public sealed record LogEntry
     /// <summary>The full DID Document at this version.</summary>
     public required DidDocument State { get; init; }
 
-    /// <summary>Data Integrity Proofs for this entry.</summary>
+    /// <summary>
+    /// The entry's Data Integrity controller proofs. A did:webvh entry requires at least one
+    /// controller proof, and one active update key is sufficient to authorize the entry. If
+    /// multiple controller proofs are supplied, every supplied proof must be structurally
+    /// valid, cryptographically valid, and signed by an active update key — validation rejects
+    /// the entry if any supplied proof fails any check (issue #101). Controller proofs do not
+    /// use threshold semantics. The wire <c>proof</c> may be a single proof object or an
+    /// array; both parse into this list.
+    /// </summary>
     public IReadOnlyList<DataIntegrityProofValue>? Proof { get; init; }
 
     /// <summary>The version number extracted from the versionId.</summary>

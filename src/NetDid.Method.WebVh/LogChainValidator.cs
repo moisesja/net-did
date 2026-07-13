@@ -14,6 +14,14 @@ internal sealed class LogChainValidator
 {
     private readonly EddsaJcs2022Cryptosuite _suite;
 
+    /// <summary>
+    /// Upper bound on controller proofs per entry. did:webvh does not define a limit; this is a
+    /// resource guard against a fetched entry that packs many proofs to amplify per-proof
+    /// verification work. Real entries carry one proof (at most one per active update key), so
+    /// this ceiling never rejects a legitimate log.
+    /// </summary>
+    internal const int MaxProofsPerEntry = 100;
+
     public LogChainValidator(EddsaJcs2022Cryptosuite suite)
     {
         _suite = suite;
@@ -213,37 +221,77 @@ internal sealed class LogChainValidator
             throw new LogChainValidationException(version, error);
     }
 
-    private void ValidateProof(LogEntry entry, IReadOnlyList<string>? authorizedKeys, int version)
+    /// <summary>
+    /// Enforces the did:webvh v1.0 controller-proof rule: an entry requires at least one
+    /// proof, and <b>every</b> supplied proof must pass the method's checks — type
+    /// <c>DataIntegrityProof</c>, cryptosuite <c>eddsa-jcs-2022</c>, purpose
+    /// <c>assertionMethod</c>, a valid signature over the entry, and a signer verbatim in
+    /// the active <paramref name="authorizedKeys"/>. "Resolvers MUST reject an entry whose
+    /// proof fails any check" — existential acceptance would admit logs that stricter
+    /// conforming resolvers reject (issue #101). One authorized signer suffices to
+    /// authorize the entry; there is no threshold semantics for controller proofs.
+    /// </summary>
+    private void ValidateProof(LogEntry entry, IReadOnlyList<string> authorizedKeys, int version)
     {
-        if (entry.Proof is null || entry.Proof.Count == 0)
+        // Snapshot once: an IReadOnlyList implementation could present different contents
+        // per enumeration, letting a proof escape validation.
+        var proofs = entry.Proof?.ToArray();
+        if (proofs is not { Length: > 0 })
             throw new LogChainValidationException(version,
                 $"No proof found at version {version}.");
 
+        // Universal validation verifies every proof (each re-canonicalizes the whole entry),
+        // so an unbounded proof array is a resource-amplification vector even though the
+        // fetched log is already size-capped. A legitimate entry needs one proof and at most
+        // one per active update key; this ceiling is far above any real use.
+        if (proofs.Length > MaxProofsPerEntry)
+            throw new LogChainValidationException(version,
+                $"Entry at version {version} declares {proofs.Length} proofs, exceeding the " +
+                $"maximum of {MaxProofsPerEntry}.");
+
         var entryJsonWithoutProof = LogEntrySerializer.SerializeWithoutProof(entry);
 
-        // At least one proof must be valid from an authorized update key
-        foreach (var proofValue in entry.Proof)
+        foreach (var proofValue in proofs)
         {
+            // Method-specific policy first, so wrong-type/suite/purpose proofs are reported
+            // precisely regardless of signature validity. The cryptosuite independently
+            // rejects mismatched type/cryptosuite during verification; proofPurpose is
+            // enforced only here — Data Integrity leaves purpose checking to the consumer.
+            if (!string.Equals(proofValue.Type, "DataIntegrityProof", StringComparison.Ordinal))
+                throw new LogChainValidationException(version,
+                    $"Proof at version {version} has unsupported type '{proofValue.Type}'.");
+
+            if (!string.Equals(
+                    proofValue.Cryptosuite,
+                    EddsaJcs2022Cryptosuite.CryptosuiteName,
+                    StringComparison.Ordinal))
+                throw new LogChainValidationException(version,
+                    $"Proof at version {version} has unsupported cryptosuite " +
+                    $"'{proofValue.Cryptosuite}'.");
+
+            if (!string.Equals(proofValue.ProofPurpose, "assertionMethod", StringComparison.Ordinal))
+                throw new LogChainValidationException(version,
+                    $"Proof at version {version} has proofPurpose '{proofValue.ProofPurpose}'; " +
+                    "did:webvh requires 'assertionMethod'.");
+
             // Verify the signature; the returned multibase is the signer's did:key id with
             // the DID==fragment anti-spoof check already enforced. Null => invalid signature
             // or malformed verificationMethod.
             var signerKey = WebVhProofVerifier.VerifyAndExtractSigner(_suite, entryJsonWithoutProof, proofValue);
             if (signerKey is null)
-                continue;
+                throw new LogChainValidationException(version,
+                    $"Proof at version {version} has an invalid signature or malformed " +
+                    "verificationMethod.");
 
             // Verify the signer is an authorized update key. Exact equality between the
             // signer's multibase key and an entry in authorizedKeys — substring matching would
             // allow a proof with verificationMethod = "did:key:<attacker>#<authorized>" to be
             // signed by the attacker yet authorized as the legitimate key.
-            if (authorizedKeys is null)
-                return; // Valid proof, no key restriction
-
-            if (authorizedKeys.Contains(signerKey, StringComparer.Ordinal))
-                return; // Valid proof from authorized key
+            if (!authorizedKeys.Contains(signerKey, StringComparer.Ordinal))
+                throw new LogChainValidationException(version,
+                    $"Proof at version {version} is signed by a key that is not an " +
+                    "authorized update key.");
         }
-
-        throw new LogChainValidationException(version,
-            $"No valid proof from an authorized update key at version {version}.");
     }
 
     private static IReadOnlyList<string> ValidatePreRotation(

@@ -184,11 +184,21 @@ public static class LogEntrySerializer
         writer.WriteStartArray();
         foreach (var proof in proofs)
         {
+            // A proof parsed from the wire round-trips verbatim: the eddsa-jcs-2022 signature
+            // covers the whole proof configuration, so dropping unmodeled members (id, expires,
+            // extensions) would corrupt another implementation's proof on re-serialization.
+            if (proof.RawJson is not null)
+            {
+                writer.WriteRawValue(proof.RawJson);
+                continue;
+            }
+
             writer.WriteStartObject();
             writer.WriteString("type", proof.Type);
             writer.WriteString("cryptosuite", proof.Cryptosuite);
             writer.WriteString("verificationMethod", proof.VerificationMethod);
-            writer.WriteString("created", proof.Created);
+            if (proof.Created is not null)
+                writer.WriteString("created", proof.Created);
             writer.WriteString("proofPurpose", proof.ProofPurpose);
             writer.WriteString("proofValue", proof.ProofValue);
             writer.WriteEndObject();
@@ -222,11 +232,12 @@ public static class LogEntrySerializer
         var stateJson = root.GetProperty("state").GetRawText();
         var state = DidDocumentSerializer.Deserialize(stateJson);
 
-        // Parse proof array (optional)
+        // Parse proof (optional here; chain validation requires one per entry). The schema
+        // permits a single proof object or an array of proof objects.
         IReadOnlyList<DataIntegrityProofValue>? proof = null;
         if (root.TryGetProperty("proof", out var proofProp))
         {
-            proof = ParseProofArray(proofProp);
+            proof = ParseProof(proofProp);
         }
 
         return new LogEntry
@@ -354,16 +365,74 @@ public static class LogEntrySerializer
         }
     }
 
-    private static IReadOnlyList<DataIntegrityProofValue> ParseProofArray(JsonElement element)
+    /// <summary>
+    /// Parses the log entry's <c>proof</c> member. The official did:webvh v1.0 log-entry
+    /// schema permits a single Data Integrity proof object or an array of them; both are
+    /// normalized to one list. Every structural violation throws <see cref="FormatException"/>
+    /// so callers at the trust boundary map it to <c>invalidDidLog</c> (issue #101).
+    /// </summary>
+    private static IReadOnlyList<DataIntegrityProofValue> ParseProof(JsonElement element)
     {
-        return element.EnumerateArray().Select(e => new DataIntegrityProofValue
+        if (element.ValueKind == JsonValueKind.Object)
+            return new List<DataIntegrityProofValue> { ParseProofObject(element) }.AsReadOnly();
+
+        if (element.ValueKind != JsonValueKind.Array)
+            throw new FormatException(
+                "did:webvh log-entry proof must be a proof object or an array of proof objects.");
+
+        var proofs = new List<DataIntegrityProofValue>();
+        foreach (var proofElement in element.EnumerateArray())
+            proofs.Add(ParseProofObject(proofElement));
+
+        if (proofs.Count == 0)
+            throw new FormatException(
+                "did:webvh log-entry proof array must contain at least one proof.");
+
+        return proofs.AsReadOnly();
+    }
+
+    private static DataIntegrityProofValue ParseProofObject(JsonElement element)
+    {
+        if (element.ValueKind != JsonValueKind.Object)
+            throw new FormatException("Every did:webvh log-entry proof must be a JSON object.");
+
+        // Unknown members are permitted by the schema (no additionalProperties restriction)
+        // and are preserved through RawJson: the eddsa-jcs-2022 signature covers the whole
+        // proof configuration, so they participate in verification and must round-trip.
+        return new DataIntegrityProofValue
         {
-            Type = e.GetProperty("type").GetString()!,
-            Cryptosuite = e.GetProperty("cryptosuite").GetString()!,
-            VerificationMethod = e.GetProperty("verificationMethod").GetString()!,
-            Created = e.GetProperty("created").GetString()!,
-            ProofPurpose = e.GetProperty("proofPurpose").GetString()!,
-            ProofValue = e.GetProperty("proofValue").GetString()!
-        }).ToList();
+            Type = RequireProofString(element, "type"),
+            Cryptosuite = RequireProofString(element, "cryptosuite"),
+            VerificationMethod = RequireProofString(element, "verificationMethod"),
+            Created = OptionalProofString(element, "created"),
+            ProofPurpose = RequireProofString(element, "proofPurpose"),
+            ProofValue = RequireProofString(element, "proofValue"),
+            RawJson = element.GetRawText()
+        };
+    }
+
+    private static string RequireProofString(JsonElement proof, string name)
+    {
+        if (!proof.TryGetProperty(name, out var value)
+            || value.ValueKind != JsonValueKind.String
+            || value.GetString() is not { } text)
+        {
+            throw new FormatException(
+                $"did:webvh log-entry proof member '{name}' must be a non-null JSON string.");
+        }
+
+        return text;
+    }
+
+    private static string? OptionalProofString(JsonElement proof, string name)
+    {
+        if (!proof.TryGetProperty(name, out var value))
+            return null;
+
+        if (value.ValueKind != JsonValueKind.String || value.GetString() is not { } text)
+            throw new FormatException(
+                $"did:webvh log-entry proof member '{name}' must be a JSON string when present.");
+
+        return text;
     }
 }

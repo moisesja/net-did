@@ -7,6 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **did:webvh entries with invalid or unauthorized extra controller proofs are now rejected**
+  (#101). `LogChainValidator` previously accepted an entry as soon as one proof verified from an
+  active update key, silently skipping every other supplied proof; did:webvh v1.0 requires
+  "Resolvers MUST reject an entry whose proof fails any check." Every supplied controller proof
+  must now be structurally valid, use `type` `DataIntegrityProof` / `cryptosuite`
+  `eddsa-jcs-2022` / `proofPurpose` `assertionMethod`, carry a valid signature, and be signed by
+  an active update key. One authorized signer still authorizes the entry — multiple valid
+  authorized proofs remain supported and no threshold semantics were introduced. `proofPurpose`
+  was previously never checked at all, so even single-proof entries with a wrong purpose were
+  accepted. **Compatibility**: NetDid's writer emits exactly one proof, and conforming
+  single-proof logs validate unchanged; a multi-proof log carrying invalid or unauthorized extras
+  is now rejected as `invalidDidLog` — intentional stricter conformance. Because every supplied
+  proof is verified (each re-canonicalizes the entry), the number of controller proofs per entry
+  is bounded (100) as a resource guard against amplification; the ceiling is far above any real
+  entry's single proof.
+- **did:webvh proof parsing is schema-faithful and interoperable** (#101). The `proof` member now
+  parses as either a single proof object or an array (the official log-entry schema's `oneOf`);
+  `created` is optional per that schema; and structurally malformed proof content (missing or
+  non-string required members, empty arrays, non-object elements) is reported as `invalidDidLog`
+  during resolution instead of `notFound` (or an unhandled `KeyNotFoundException` /
+  `InvalidOperationException` from Update/Deactivate, which now surface `FormatException` like
+  other malformed-log content). Parsed proofs retain their verbatim wire JSON
+  (`DataIntegrityProofValue.RawJson`): members outside NetDid's model (schema-permitted
+  `id`/`expires` and extensions) are covered by the `eddsa-jcs-2022` signature, so they now
+  verify correctly and round-trip byte-for-byte when Update/Deactivate republish a fetched log
+  (previously they were dropped, corrupting foreign proofs). A wire single-object `proof`
+  re-emits in the equivalent array form. API note: `DataIntegrityProofValue.Created` is now
+  optional (`string?`).
+
 ### Security
 
 - Fresh-key creation in `DidKeyMethod` (did:key) and `Numalgo0Handler` (did:peer:0) now disposes

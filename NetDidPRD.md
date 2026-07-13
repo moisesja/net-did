@@ -1073,6 +1073,23 @@ chains to the predecessor `versionId`. The SCID and genesis entry hash are disti
 computed from the placeholder-bearing preliminary genesis, while the genesis entry hash is computed
 after SCID substitution with `versionId` temporarily set to the SCID.
 
+**Controller proofs (issue #101).** A did:webvh entry requires at least one controller proof. One
+active update key is sufficient to authorize the entry. If multiple controller proofs are supplied,
+every supplied proof must be structurally valid, cryptographically valid (`type`
+`DataIntegrityProof`, `cryptosuite` `eddsa-jcs-2022`, `proofPurpose` `assertionMethod`), and signed
+by an active update key — per the spec's Authorized Keys rule, "Resolvers MUST reject an entry
+whose proof fails any check." Controller proofs do not use threshold semantics (that exception is
+witness-specific). The official log-entry schema permits `proof` as a single proof object or an
+array; NetDid parses both (normalizing to a list and re-emitting the array form) and treats
+`created` as optional per that schema. Proof members outside NetDid's model (schema-permitted
+`id`/`expires` and extensions) are covered by the `eddsa-jcs-2022` signature, so parsed proofs
+retain their verbatim wire JSON (`DataIntegrityProofValue.RawJson`) both for verification and for
+byte-faithful re-serialization when Update/Deactivate republish a fetched log. Malformed proof
+content in a fetched log MUST be reported as `invalidDidLog`, not as `notFound`. Because every
+supplied proof is now verified (each re-canonicalizes the entry), a resolver bounds the proofs per
+entry as a resource guard (NetDid: 100, far above any real entry's single proof); an entry
+exceeding it is rejected as `invalidDidLog`.
+
 `versionTime` is part of the hash- and proof-protected entry. NetDid formats it in UTC with
 the invariant Gregorian calendar, preserving fractional seconds when present while retaining
 the existing whole-second form when the fraction is zero. Parsing requires an explicit UTC `Z`
@@ -1126,7 +1143,7 @@ well-known placeholder string (`{SCID}`) that stands in for the real SCID during
 4. Validate the genesis entry by independently reconstructing both hashes: restore the SCID as the
    preliminary `versionId` and verify the published genesis entry hash, then restore `{SCID}` in all
    SCID-bearing values and verify the SCID. The SCID and genesis entry hash MUST NOT be conflated.
-5. For each subsequent entry: require `versionTime` to be strictly later than the previous entry, verify the proof signature against an authorized update key, verify the hash chain links to the previous entry, and verify parameter constraints (pre-rotation key commitments and witness policy shape).
+5. For each subsequent entry: require `versionTime` to be strictly later than the previous entry, validate **every** supplied controller proof (required type/cryptosuite/purpose, valid signature, signer verbatim in the active `updateKeys` — one authorized signer authorizes the entry, but any invalid or unauthorized extra proof invalidates it; see §7.4), verify the hash chain links to the previous entry, and verify parameter constraints (pre-rotation key commitments and witness policy shape). The same universal proof rule applies to the genesis entry against its own declared `updateKeys`.
 6. **Bind the DID's self-certifying SCID to the genesis (issue #82).** The SCID segment of the requested DID string MUST equal the genesis entry's SCID (`entries[0].Parameters.Scid`, already proven equal to the recomputed genesis hash by step 4). The target entry's `state.id` (an author-controlled field) matching `did` is necessary but **not** sufficient: without the SCID check, a host/CDN/MITM adversary can serve a self-consistent genesis signed by their own key with `state.id` set to the victim's DID and impersonate it, collapsing did:webvh's security to plain did:web. Reject with `invalidDidLog` on mismatch.
 7. Validate every explicitly declared witness policy before it can take effect, at genesis and on every later transition. The disabling form is the empty object `{}`. A configured policy MUST contain both `threshold` and a non-empty `witnesses` list; `threshold` MUST be in the inclusive range `1..count(distinct witness ids)`; every id MUST already be Unicode NFC-normalized, MUST be unique under ordinal comparison in that canonical form, MUST be a bare `did:key` DID, and MUST encode an Ed25519 key compatible with `eddsa-jcs-2022`. Missing fields, duplicate or non-canonical ids, zero/negative/out-of-range thresholds, malformed keys, and unsupported key types invalidate the log rather than being coerced to “no witnesses.”
 8. Determine the witness authority for every entry. Genesis is governed by the witness policy it declares. The first later entry that changes from no active witnesses to a configured policy is immediately governed by that new policy and MUST itself be witnessed. Once a policy is active, it governs the entry that lowers, removes, or replaces it, and the replacement takes effect only after that entry is published. If any entry through the requested version requires witnessing, fetch `did-witness.json` and validate cumulative witness coverage against those authorizing policies. Count a configured witness only after its proof verifies and binds to the exact configured `did:key` signer (never a `verificationMethod` prefix), and count each distinct signer at most once per required entry.
