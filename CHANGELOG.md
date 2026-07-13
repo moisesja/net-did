@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- Fresh-key creation in `DidKeyMethod` (did:key) and `Numalgo0Handler` (did:peer:0) now disposes
+  the generated NetCrypto `KeyPair` as soon as its public key has been copied out, deterministically
+  zeroizing the private half instead of leaving it in process memory until garbage collection
+  (#97, ND-E8 follow-up to NetCrypto 1.2.0's `KeyPair : IDisposable`). No public API or behavior
+  change: created DIDs and documents are byte-identical; `ExistingKey` paths (caller-owned `ISigner`
+  custody) are unaffected.
+
 ## [2.2.0] - 2026-07-12
 
 ### Security

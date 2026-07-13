@@ -440,6 +440,70 @@ public class DidKeyMethodTests
         _method.RecoveryMaterialSpec.Should().BeNull();
     }
 
+    // --- Issue #97: dispose generated KeyPair (ND-E8 follow-up) ---
+
+    [Theory]
+    [InlineData(KeyType.Ed25519)]
+    [InlineData(KeyType.X25519)]
+    [InlineData(KeyType.P256)]
+    [InlineData(KeyType.P384)]
+    [InlineData(KeyType.P521)]
+    [InlineData(KeyType.Secp256k1)]
+    [InlineData(KeyType.Bls12381G1)]
+    [InlineData(KeyType.Bls12381G2)]
+    public async Task Issue97_Create_FreshKey_DisposesGeneratedKeyPair(KeyType keyType)
+    {
+        var recordingGen = new RecordingKeyGenerator();
+        var method = new DidKeyMethod(recordingGen);
+
+        var result = await method.CreateAsync(new DidKeyCreateOptions { KeyType = keyType });
+
+        // NetCrypto 1.2.0 KeyPair.Dispose() zeroizes key material; access afterwards throws.
+        recordingGen.GeneratedPairs.Should().HaveCount(1);
+        var pair = recordingGen.GeneratedPairs[0];
+        var accessAfterCreate = () => pair.PublicKey;
+        accessAfterCreate.Should().Throw<ObjectDisposedException>(
+            because: "CreateAsync must dispose the KeyPair it generates and discards");
+
+        // The DID must still encode the public key read before disposal.
+        var prefixed = Multicodec.Prefix(keyType.GetMulticodec(), recordingGen.GeneratedPublicKeys[0]);
+        var expectedMultibase = Multibase.Encode(prefixed, MultibaseEncoding.Base58Btc);
+        result.Did.Value.Should().Be($"did:key:{expectedMultibase}");
+    }
+
+    /// <summary>
+    /// Test helper: delegates to DefaultKeyGenerator but records every generated KeyPair
+    /// (and a pre-disposal copy of its public key) so tests can observe disposal.
+    /// A hand-rolled fake because NSubstitute cannot intercept ReadOnlySpan parameters.
+    /// </summary>
+    private sealed class RecordingKeyGenerator : IKeyGenerator
+    {
+        private readonly DefaultKeyGenerator _inner = new();
+
+        public List<KeyPair> GeneratedPairs { get; } = [];
+        public List<byte[]> GeneratedPublicKeys { get; } = [];
+
+        public KeyPair Generate(KeyType keyType)
+        {
+            var pair = _inner.Generate(keyType);
+            GeneratedPairs.Add(pair);
+            GeneratedPublicKeys.Add(pair.PublicKey);
+            return pair;
+        }
+
+        public KeyPair FromPrivateKey(KeyType keyType, ReadOnlySpan<byte> privateKey)
+            => _inner.FromPrivateKey(keyType, privateKey);
+
+        public PublicKeyReference FromPublicKey(KeyType keyType, ReadOnlySpan<byte> publicKey)
+            => _inner.FromPublicKey(keyType, publicKey);
+
+        public KeyPair DeriveX25519FromEd25519(KeyPair ed25519KeyPair)
+            => _inner.DeriveX25519FromEd25519(ed25519KeyPair);
+
+        public PublicKeyReference DeriveX25519PublicKeyFromEd25519(ReadOnlySpan<byte> ed25519PublicKey)
+            => _inner.DeriveX25519PublicKeyFromEd25519(ed25519PublicKey);
+    }
+
     /// <summary>Test helper: ISigner that returns uncompressed EC public key bytes.</summary>
     private sealed class UncompressedKeySigner : ISigner
     {
