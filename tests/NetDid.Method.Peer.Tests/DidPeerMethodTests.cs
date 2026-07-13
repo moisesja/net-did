@@ -965,7 +965,9 @@ public class DidPeerMethodTests
         accessAfterCreate.Should().Throw<ObjectDisposedException>(
             because: "Numalgo0 Create must dispose the KeyPair it generates and discards");
 
-        // The DID must still encode the public key read before disposal.
+        // The DID must still encode the public key read before disposal. The snapshot must be
+        // real pre-disposal bytes, not a zeroized alias, or this comparison proves nothing.
+        recordingGen.GeneratedPublicKeys[0].Should().Contain(b => b != 0);
         var expectedMultibase = EncodeMultikey(keyType.GetMulticodec(), recordingGen.GeneratedPublicKeys[0]);
         result.Did.Value.Should().Be($"did:peer:0{expectedMultibase}");
     }
@@ -986,7 +988,9 @@ public class DidPeerMethodTests
         {
             var pair = _inner.Generate(keyType);
             GeneratedPairs.Add(pair);
-            GeneratedPublicKeys.Add(pair.PublicKey);
+            // Clone so the snapshot stays valid even if PublicKey's defensive copy ever regressed
+            // to returning the (later zeroized) backing store.
+            GeneratedPublicKeys.Add((byte[])pair.PublicKey.Clone());
             return pair;
         }
 
