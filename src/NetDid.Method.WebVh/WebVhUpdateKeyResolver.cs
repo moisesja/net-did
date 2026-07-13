@@ -52,8 +52,13 @@ internal sealed class WebVhUpdateKeyResolver : IVerificationMethodResolver
         {
             publicKey = PublicKeyMaterial.FromMultikey(multibaseKey);
         }
-        catch
+        catch (ArgumentException)
         {
+            // The key is in the active updateKeys but is not a decodable Multikey — a malformed
+            // (attacker-supplied) log parameter. ArgumentException is FromMultikey's documented
+            // and observed contract for every invalid input; fail closed so the proof is
+            // unauthorized and the entry rejected. Anything else is an unexpected bug and must
+            // propagate, not masquerade as an authorization decision.
             return null;
         }
 
