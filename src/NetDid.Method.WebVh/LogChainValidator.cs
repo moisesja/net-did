@@ -73,6 +73,15 @@ internal sealed class LogChainValidator
         var genesis = entries[0];
         ValidateGenesisEntry(genesis);
 
+        // did:webvh v1.0: "The SCID segment of state.id MUST be byte-for-byte identical to the
+        // scid value in the DID and the first entry's parameters.scid. This check MUST apply to
+        // every entry's state.id, not just the first. A mismatch MUST terminate resolution."
+        // SCID-level (not full-DID) comparison keeps portable host/path renames valid. Enforced
+        // here so resolution, update, and deactivation share one identity gate: the driver can
+        // never build on a log its own resolver rejects.
+        var scid = genesis.Parameters.Scid!;
+        ValidateStateScidConsistency(genesis, scid, 1);
+
         var effectiveParams = genesis.Parameters;
         result.Add(effectiveParams);
 
@@ -82,6 +91,7 @@ internal sealed class LogChainValidator
             var previous = entries[i - 1];
             var current = entries[i];
 
+            ValidateStateScidConsistency(current, scid, i + 1);
             ValidateSubsequentEntry(current, previous, effectiveParams, i + 1);
 
             // Merge parameters for the next iteration
@@ -207,6 +217,38 @@ internal sealed class LogChainValidator
         }
 
         ValidateProof(current, authorizedKeys, expectedVersion);
+    }
+
+    /// <summary>
+    /// Enforces the per-entry identity rule: every validated entry's <c>state.id</c> must be a
+    /// did:webvh DID whose SCID segment equals the genesis <c>parameters.scid</c> byte-for-byte.
+    /// The comparison is deliberately SCID-level — under portability only the host/path portion
+    /// of <c>state.id</c> may change; the SCID is immutable for the life of the DID.
+    /// </summary>
+    private static void ValidateStateScidConsistency(LogEntry entry, string scid, int version)
+    {
+        var stateId = entry.State.Id.Value;
+        if (string.IsNullOrEmpty(stateId))
+            throw new LogChainValidationException(version,
+                $"Entry {version} document has no id; every entry's state.id must carry the log's SCID.");
+
+        string entryScid;
+        try
+        {
+            entryScid = DidUrlMapper.ExtractScid(stateId);
+        }
+        catch (ArgumentException)
+        {
+            throw new LogChainValidationException(version,
+                $"Entry {version} state.id is not a valid did:webvh DID.");
+        }
+
+        if (!stateId.StartsWith("did:webvh:", StringComparison.Ordinal)
+            || !string.Equals(entryScid, scid, StringComparison.Ordinal))
+        {
+            throw new LogChainValidationException(version,
+                $"Entry {version} state.id SCID does not match the log's SCID.");
+        }
     }
 
     /// <summary>

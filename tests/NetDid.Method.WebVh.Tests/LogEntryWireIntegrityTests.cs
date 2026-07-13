@@ -82,40 +82,8 @@ public sealed class LogEntryWireIntegrityTests
         var (method, httpClient, signer) = CreateMethodAndSigner();
         var created = await CreateAsync(method, signer);
         var did = created.Did.Value;
-        var updated = await method.UpdateAsync(did, new DidWebVhUpdateOptions
-        {
-            CurrentLogContent = Encoding.UTF8.GetBytes(
-                (string)created.Artifacts![DidWebVhArtifacts.DidJsonl]),
-            SigningKey = signer
-        });
-        var lines = ((string)updated.Artifacts![DidWebVhArtifacts.DidJsonl]).Split('\n');
-        lines.Should().HaveCount(2);
-
-        var previousVersionId = JsonNode.Parse(lines[0])!["versionId"]!.GetValue<string>();
-        var unsigned = JsonNode.Parse(lines[1])!.AsObject();
-        unsigned.Remove("proof");
-        unsigned["state"]!["verificationMethod"]![0]!["foreignExtension"] =
-            new JsonObject { ["policy"] = "preserved" };
-
-        // did:webvh hashes an update with its versionId temporarily set to the previous full
-        // versionId, then publishes the resulting hash in the update's actual versionId.
-        unsigned["versionId"] = previousVersionId;
-        var entryHash = ScidGenerator.ComputeEntryHash(unsigned.ToJsonString());
-        unsigned["versionId"] = $"2-{entryHash}";
-
-        using var unsignedDocument = JsonDocument.Parse(unsigned.ToJsonString());
-        var verificationMethod =
-            $"did:key:{signer.MultibasePublicKey}#{signer.MultibasePublicKey}";
-        var secured = await new DataIntegrityProofPipeline().AddProofAsync(
-            unsignedDocument.RootElement,
-            new DataIntegrityProof
-            {
-                Cryptosuite = EddsaJcs2022Cryptosuite.CryptosuiteName,
-                VerificationMethod = verificationMethod,
-                ProofPurpose = "assertionMethod"
-            },
-            signer);
-        var foreignLog = $"{lines[0]}\n{secured.GetRawText()}";
+        var foreignLog = await BuildLogWithSignedNestedStateExtensionAsync(
+            method, did, created, signer);
         httpClient.SetLogResponse(
             DidUrlMapper.MapToLogUrl(did), Encoding.UTF8.GetBytes(foreignLog));
 
@@ -146,6 +114,62 @@ public sealed class LogEntryWireIntegrityTests
             .Split('\n')[1]
             .Should().Contain("foreignExtension",
                 "Deactivate must preserve fetched prior entries instead of reducing their state model");
+    }
+
+    [Fact]
+    public async Task Issue101_PreserveModeUpdate_CarriesSignedNestedStateExtensionIntoNewHead()
+    {
+        var (method, httpClient, signer) = CreateMethodAndSigner();
+        var created = await CreateAsync(method, signer);
+        var did = created.Did.Value;
+        var foreignLog = await BuildLogWithSignedNestedStateExtensionAsync(
+            method, did, created, signer);
+
+        // NewDocument == null promises "the previous document is preserved" — the new signed
+        // head must republish the previous state verbatim, not a reduced typed-model
+        // reconstruction that silently erases signed extension members.
+        var updated = await method.UpdateAsync(did, new DidWebVhUpdateOptions
+        {
+            CurrentLogContent = Encoding.UTF8.GetBytes(foreignLog),
+            SigningKey = signer
+        });
+
+        var updatedLog = (string)updated.Artifacts![DidWebVhArtifacts.DidJsonl];
+        var lines = updatedLog.Split('\n');
+        lines.Should().HaveCount(3);
+        var previousState = JsonNode.Parse(lines[1])!["state"]!.ToJsonString();
+        var headState = JsonNode.Parse(lines[2])!["state"]!.ToJsonString();
+        headState.Should().Be(previousState,
+            "a preserve-mode update must carry the previous signed document into the new head");
+
+        httpClient.SetLogResponse(
+            DidUrlMapper.MapToLogUrl(did), Encoding.UTF8.GetBytes(updatedLog));
+        var resolved = await method.ResolveAsync(did);
+        resolved.ResolutionMetadata.Error.Should().BeNull();
+        resolved.DidDocument.Should().NotBeNull();
+    }
+
+    [Fact]
+    public async Task Issue101_Deactivate_HeadRemainsMinimalDocumentByDesign()
+    {
+        // Deactivation intentionally publishes a minimal final document; it is not a
+        // preserve-mode update and must not start carrying prior-state extensions.
+        var (method, _, signer) = CreateMethodAndSigner();
+        var created = await CreateAsync(method, signer);
+        var did = created.Did.Value;
+        var foreignLog = await BuildLogWithSignedNestedStateExtensionAsync(
+            method, did, created, signer);
+
+        var deactivated = await method.DeactivateAsync(did, new DidWebVhDeactivateOptions
+        {
+            CurrentLogContent = Encoding.UTF8.GetBytes(foreignLog),
+            SigningKey = signer
+        });
+
+        var head = JsonNode.Parse(
+            ((string)deactivated.Artifacts![DidWebVhArtifacts.DidJsonl]).Split('\n')[^1])!;
+        head["state"]!["id"]!.GetValue<string>().Should().Be(did);
+        head["state"]!.ToJsonString().Should().NotContain("foreignExtension");
     }
 
     [Fact]
@@ -180,6 +204,50 @@ public sealed class LogEntryWireIntegrityTests
             Domain = "example.com",
             UpdateKey = signer
         });
+
+    /// <summary>
+    /// Builds a two-entry log whose second entry is genuinely signed and carries a nested
+    /// verification-method extension member that the typed model does not surface
+    /// (<c>foreignExtension</c>), simulating a conforming foreign controller's document.
+    /// </summary>
+    private static async Task<string> BuildLogWithSignedNestedStateExtensionAsync(
+        DidWebVhMethod method, string did, DidCreateResult created, KeyPairSigner signer)
+    {
+        var updated = await method.UpdateAsync(did, new DidWebVhUpdateOptions
+        {
+            CurrentLogContent = Encoding.UTF8.GetBytes(
+                (string)created.Artifacts![DidWebVhArtifacts.DidJsonl]),
+            SigningKey = signer
+        });
+        var lines = ((string)updated.Artifacts![DidWebVhArtifacts.DidJsonl]).Split('\n');
+        lines.Should().HaveCount(2);
+
+        var previousVersionId = JsonNode.Parse(lines[0])!["versionId"]!.GetValue<string>();
+        var unsigned = JsonNode.Parse(lines[1])!.AsObject();
+        unsigned.Remove("proof");
+        unsigned["state"]!["verificationMethod"]![0]!["foreignExtension"] =
+            new JsonObject { ["policy"] = "preserved" };
+
+        // did:webvh hashes an update with its versionId temporarily set to the previous full
+        // versionId, then publishes the resulting hash in the update's actual versionId.
+        unsigned["versionId"] = previousVersionId;
+        var entryHash = ScidGenerator.ComputeEntryHash(unsigned.ToJsonString());
+        unsigned["versionId"] = $"2-{entryHash}";
+
+        using var unsignedDocument = JsonDocument.Parse(unsigned.ToJsonString());
+        var verificationMethod =
+            $"did:key:{signer.MultibasePublicKey}#{signer.MultibasePublicKey}";
+        var secured = await new DataIntegrityProofPipeline().AddProofAsync(
+            unsignedDocument.RootElement,
+            new DataIntegrityProof
+            {
+                Cryptosuite = EddsaJcs2022Cryptosuite.CryptosuiteName,
+                VerificationMethod = verificationMethod,
+                ProofPurpose = "assertionMethod"
+            },
+            signer);
+        return $"{lines[0]}\n{secured.GetRawText()}";
+    }
 
     private static byte[] ReplaceOnce(byte[] source, byte[] oldValue, byte[] newValue)
     {

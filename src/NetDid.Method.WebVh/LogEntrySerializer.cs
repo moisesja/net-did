@@ -23,6 +23,21 @@ public static class LogEntrySerializer
     // in-place mutation through public nested collections before raw-backed serialization.
     private static readonly ConditionalWeakTable<LogEntry, WireEntry> WireEntries = new();
 
+    // State-level provenance, keyed by the parsed DidDocument reference. A freshly built entry
+    // that carries a parsed state — a preserve-mode update's new head — must republish that
+    // state verbatim: the typed model drops signed nested members it does not surface, and the
+    // new head is hashed/signed over whatever is emitted here, so a modeled rewrite would
+    // silently erase them. Guard rules: a `with`-cloned document is a new reference with no
+    // provenance (modeled fallback), and any model-visible change invalidates the fingerprint
+    // (modeled fallback). The fingerprint is over the lossy modeled serialization, so a
+    // model-invisible in-place change (a nested raw-only member, or replacing a list element
+    // with a model-equal one) is NOT detected and stale raw would be re-emitted — but that is
+    // unreachable through a signed path: the only WireStates-registered document that reaches a
+    // signed head is the internal previousEntry.State parsed from the fetched log (no caller
+    // reference), and a caller-supplied NewDocument is deep-copied by
+    // DidWebVhMethod.SnapshotDocument, which produces a fresh unregistered reference.
+    private static readonly ConditionalWeakTable<DidDocument, WireState> WireStates = new();
+
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
@@ -135,11 +150,17 @@ public static class LogEntrySerializer
         writer.WritePropertyName("parameters");
         WriteParameters(writer, entry.Parameters);
 
-        // state — the DID Document, serialized as JSON-LD
+        // state — a parsed document with current provenance re-emits its wire JSON verbatim;
+        // otherwise the DID Document is serialized as JSON-LD from the typed model.
         writer.WritePropertyName("state");
-        var stateJson = DidDocumentSerializer.Serialize(entry.State, DidContentTypes.JsonLd);
-        using (var stateDoc = JsonDocument.Parse(stateJson))
+        if (TryGetCurrentWireState(entry.State, out var stateWireJson))
         {
+            writer.WriteRawValue(stateWireJson);
+        }
+        else
+        {
+            var stateJson = DidDocumentSerializer.Serialize(entry.State, DidContentTypes.JsonLd);
+            using var stateDoc = JsonDocument.Parse(stateJson);
             stateDoc.RootElement.WriteTo(writer);
         }
 
@@ -213,6 +234,24 @@ public static class LogEntrySerializer
         var modeled = WriteModeledEntry(entry, includeProof: true, versionIdOverride: null);
         return SHA256.HashData(Encoding.UTF8.GetBytes(modeled));
     }
+
+    private static bool TryGetCurrentWireState(DidDocument state, out string stateWireJson)
+    {
+        stateWireJson = null!;
+        if (!WireStates.TryGetValue(state, out var wireState))
+            return false;
+
+        var currentFingerprint = ComputeModeledStateFingerprint(state);
+        if (!currentFingerprint.AsSpan().SequenceEqual(wireState.ModeledFingerprint))
+            return false;
+
+        stateWireJson = wireState.RawJson;
+        return true;
+    }
+
+    private static byte[] ComputeModeledStateFingerprint(DidDocument state)
+        => SHA256.HashData(Encoding.UTF8.GetBytes(
+            DidDocumentSerializer.Serialize(state, DidContentTypes.JsonLd)));
 
     private static void WriteParameters(Utf8JsonWriter writer, LogEntryParameters parameters)
     {
@@ -356,9 +395,13 @@ public static class LogEntrySerializer
             }
             var parameters = ParseParameters(root.GetProperty("parameters"));
 
-            // Parse state as a DID Document
+            // Parse state as a DID Document, retaining its wire JSON as state-level provenance
+            // (registered before the whole-entry provenance below so the entry fingerprint is
+            // computed over the same raw-state-backed output it will be compared against).
             var stateJson = root.GetProperty("state").GetRawText();
             var state = DidDocumentSerializer.Deserialize(stateJson);
+            WireStates.Add(state, new WireState(
+                stateJson, ComputeModeledStateFingerprint(state)));
 
             // Parse proof (optional here; chain validation requires one per entry). The schema
             // permits a single proof object or an array of proof objects.
@@ -596,6 +639,8 @@ public static class LogEntrySerializer
     }
 
     private sealed record WireEntry(string RawJson, byte[] ModeledFingerprint);
+
+    private sealed record WireState(string RawJson, byte[] ModeledFingerprint);
 
     private static string RequireProofString(JsonElement proof, string name)
     {

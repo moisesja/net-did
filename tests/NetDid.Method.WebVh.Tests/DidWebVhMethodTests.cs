@@ -2739,6 +2739,58 @@ public class DidWebVhMethodTests
     }
 
     [Fact]
+    public async Task Issue101_Update_DynamicNewDocumentCollection_PublishedLogMatchesSignedSnapshot()
+    {
+        // A NewDocument whose collections yield different contents per enumeration must not be
+        // able to desynchronize the entry hash, the signed bytes, and the published log —
+        // hashing, signing, publication, and the reported document must all reflect a single
+        // snapshot taken at the trust boundary.
+        var (method, httpClient) = CreateMethod();
+        var (did, log, signer) = await CreateWebVhDidAsync(method);
+
+        var firstService = new Service
+        {
+            Id = "#service-first",
+            Type = "ExampleService",
+            ServiceEndpoint = ServiceEndpointValue.FromUri("https://example.com/first")
+        };
+        var laterService = new Service
+        {
+            Id = "#service-later",
+            Type = "ExampleService",
+            ServiceEndpoint = ServiceEndpointValue.FromUri("https://example.com/later")
+        };
+        var newDocument = new DidDocument
+        {
+            Id = new Did(did),
+            Service = new FlippingList<Service>([firstService], [laterService])
+        };
+
+        var updateResult = await method.UpdateAsync(did, new DidWebVhUpdateOptions
+        {
+            CurrentLogContent = Encoding.UTF8.GetBytes(log),
+            SigningKey = signer,
+            NewDocument = newDocument
+        });
+
+        // The published log verifies end-to-end and carries the first (snapshot) read.
+        var updatedLog = (string)updateResult.Artifacts![DidWebVhArtifacts.DidJsonl];
+        httpClient.SetLogResponse(
+            DidUrlMapper.MapToLogUrl(did), Encoding.UTF8.GetBytes(updatedLog));
+        var resolved = await method.ResolveAsync(did);
+
+        resolved.ResolutionMetadata.Error.Should().BeNull(
+            "the published bytes must be the same single snapshot that was hashed and signed");
+        resolved.DidDocument!.Service.Should().ContainSingle()
+            .Which.Id.Should().Be("#service-first");
+
+        // The reported document is the private snapshot, not the caller's live instance.
+        updateResult.DidDocument.Should().NotBeSameAs(newDocument);
+        updateResult.DidDocument!.Service.Should().ContainSingle()
+            .Which.Id.Should().Be("#service-first");
+    }
+
+    [Fact]
     public async Task Issue91_Update_EffectiveUpdateKeys_MatchesValidatedChain()
     {
         // Writer/reader parity: the reported set must equal what the chain validator derives as
@@ -3225,8 +3277,10 @@ public class DidWebVhMethodTests
         var victimDid = victim.Did.Value;
 
         // Attacker crafts a validly-signed log whose latest entry claims the victim DID and whose
-        // authority is the attacker's own key. RequireAppendableLogForDid's State.Id check passes;
-        // the genesis-SCID binding must reject it.
+        // authority is the attacker's own key. Such a log is internally SCID-inconsistent
+        // (state.id carries the victim's SCID, parameters.scid the forge's own hash), so the
+        // per-entry identity rule (#101) rejects it during chain validation — before the
+        // genesis-SCID binding that used to catch it (issue #82) is even reached.
         var attackerKey = CreateEd25519Signer();
         var forgedLog = await ForgeGenesisClaimingDidAsync(victimDid, attackerKey);
 
@@ -3237,7 +3291,7 @@ public class DidWebVhMethodTests
             NewDocument = new DidDocument { Id = new Did(victimDid) }
         });
 
-        await act.Should().ThrowAsync<ArgumentException>().WithMessage("*genesis SCID*");
+        await act.Should().ThrowAsync<LogChainValidationException>().WithMessage("*SCID*");
     }
 
     [Fact]
@@ -3263,6 +3317,8 @@ public class DidWebVhMethodTests
             SigningKey = attackerKey
         });
 
-        await act.Should().ThrowAsync<ArgumentException>().WithMessage("*genesis SCID*");
+        // The forged log is internally SCID-inconsistent, so the per-entry identity rule
+        // (#101) rejects it during chain validation (see the Update variant above).
+        await act.Should().ThrowAsync<LogChainValidationException>().WithMessage("*SCID*");
     }
 }

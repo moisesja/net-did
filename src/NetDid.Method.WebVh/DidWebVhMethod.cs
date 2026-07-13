@@ -8,6 +8,7 @@ using DataProofsDotnet.DataIntegrity;
 using NetDid.Core;
 using NetCrypto;
 using NetDid.Core.Model;
+using NetDid.Core.Serialization;
 using NetDid.Method.WebVh.Model;
 
 namespace NetDid.Method.WebVh;
@@ -350,10 +351,11 @@ public sealed class DidWebVhMethod : DidMethodBase
             {
                 try
                 {
+                    // Per-entry state.id SCID consistency is enforced inside chain validation,
+                    // so a tail claiming a foreign identity fails here and is not asserted.
                     var fullPerEntryParams = _chainValidator.ValidateChainWithPerEntryParams(
                         entries, entries.Count);
-                    if (fullPerEntryParams[^1].Deactivated == true &&
-                        HasConsistentScid(entries, entries[0].Parameters.Scid))
+                    if (fullPerEntryParams[^1].Deactivated == true)
                     {
                         var fullChainWitnessesValid = true;
                         if (WitnessValidator.RequiresWitness(fullPerEntryParams, entries.Count - 1))
@@ -468,7 +470,17 @@ public sealed class DidWebVhMethod : DidMethodBase
         // witness thresholds, are orthogonal — a witness-policy update still needs matching proofs
         // published for the resulting log to resolve.)
         RequireAppendableLogForDid(entries, effectiveParams, did);
-        if (updateOptions.NewDocument is not null && updateOptions.NewDocument.Id.Value != did)
+
+        // Snapshot the caller's document exactly once at the trust boundary. The document is
+        // read by validation, entry hashing, signing (across an await), the published log, and
+        // the compatibility artifact; a mutable or dynamic collection inside a live caller
+        // instance could otherwise present different contents to each stage, publishing bytes
+        // that diverge from the hashed and signed bytes. Every check below — including the Id
+        // binding — runs against this private copy.
+        var snapshotDocument = updateOptions.NewDocument is { } callerDocument
+            ? SnapshotDocument(callerDocument)
+            : null;
+        if (snapshotDocument is not null && snapshotDocument.Id.Value != did)
             throw new ArgumentException(
                 $"NewDocument.Id must equal the DID being updated ('{did}').", nameof(options));
 
@@ -521,8 +533,9 @@ public sealed class DidWebVhMethod : DidMethodBase
 
         var previousEntry = entries[^1];
 
-        // Build updated document
-        var newDocument = updateOptions.NewDocument ?? previousEntry.State;
+        // Build updated document: the caller's snapshot, or the previous parsed document
+        // (whose wire provenance carries signed nested members into the new head verbatim).
+        var newDocument = snapshotDocument ?? previousEntry.State;
 
         RequireValidWitnessPolicy(newParams.Witness, nameof(options));
 
@@ -851,6 +864,18 @@ public sealed class DidWebVhMethod : DidMethodBase
     }
 
     /// <summary>
+    /// Deep-copies a caller-supplied DID Document through one JSON-LD serialization round-trip,
+    /// so hashing, signing, publication, and the reported result all observe a single read of
+    /// the caller's (possibly mutable or dynamic) collections. The round-trip is the same
+    /// projection publication applies — the log entry's <c>state</c> is always emitted as
+    /// JSON-LD — so it changes no published bytes; a document without an explicit
+    /// <c>@context</c> materializes the same default context publication would add.
+    /// </summary>
+    private static DidDocument SnapshotDocument(DidDocument document)
+        => DidDocumentSerializer.Deserialize(
+            DidDocumentSerializer.Serialize(document, DidContentTypes.JsonLd));
+
+    /// <summary>
     /// Copies a caller-supplied witness policy so its entry list cannot change between
     /// validation and serialization. <see cref="WitnessEntry"/> itself is sealed with init-only
     /// members, so copying the list suffices; the internal wire-presence flags are preserved so
@@ -916,32 +941,6 @@ public sealed class DidWebVhMethod : DidMethodBase
         if (!WitnessConfigEquals(before.Witness, after.Witness))
             return true;
         return false;
-    }
-
-    private static bool HasConsistentScid(
-        IReadOnlyList<LogEntry> entries,
-        string? expectedScid)
-    {
-        if (string.IsNullOrEmpty(expectedScid))
-            return false;
-
-        foreach (var entry in entries)
-        {
-            try
-            {
-                if (!string.Equals(
-                        DidUrlMapper.ExtractScid(entry.State.Id.Value),
-                        expectedScid,
-                        StringComparison.Ordinal))
-                    return false;
-            }
-            catch
-            {
-                return false;
-            }
-        }
-
-        return true;
     }
 
     /// <summary>Order-insensitive, ordinal set equality; a null list is treated as empty.</summary>

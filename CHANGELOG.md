@@ -9,6 +9,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Preserve-mode did:webvh updates carry the previous document verbatim into the new signed
+  entry** (#101). An `UpdateAsync` with `NewDocument == null` previously rebuilt the appended head
+  from the reduced typed model, silently dropping signed nested document members the model does not
+  surface (for example a member inside a `verificationMethod` object) before hashing and signing the
+  reduced state. The preserved state is now re-emitted from its retained wire JSON, so signed nested
+  members survive into the new head. A state-level provenance fingerprint falls back to modeled
+  serialization for a deliberately changed document, so a genuine consumer edit still wins over stale
+  wire bytes.
+- **A mutable or dynamic `NewDocument` can no longer diverge the published log from the signed
+  bytes** (#101). `UpdateCoreAsync` now deep-copies the caller's `DidWebVhUpdateOptions.NewDocument`
+  exactly once at the trust boundary (one JSON-LD round-trip). Entry hashing, signing across the
+  async boundary, the published `did.jsonl`, the `did.json` compatibility artifact, and
+  `DidUpdateResult.DidDocument` all observe that single private snapshot, so a caller-supplied
+  collection that returns different contents per enumeration cannot publish bytes that differ from
+  what was hashed and signed (the same trust-boundary treatment already applied to parameter
+  collections). Observable change: `DidUpdateResult.DidDocument` is now the private snapshot, not the
+  caller's supplied instance.
+- **Resolution enforces the SCID identity of every validated entry, not just the target** (#101).
+  did:webvh v1.0 requires the SCID segment of `state.id` to be byte-for-byte identical to the DID's
+  SCID and the first entry's `parameters.scid` "for every entry's `state.id`, not just the first,"
+  independently of portability. `LogChainValidator` now checks this for the genesis and every
+  subsequent entry it validates (only the host/path portion may change under portability), so a
+  genuinely signed log whose intermediate or genesis entry claims a foreign SCID — or omits
+  `state.id` — is rejected as `invalidDidLog`. Historical resolution still validates only the
+  selected prefix, so a corrupt later tail does not revoke an already-established version.
+  **Compatibility**: Update/Deactivate on an SCID-inconsistent (e.g. forged) log now throw
+  `LogChainValidationException` during chain validation rather than the previous `ArgumentException`;
+  both still reject the log.
 - **did:webvh entries with invalid or unauthorized extra controller proofs are now rejected**
   (#101). `LogChainValidator` previously accepted an entry as soon as one proof verified from an
   active update key, silently skipping every other supplied proof; did:webvh v1.0 requires
