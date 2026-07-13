@@ -311,7 +311,7 @@ Console.WriteLine(resolved.DocumentMetadata!.VersionId);  // "1-z6Rk8Rx..."
 
 Resolution fetches the `did.jsonl` log over HTTPS, validates the hash chain and Data Integrity Proofs, and returns the latest DID Document.
 
-Every supplied controller proof on an entry must pass validation (type `DataIntegrityProof`, cryptosuite `eddsa-jcs-2022`, purpose `assertionMethod`, valid signature, signer in the active `updateKeys`); one authorized signer authorizes the entry, and any invalid or unauthorized extra proof rejects the log as `invalidDidLog` — controller proofs have no threshold semantics. The wire `proof` may be a single object or an array, `created` is optional, and entries exposed via `DidResolutionOptions.IncludeLog` (`Artifacts["log.entries"]`) carry only fully validated proofs, with each proof's verbatim wire JSON available as `DataIntegrityProofValue.RawJson`.
+Every supplied controller proof on an entry must pass validation (type `DataIntegrityProof`, cryptosuite `eddsa-jcs-2022`, purpose `assertionMethod`, valid signature, signer in the active `updateKeys`); one authorized signer authorizes the entry, and any invalid or unauthorized extra proof rejects the log as `invalidDidLog` — controller proofs have no threshold semantics. The wire `proof` may be a single object or an array and `created` is optional. A controller proof is restricted to that profile: a proof carrying other Data Integrity features (`id`, `expires`, `previousProof`, `domain`, `challenge`, `@context`, extensions) is rejected as unsupported, and duplicate JSON members in an entry are rejected — so entries exposed via `DidResolutionOptions.IncludeLog` (`Artifacts["log.entries"]`) carry only fully validated proofs.
 
 ### Update (append to log)
 

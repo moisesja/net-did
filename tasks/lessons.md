@@ -31,6 +31,34 @@
   pre-rotation entry with the CURRENT entry's own updateKeys — the prior-keys rule only
   holds when pre-rotation is inactive. NetDid deviated and my #91 evidence contract
   ("keys authorized to sign the next entry") repeated the deviation as a promise (#93).
+- `JsonDocument.Parse` (default options) ACCEPTS duplicate JSON members and keeps the LAST one.
+  For a spec-governed format where "every supplied X is validated" is the security contract, a
+  decoy duplicate (`"proof":[{bogus}],"proof":[valid]`) smuggles an unvalidated member past the
+  check. Parse untrusted document JSON at the trust boundary with
+  `new JsonDocumentOptions { AllowDuplicateProperties = false }` (recursive; catches nested dups)
+  and map the `JsonException` to the format's invalid-content error. (Issue #101 PR review.)
+- Do NOT "preserve and accept" arbitrary members of a signed structure you do not evaluate in the
+  name of interop. Accepting a Data Integrity proof carrying `previousProof`/`expires`/`id`/`domain`
+  you never resolve/enforce is a FALSE validation claim (dangling chain refs, elapsed expiry pass
+  silently). For a narrow method profile (did:webvh controller proof = type/cryptosuite/
+  verificationMethod/created?/proofPurpose/proofValue), REJECT any out-of-profile member. Then the
+  modeled fields are the whole proof, verification is byte-faithful, and no raw-JSON carry is
+  needed. "Fully interoperable" means interoperating with what the method actually emits, not
+  accepting every superset the base spec permits. (Issue #101 PR review.)
+- A dedup/identity key that joins nullable strings is unsound: `Created ?? ""` folds absent
+  (`null`) and present-empty (`""`) — DISTINCT signed configs — to one key, and a shared separator
+  can be injected by field contents. Use a value TUPLE
+  (`HashSet<(string, string, string, string?, string, string)>`) so components compare
+  independently and `null != ""`. A string-join identity over attacker-controlled fields is a
+  collision waiting to skip a distinct invalid item behind a valid one. (Issue #101 PR review, F1.)
+- An arbitrary count cap (e.g. "max 100 proofs") that rejects otherwise schema-valid input is a
+  baseless compatibility break, not a DoS control. Bound work by structure instead: stop at the
+  first failing item, and dedup byte-identical items (verify once). With deterministic Ed25519
+  (one key ⇒ one valid signature over a fixed message), distinct passing proofs ≤ active keys, so
+  no cap is needed and no conforming log is rejected on count. (Issue #101 PR review, finding 3.)
+- After a reworked fix that materially changes the design (removing a field, adding a trust check),
+  re-run the FULL adversarial review on the NEW surface — do not assume the prior clean verdict
+  carries over. The rework's own new dedup introduced a fresh soundness bug the second pass caught.
 - Treat caller-supplied interface-typed collections (IReadOnlyList<T> etc.) as adversarial
   code at trust boundaries: an implementation can return different contents per
   enumeration (TOCTOU). Snapshot ONCE at entry and use the private copy for validation,

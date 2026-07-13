@@ -1081,14 +1081,27 @@ by an active update key — per the spec's Authorized Keys rule, "Resolvers MUST
 whose proof fails any check." Controller proofs do not use threshold semantics (that exception is
 witness-specific). The official log-entry schema permits `proof` as a single proof object or an
 array; NetDid parses both (normalizing to a list and re-emitting the array form) and treats
-`created` as optional per that schema. Proof members outside NetDid's model (schema-permitted
-`id`/`expires` and extensions) are covered by the `eddsa-jcs-2022` signature, so parsed proofs
-retain their verbatim wire JSON (`DataIntegrityProofValue.RawJson`) both for verification and for
-byte-faithful re-serialization when Update/Deactivate republish a fetched log. Malformed proof
-content in a fetched log MUST be reported as `invalidDidLog`, not as `notFound`. Because every
-supplied proof is now verified (each re-canonicalizes the entry), a resolver bounds the proofs per
-entry as a resource guard (NetDid: 100, far above any real entry's single proof); an entry
-exceeding it is rejected as `invalidDidLog`.
+`created` as optional per that schema.
+
+A did:webvh controller proof is restricted to the profile members `type`, `cryptosuite`,
+`verificationMethod`, `created` (optional), `proofPurpose`, and `proofValue`. A proof carrying any
+other Data Integrity feature — `id`, `expires`, `previousProof` (proof chains), `domain`,
+`challenge`, `@context`, or extensions — is rejected as unsupported, because did:webvh does not
+define these for controller proofs and the resolver does not evaluate them; accepting them would
+claim a validation (dangling-reference resolution, an expiry policy, id-as-URL) that is not
+performed. Because every accepted member is one the resolver validates, verification over the
+modeled fields is byte-faithful to the signed proof configuration. To keep universal validation
+sound the parser also rejects duplicate JSON members anywhere in a fetched entry
+(`AllowDuplicateProperties = false`): `System.Text.Json` keeps the last of a duplicate pair, so a
+decoy `proof` beside a valid one would otherwise be silently dropped. Malformed proof content in a
+fetched log MUST be reported as `invalidDidLog`, not as `notFound`.
+
+Every supplied proof is verified, and each verification re-canonicalizes the entry, so validation
+work is bounded rather than capped: verification stops at the first failing proof; byte-identical
+duplicate proofs are verified once; and because `eddsa-jcs-2022` (Ed25519) signatures are
+deterministic, an active key produces exactly one valid signature over a given entry, so the number
+of *distinct* proofs that can pass is at most the number of active update keys. No arbitrary
+per-entry proof count is imposed, so a conforming multi-proof log is never rejected on count.
 
 `versionTime` is part of the hash- and proof-protected entry. NetDid formats it in UTC with
 the invariant Gregorian calendar, preserving fractional seconds when present while retaining

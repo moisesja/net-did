@@ -72,9 +72,7 @@ public class LogChainValidatorMultiProofTests
         LogEntry entry,
         KeyPair keyPair,
         string proofPurpose = "assertionMethod",
-        string? created = null,
-        string? expires = null,
-        bool includeRawJson = false)
+        string? created = null)
     {
         var vm = $"did:key:{keyPair.MultibasePublicKey}#{keyPair.MultibasePublicKey}";
         var proofOptions = new DataIntegrityProof
@@ -82,7 +80,6 @@ public class LogChainValidatorMultiProofTests
             Cryptosuite = EddsaJcs2022Cryptosuite.CryptosuiteName,
             VerificationMethod = vm,
             Created = created,
-            Expires = expires,
             ProofPurpose = proofPurpose,
         };
 
@@ -98,10 +95,7 @@ public class LogChainValidatorMultiProofTests
             VerificationMethod = proof.VerificationMethod!,
             Created = proof.Created,
             ProofPurpose = proof.ProofPurpose!,
-            ProofValue = proof.ProofValue!,
-            RawJson = includeRawJson
-                ? JsonSerializer.Serialize(proof, DataProofsJsonOptions.Default)
-                : null
+            ProofValue = proof.ProofValue!
         };
     }
 
@@ -494,7 +488,7 @@ public class LogChainValidatorMultiProofTests
     }
 
     // ================================================================
-    // Interop: optional created, foreign proof members, round-trip
+    // Interop: optional created (schema-permitted)
     // ================================================================
 
     [Fact]
@@ -515,85 +509,141 @@ public class LogChainValidatorMultiProofTests
         result.DidDocument.Should().NotBeNull();
     }
 
-    [Fact]
-    public async Task Issue101_ProofWithSignedExtraMember_Resolves()
+    // ================================================================
+    // Profile narrowing: proofs carrying features the resolver does
+    // not evaluate are rejected, not silently accepted (PR #102 review)
+    // ================================================================
+
+    [Theory]
+    [InlineData("previousProof", "urn:missing-proof")]
+    [InlineData("expires", "2000-01-01T00:00:00Z")]
+    [InlineData("id", "not a url")]
+    [InlineData("domain", "example.com")]
+    [InlineData("challenge", "abc123")]
+    [InlineData("@context", "https://w3id.org/security/data-integrity/v2")]
+    public async Task Issue101_ProofWithUnsupportedMember_ResolvesInvalidDidLog(
+        string member, string value)
     {
-        // A conforming foreign proof may carry schema-permitted members NetDid does not
-        // model (expires). eddsa-jcs-2022 signs the whole proof configuration, so the
-        // verifier must reconstruct it from the wire bytes, not from a lossy model.
-        var (kpA, signerA) = CreateEd25519();
-        var (did, entries, _) = await CreateLogAsync(signerA);
+        // A proof carrying a Data Integrity feature outside the did:webvh controller-proof
+        // profile is rejected. Accepting it would claim a validation the resolver never
+        // performs (e.g. dangling previousProof, expiry policy, id-as-URL). The value is added
+        // at the JSON level so it participates in the wire proof the parser must reject.
+        var (_, signerA) = CreateEd25519();
+        var (did, _, jsonl) = await CreateLogAsync(signerA);
 
-        var foreignProof = await SignEntryAsync(
-            entries[0], kpA,
-            created: entries[0].Proof![0].Created,
-            expires: "2099-12-31T23:59:59Z",
-            includeRawJson: true);
-        entries[0] = entries[0] with { Proof = [foreignProof] };
+        var mutated = MutateGenesisLine(jsonl, node =>
+            node["proof"]![0]!.AsObject()[member] = value);
 
-        var log = SerializeLog(entries);
-        Encoding.UTF8.GetString(log).Should().Contain("\"expires\"");
+        var parse = () => LogEntrySerializer.ParseJsonLines(Encoding.UTF8.GetBytes(mutated));
+        parse.Should().Throw<FormatException>().WithMessage("*unsupported member*");
 
-        var result = await ResolveLogAsync(did, log);
+        var result = await ResolveLogAsync(did, Encoding.UTF8.GetBytes(mutated));
+        result.DidDocument.Should().BeNull();
+        result.ResolutionMetadata.Error.Should().Be("invalidDidLog");
+    }
 
-        result.ResolutionMetadata.Error.Should().BeNull();
-        result.DidDocument.Should().NotBeNull();
+    // ================================================================
+    // Duplicate JSON members cannot smuggle an unvalidated proof (PR #102 review, finding 1)
+    // ================================================================
+
+    [Fact]
+    public async Task Issue101_DuplicateTopLevelProofMember_ResolvesInvalidDidLog()
+    {
+        // .NET keeps the last of a duplicate pair. A leading decoy "proof" beside the valid
+        // trailing one is an extra supplied proof that was never validated — the exact
+        // invariant this fix establishes. Duplicate members must reject the whole entry.
+        var (_, signerA) = CreateEd25519();
+        var (did, _, jsonl) = await CreateLogAsync(signerA);
+
+        var line = jsonl.Split('\n')[0];
+        // Inject a decoy proof member ahead of the existing one via raw text. "proof": is the
+        // top-level member (distinct from "proofPurpose"/"proofValue"), so it occurs once.
+        var doctored = line.Replace(
+            "\"proof\":", "\"proof\":[{\"type\":\"bogus\"}],\"proof\":");
+
+        var parse = () => LogEntrySerializer.ParseJsonLines(Encoding.UTF8.GetBytes(doctored));
+        parse.Should().Throw<FormatException>();
+
+        var result = await ResolveLogAsync(did, Encoding.UTF8.GetBytes(doctored));
+        result.DidDocument.Should().BeNull();
+        result.ResolutionMetadata.Error.Should().Be("invalidDidLog");
     }
 
     [Fact]
-    public async Task Issue101_Update_PreservesForeignProofMembers()
+    public async Task Issue101_DuplicateMemberInsideProofObject_ResolvesInvalidDidLog()
     {
-        // Re-serializing a fetched log during update must not strip unmodeled proof
-        // members — that would corrupt the foreign proof for every other resolver.
-        var (kpA, signerA) = CreateEd25519();
-        var (did, entries, _) = await CreateLogAsync(signerA);
+        var (_, signerA) = CreateEd25519();
+        var (did, _, jsonl) = await CreateLogAsync(signerA);
 
-        var foreignProof = await SignEntryAsync(
-            entries[0], kpA,
-            created: entries[0].Proof![0].Created,
-            expires: "2099-12-31T23:59:59Z",
-            includeRawJson: true);
-        entries[0] = entries[0] with { Proof = [foreignProof] };
-        var foreignLog = SerializeLog(entries);
+        var line = jsonl.Split('\n')[0];
+        // Duplicate proofPurpose inside the proof object with a non-conforming last value.
+        var doctored = line.Replace(
+            "\"proofPurpose\":\"assertionMethod\"",
+            "\"proofPurpose\":\"assertionMethod\",\"proofPurpose\":\"authentication\"");
 
+        var parse = () => LogEntrySerializer.ParseJsonLines(Encoding.UTF8.GetBytes(doctored));
+        parse.Should().Throw<FormatException>();
+
+        var result = await ResolveLogAsync(did, Encoding.UTF8.GetBytes(doctored));
+        result.DidDocument.Should().BeNull();
+        result.ResolutionMetadata.Error.Should().Be("invalidDidLog");
+    }
+
+    // ================================================================
+    // Update/Deactivate surface malformed proof content as FormatException (finding 4)
+    // ================================================================
+
+    [Fact]
+    public async Task Issue101_Update_OnMalformedProofLog_ThrowsFormatException()
+    {
+        var (_, signerA) = CreateEd25519();
+        var (did, _, jsonl) = await CreateLogAsync(signerA);
+
+        var malformed = MutateGenesisLine(jsonl, node => node["proof"]![0]!.AsObject().Remove("proofValue"));
         var (method, _) = CreateMethod();
-        var updateResult = await method.UpdateAsync(did, new DidWebVhUpdateOptions
+
+        var act = () => method.UpdateAsync(did, new DidWebVhUpdateOptions
         {
-            CurrentLogContent = foreignLog,
+            CurrentLogContent = Encoding.UTF8.GetBytes(malformed),
             SigningKey = signerA
         });
 
-        var updatedJsonl = (string)updateResult.Artifacts![DidWebVhArtifacts.DidJsonl];
-        updatedJsonl.Split('\n')[0].Should().Contain(foreignProof.RawJson!,
-            "the genesis entry's foreign proof must round-trip byte-for-byte");
+        await act.Should().ThrowAsync<FormatException>();
+    }
 
-        // The republished log must still resolve.
-        var (resolver, httpClient) = CreateMethod();
-        httpClient.SetLogResponse(
-            DidUrlMapper.MapToLogUrl(did), Encoding.UTF8.GetBytes(updatedJsonl));
-        var resolved = await resolver.ResolveAsync(did);
+    [Fact]
+    public async Task Issue101_Deactivate_OnMalformedProofLog_ThrowsFormatException()
+    {
+        var (_, signerA) = CreateEd25519();
+        var (did, _, jsonl) = await CreateLogAsync(signerA);
 
-        resolved.ResolutionMetadata.Error.Should().BeNull();
-        resolved.DidDocument.Should().NotBeNull();
+        var malformed = MutateGenesisLine(jsonl, node => node["proof"]![0]!["proofValue"] = 42);
+        var (method, _) = CreateMethod();
+
+        var act = () => method.DeactivateAsync(did, new DidWebVhDeactivateOptions
+        {
+            CurrentLogContent = Encoding.UTF8.GetBytes(malformed),
+            SigningKey = signerA
+        });
+
+        await act.Should().ThrowAsync<FormatException>();
     }
 
     // ================================================================
-    // Proof-count resource cap (adversarial-review finding A)
+    // Work is bounded: identical proofs verified once; large entry (finding 3)
     // ================================================================
 
     [Fact]
-    public async Task Issue101_ProofCountAtCap_Resolves()
+    public async Task Issue101_ManyIdenticalValidProofs_Resolves()
     {
-        // A full array of valid, authorized proofs at the ceiling still resolves — the cap is
-        // a resource guard, not a conformance rule, so it never rejects otherwise-valid logs.
+        // Removing the arbitrary count cap must not reintroduce the amplification it guarded:
+        // byte-identical proofs are verified once (dedup), so a large repeated-proof array
+        // still resolves without re-canonicalizing the entry thousands of times.
         var (_, signerA) = CreateEd25519();
         var (did, entries, _) = await CreateLogAsync(signerA);
 
         var proof = entries[0].Proof![0];
-        entries[0] = entries[0] with
-        {
-            Proof = Enumerable.Repeat(proof, LogChainValidator.MaxProofsPerEntry).ToList()
-        };
+        entries[0] = entries[0] with { Proof = Enumerable.Repeat(proof, 5000).ToList() };
 
         var result = await ResolveLogAsync(did, SerializeLog(entries));
 
@@ -602,21 +652,65 @@ public class LogChainValidatorMultiProofTests
     }
 
     [Fact]
-    public async Task Issue101_ProofCountAboveCap_ResolvesInvalidDidLog()
+    public async Task Issue101_DedupDoesNotSkipDistinctCreatedVariant_ResolvesInvalidDidLog()
     {
-        var (_, signerA) = CreateEd25519();
+        // Dedup must not collide a valid created-less proof with a distinct invalid proof that
+        // only differs by carrying created:"" (a different, and invalid, signed configuration).
+        // A joined-string identity that maps null and "" to the same key would skip the invalid
+        // proof and wrongly accept the entry (PR #102 review, adversarial finding F1).
+        var (kpA, signerA) = CreateEd25519();
         var (did, entries, _) = await CreateLogAsync(signerA);
 
-        var proof = entries[0].Proof![0];
-        entries[0] = entries[0] with
+        var validNoCreated = await SignEntryAsync(entries[0], kpA, created: null);
+        var invalidEmptyCreated = new DataIntegrityProofValue
         {
-            Proof = Enumerable.Repeat(proof, LogChainValidator.MaxProofsPerEntry + 1).ToList()
+            Type = validNoCreated.Type,
+            Cryptosuite = validNoCreated.Cryptosuite,
+            VerificationMethod = validNoCreated.VerificationMethod,
+            Created = "",                       // present-but-empty: not a valid dateTimeStamp
+            ProofPurpose = validNoCreated.ProofPurpose,
+            ProofValue = validNoCreated.ProofValue
         };
+        entries[0] = entries[0] with { Proof = [validNoCreated, invalidEmptyCreated] };
 
         var result = await ResolveLogAsync(did, SerializeLog(entries));
 
         result.DidDocument.Should().BeNull();
         result.ResolutionMetadata.Error.Should().Be("invalidDidLog");
+    }
+
+    [Fact]
+    public async Task Issue101_LargeEntryWithRepeatedProofs_Resolves()
+    {
+        // Realistically large entry (many services) with repeated proofs: dedup bounds the
+        // per-proof whole-document canonicalization work to one verification.
+        var (kpA, signerA) = CreateEd25519();
+        var (method, httpClient) = CreateMethod();
+
+        var services = Enumerable.Range(0, 200).Select(i => new Service
+        {
+            Id = $"#svc-{i}",
+            Type = "TestService",
+            ServiceEndpoint = ServiceEndpointValue.FromUri($"https://example.com/svc/{i}")
+        }).ToList();
+
+        var createResult = await method.CreateAsync(new DidWebVhCreateOptions
+        {
+            Domain = "example.com",
+            UpdateKey = signerA,
+            Services = services
+        });
+        var did = createResult.Did.Value;
+        var entries = LogEntrySerializer.ParseJsonLines(Encoding.UTF8.GetBytes(
+            (string)createResult.Artifacts![DidWebVhArtifacts.DidJsonl])).ToList();
+
+        entries[0] = entries[0] with { Proof = Enumerable.Repeat(entries[0].Proof![0], 2000).ToList() };
+        httpClient.SetLogResponse(DidUrlMapper.MapToLogUrl(did), SerializeLog(entries));
+
+        var result = await method.ResolveAsync(did);
+
+        result.ResolutionMetadata.Error.Should().BeNull();
+        result.DidDocument.Should().NotBeNull();
     }
 
     // ================================================================

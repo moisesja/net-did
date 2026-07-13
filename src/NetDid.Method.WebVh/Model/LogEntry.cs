@@ -35,8 +35,10 @@ public sealed record LogEntry
     /// multiple controller proofs are supplied, every supplied proof must be structurally
     /// valid, cryptographically valid, and signed by an active update key — validation rejects
     /// the entry if any supplied proof fails any check (issue #101). Controller proofs do not
-    /// use threshold semantics. The wire <c>proof</c> may be a single proof object or an
-    /// array; both parse into this list.
+    /// use threshold semantics. Each proof is restricted to the did:webvh controller-proof
+    /// profile (see <see cref="DataIntegrityProofValue"/>); proofs carrying other Data Integrity
+    /// features are rejected. The wire <c>proof</c> may be a single proof object or an array;
+    /// both parse into this list.
     /// </summary>
     public IReadOnlyList<DataIntegrityProofValue>? Proof { get; init; }
 

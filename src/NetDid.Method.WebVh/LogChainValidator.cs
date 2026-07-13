@@ -14,14 +14,6 @@ internal sealed class LogChainValidator
 {
     private readonly EddsaJcs2022Cryptosuite _suite;
 
-    /// <summary>
-    /// Upper bound on controller proofs per entry. did:webvh does not define a limit; this is a
-    /// resource guard against a fetched entry that packs many proofs to amplify per-proof
-    /// verification work. Real entries carry one proof (at most one per active update key), so
-    /// this ceiling never rejects a legitimate log.
-    /// </summary>
-    internal const int MaxProofsPerEntry = 100;
-
     public LogChainValidator(EddsaJcs2022Cryptosuite suite)
     {
         _suite = suite;
@@ -231,6 +223,15 @@ internal sealed class LogChainValidator
     /// conforming resolvers reject (issue #101). One authorized signer suffices to
     /// authorize the entry; there is no threshold semantics for controller proofs.
     /// </summary>
+    /// <remarks>
+    /// Proofs are restricted to the did:webvh controller-proof profile at parse time
+    /// (<see cref="LogEntrySerializer"/>), so every member of every proof reaching here is one
+    /// this method validates. Work is bounded: verification stops at the first failing proof,
+    /// so only leading all-valid proofs are ever verified; because <c>eddsa-jcs-2022</c>
+    /// (Ed25519) signatures are deterministic, an active key yields exactly one valid signature
+    /// over a given entry, so the number of distinct proofs that can pass is at most the number
+    /// of active update keys. Byte-identical duplicate proofs are verified once.
+    /// </remarks>
     private void ValidateProof(LogEntry entry, IReadOnlyList<string> authorizedKeys, int version)
     {
         // Snapshot once: an IReadOnlyList implementation could present different contents
@@ -240,19 +241,28 @@ internal sealed class LogChainValidator
             throw new LogChainValidationException(version,
                 $"No proof found at version {version}.");
 
-        // Universal validation verifies every proof (each re-canonicalizes the whole entry),
-        // so an unbounded proof array is a resource-amplification vector even though the
-        // fetched log is already size-capped. A legitimate entry needs one proof and at most
-        // one per active update key; this ceiling is far above any real use.
-        if (proofs.Length > MaxProofsPerEntry)
-            throw new LogChainValidationException(version,
-                $"Entry at version {version} declares {proofs.Length} proofs, exceeding the " +
-                $"maximum of {MaxProofsPerEntry}.");
-
         var entryJsonWithoutProof = LogEntrySerializer.SerializeWithoutProof(entry);
+
+        // Dedup key over the complete profile: a value tuple, so components compare
+        // independently — absent `created` (null) is distinct from `created:""`, and no field's
+        // contents can shift another's boundary the way a joined string would. Restricting
+        // proofs to the profile at parse time makes equal tuples mean byte-identical proofs.
+        var verified = new HashSet<(string, string, string, string?, string, string)>();
 
         foreach (var proofValue in proofs)
         {
+            // Skip re-verifying a byte-identical proof already validated in this entry. This is
+            // semantically transparent — identical proofs share a verdict, and any invalid one
+            // would already have thrown below — and bounds repeated-identical-proof work.
+            if (!verified.Add((
+                    proofValue.Type,
+                    proofValue.Cryptosuite,
+                    proofValue.VerificationMethod,
+                    proofValue.Created,
+                    proofValue.ProofPurpose,
+                    proofValue.ProofValue)))
+                continue;
+
             // Method-specific policy first, so wrong-type/suite/purpose proofs are reported
             // precisely regardless of signature validity. The cryptosuite independently
             // rejects mismatched type/cryptosuite during verification; proofPurpose is

@@ -20,23 +20,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   was previously never checked at all, so even single-proof entries with a wrong purpose were
   accepted. **Compatibility**: NetDid's writer emits exactly one proof, and conforming
   single-proof logs validate unchanged; a multi-proof log carrying invalid or unauthorized extras
-  is now rejected as `invalidDidLog` — intentional stricter conformance. Because every supplied
-  proof is verified (each re-canonicalizes the entry), the number of controller proofs per entry
-  is bounded (100) as a resource guard against amplification; the ceiling is far above any real
-  entry's single proof.
-- **did:webvh proof parsing is schema-faithful and interoperable** (#101). The `proof` member now
+  is now rejected as `invalidDidLog` — intentional stricter conformance.
+- **Duplicate JSON members in a fetched did:webvh log entry are now rejected** (#101). The parser
+  used `System.Text.Json`'s default behaviour, which keeps the *last* of a duplicate pair, so a
+  log could carry a decoy `proof` (or any duplicate member) beside a valid one and have the decoy
+  silently dropped — defeating universal proof validation. Log entries now parse with
+  `AllowDuplicateProperties = false`; a duplicate member anywhere in the entry makes it
+  `invalidDidLog`.
+- **did:webvh controller proofs are validated against a defined profile** (#101). A controller
+  proof is restricted to `type`, `cryptosuite`, `verificationMethod`, `created` (optional),
+  `proofPurpose`, and `proofValue`. A proof carrying any other Data Integrity feature — `id`,
+  `expires`, `previousProof` (proof chains), `domain`, `challenge`, `@context`, or extensions —
+  is rejected as unsupported (`invalidDidLog`), because did:webvh does not define these for
+  controller proofs and the resolver does not evaluate them; silently accepting them would claim
+  a validation that was never performed (e.g. a dangling `previousProof` reference or an elapsed
+  `expires`). Because every accepted member is one the resolver validates, verification is
+  byte-faithful to the signed proof configuration without carrying raw wire JSON.
+- **did:webvh proof shape and error mapping are schema-faithful** (#101). The `proof` member now
   parses as either a single proof object or an array (the official log-entry schema's `oneOf`);
   `created` is optional per that schema; and structurally malformed proof content (missing or
-  non-string required members, empty arrays, non-object elements) is reported as `invalidDidLog`
-  during resolution instead of `notFound` (or an unhandled `KeyNotFoundException` /
-  `InvalidOperationException` from Update/Deactivate, which now surface `FormatException` like
-  other malformed-log content). Parsed proofs retain their verbatim wire JSON
-  (`DataIntegrityProofValue.RawJson`): members outside NetDid's model (schema-permitted
-  `id`/`expires` and extensions) are covered by the `eddsa-jcs-2022` signature, so they now
-  verify correctly and round-trip byte-for-byte when Update/Deactivate republish a fetched log
-  (previously they were dropped, corrupting foreign proofs). A wire single-object `proof`
-  re-emits in the equivalent array form. API note: `DataIntegrityProofValue.Created` is now
-  optional (`string?`).
+  non-string required members, empty arrays, non-object elements, unsupported members) is reported
+  as `invalidDidLog` during resolution instead of `notFound` (or an unhandled
+  `KeyNotFoundException` / `InvalidOperationException` from Update/Deactivate, which now surface
+  `FormatException` like other malformed-log content). API note: `DataIntegrityProofValue.Created`
+  is now optional (`string?`).
 
 ### Security
 

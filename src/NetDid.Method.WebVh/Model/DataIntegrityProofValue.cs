@@ -11,7 +11,11 @@ namespace NetDid.Method.WebVh.Model;
 /// structurally valid, cryptographically valid (<c>type</c> <c>DataIntegrityProof</c>,
 /// <c>cryptosuite</c> <c>eddsa-jcs-2022</c>, <c>proofPurpose</c> <c>assertionMethod</c>),
 /// and signed by an active update key. Controller proofs do not use threshold semantics.
-/// See issue #101.
+/// A did:webvh controller proof is restricted to the members below; log entries whose proofs
+/// carry other Data Integrity features (<c>id</c>, <c>expires</c>, <c>previousProof</c>,
+/// <c>domain</c>, <c>challenge</c>, <c>@context</c>, or extensions) are rejected as
+/// unsupported, because did:webvh does not define them for controller proofs and the resolver
+/// does not evaluate them. See issue #101.
 /// </remarks>
 public sealed class DataIntegrityProofValue
 {
@@ -36,16 +40,4 @@ public sealed class DataIntegrityProofValue
 
     /// <summary>The multibase-encoded signature value.</summary>
     public required string ProofValue { get; init; }
-
-    /// <summary>
-    /// Verbatim wire JSON of the proof object as parsed from a DID log; <c>null</c> for
-    /// programmatically constructed proofs. The <c>eddsa-jcs-2022</c> signature covers the
-    /// whole proof configuration, so members this model does not surface (schema-permitted
-    /// <c>id</c>/<c>expires</c> and extensions) must be preserved byte-for-byte both for
-    /// signature verification and for re-serializing a fetched log during update/deactivate.
-    /// Consumers can read unmodeled members from this JSON. The setter is internal because this
-    /// is parser-populated fidelity data: a caller-supplied value (e.g. one containing an
-    /// embedded newline) would corrupt JSON Lines re-serialization.
-    /// </summary>
-    public string? RawJson { get; internal init; }
 }

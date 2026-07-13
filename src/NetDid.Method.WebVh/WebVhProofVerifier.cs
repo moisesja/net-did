@@ -38,57 +38,22 @@ internal static class WebVhProofVerifier
             return null;
         }
 
-        // Reconstruct the proof exactly as written on the wire. When the proof was parsed
-        // from a DID log, deserialize its verbatim wire JSON so members outside NetDid's
-        // model (schema-permitted id/expires and extensions) are part of the recomputed
-        // proof configuration — the eddsa-jcs-2022 signature covers them all (issue #101).
-        // Otherwise (programmatically built proofs, witness entries) reconstruct from the
-        // modeled fields; Created is passed verbatim (no DateTimeOffset round-trip) so the
-        // hashed proof configuration is byte-identical to the one signed at creation time.
-        DataIntegrityProof? proof;
-        if (proofValue.RawJson is not null)
+        // Reconstruct the proof from the modeled fields. For controller proofs the parser
+        // restricts the wire proof to exactly these members, so the reconstruction is
+        // byte-faithful to the signed proof configuration. Witness proofs (from did-witness.json)
+        // are not profile-restricted; a witness proof carrying any member outside this set drops
+        // it here and therefore fails signature verification — fail closed, never forge. Created
+        // is passed verbatim (no DateTimeOffset round-trip) so the hashed proof configuration is
+        // byte-identical to the one signed at creation time.
+        var proof = new DataIntegrityProof
         {
-            try
-            {
-                proof = JsonSerializer.Deserialize<DataIntegrityProof>(
-                    proofValue.RawJson, DataProofsJsonOptions.Default);
-            }
-            catch
-            {
-                // Fail closed: a wire proof whose shape the Data Integrity model rejects
-                // cannot be verified.
-                return null;
-            }
-
-            if (proof is null)
-                return null;
-
-            // The modeled fields drive the caller's policy checks while the wire JSON
-            // drives signature verification; a proof value whose two views disagree
-            // (impossible via the parser, constructible programmatically) must never
-            // verify under one view and be authorized under the other.
-            if (!string.Equals(proof.Type, proofValue.Type, StringComparison.Ordinal)
-                || !string.Equals(proof.Cryptosuite, proofValue.Cryptosuite, StringComparison.Ordinal)
-                || !string.Equals(proof.VerificationMethod, proofValue.VerificationMethod, StringComparison.Ordinal)
-                || !string.Equals(proof.Created, proofValue.Created, StringComparison.Ordinal)
-                || !string.Equals(proof.ProofPurpose, proofValue.ProofPurpose, StringComparison.Ordinal)
-                || !string.Equals(proof.ProofValue, proofValue.ProofValue, StringComparison.Ordinal))
-            {
-                return null;
-            }
-        }
-        else
-        {
-            proof = new DataIntegrityProof
-            {
-                Type = proofValue.Type,
-                Cryptosuite = proofValue.Cryptosuite,
-                VerificationMethod = proofValue.VerificationMethod,
-                Created = proofValue.Created,
-                ProofPurpose = proofValue.ProofPurpose,
-                ProofValue = proofValue.ProofValue,
-            };
-        }
+            Type = proofValue.Type,
+            Cryptosuite = proofValue.Cryptosuite,
+            VerificationMethod = proofValue.VerificationMethod,
+            Created = proofValue.Created,
+            ProofPurpose = proofValue.ProofPurpose,
+            ProofValue = proofValue.ProofValue,
+        };
 
         // Fail closed on anything unexpected (malformed entry JSON, or any error the
         // cryptosuite might surface) — a verification path must never throw for hostile input.
