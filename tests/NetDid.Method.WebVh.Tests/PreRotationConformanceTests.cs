@@ -146,8 +146,9 @@ public class PreRotationConformanceTests
         var resolved = await method.ResolveAsync(created.Did.Value);
 
         resolved.ResolutionMetadata.Error.Should().BeNull();
-        updated.UpdateKeyChange.Should().Be(AuthorizationChangeStatus.Unknown);
+        updated.UpdateKeyChange.Should().Be(AuthorizationChangeStatus.Unchanged);
         updated.EffectiveUpdateKeys.Should().BeNull();
+        updated.RevealedUpdateKeys.Should().BeEquivalentTo([currentKey.MultibasePublicKey]);
     }
 
     [Fact]
@@ -236,6 +237,12 @@ public class PreRotationConformanceTests
 
         resolved.ResolutionMetadata.Error.Should().BeNull();
         LogEntrySerializer.ParseJsonLines(thirdLog).Should().HaveCount(3);
+        second.UpdateKeyChange.Should().Be(AuthorizationChangeStatus.Changed);
+        second.EffectiveUpdateKeys.Should().BeNull();
+        second.RevealedUpdateKeys.Should().BeEquivalentTo([key2.MultibasePublicKey]);
+        third.UpdateKeyChange.Should().Be(AuthorizationChangeStatus.Changed);
+        third.EffectiveUpdateKeys.Should().BeNull();
+        third.RevealedUpdateKeys.Should().BeEquivalentTo([key3.MultibasePublicKey]);
     }
 
     [Fact]

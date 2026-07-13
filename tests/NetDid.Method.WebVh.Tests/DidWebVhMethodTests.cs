@@ -2305,6 +2305,10 @@ public class DidWebVhMethodTests
         // post-rotation set (which also implies the retired key is gone).
         updateResult.EffectiveUpdateKeys.Should().BeEquivalentTo([newKey.MultibasePublicKey]);
         updateResult.EffectiveUpdateKeys.Should().NotContain(signerA.MultibasePublicKey);
+        // The ordinary-mode entry was authorized by the prior effective set, not by the
+        // newly installed set that will authorize the following entry.
+        updateResult.RevealedUpdateKeys.Should().BeEquivalentTo([signerA.MultibasePublicKey]);
+        updateResult.RevealedUpdateKeys.Should().NotContain(newKey.MultibasePublicKey);
     }
 
     [Fact]
@@ -2363,12 +2367,11 @@ public class DidWebVhMethodTests
     }
 
     [Fact]
-    public async Task Issue91_Update_PreRotationActivation_KeyEvidenceIsWithheld()
+    public async Task Issue91_Update_PreRotationActivation_ReportsCurrentEntryEvidence()
     {
-        // Enabling pre-rotation makes the parameter-level updateKeys stop naming the next
-        // entry's signers (did:webvh v1.0 authorizes a pre-rotation entry with its OWN
-        // pre-committed updateKeys), so the driver must fail the key evidence closed rather
-        // than publish a claim it cannot honor. See issue #93.
+        // Enabling pre-rotation hides the next entry's concrete signers, so
+        // EffectiveUpdateKeys remains withheld. The activation entry itself is ordinary-mode,
+        // however, and the prior effective updateKeys are concrete authorization evidence.
         var (method, _) = CreateMethod();
         var (didA, logA, signerA) = await CreateWebVhDidAsync(method, "alice");
         var nextKey = CreateEd25519Signer();
@@ -2384,10 +2387,11 @@ public class DidWebVhMethodTests
             }
         });
 
-        // The coarse status still reports honestly; the key-specific evidence fails closed.
+        // This policy-only change does not change the effective updateKeys set.
         updateResult.AuthorizationChange.Should().Be(AuthorizationChangeStatus.Changed);
-        updateResult.UpdateKeyChange.Should().Be(AuthorizationChangeStatus.Unknown);
+        updateResult.UpdateKeyChange.Should().Be(AuthorizationChangeStatus.Unchanged);
         updateResult.EffectiveUpdateKeys.Should().BeNull();
+        updateResult.RevealedUpdateKeys.Should().BeEquivalentTo([signerA.MultibasePublicKey]);
     }
 
     [Fact]
@@ -2464,12 +2468,10 @@ public class DidWebVhMethodTests
     }
 
     [Fact]
-    public async Task Issue91_Update_PreRotationActive_KeyEvidenceIsWithheld()
+    public async Task Issue91_Update_PreRotationActive_ReportsRevealedCurrentEntryKeys()
     {
-        // While the resulting state keeps pre-rotation active, the key evidence is withheld even
-        // for a genuine committed-key rotation: the new nextKeyHashes do not reveal the concrete
-        // keys that may sign the next entry. Publishing evidence here would be a false security
-        // contract, so the driver fails closed.
+        // Fresh nextKeyHashes still hide who may sign the next entry, but this entry's own
+        // updateKeys were individually commitment-validated and are concrete evidence.
         var (method, _) = CreateMethod();
         var key1 = CreateEd25519Signer();
         var key2 = CreateEd25519Signer();
@@ -2494,18 +2496,17 @@ public class DidWebVhMethodTests
             }
         });
 
-        updateResult.UpdateKeyChange.Should().Be(AuthorizationChangeStatus.Unknown);
+        updateResult.UpdateKeyChange.Should().Be(AuthorizationChangeStatus.Changed);
         updateResult.EffectiveUpdateKeys.Should().BeNull();
+        updateResult.RevealedUpdateKeys.Should().BeEquivalentTo([key2.MultibasePublicKey]);
     }
 
     [Fact]
-    public async Task Issue91_Update_PreRotationRecommitSameKey_KeyEvidenceIsWithheld()
+    public async Task Issue91_Update_PreRotationRecommitSameKey_ReportsUnchanged()
     {
         // A pre-rotation "rotation" that re-commits to the CURRENT key passes
         // PreRotationManager.ValidateKeyRotation (hash-membership only) without rotating
-        // authority. The evidence must not lend that phantom rotation any credibility:
-        // while pre-rotation is active the driver reports Unknown / null, and a fail-closed
-        // consumer records nothing.
+        // authority. The evidence must not lend that phantom rotation any credibility.
         var (method, _) = CreateMethod();
         var key1 = CreateEd25519Signer();
         var commitment1 = PreRotationManager.ComputeKeyCommitment(key1.MultibasePublicKey);
@@ -2529,8 +2530,9 @@ public class DidWebVhMethodTests
             }
         });
 
-        updateResult.UpdateKeyChange.Should().Be(AuthorizationChangeStatus.Unknown);
+        updateResult.UpdateKeyChange.Should().Be(AuthorizationChangeStatus.Unchanged);
         updateResult.EffectiveUpdateKeys.Should().BeNull();
+        updateResult.RevealedUpdateKeys.Should().BeEquivalentTo([key1.MultibasePublicKey]);
     }
 
     [Fact]
@@ -2702,6 +2704,7 @@ public class DidWebVhMethodTests
 
         updateResult.UpdateKeyChange.Should().Be(AuthorizationChangeStatus.Changed);
         updateResult.EffectiveUpdateKeys.Should().BeEquivalentTo([key2.MultibasePublicKey]);
+        updateResult.RevealedUpdateKeys.Should().BeEquivalentTo([key2.MultibasePublicKey]);
         updateResult.AuthorizationChange.Should().Be(AuthorizationChangeStatus.Changed);
     }
 
@@ -2737,9 +2740,11 @@ public class DidWebVhMethodTests
         var effective = new LogChainValidator(new EddsaJcs2022Cryptosuite()).ValidateChain(entries);
         effective.NextKeyHashes.Should().BeEquivalentTo([honestCommitment]);
 
-        // Pre-rotation is now in play, so the key evidence is withheld.
-        updateResult.UpdateKeyChange.Should().Be(AuthorizationChangeStatus.Unknown);
+        // Pre-rotation hides only the following entry's keys. This activation entry was still
+        // authorized by the prior ordinary-mode set.
+        updateResult.UpdateKeyChange.Should().Be(AuthorizationChangeStatus.Unchanged);
         updateResult.EffectiveUpdateKeys.Should().BeNull();
+        updateResult.RevealedUpdateKeys.Should().BeEquivalentTo([signerA.MultibasePublicKey]);
     }
 
     [Fact]
@@ -2777,6 +2782,187 @@ public class DidWebVhMethodTests
 
         updateResult.AuthorizationChange.Should().Be(AuthorizationChangeStatus.Changed);
         updateResult.UpdateKeyChange.Should().Be(AuthorizationChangeStatus.Unchanged);
+    }
+
+    // ================================================================
+    // ISSUE #98: CONTINUOUS PRE-ROTATION EVIDENCE
+    // The current entry's authorizing set is concrete even when fresh
+    // commitments intentionally hide the keys eligible for the next entry.
+    // ================================================================
+
+    [Fact]
+    public async Task Issue98_Update_ContinuousPreRotation_ReportsKnownKeyChange()
+    {
+        var (method, _) = CreateMethod();
+        var key1 = CreateEd25519Signer();
+        var key2 = CreateEd25519Signer();
+        var key3 = CreateEd25519Signer();
+
+        var createResult = await method.CreateAsync(new DidWebVhCreateOptions
+        {
+            Domain = "example.com",
+            UpdateKey = key1,
+            PreRotationCommitments = [PreRotationManager.ComputeKeyCommitment(key2.MultibasePublicKey)]
+        });
+
+        var updateResult = await method.UpdateAsync(createResult.Did.Value, new DidWebVhUpdateOptions
+        {
+            CurrentLogContent = Encoding.UTF8.GetBytes(
+                (string)createResult.Artifacts![DidWebVhArtifacts.DidJsonl]),
+            SigningKey = key2,
+            ParameterUpdates = new DidWebVhParameterUpdates
+            {
+                UpdateKeys = [key2.MultibasePublicKey],
+                NextKeyHashes = [PreRotationManager.ComputeKeyCommitment(key3.MultibasePublicKey)]
+            }
+        });
+
+        updateResult.UpdateKeyChange.Should().Be(AuthorizationChangeStatus.Changed);
+        updateResult.EffectiveUpdateKeys.Should().BeNull();
+        updateResult.RevealedUpdateKeys.Should().BeEquivalentTo([key2.MultibasePublicKey]);
+    }
+
+    [Fact]
+    public async Task Issue98_Update_PreRotationActivation_ReportsUnchangedKeySet()
+    {
+        var (method, _) = CreateMethod();
+        var (did, log, signer) = await CreateWebVhDidAsync(method, "alice");
+        var nextKey = CreateEd25519Signer();
+
+        var updateResult = await method.UpdateAsync(did, new DidWebVhUpdateOptions
+        {
+            CurrentLogContent = Encoding.UTF8.GetBytes(log),
+            SigningKey = signer,
+            ParameterUpdates = new DidWebVhParameterUpdates
+            {
+                NextKeyHashes = [PreRotationManager.ComputeKeyCommitment(nextKey.MultibasePublicKey)]
+            }
+        });
+
+        updateResult.UpdateKeyChange.Should().Be(AuthorizationChangeStatus.Unchanged);
+        updateResult.EffectiveUpdateKeys.Should().BeNull();
+        updateResult.RevealedUpdateKeys.Should().BeEquivalentTo([signer.MultibasePublicKey]);
+    }
+
+    [Fact]
+    public async Task Issue98_Update_ActivationWithKeyChange_DoesNotMislabelPriorAuthorizingSet()
+    {
+        // This entry is still ordinary-mode because there were no prior commitments. It is
+        // authorized by key1 even though it installs key2 and activates pre-rotation for a
+        // successor that must reveal key3. The two nullable evidence properties cannot be
+        // coalesced into a generic post-change key set.
+        var (method, _) = CreateMethod();
+        var (did, log, key1) = await CreateWebVhDidAsync(method, "alice");
+        var key2 = CreateEd25519Signer();
+        var key3 = CreateEd25519Signer();
+
+        var updateResult = await method.UpdateAsync(did, new DidWebVhUpdateOptions
+        {
+            CurrentLogContent = Encoding.UTF8.GetBytes(log),
+            SigningKey = key1,
+            ParameterUpdates = new DidWebVhParameterUpdates
+            {
+                UpdateKeys = [key2.MultibasePublicKey],
+                NextKeyHashes = [PreRotationManager.ComputeKeyCommitment(key3.MultibasePublicKey)]
+            }
+        });
+
+        updateResult.UpdateKeyChange.Should().Be(AuthorizationChangeStatus.Changed);
+        updateResult.EffectiveUpdateKeys.Should().BeNull();
+        updateResult.RevealedUpdateKeys.Should().BeEquivalentTo([key1.MultibasePublicKey]);
+        updateResult.RevealedUpdateKeys.Should().NotContain(key2.MultibasePublicKey);
+    }
+
+    [Fact]
+    public async Task Issue98_Update_RevealedUpdateKeys_IsDefensiveReadOnlyCopy()
+    {
+        var (method, _) = CreateMethod();
+        var key1 = CreateEd25519Signer();
+        var key2 = CreateEd25519Signer();
+        var key3 = CreateEd25519Signer();
+        var callerList = new List<string> { key2.MultibasePublicKey };
+
+        var createResult = await method.CreateAsync(new DidWebVhCreateOptions
+        {
+            Domain = "example.com",
+            UpdateKey = key1,
+            PreRotationCommitments =
+                [PreRotationManager.ComputeKeyCommitment(key2.MultibasePublicKey)]
+        });
+
+        var updateResult = await method.UpdateAsync(createResult.Did.Value, new DidWebVhUpdateOptions
+        {
+            CurrentLogContent = Encoding.UTF8.GetBytes(
+                (string)createResult.Artifacts![DidWebVhArtifacts.DidJsonl]),
+            SigningKey = key2,
+            ParameterUpdates = new DidWebVhParameterUpdates
+            {
+                UpdateKeys = callerList,
+                NextKeyHashes = [PreRotationManager.ComputeKeyCommitment(key3.MultibasePublicKey)]
+            }
+        });
+
+        callerList.Clear();
+        callerList.Add("z6MkAttackerControlledValueAfterTheFact");
+
+        updateResult.RevealedUpdateKeys.Should().BeEquivalentTo([key2.MultibasePublicKey]);
+        var mutableView = updateResult.RevealedUpdateKeys as IList<string>;
+        mutableView.Should().NotBeNull();
+        mutableView!.IsReadOnly.Should().BeTrue();
+        ((Action)(() => mutableView[0] = "z6MkAttackerControlledDowncast"))
+            .Should().Throw<NotSupportedException>();
+    }
+
+    [Fact]
+    public async Task Issue98_Update_DynamicRevealedKeySet_CannotDesyncFullEvidenceFromArtifact()
+    {
+        // The report must contain every commitment-validated current update key, not only the
+        // signer, and a dynamic caller collection must not be able to change that set between
+        // validation, signing/serialization, and evidence construction.
+        var (method, _) = CreateMethod();
+        var key1 = CreateEd25519Signer();
+        var key2 = CreateEd25519Signer();
+        var key2B = CreateEd25519Signer();
+        var key3 = CreateEd25519Signer();
+        var revealedKeys = new FlippingList<string>(
+            firstEnumeration: [key2.MultibasePublicKey, key2B.MultibasePublicKey],
+            laterEnumerations: [key2.MultibasePublicKey]);
+
+        var createResult = await method.CreateAsync(new DidWebVhCreateOptions
+        {
+            Domain = "example.com",
+            UpdateKey = key1,
+            PreRotationCommitments =
+            [
+                PreRotationManager.ComputeKeyCommitment(key2.MultibasePublicKey),
+                PreRotationManager.ComputeKeyCommitment(key2B.MultibasePublicKey)
+            ]
+        });
+
+        var updateResult = await method.UpdateAsync(createResult.Did.Value, new DidWebVhUpdateOptions
+        {
+            CurrentLogContent = Encoding.UTF8.GetBytes(
+                (string)createResult.Artifacts![DidWebVhArtifacts.DidJsonl]),
+            SigningKey = key2,
+            ParameterUpdates = new DidWebVhParameterUpdates
+            {
+                UpdateKeys = revealedKeys,
+                NextKeyHashes = [PreRotationManager.ComputeKeyCommitment(key3.MultibasePublicKey)]
+            }
+        });
+
+        var updatedLog = (string)updateResult.Artifacts![DidWebVhArtifacts.DidJsonl];
+        var entries = LogEntrySerializer.ParseJsonLines(Encoding.UTF8.GetBytes(updatedLog));
+        entries[^1].Parameters.UpdateKeys.Should().BeEquivalentTo(
+            [key2.MultibasePublicKey, key2B.MultibasePublicKey]);
+        new LogChainValidator(new EddsaJcs2022Cryptosuite()).ValidateChain(entries)
+            .UpdateKeys.Should().BeEquivalentTo(
+                [key2.MultibasePublicKey, key2B.MultibasePublicKey]);
+
+        updateResult.UpdateKeyChange.Should().Be(AuthorizationChangeStatus.Changed);
+        updateResult.EffectiveUpdateKeys.Should().BeNull();
+        updateResult.RevealedUpdateKeys.Should().BeEquivalentTo(
+            [key2.MultibasePublicKey, key2B.MultibasePublicKey]);
     }
 
     [Fact]

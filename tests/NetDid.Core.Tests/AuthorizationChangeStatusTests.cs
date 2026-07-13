@@ -65,6 +65,7 @@ public class AuthorizationChangeStatusTests
         // must never read as "confirmed unrotated" or as an authorized key set.
         result.UpdateKeyChange.Should().Be(AuthorizationChangeStatus.Unknown);
         result.EffectiveUpdateKeys.Should().BeNull();
+        result.RevealedUpdateKeys.Should().BeNull();
     }
 
     [Fact]
@@ -74,5 +75,18 @@ public class AuthorizationChangeStatusTests
 
         result.UpdateKeyChange.Should().Be(AuthorizationChangeStatus.Unknown);
         result.EffectiveUpdateKeys.Should().BeNull();
+        result.RevealedUpdateKeys.Should().BeNull();
+    }
+
+    [Fact]
+    public void Issue98_DidUpdateResult_AcceptsRevealedUpdateKeys()
+    {
+        var result = new DidUpdateResult
+        {
+            DidDocument = new DidDocument { Id = new Did("did:example:1") },
+            RevealedUpdateKeys = ["z6MkRevealed"]
+        };
+
+        result.RevealedUpdateKeys.Should().Equal("z6MkRevealed");
     }
 }

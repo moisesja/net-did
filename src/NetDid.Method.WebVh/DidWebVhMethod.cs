@@ -502,23 +502,26 @@ public sealed class DidWebVhMethod : DidMethodBase
             ? AuthorizationChangeStatus.Changed
             : AuthorizationChangeStatus.Unchanged;
 
-        // Key-specific evidence for rotation consumers (issue #91): whether the effective
-        // updateKeys set itself changed — a witness- or pre-rotation-policy-only change must not read
-        // as a rotation — plus the key set a consumer can bind its new key to. Folding the set
-        // comparison into the coarse status above makes UpdateKeyChange == Changed structurally
-        // imply AuthorizationChange == Changed.
+        // Key-specific evidence for rotation consumers (issues #91 and #98): whether the effective
+        // updateKeys set itself changed — a witness- or pre-rotation-policy-only change must not
+        // read as a rotation — plus distinct complete sets for the entry just authorized and the
+        // next entry. Folding the set comparison into the coarse status above makes
+        // UpdateKeyChange == Changed structurally imply AuthorizationChange == Changed.
         //
-        // Withheld (fail closed: Unknown / null) when the resulting state keeps pre-rotation
-        // active: nextKeyHashes names only hashes, so the concrete keys authorized to sign the
-        // next entry are unknowable here. An entry that explicitly sets nextKeyHashes to [] is
-        // itself governed by pre-rotation, but its resulting state returns to ordinary mode; its
-        // current effective updateKeys therefore do authorize the next entry and can be reported.
+        // The before/after effective updateKeys comparison is concrete even while pre-rotation
+        // remains active. What fresh nextKeyHashes conceal is only the keys eligible to authorize
+        // the next entry, so EffectiveUpdateKeys remains fail-closed (null) in that state. The
+        // already validated authorizedKeys set is the complete set eligible to authorize this
+        // appended entry: prior effective keys in ordinary mode, or the current explicit keys
+        // matched against prior commitments while pre-rotation governs the entry.
         var preRotationActiveAfterUpdate = newEffectiveParams.NextKeyHashes is { Count: > 0 };
-        var updateKeyChange = preRotationActiveAfterUpdate
-            ? AuthorizationChangeStatus.Unknown
-            : updateKeysUnchanged ? AuthorizationChangeStatus.Unchanged : AuthorizationChangeStatus.Changed;
-        // Read-only copy: the reported evidence must not be mutable after return, whether via
-        // the caller's original list or a consumer downcast.
+        var updateKeyChange = updateKeysUnchanged
+            ? AuthorizationChangeStatus.Unchanged
+            : AuthorizationChangeStatus.Changed;
+
+        // Read-only copies: reported evidence must not be mutable after return, whether via the
+        // caller's original list or a consumer downcast.
+        IReadOnlyList<string> revealedUpdateKeys = Array.AsReadOnly(authorizedKeys.ToArray());
         IReadOnlyList<string>? effectiveUpdateKeys = null;
         if (!preRotationActiveAfterUpdate && newEffectiveParams.UpdateKeys is { } nextAuthorizedKeys)
             effectiveUpdateKeys = Array.AsReadOnly(nextAuthorizedKeys.ToArray());
@@ -573,6 +576,7 @@ public sealed class DidWebVhMethod : DidMethodBase
             Artifacts = updateArtifacts,
             AuthorizationChange = authorizationChange,
             UpdateKeyChange = updateKeyChange,
+            RevealedUpdateKeys = revealedUpdateKeys,
             EffectiveUpdateKeys = effectiveUpdateKeys
         };
     }

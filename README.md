@@ -336,17 +336,26 @@ var updateResult = await didWebVh.UpdateAsync(result.Did.Value, new DidWebVhUpda
 The result carries authorization-change evidence for method-agnostic callers.
 `AuthorizationChange` reports whether *any* authorization material changed
 (`updateKeys` / `nextKeyHashes` / witness config); `UpdateKeyChange`
-reports whether the effective `updateKeys` set itself changed, and
-`EffectiveUpdateKeys` lists the keys authorized to sign the *next* log entry. An
-exclusive key-rotation postcondition is: `UpdateKeyChange == Changed` and
-`EffectiveUpdateKeys` set-equal to the intended post-rotation key set (membership
-checks alone would accept unexpected extra keys). Both statuses default to `Unknown`
-so a method that reports no evidence fails closed, and the did:webvh driver
-deliberately withholds the key evidence (`Unknown` / `null`) while the resulting state keeps
-key pre-rotation active — under pre-rotation the next entry is authorized by its own
-pre-committed keys, so the driver cannot derive the next signer list from the
-parameter-level evidence it has (`nextKeyHashes` are hashes, not keys). An entry that sets
-`nextKeyHashes: []` ends pre-rotation after that entry and restores concrete next-key evidence.
+reports whether the effective `updateKeys` set itself changed, including while the
+resulting state keeps pre-rotation active. `RevealedUpdateKeys` is the complete set
+eligible to authorize the entry just appended: the prior effective keys when prior
+commitments did not govern that entry (including an entry that activates pre-rotation
+for its successor), or the current entry's explicit keys when prior commitments did
+govern it and every member passed commitment validation. Eligibility does not mean
+every listed key signed; one eligible update key can authorize the proof.
+`EffectiveUpdateKeys` is forward-looking and lists the keys authorized to sign the
+*next* log entry. Do not coalesce the two nullable key properties into a generic
+post-change key set; they answer different current-entry and next-entry questions.
+
+For an exclusive rotation or authorization postcondition, require the expected status
+and compare the applicable complete key set for equality; membership checks alone
+would accept unexpected extra keys. Both statuses and nullable key sets fail closed for
+methods that report no evidence. The did:webvh driver reports
+`UpdateKeyChange == Changed` or `Unchanged` and `RevealedUpdateKeys` even during
+continuous pre-rotation, but keeps `EffectiveUpdateKeys` null when the resulting state
+has non-empty `nextKeyHashes`: commitments are hashes, so they cannot reveal the keys
+that will authorize the next entry. An entry that sets `nextKeyHashes: []` ends
+pre-rotation after that entry and restores concrete next-entry evidence.
 
 ### Pre-rotation (key commitment)
 
