@@ -77,7 +77,9 @@ public class LogChainValidatorMultiProofTests
         string proofPurpose = "assertionMethod",
         string? created = null,
         string? expires = null,
-        string? id = null)
+        string? id = null,
+        PreviousProofReference? previousProof = null,
+        IReadOnlyList<string>? arrayDomain = null)
     {
         var vm = $"did:key:{keyPair.MultibasePublicKey}#{keyPair.MultibasePublicKey}";
         var proofOptions = new DataIntegrityProof
@@ -88,12 +90,30 @@ public class LogChainValidatorMultiProofTests
             Expires = expires,
             Id = id,
             ProofPurpose = proofPurpose,
+            PreviousProof = previousProof,
+            // The pinned DataProofsDotnet model exposes domain as string?, but its low-level
+            // suite still signs an array-valued domain when supplied as an extension. This
+            // lets the integration test characterize the high-level pipeline limitation with
+            // a cryptographically self-consistent proof.
+            AdditionalProperties = arrayDomain is null
+                ? null
+                : new Dictionary<string, JsonElement>
+                {
+                    ["domain"] = JsonSerializer.SerializeToElement(arrayDomain)
+                }
         };
 
         var entryJsonWithoutProof = LogEntrySerializer.SerializeWithoutProof(entry);
         using var document = JsonDocument.Parse(entryJsonWithoutProof);
-        var proof = await new EddsaJcs2022Cryptosuite().CreateProofAsync(
+        var suite = new EddsaJcs2022Cryptosuite();
+        var proof = await suite.CreateProofAsync(
             document.RootElement, proofOptions, new KeyPairSigner(keyPair, _crypto));
+        suite.VerifyProof(
+                document.RootElement,
+                proof,
+                PublicKeyMaterial.FromMultikey(keyPair.MultibasePublicKey))
+            .Verified.Should().BeTrue(
+                "the helper must produce a self-consistent signature before policy validation");
 
         return new DataIntegrityProofValue
         {
@@ -438,6 +458,9 @@ public class LogChainValidatorMultiProofTests
     [InlineData("null-member")]
     [InlineData("non-object-element")]
     [InlineData("non-object-non-array-proof")]
+    [InlineData("null-id")]
+    [InlineData("empty-id")]
+    [InlineData("non-string-id")]
     public async Task Issue101_MalformedProof_ThrowsFormatException_AndResolvesInvalidDidLog(
         string malformation)
     {
@@ -462,6 +485,15 @@ public class LogChainValidatorMultiProofTests
                     break;
                 case "non-object-non-array-proof":
                     node["proof"] = JsonValue.Create("bogus");
+                    break;
+                case "null-id":
+                    node["proof"]![0]!["id"] = null;
+                    break;
+                case "empty-id":
+                    node["proof"]![0]!["id"] = "";
+                    break;
+                case "non-string-id":
+                    node["proof"]![0]!["id"] = 42;
                     break;
             }
         });
@@ -566,8 +598,11 @@ public class LogChainValidatorMultiProofTests
         result.ResolutionMetadata.Error.Should().Be("invalidDidLog");
     }
 
-    [Fact]
-    public async Task Issue101_SignedProofWithId_Resolves()
+    [Theory]
+    [InlineData("urn:proof:1")]
+    [InlineData("did:example:proof-1")]
+    [InlineData("https://proof.example/1")]
+    public async Task Issue101_SignedProofWithId_Resolves(string proofId)
     {
         // id is schema-defined; a genuinely signed proof carrying it must verify and the id
         // must round-trip on re-serialization.
@@ -577,10 +612,10 @@ public class LogChainValidatorMultiProofTests
         entries[0] = entries[0] with
         {
             Proof = [await SignEntryAsync(entries[0], kpA,
-                created: entries[0].Proof![0].Created, id: "urn:proof:1")]
+                created: entries[0].Proof![0].Created, id: proofId)]
         };
         var log = SerializeLog(entries);
-        Encoding.UTF8.GetString(log).Should().Contain("urn:proof:1");
+        Encoding.UTF8.GetString(log).Should().Contain(proofId);
 
         var result = await ResolveLogAsync(did, log);
 
@@ -589,32 +624,109 @@ public class LogChainValidatorMultiProofTests
     }
 
     [Fact]
-    public async Task Issue101_SignedProofWithDanglingPreviousProof_ResolvesInvalidDidLog()
+    public async Task Issue101_SignedProofWithInvalidId_ResolvesInvalidDidLog()
     {
-        // A previousProof reference that matches no proof id in the entry is a dangling chain
-        // reference; the Data Integrity pipeline rejects it. (Accepting it was a prior defect.)
+        // Data Integrity requires a present proof id to be a URL. This proof is genuinely
+        // signed over the invalid id, so rejection cannot be attributed to signature failure.
         var (kpA, signerA) = CreateEd25519();
         var (did, entries, _) = await CreateLogAsync(signerA);
 
-        var signed = await SignEntryAsync(entries[0], kpA, created: entries[0].Proof![0].Created);
-        // Add a previousProof referencing a proof id that does not exist in the entry. The
-        // pipeline resolves chain references before checking the signature, so a dangling
-        // reference is rejected regardless of the signature.
-        var rawWithPrev = signed.RawJson!.TrimEnd('}')
-            + ",\"previousProof\":\"urn:missing\"}";
-        var proofWithPrev = new DataIntegrityProofValue
+        entries[0] = entries[0] with
         {
-            Type = signed.Type,
-            Cryptosuite = signed.Cryptosuite,
-            VerificationMethod = signed.VerificationMethod,
-            Created = signed.Created,
-            ProofPurpose = signed.ProofPurpose,
-            ProofValue = signed.ProofValue,
-            RawJson = rawWithPrev
+            Proof = [await SignEntryAsync(entries[0], kpA,
+                created: entries[0].Proof![0].Created, id: "not a URL")]
         };
-        entries[0] = entries[0] with { Proof = [proofWithPrev] };
 
         var result = await ResolveLogAsync(did, SerializeLog(entries));
+
+        result.DidDocument.Should().BeNull();
+        result.ResolutionMetadata.Error.Should().Be("invalidDidLog");
+    }
+
+    [Fact]
+    public async Task Issue101_SignedProofWithDanglingPreviousProof_ResolvesInvalidDidLog()
+    {
+        // A previousProof reference that matches no proof id in the entry is a dangling chain
+        // reference. The proof is signed with previousProof already in its configuration, so
+        // this test cannot pass merely because the test mutated a valid proof after signing.
+        var (kpA, signerA) = CreateEd25519();
+        var (did, entries, _) = await CreateLogAsync(signerA);
+
+        entries[0] = entries[0] with
+        {
+            Proof = [await SignEntryAsync(
+                entries[0], kpA,
+                created: entries[0].Proof![0].Created,
+                previousProof: PreviousProofReference.FromSingle("urn:missing"))]
+        };
+
+        var result = await ResolveLogAsync(did, SerializeLog(entries));
+
+        result.DidDocument.Should().BeNull();
+        result.ResolutionMetadata.Error.Should().Be("invalidDidLog");
+    }
+
+    [Fact]
+    public async Task Issue101_GenuineTwoProofChain_Resolves()
+    {
+        var (kpA, signerA) = CreateEd25519();
+        var (did, entries, _) = await CreateLogAsync(signerA);
+        const string firstProofId = "urn:proof:chain-root";
+        var verificationMethod =
+            $"did:key:{kpA.MultibasePublicKey}#{kpA.MultibasePublicKey}";
+        var created = entries[0].Proof![0].Created;
+        var pipeline = new DataIntegrityProofPipeline();
+        var signer = new KeyPairSigner(kpA, _crypto);
+
+        using var unsecured = JsonDocument.Parse(
+            LogEntrySerializer.SerializeWithoutProof(entries[0]));
+        var withFirst = await pipeline.AddProofAsync(unsecured.RootElement, new DataIntegrityProof
+        {
+            Id = firstProofId,
+            Cryptosuite = EddsaJcs2022Cryptosuite.CryptosuiteName,
+            VerificationMethod = verificationMethod,
+            Created = created,
+            ProofPurpose = "assertionMethod"
+        }, signer);
+        var withChain = await pipeline.AddProofAsync(withFirst, new DataIntegrityProof
+        {
+            Id = "urn:proof:chain-child",
+            Cryptosuite = EddsaJcs2022Cryptosuite.CryptosuiteName,
+            VerificationMethod = verificationMethod,
+            Created = created,
+            ProofPurpose = "assertionMethod",
+            PreviousProof = PreviousProofReference.FromSingle(firstProofId)
+        }, signer);
+
+        var result = await ResolveLogAsync(
+            did, Encoding.UTF8.GetBytes(withChain.GetRawText()));
+
+        result.ResolutionMetadata.Error.Should().BeNull();
+        result.DidDocument.Should().NotBeNull();
+    }
+
+    [Fact]
+    public async Task Issue101_ArrayValuedDomain_PinnedPipelineRejectsUpstreamLimitation()
+    {
+        // W3C Data Integrity permits domain as an unordered set of strings. The low-level stock
+        // suite signs this representation, but the pinned pipeline models domain as string? and
+        // therefore rejects it during proof deserialization. Keep this characterization explicit
+        // until DataProofsDotnet publishes a string-or-set model.
+        var (kpA, signerA) = CreateEd25519();
+        var (did, entries, _) = await CreateLogAsync(signerA);
+
+        entries[0] = entries[0] with
+        {
+            Proof = [await SignEntryAsync(
+                entries[0], kpA,
+                created: entries[0].Proof![0].Created,
+                arrayDomain: ["domain.example", "https://domain.example:8443"])]
+        };
+        var log = SerializeLog(entries);
+        Encoding.UTF8.GetString(log).Should().Contain(
+            "\"domain\":[\"domain.example\",\"https://domain.example:8443\"]");
+
+        var result = await ResolveLogAsync(did, log);
 
         result.DidDocument.Should().BeNull();
         result.ResolutionMetadata.Error.Should().Be("invalidDidLog");
@@ -746,7 +858,7 @@ public class LogChainValidatorMultiProofTests
 
         var baseInstant = DateTimeOffset.Parse(entries[0].Proof![0].Created!).UtcDateTime;
         var proofs = new List<DataIntegrityProofValue>();
-        for (int i = 0; i < LogChainValidator.DefaultMaxProofsPerEntry; i++)
+        for (int i = 0; i < LogChainValidator.DefaultMaxControllerProofsPerEntry; i++)
         {
             var created = baseInstant.AddSeconds(-1 - i).ToString("yyyy-MM-ddTHH:mm:ssZ");
             proofs.Add(await SignEntryAsync(entries[0], kpA, created: created));
@@ -769,7 +881,7 @@ public class LogChainValidatorMultiProofTests
 
         var baseInstant = DateTimeOffset.Parse(entries[0].Proof![0].Created!).UtcDateTime;
         var proofs = new List<DataIntegrityProofValue>();
-        for (int i = 0; i < LogChainValidator.DefaultMaxProofsPerEntry + 1; i++)
+        for (int i = 0; i < LogChainValidator.DefaultMaxControllerProofsPerEntry + 1; i++)
         {
             var created = baseInstant.AddSeconds(-1 - i).ToString("yyyy-MM-ddTHH:mm:ssZ");
             proofs.Add(await SignEntryAsync(entries[0], kpA, created: created));
@@ -780,6 +892,32 @@ public class LogChainValidatorMultiProofTests
 
         result.DidDocument.Should().BeNull();
         result.ResolutionMetadata.Error.Should().Be("invalidDidLog");
+    }
+
+    [Fact]
+    public async Task Issue101_RaisedPublicBudget_AllowsDistinctProofsAboveDefault()
+    {
+        var (kpA, signerA) = CreateEd25519();
+        var (did, entries, _) = await CreateLogAsync(signerA);
+        var raisedBudget = LogChainValidator.DefaultMaxControllerProofsPerEntry + 1;
+        var baseInstant = DateTimeOffset.Parse(entries[0].Proof![0].Created!).UtcDateTime;
+        var proofs = new List<DataIntegrityProofValue>();
+        for (var i = 0; i < raisedBudget; i++)
+        {
+            var created = baseInstant.AddSeconds(-1 - i).ToString("yyyy-MM-ddTHH:mm:ssZ");
+            proofs.Add(await SignEntryAsync(entries[0], kpA, created: created));
+        }
+        entries[0] = entries[0] with { Proof = proofs };
+
+        var httpClient = new MockWebVhHttpClient();
+        httpClient.SetLogResponse(DidUrlMapper.MapToLogUrl(did), SerializeLog(entries));
+        var method = new DidWebVhMethod(
+            httpClient, logger: null, maxControllerProofsPerEntry: raisedBudget);
+
+        var result = await method.ResolveAsync(did);
+
+        result.ResolutionMetadata.Error.Should().BeNull();
+        result.DidDocument.Should().NotBeNull();
     }
 
     [Fact]
@@ -832,5 +970,50 @@ public class LogChainValidatorMultiProofTests
 
         result.ResolutionMetadata.Error.Should().Be("invalidDidLog");
         result.Artifacts.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task Issue101_HistoricalIncludeLog_ExcludesGenuinelyUnauthorizedTailProof()
+    {
+        var (_, authorizedSigner) = CreateEd25519();
+        var (attackerKey, _) = CreateEd25519();
+        var (method, httpClient) = CreateMethod();
+        var created = await method.CreateAsync(new DidWebVhCreateOptions
+        {
+            Domain = "example.com",
+            UpdateKey = authorizedSigner
+        });
+        var did = created.Did.Value;
+        var updated = await method.UpdateAsync(did, new DidWebVhUpdateOptions
+        {
+            CurrentLogContent = Encoding.UTF8.GetBytes(
+                (string)created.Artifacts![DidWebVhArtifacts.DidJsonl]),
+            SigningKey = authorizedSigner
+        });
+        var entries = LogEntrySerializer.ParseJsonLines(Encoding.UTF8.GetBytes(
+            (string)updated.Artifacts![DidWebVhArtifacts.DidJsonl])).ToList();
+
+        var authorizedProof = entries[1].Proof![0];
+        var unauthorizedProof = await SignEntryAsync(
+            entries[1], attackerKey, created: authorizedProof.Created);
+        entries[1] = entries[1] with { Proof = [authorizedProof, unauthorizedProof] };
+        var hostileLog = Encoding.UTF8.GetString(SerializeLog(entries));
+        httpClient.SetLogResponse(
+            DidUrlMapper.MapToLogUrl(did), Encoding.UTF8.GetBytes(hostileLog));
+
+        var result = await method.ResolveAsync(did, new DidResolutionOptions
+        {
+            VersionId = entries[0].VersionId,
+            IncludeLog = true
+        });
+
+        result.ResolutionMetadata.Error.Should().BeNull();
+        result.DidDocument.Should().NotBeNull();
+        var exposed = (IReadOnlyList<LogEntry>)result.Artifacts![DidWebVhArtifacts.LogEntries];
+        exposed.Should().ContainSingle()
+            .Which.VersionId.Should().Be(entries[0].VersionId);
+        var exposedJsonl = (string)result.Artifacts[DidWebVhArtifacts.DidJsonl];
+        exposedJsonl.Should().Be(hostileLog.Split('\n')[0]);
+        exposedJsonl.Should().NotContain(unauthorizedProof.ProofValue);
     }
 }

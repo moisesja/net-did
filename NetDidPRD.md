@@ -1074,36 +1074,56 @@ computed from the placeholder-bearing preliminary genesis, while the genesis ent
 after SCID substitution with `versionId` temporarily set to the SCID.
 
 **Controller proofs (issue #101).** A did:webvh entry requires at least one controller proof. One
-active update key is sufficient to authorize the entry. Every supplied controller proof is verified
-under the full W3C Data Integrity algorithm — delegated to DataProofsDotnet's
-`DataIntegrityProofPipeline` — and authorized by NetDid's did:webvh policy: the `verificationMethod`
-must be a `did:key` (DID==fragment anti-spoof) whose Ed25519 multibase appears verbatim in the
-active `updateKeys`, used for `proofPurpose` `assertionMethod`. If any supplied proof fails any
-check the entry is rejected, per the spec's Authorized Keys rule ("Resolvers MUST reject an entry
-whose proof fails any check"). Controller proofs do not use threshold semantics (that exception is
-witness-specific). The official log-entry schema permits `proof` as a single proof object or an
-array; NetDid parses both and treats `created` as optional per that schema.
+active update key is sufficient to authorize the entry. Every supplied controller proof is processed
+by DataProofsDotnet's `DataIntegrityProofPipeline` and authorized by NetDid's did:webvh policy: it
+must use `DataIntegrityProof`, `eddsa-jcs-2022`, and `assertionMethod`; its `verificationMethod` must
+be an anti-spoofed `did:key` whose Ed25519 multibase appears verbatim in the active `updateKeys`; and
+its signature must verify. If any supplied proof fails any check the entry is rejected, per the
+spec's Authorized Keys rule ("Resolvers MUST reject an entry whose proof fails any check").
+Controller proofs do not use threshold semantics (that exception is witness-specific). The official
+log-entry schema permits `proof` as a single proof object or an array; NetDid parses both and treats
+`created` as optional per that schema.
 
 The did:webvh v1.0 schema requires the controller-proof members *at minimum* and leaves additional
-properties open, so schema-defined extras (`id`, `expires`) and other Data Integrity members are
-preserved verbatim (`DataIntegrityProofValue.RawJson`) and validated, not rejected: the pipeline
-resolves any `previousProof` chain and rejects a dangling reference, and a proof whose `expires` is
-at or before the entry's `versionTime` is treated as expired (the resolver pins the Data Integrity
-verification time to `versionTime`). Preserving the wire JSON also lets Update/Deactivate republish
-a fetched log without corrupting a foreign implementation's proof. Array-valued `domain` and full
-proof chains are limited by the underlying library and are not did:webvh controller-proof features.
+properties open. NetDid preserves the exact JSON for each parsed proof object and includes unknown
+members in signature verification, but it claims semantic enforcement only where a policy exists.
+A present proof `id` must pass a conservative `System.Uri`-compatible absolute-URI check without
+surrounding whitespace. This accepts the DID, URN, and HTTPS forms covered by NetDid, but is not full
+WHATWG valid-URL-string conformance and can reject other standards-valid forms. Present proof ids
+must also be unique under ordinal equality so `previousProof` resolution cannot depend on proof-array
+order. The pipeline resolves `previousProof` references and rejects dangling references; a proof
+whose `expires` is at or before the entry's `versionTime` is expired (verification time is pinned to
+`versionTime`). Other extension members are signature-bound, not generically application-validated.
+A single-object `proof` container is
+normalized to a one-element array when Update/Deactivate reserialize the log; the proof object's
+JSON itself remains verbatim, so normalization does not change its signature input. The pinned
+DataProofsDotnet model supports scalar `domain` only; a standards-valid array-valued `domain` is a
+documented upstream compatibility limitation and is rejected by this version of NetDid.
 To keep universal validation sound the parser rejects duplicate JSON members anywhere in a fetched
 entry (`AllowDuplicateProperties = false`) — `System.Text.Json` keeps the last of a duplicate pair,
 so a decoy `proof` beside a valid one would otherwise be silently dropped — and maps JSON-access
 failures at the parse boundary (e.g. a string carrying an unpaired surrogate that decodes with an
-error) to `invalidDidLog`, never `notFound`.
+error) to `invalidDidLog`, never `notFound`. did.jsonl and witness files are decoded as strict UTF-8;
+malformed byte sequences are never silently replaced before hash or proof verification.
+
+Fetched-entry integrity input MUST retain every semantic JSON member, including nested members under
+`parameters` and `state` that the public typed model does not surface. `LogEntrySerializer` keeps
+private, reference-identity wire provenance plus a fingerprint of the modeled entry at parse time.
+For an unchanged parsed entry, entry-hash/SCID input replaces only top-level `versionId`, proofless
+hash/witness input removes only top-level `proof`, and controller verification consumes the complete
+secured entry. Update/Deactivate re-emission retains those fetched nested members. A public `with`
+clone has no provenance, and an in-place modeled mutation changes the fingerprint, so either case
+falls back to modeled serialization instead of allowing stale wire data to override caller intent.
 
 Verifying each proof re-canonicalizes the entry, and `created` is attacker-chosen and part of the
 signed configuration, so one active key can mint arbitrarily many *distinct* valid proofs. The
 resolver therefore imposes an explicit, configurable resource limit on controller proofs per entry
-(default 8); an entry beyond the limit is rejected as `invalidDidLog`. This is a resource policy,
-not a conformance rule — real entries carry a single controller proof, so the default is far above
-any realistic co-signing arrangement.
+(default 8); an entry beyond the limit is rejected as `invalidDidLog`. Direct construction configures
+it with `new DidWebVhMethod(client, logger: null, maxControllerProofsPerEntry: value)` and dependency
+injection with `builder.AddDidWebVh(httpClientOptions: null, maxControllerProofsPerEntry: value)`.
+The existing constructor and registration signatures are retained to avoid source and binary
+breaks. Values must be positive. This is a resource policy, not a conformance rule; raising it
+deliberately increases attacker-controlled canonicalization and signature work.
 
 `versionTime` is part of the hash- and proof-protected entry. NetDid formats it in UTC with
 the invariant Gregorian calendar, preserving fractional seconds when present while retaining
@@ -1162,7 +1182,7 @@ well-known placeholder string (`{SCID}`) that stands in for the real SCID during
 6. **Bind the DID's self-certifying SCID to the genesis (issue #82).** The SCID segment of the requested DID string MUST equal the genesis entry's SCID (`entries[0].Parameters.Scid`, already proven equal to the recomputed genesis hash by step 4). The target entry's `state.id` (an author-controlled field) matching `did` is necessary but **not** sufficient: without the SCID check, a host/CDN/MITM adversary can serve a self-consistent genesis signed by their own key with `state.id` set to the victim's DID and impersonate it, collapsing did:webvh's security to plain did:web. Reject with `invalidDidLog` on mismatch.
 7. Validate every explicitly declared witness policy before it can take effect, at genesis and on every later transition. The disabling form is the empty object `{}`. A configured policy MUST contain both `threshold` and a non-empty `witnesses` list; `threshold` MUST be in the inclusive range `1..count(distinct witness ids)`; every id MUST already be Unicode NFC-normalized, MUST be unique under ordinal comparison in that canonical form, MUST be a bare `did:key` DID, and MUST encode an Ed25519 key compatible with `eddsa-jcs-2022`. Missing fields, duplicate or non-canonical ids, zero/negative/out-of-range thresholds, malformed keys, and unsupported key types invalidate the log rather than being coerced to “no witnesses.”
 8. Determine the witness authority for every entry. Genesis is governed by the witness policy it declares. The first later entry that changes from no active witnesses to a configured policy is immediately governed by that new policy and MUST itself be witnessed. Once a policy is active, it governs the entry that lowers, removes, or replaces it, and the replacement takes effect only after that entry is published. If any entry through the requested version requires witnessing, fetch `did-witness.json` and validate cumulative witness coverage against those authorizing policies. Count a configured witness only after its proof verifies and binds to the exact configured `did:key` signer (never a `verificationMethod` prefix), and count each distinct signer at most once per required entry.
-9. Return the DID Document from the final valid entry. When `DidResolutionOptions.IncludeLog == true`, also surface the fetched log as `Artifacts["did.jsonl"]` (UTF-8 string, matching the Create/Update/Deactivate artifact convention) and the parsed chain as `Artifacts["log.entries"]` (`IReadOnlyList<LogEntry>`). The log is parsed and validated regardless; the flag only controls whether it is exposed to the caller.
+9. Return the DID Document from the selected valid entry. When `DidResolutionOptions.IncludeLog == true`, also surface the validated resolution scope as `Artifacts["did.jsonl"]` (UTF-8 JSONL) and `Artifacts["log.entries"]` (`IReadOnlyList<LogEntry>`). Latest resolution returns the complete fetched log after complete validation. A successfully selected historical `versionId`/`versionTime` resolution returns only the exact raw and parsed prefix through the selected entry; later entries are not resolution evidence and MUST NOT be exposed in those artifacts.
 
 #### Witness weight compatibility and migration
 

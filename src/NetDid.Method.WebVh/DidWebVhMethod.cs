@@ -1,3 +1,4 @@
+using System.Collections.ObjectModel;
 using System.Globalization;
 using System.Text;
 using System.Text.Json;
@@ -17,6 +18,13 @@ namespace NetDid.Method.WebVh;
 /// </summary>
 public sealed class DidWebVhMethod : DidMethodBase
 {
+    /// <summary>
+    /// Default maximum controller proofs verified per log entry. This is a resolver resource
+    /// policy, not a did:webvh conformance limit.
+    /// </summary>
+    public const int DefaultMaxControllerProofsPerEntry =
+        LogChainValidator.DefaultMaxControllerProofsPerEntry;
+
     private readonly IWebVhHttpClient _httpClient;
     private readonly EddsaJcs2022Cryptosuite _suite;
     private readonly LogChainValidator _chainValidator;
@@ -25,11 +33,29 @@ public sealed class DidWebVhMethod : DidMethodBase
 
     internal const string MethodVersion = "did:webvh:1.0";
 
+    /// <summary>
+    /// Creates a did:webvh method using <see cref="DefaultMaxControllerProofsPerEntry"/>.
+    /// </summary>
     public DidWebVhMethod(IWebVhHttpClient httpClient, ILogger<DidWebVhMethod>? logger = null)
+        : this(httpClient, logger, DefaultMaxControllerProofsPerEntry)
+    {
+    }
+
+    /// <summary>Creates a did:webvh method with a caller-specified controller-proof budget.</summary>
+    /// <param name="httpClient">Client used to fetch did:webvh artifacts.</param>
+    /// <param name="logger">Optional resolver logger.</param>
+    /// <param name="maxControllerProofsPerEntry">
+    /// Maximum controller proofs verified per log entry. Must be at least one. Raising this value
+    /// increases the canonicalization and signature-verification work an untrusted log can cause.
+    /// </param>
+    public DidWebVhMethod(
+        IWebVhHttpClient httpClient,
+        ILogger<DidWebVhMethod>? logger,
+        int maxControllerProofsPerEntry)
     {
         _httpClient = httpClient ?? throw new ArgumentNullException(nameof(httpClient));
         _suite = new EddsaJcs2022Cryptosuite();
-        _chainValidator = new LogChainValidator();
+        _chainValidator = new LogChainValidator(maxControllerProofsPerEntry);
         _witnessValidator = new WitnessValidator(_suite);
         _logger = logger ?? NullLogger<DidWebVhMethod>.Instance;
     }
@@ -219,8 +245,8 @@ public sealed class DidWebVhMethod : DidMethodBase
             if (entries.Count == 0)
                 return DidResolutionResult.NotFound(did);
 
-            // Determine the target entry index before validation
-            // This allows versioned queries to succeed even if later entries are invalid
+            // Determine the target entry index before validation. For an exact historical target,
+            // validation below is intentionally limited to the selected prefix.
             var targetIndex = FindTargetIndex(entries, options);
             if (targetIndex < 0)
                 return DidResolutionResult.NotFound(did);
@@ -316,8 +342,8 @@ public sealed class DidWebVhMethod : DidMethodBase
             // A directly requested deactivation entry suppresses the DID Document. For a prior
             // version of a DID that was validly deactivated later, retain that historical
             // document but mark its metadata deactivated as required by did:webvh v1.0. A parsed
-            // tail that fails chain, identity, or witness validation never contaminates a valid
-            // historical resolution.
+            // tail beyond the selected target that fails chain, identity, or witness validation
+            // does not contaminate that target's resolution artifacts.
             var isDeactivated = effectiveParams.Deactivated == true;
             var deactivatedForMetadata = isDeactivated;
             if (!isDeactivated && targetIndex < entries.Count - 1)
@@ -362,11 +388,20 @@ public sealed class DidWebVhMethod : DidMethodBase
             IReadOnlyDictionary<string, object>? artifacts = null;
             if (options?.IncludeLog == true)
             {
-                artifacts = new Dictionary<string, object>
-                {
-                    [DidWebVhArtifacts.DidJsonl] = Encoding.UTF8.GetString(logContent),
-                    [DidWebVhArtifacts.LogEntries] = entries
-                };
+                var resolvesLatest = targetIndex == entries.Count - 1;
+                IReadOnlyList<LogEntry> exposedEntries = resolvesLatest
+                    ? entries
+                    : entries.Take(targetIndex + 1).ToList().AsReadOnly();
+                var exposedJsonl = resolvesLatest
+                    ? LogEntrySerializer.DecodeUtf8(logContent)
+                    : GetRawJsonLinesPrefix(logContent, targetIndex + 1);
+
+                artifacts = new ReadOnlyDictionary<string, object>(
+                    new Dictionary<string, object>
+                    {
+                        [DidWebVhArtifacts.DidJsonl] = exposedJsonl,
+                        [DidWebVhArtifacts.LogEntries] = exposedEntries
+                    });
             }
 
             return new DidResolutionResult
@@ -936,6 +971,51 @@ public sealed class DidWebVhMethod : DidMethodBase
             .Select(entry => entry.Id.Normalize(NormalizationForm.FormC))
             .ToHashSet(StringComparer.Ordinal);
         return idsA.SetEquals(idsB);
+    }
+
+    /// <summary>
+    /// Returns the original JSON Lines content through the requested non-blank record.
+    /// The line separator after that record is excluded so an unchecked later record cannot
+    /// leak through the raw artifact. Parsing has already proven that the requested number of
+    /// records exists; failure here therefore indicates an internal parser/prefix mismatch.
+    /// </summary>
+    private static string GetRawJsonLinesPrefix(byte[] content, int entryCount)
+    {
+        var text = LogEntrySerializer.DecodeUtf8(content);
+        var lineStart = 0;
+        var entriesSeen = 0;
+
+        while (lineStart < text.Length)
+        {
+            var newlineIndex = text.IndexOf('\n', lineStart);
+            var lineEnd = newlineIndex >= 0 ? newlineIndex : text.Length;
+            var hasContent = false;
+            for (var i = lineStart; i < lineEnd; i++)
+            {
+                if (!char.IsWhiteSpace(text[i]))
+                {
+                    hasContent = true;
+                    break;
+                }
+            }
+
+            if (hasContent && ++entriesSeen == entryCount)
+            {
+                var prefixEnd = lineEnd;
+                if (prefixEnd > lineStart && text[prefixEnd - 1] == '\r')
+                    prefixEnd--;
+
+                return text[..prefixEnd];
+            }
+
+            if (newlineIndex < 0)
+                break;
+
+            lineStart = newlineIndex + 1;
+        }
+
+        throw new InvalidOperationException(
+            "The parsed did:webvh log does not contain the requested JSON Lines prefix.");
     }
 
     /// <summary>

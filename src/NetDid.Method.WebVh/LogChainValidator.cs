@@ -20,15 +20,18 @@ internal sealed class LogChainValidator
     /// controller proof; the default is far above any realistic co-signing arrangement.
     /// Configurable via the constructor. An entry exceeding it is rejected as invalidDidLog.
     /// </summary>
-    internal const int DefaultMaxProofsPerEntry = 8;
+    internal const int DefaultMaxControllerProofsPerEntry = 8;
 
     private readonly DataIntegrityProofPipeline _pipeline;
-    private readonly int _maxProofsPerEntry;
+    private readonly int _maxControllerProofsPerEntry;
 
-    public LogChainValidator(int maxProofsPerEntry = DefaultMaxProofsPerEntry)
+    public LogChainValidator(
+        int maxControllerProofsPerEntry = DefaultMaxControllerProofsPerEntry)
     {
+        ArgumentOutOfRangeException.ThrowIfLessThan(maxControllerProofsPerEntry, 1);
+
         _pipeline = new DataIntegrityProofPipeline();
-        _maxProofsPerEntry = maxProofsPerEntry;
+        _maxControllerProofsPerEntry = maxControllerProofsPerEntry;
     }
 
     /// <summary>
@@ -116,8 +119,7 @@ internal sealed class LogChainValidator
         // post-SCID entry whose versionId is the SCID itself; it is the input to the genesis
         // entry-hash calculation and to reverse-substitution for SCID verification.
         var scid = genesis.Parameters.Scid;
-        var genesisForHashing = genesis with { VersionId = scid };
-        var entryJsonForHashing = LogEntrySerializer.SerializeWithoutProof(genesisForHashing);
+        var entryJsonForHashing = LogEntrySerializer.SerializeWithoutProof(genesis, scid);
 
         var computedEntryHash = ScidGenerator.ComputeEntryHash(entryJsonForHashing);
         if (computedEntryHash != genesis.EntryHash)
@@ -173,8 +175,9 @@ internal sealed class LogChainValidator
 
         // Verify entry hash: the hash input's versionId is exactly the previous entry's
         // full published versionId.
-        var entryForHashing = current with { VersionId = previous.VersionId };
-        var entryJsonWithoutProof = LogEntrySerializer.SerializeWithoutProof(entryForHashing);
+        var entryJsonWithoutProof = LogEntrySerializer.SerializeWithoutProof(
+            current,
+            previous.VersionId);
         var computedHash = ScidGenerator.ComputeEntryHash(entryJsonWithoutProof);
 
         if (computedHash != current.EntryHash)
@@ -227,8 +230,8 @@ internal sealed class LogChainValidator
 
     /// <summary>
     /// Enforces the did:webvh v1.0 controller-proof rule: an entry requires at least one proof,
-    /// and <b>every</b> supplied proof must verify under the full W3C Data Integrity algorithm
-    /// (delegated to DataProofsDotnet's <see cref="DataIntegrityProofPipeline"/>) and be
+    /// and <b>every</b> supplied proof must pass the checks implemented by DataProofsDotnet's
+    /// <see cref="DataIntegrityProofPipeline"/> plus NetDid's application-boundary checks, and be
     /// authorized by the active <paramref name="authorizedKeys"/>. "Resolvers MUST reject an
     /// entry whose proof fails any check" — existential acceptance would admit logs that
     /// stricter conforming resolvers reject (issue #101). One authorized signer suffices to
@@ -242,8 +245,8 @@ internal sealed class LogChainValidator
     /// whose Ed25519 multibase is verbatim in the active updateKeys, used for
     /// <c>assertionMethod</c> — is supplied by <see cref="WebVhUpdateKeyResolver"/>. Verifying
     /// each proof re-canonicalizes the entry, so the proof count is bounded by
-    /// <see cref="_maxProofsPerEntry"/> as an explicit resource policy (see
-    /// <see cref="DefaultMaxProofsPerEntry"/>).
+    /// <see cref="_maxControllerProofsPerEntry"/> as an explicit resource policy (see
+    /// <see cref="DefaultMaxControllerProofsPerEntry"/>).
     /// </remarks>
     private void ValidateProof(LogEntry entry, IReadOnlyList<string> authorizedKeys, int version)
     {
@@ -258,10 +261,10 @@ internal sealed class LogChainValidator
         // verification re-canonicalizes the entry document. `created` is attacker-chosen and
         // part of the signed proof configuration, so one active key can mint arbitrarily many
         // distinct valid proofs — the count, not key diversity, is what must be capped.
-        if (proofs.Length > _maxProofsPerEntry)
+        if (proofs.Length > _maxControllerProofsPerEntry)
             throw new LogChainValidationException(version,
                 $"Entry at version {version} declares {proofs.Length} controller proofs, " +
-                $"exceeding the resolver's limit of {_maxProofsPerEntry}.");
+                $"exceeding the resolver's limit of {_maxControllerProofsPerEntry}.");
 
         // Verify against the entry as published (full-fidelity proofs via RawJson): the pipeline
         // removes the proof member, JCS-canonicalizes the rest, and checks every proof. Its

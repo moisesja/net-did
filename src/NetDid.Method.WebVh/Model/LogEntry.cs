@@ -26,18 +26,23 @@ public sealed record LogEntry
     /// <summary>Entry parameters (method version, SCID, updateKeys, etc.).</summary>
     public required LogEntryParameters Parameters { get; init; }
 
-    /// <summary>The full DID Document at this version.</summary>
+    /// <summary>
+    /// The typed DID Document at this version. For a parsed log, hashing and proof verification
+    /// also retain signed nested wire members that this typed model does not surface.
+    /// </summary>
     public required DidDocument State { get; init; }
 
     /// <summary>
     /// The entry's Data Integrity controller proofs. A did:webvh entry requires at least one
     /// controller proof, and one active update key is sufficient to authorize the entry. Every
-    /// supplied proof is verified under the full Data Integrity algorithm and authorized against
-    /// the active update keys; the entry is rejected if any supplied proof fails any check (issue
-    /// #101). Controller proofs do not use threshold semantics. Schema-defined extras
-    /// (<c>id</c>, <c>expires</c>) and other Data Integrity members are preserved and validated
-    /// (see <see cref="DataIntegrityProofValue"/>). The wire <c>proof</c> may be a single proof
-    /// object or an array; both parse into this list.
+    /// supplied proof is processed by DataProofsDotnet and authorized against the active update
+    /// keys; the entry is rejected if any supplied proof fails NetDid's controller policy (issue
+    /// #101). Controller proofs do not use threshold semantics. Duplicate proof ids are rejected.
+    /// Proof extensions are preserved and signature-bound; NetDid enforces documented semantics
+    /// for <c>id</c>, <c>expires</c>, and
+    /// <c>previousProof</c> but does not claim semantics for every extension (see
+    /// <see cref="DataIntegrityProofValue"/>). The wire <c>proof</c> may be a single proof object or
+    /// an array; both parse into this list, and serialization uses the array form.
     /// </summary>
     public IReadOnlyList<DataIntegrityProofValue>? Proof { get; init; }
 

@@ -43,9 +43,30 @@ public sealed class NetDidBuilder
         return this;
     }
 
-    /// <summary>Register the did:webvh method. Uses IHttpClientFactory for HTTP requests.</summary>
+    /// <summary>
+    /// Register the did:webvh method with the default controller-proof verification budget.
+    /// Uses IHttpClientFactory for HTTP requests.
+    /// </summary>
     public NetDidBuilder AddDidWebVh(WebVhHttpClientOptions? httpClientOptions = null)
+        => AddDidWebVh(
+            httpClientOptions,
+            DidWebVhMethod.DefaultMaxControllerProofsPerEntry);
+
+    /// <summary>
+    /// Register the did:webvh method with a caller-specified upper bound on controller proofs
+    /// verified per log entry. Uses IHttpClientFactory for HTTP requests.
+    /// </summary>
+    /// <param name="httpClientOptions">Resource limits for fetching did:webvh artifacts.</param>
+    /// <param name="maxControllerProofsPerEntry">
+    /// Maximum controller proofs verified per entry. Must be at least one. Raising this limit
+    /// increases the canonicalization and signature-verification work an untrusted log can cause.
+    /// </param>
+    public NetDidBuilder AddDidWebVh(
+        WebVhHttpClientOptions? httpClientOptions,
+        int maxControllerProofsPerEntry)
     {
+        ArgumentOutOfRangeException.ThrowIfLessThan(maxControllerProofsPerEntry, 1);
+
         Services.AddSingleton(httpClientOptions ?? new WebVhHttpClientOptions());
         // WebVhHttpClientOptions.Timeout is the sole time authority for this
         // library-owned client: neutralize HttpClient.Timeout (100s framework
@@ -58,7 +79,9 @@ public sealed class NetDidBuilder
             sp.GetRequiredService<DefaultWebVhHttpClient>());
         Services.AddSingleton<IDidMethod>(sp =>
             new DidWebVhMethod(
-                sp.GetRequiredService<IWebVhHttpClient>()));
+                sp.GetRequiredService<IWebVhHttpClient>(),
+                logger: null,
+                maxControllerProofsPerEntry: maxControllerProofsPerEntry));
         return this;
     }
 

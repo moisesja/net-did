@@ -1981,6 +1981,97 @@ public class DidWebVhMethodTests
         entries.Should().HaveCount(2);
         entries[0].VersionNumber.Should().Be(1);
         entries[1].VersionNumber.Should().Be(2);
+        ((string)resolveResult.Artifacts[DidWebVhArtifacts.DidJsonl])
+            .Should().Be(updatedLog, "latest resolution validates and exposes the complete fetched log");
+    }
+
+    [Fact]
+    public async Task Issue37_Resolve_HistoricalIncludeLog_ExposesOnlyValidatedPrefix()
+    {
+        var (method, httpClient) = CreateMethod();
+        var signer = CreateEd25519Signer();
+
+        var createResult = await method.CreateAsync(new DidWebVhCreateOptions
+        {
+            Domain = "example.com",
+            UpdateKey = signer
+        });
+        var did = createResult.Did.Value;
+        var updateResult = await method.UpdateAsync(did, new DidWebVhUpdateOptions
+        {
+            CurrentLogContent = Encoding.UTF8.GetBytes(
+                (string)createResult.Artifacts![DidWebVhArtifacts.DidJsonl]),
+            SigningKey = signer
+        });
+
+        var updatedLog = (string)updateResult.Artifacts![DidWebVhArtifacts.DidJsonl];
+        var lines = updatedLog.Split('\n');
+        var crlfLog = string.Join("\r\n", lines);
+        var entries = LogEntrySerializer.ParseJsonLines(Encoding.UTF8.GetBytes(crlfLog));
+        httpClient.SetLogResponse(
+            DidUrlMapper.MapToLogUrl(did), Encoding.UTF8.GetBytes(crlfLog));
+
+        var result = await method.ResolveAsync(did, new DidResolutionOptions
+        {
+            VersionId = entries[0].VersionId,
+            IncludeLog = true
+        });
+
+        result.ResolutionMetadata.Error.Should().BeNull();
+        var exposedEntries = (IReadOnlyList<LogEntry>)result.Artifacts![DidWebVhArtifacts.LogEntries];
+        exposedEntries.Should().ContainSingle()
+            .Which.VersionId.Should().Be(entries[0].VersionId);
+        ((string)result.Artifacts[DidWebVhArtifacts.DidJsonl]).Should().Be(lines[0],
+            "the raw artifact must end exactly at the validated entry, without the CRLF separator");
+    }
+
+    [Fact]
+    public async Task Issue101_Resolve_HistoricalIncludeLog_DoesNotExposeInvalidTail()
+    {
+        var (method, httpClient) = CreateMethod();
+        var signer = CreateEd25519Signer();
+
+        var createResult = await method.CreateAsync(new DidWebVhCreateOptions
+        {
+            Domain = "example.com",
+            UpdateKey = signer
+        });
+        var did = createResult.Did.Value;
+        var updateResult = await method.UpdateAsync(did, new DidWebVhUpdateOptions
+        {
+            CurrentLogContent = Encoding.UTF8.GetBytes(
+                (string)createResult.Artifacts![DidWebVhArtifacts.DidJsonl]),
+            SigningKey = signer
+        });
+
+        var updatedLog = (string)updateResult.Artifacts![DidWebVhArtifacts.DidJsonl];
+        var entries = LogEntrySerializer.ParseJsonLines(Encoding.UTF8.GetBytes(updatedLog));
+        var lines = updatedLog.Split('\n');
+        lines[1] = lines[1].Replace(
+            entries[1].Proof![0].ProofValue, "zInvalidUncheckedTailProof");
+        var corruptedLog = string.Join('\n', lines);
+        httpClient.SetLogResponse(
+            DidUrlMapper.MapToLogUrl(did), Encoding.UTF8.GetBytes(corruptedLog));
+
+        var result = await method.ResolveAsync(did, new DidResolutionOptions
+        {
+            VersionId = entries[0].VersionId,
+            IncludeLog = true
+        });
+
+        result.ResolutionMetadata.Error.Should().BeNull();
+        result.DidDocument.Should().NotBeNull();
+        var exposedEntries = (IReadOnlyList<LogEntry>)result.Artifacts![DidWebVhArtifacts.LogEntries];
+        exposedEntries.Should().ContainSingle()
+            .Which.VersionId.Should().Be(entries[0].VersionId);
+        var exposedJsonl = (string)result.Artifacts[DidWebVhArtifacts.DidJsonl];
+        exposedJsonl.Should().Be(lines[0]);
+        exposedJsonl.Should().NotContain("zInvalidUncheckedTailProof");
+
+        var dictionaryView = (IDictionary<string, object>)result.Artifacts;
+        var mutate = () => dictionaryView[DidWebVhArtifacts.DidJsonl] = corruptedLog;
+        mutate.Should().Throw<NotSupportedException>(
+            "cached resolution artifacts must not be caller-mutable");
     }
 
     [Fact]
