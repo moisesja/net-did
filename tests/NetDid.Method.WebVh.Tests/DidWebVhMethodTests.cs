@@ -153,7 +153,7 @@ public class DidWebVhMethodTests
             VersionId = $"1-{genesis.Parameters.Scid}"
         };
 
-        var act = () => new LogChainValidator(new EddsaJcs2022Cryptosuite())
+        var act = () => new LogChainValidator()
             .ValidateChain([legacyGenesis]);
 
         act.Should().Throw<LogChainValidationException>()
@@ -194,7 +194,7 @@ public class DidWebVhMethodTests
             Proof = [await SignEntryAsync(legacyGenesis, signer)]
         };
 
-        var act = () => new LogChainValidator(new EddsaJcs2022Cryptosuite())
+        var act = () => new LogChainValidator()
             .ValidateChain([legacyGenesis]);
 
         act.Should().Throw<LogChainValidationException>()
@@ -882,7 +882,7 @@ public class DidWebVhMethodTests
             Proof = [await SignEntryAsync(nonConformantEntry, signer)]
         };
 
-        var act = () => new LogChainValidator(new EddsaJcs2022Cryptosuite())
+        var act = () => new LogChainValidator()
             .ValidateChain([genesis, nonConformantEntry]);
 
         act.Should().Throw<LogChainValidationException>()
@@ -2640,7 +2640,7 @@ public class DidWebVhMethodTests
         var entries = LogEntrySerializer.ParseJsonLines(Encoding.UTF8.GetBytes(updatedLog));
         entries[^1].Parameters.UpdateKeys.Should().BeEquivalentTo([newKey.MultibasePublicKey]);
 
-        var effective = new LogChainValidator(new EddsaJcs2022Cryptosuite()).ValidateChain(entries);
+        var effective = new LogChainValidator().ValidateChain(entries);
         effective.UpdateKeys.Should().BeEquivalentTo([newKey.MultibasePublicKey]);
 
         updateResult.UpdateKeyChange.Should().Be(AuthorizationChangeStatus.Changed);
@@ -2668,7 +2668,7 @@ public class DidWebVhMethodTests
 
         var updatedLog = (string)updateResult.Artifacts![DidWebVhArtifacts.DidJsonl];
         var entries = LogEntrySerializer.ParseJsonLines(Encoding.UTF8.GetBytes(updatedLog));
-        var effective = new LogChainValidator(new EddsaJcs2022Cryptosuite()).ValidateChain(entries);
+        var effective = new LogChainValidator().ValidateChain(entries);
 
         updateResult.EffectiveUpdateKeys.Should().BeEquivalentTo(effective.UpdateKeys);
     }
@@ -2737,7 +2737,7 @@ public class DidWebVhMethodTests
         var entries = LogEntrySerializer.ParseJsonLines(Encoding.UTF8.GetBytes(updatedLog));
         entries[^1].Parameters.NextKeyHashes.Should().BeEquivalentTo([honestCommitment]);
 
-        var effective = new LogChainValidator(new EddsaJcs2022Cryptosuite()).ValidateChain(entries);
+        var effective = new LogChainValidator().ValidateChain(entries);
         effective.NextKeyHashes.Should().BeEquivalentTo([honestCommitment]);
 
         // Pre-rotation hides only the following entry's keys. This activation entry was still
@@ -2955,7 +2955,7 @@ public class DidWebVhMethodTests
         var entries = LogEntrySerializer.ParseJsonLines(Encoding.UTF8.GetBytes(updatedLog));
         entries[^1].Parameters.UpdateKeys.Should().BeEquivalentTo(
             [key2.MultibasePublicKey, key2B.MultibasePublicKey]);
-        new LogChainValidator(new EddsaJcs2022Cryptosuite()).ValidateChain(entries)
+        new LogChainValidator().ValidateChain(entries)
             .UpdateKeys.Should().BeEquivalentTo(
                 [key2.MultibasePublicKey, key2B.MultibasePublicKey]);
 

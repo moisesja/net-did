@@ -12,11 +12,23 @@ namespace NetDid.Method.WebVh;
 /// </summary>
 internal sealed class LogChainValidator
 {
-    private readonly EddsaJcs2022Cryptosuite _suite;
+    /// <summary>
+    /// Default upper bound on controller proofs verified per entry. Verifying each proof
+    /// re-canonicalizes the entry document, so this is an explicit resource policy (not a
+    /// conformance rule) that bounds per-entry verification work to
+    /// <c>bound × entry-size</c> over an already size-capped log. Real entries carry a single
+    /// controller proof; the default is far above any realistic co-signing arrangement.
+    /// Configurable via the constructor. An entry exceeding it is rejected as invalidDidLog.
+    /// </summary>
+    internal const int DefaultMaxProofsPerEntry = 8;
 
-    public LogChainValidator(EddsaJcs2022Cryptosuite suite)
+    private readonly DataIntegrityProofPipeline _pipeline;
+    private readonly int _maxProofsPerEntry;
+
+    public LogChainValidator(int maxProofsPerEntry = DefaultMaxProofsPerEntry)
     {
-        _suite = suite;
+        _pipeline = new DataIntegrityProofPipeline();
+        _maxProofsPerEntry = maxProofsPerEntry;
     }
 
     /// <summary>
@@ -214,23 +226,24 @@ internal sealed class LogChainValidator
     }
 
     /// <summary>
-    /// Enforces the did:webvh v1.0 controller-proof rule: an entry requires at least one
-    /// proof, and <b>every</b> supplied proof must pass the method's checks — type
-    /// <c>DataIntegrityProof</c>, cryptosuite <c>eddsa-jcs-2022</c>, purpose
-    /// <c>assertionMethod</c>, a valid signature over the entry, and a signer verbatim in
-    /// the active <paramref name="authorizedKeys"/>. "Resolvers MUST reject an entry whose
-    /// proof fails any check" — existential acceptance would admit logs that stricter
-    /// conforming resolvers reject (issue #101). One authorized signer suffices to
+    /// Enforces the did:webvh v1.0 controller-proof rule: an entry requires at least one proof,
+    /// and <b>every</b> supplied proof must verify under the full W3C Data Integrity algorithm
+    /// (delegated to DataProofsDotnet's <see cref="DataIntegrityProofPipeline"/>) and be
+    /// authorized by the active <paramref name="authorizedKeys"/>. "Resolvers MUST reject an
+    /// entry whose proof fails any check" — existential acceptance would admit logs that
+    /// stricter conforming resolvers reject (issue #101). One authorized signer suffices to
     /// authorize the entry; there is no threshold semantics for controller proofs.
     /// </summary>
     /// <remarks>
-    /// Proofs are restricted to the did:webvh controller-proof profile at parse time
-    /// (<see cref="LogEntrySerializer"/>), so every member of every proof reaching here is one
-    /// this method validates. Work is bounded: verification stops at the first failing proof,
-    /// so only leading all-valid proofs are ever verified; because <c>eddsa-jcs-2022</c>
-    /// (Ed25519) signatures are deterministic, an active key yields exactly one valid signature
-    /// over a given entry, so the number of distinct proofs that can pass is at most the number
-    /// of active update keys. Byte-identical duplicate proofs are verified once.
+    /// The pipeline verifies each proof's signature over the entry (with the <c>proof</c>
+    /// removed), enforces the required type/cryptosuite/purpose, resolves any
+    /// <c>previousProof</c> chain, and rejects a proof whose <c>expires</c> is at or before the
+    /// entry's <c>versionTime</c>. Authorization — a <c>did:key</c> verificationMethod (anti-spoof)
+    /// whose Ed25519 multibase is verbatim in the active updateKeys, used for
+    /// <c>assertionMethod</c> — is supplied by <see cref="WebVhUpdateKeyResolver"/>. Verifying
+    /// each proof re-canonicalizes the entry, so the proof count is bounded by
+    /// <see cref="_maxProofsPerEntry"/> as an explicit resource policy (see
+    /// <see cref="DefaultMaxProofsPerEntry"/>).
     /// </remarks>
     private void ValidateProof(LogEntry entry, IReadOnlyList<string> authorizedKeys, int version)
     {
@@ -241,66 +254,56 @@ internal sealed class LogChainValidator
             throw new LogChainValidationException(version,
                 $"No proof found at version {version}.");
 
-        var entryJsonWithoutProof = LogEntrySerializer.SerializeWithoutProof(entry);
+        // Bound verification work before doing any: the pipeline verifies every proof and each
+        // verification re-canonicalizes the entry document. `created` is attacker-chosen and
+        // part of the signed proof configuration, so one active key can mint arbitrarily many
+        // distinct valid proofs — the count, not key diversity, is what must be capped.
+        if (proofs.Length > _maxProofsPerEntry)
+            throw new LogChainValidationException(version,
+                $"Entry at version {version} declares {proofs.Length} controller proofs, " +
+                $"exceeding the resolver's limit of {_maxProofsPerEntry}.");
 
-        // Dedup key over the complete profile: a value tuple, so components compare
-        // independently — absent `created` (null) is distinct from `created:""`, and no field's
-        // contents can shift another's boundary the way a joined string would. Restricting
-        // proofs to the profile at parse time makes equal tuples mean byte-identical proofs.
-        var verified = new HashSet<(string, string, string, string?, string, string)>();
-
-        foreach (var proofValue in proofs)
+        // Verify against the entry as published (full-fidelity proofs via RawJson): the pipeline
+        // removes the proof member, JCS-canonicalizes the rest, and checks every proof. Its
+        // resolver authorizes only did:key methods whose Ed25519 multibase is an active update
+        // key used for assertionMethod; VerificationTime pins the expires policy to versionTime.
+        // Serialization is inside the try so any failure is reported as a chain-validation error
+        // (invalidDidLog), never as notFound.
+        var resolver = new WebVhUpdateKeyResolver(authorizedKeys);
+        var options = new ProofVerificationOptions
         {
-            // Skip re-verifying a byte-identical proof already validated in this entry. This is
-            // semantically transparent — identical proofs share a verdict, and any invalid one
-            // would already have thrown below — and bounds repeated-identical-proof work.
-            if (!verified.Add((
-                    proofValue.Type,
-                    proofValue.Cryptosuite,
-                    proofValue.VerificationMethod,
-                    proofValue.Created,
-                    proofValue.ProofPurpose,
-                    proofValue.ProofValue)))
-                continue;
+            ExpectedProofPurpose = "assertionMethod",
+            VerificationTime = entry.VersionTime
+        };
 
-            // Method-specific policy first, so wrong-type/suite/purpose proofs are reported
-            // precisely regardless of signature validity. The cryptosuite independently
-            // rejects mismatched type/cryptosuite during verification; proofPurpose is
-            // enforced only here — Data Integrity leaves purpose checking to the consumer.
-            if (!string.Equals(proofValue.Type, "DataIntegrityProof", StringComparison.Ordinal))
-                throw new LogChainValidationException(version,
-                    $"Proof at version {version} has unsupported type '{proofValue.Type}'.");
+        DocumentVerificationResult result;
+        try
+        {
+            var securedDocumentJson = LogEntrySerializer.Serialize(entry);
+            using var document = System.Text.Json.JsonDocument.Parse(securedDocumentJson);
+            // The resolver completes synchronously, so this does not block on real I/O.
+            result = _pipeline
+                .VerifyAsync(document.RootElement, resolver, options)
+                .GetAwaiter()
+                .GetResult();
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            // A verification path must never throw for hostile input.
+            throw new LogChainValidationException(version,
+                $"Proof verification failed at version {version} ({ex.GetType().Name}).");
+        }
 
-            if (!string.Equals(
-                    proofValue.Cryptosuite,
-                    EddsaJcs2022Cryptosuite.CryptosuiteName,
-                    StringComparison.Ordinal))
-                throw new LogChainValidationException(version,
-                    $"Proof at version {version} has unsupported cryptosuite " +
-                    $"'{proofValue.Cryptosuite}'.");
-
-            if (!string.Equals(proofValue.ProofPurpose, "assertionMethod", StringComparison.Ordinal))
-                throw new LogChainValidationException(version,
-                    $"Proof at version {version} has proofPurpose '{proofValue.ProofPurpose}'; " +
-                    "did:webvh requires 'assertionMethod'.");
-
-            // Verify the signature; the returned multibase is the signer's did:key id with
-            // the DID==fragment anti-spoof check already enforced. Null => invalid signature
-            // or malformed verificationMethod.
-            var signerKey = WebVhProofVerifier.VerifyAndExtractSigner(_suite, entryJsonWithoutProof, proofValue);
-            if (signerKey is null)
-                throw new LogChainValidationException(version,
-                    $"Proof at version {version} has an invalid signature or malformed " +
-                    "verificationMethod.");
-
-            // Verify the signer is an authorized update key. Exact equality between the
-            // signer's multibase key and an entry in authorizedKeys — substring matching would
-            // allow a proof with verificationMethod = "did:key:<attacker>#<authorized>" to be
-            // signed by the attacker yet authorized as the legitimate key.
-            if (!authorizedKeys.Contains(signerKey, StringComparer.Ordinal))
-                throw new LogChainValidationException(version,
-                    $"Proof at version {version} is signed by a key that is not an " +
-                    "authorized update key.");
+        if (!result.Verified)
+        {
+            var reason = result.ProofResults
+                .SelectMany(r => r.Problems)
+                .Select(p => p.Message)
+                .FirstOrDefault(m => m is not null)
+                ?? result.Problems.Select(p => p.Message).FirstOrDefault(m => m is not null)
+                ?? "a controller proof failed Data Integrity verification or is not from an active update key";
+            throw new LogChainValidationException(version,
+                $"Proof validation failed at version {version}: {reason}");
         }
     }
 

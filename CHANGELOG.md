@@ -13,37 +13,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (#101). `LogChainValidator` previously accepted an entry as soon as one proof verified from an
   active update key, silently skipping every other supplied proof; did:webvh v1.0 requires
   "Resolvers MUST reject an entry whose proof fails any check." Every supplied controller proof
-  must now be structurally valid, use `type` `DataIntegrityProof` / `cryptosuite`
-  `eddsa-jcs-2022` / `proofPurpose` `assertionMethod`, carry a valid signature, and be signed by
-  an active update key. One authorized signer still authorizes the entry — multiple valid
-  authorized proofs remain supported and no threshold semantics were introduced. `proofPurpose`
-  was previously never checked at all, so even single-proof entries with a wrong purpose were
-  accepted. **Compatibility**: NetDid's writer emits exactly one proof, and conforming
-  single-proof logs validate unchanged; a multi-proof log carrying invalid or unauthorized extras
-  is now rejected as `invalidDidLog` — intentional stricter conformance.
-- **Duplicate JSON members in a fetched did:webvh log entry are now rejected** (#101). The parser
-  used `System.Text.Json`'s default behaviour, which keeps the *last* of a duplicate pair, so a
-  log could carry a decoy `proof` (or any duplicate member) beside a valid one and have the decoy
-  silently dropped — defeating universal proof validation. Log entries now parse with
-  `AllowDuplicateProperties = false`; a duplicate member anywhere in the entry makes it
-  `invalidDidLog`.
-- **did:webvh controller proofs are validated against a defined profile** (#101). A controller
-  proof is restricted to `type`, `cryptosuite`, `verificationMethod`, `created` (optional),
-  `proofPurpose`, and `proofValue`. A proof carrying any other Data Integrity feature — `id`,
-  `expires`, `previousProof` (proof chains), `domain`, `challenge`, `@context`, or extensions —
-  is rejected as unsupported (`invalidDidLog`), because did:webvh does not define these for
-  controller proofs and the resolver does not evaluate them; silently accepting them would claim
-  a validation that was never performed (e.g. a dangling `previousProof` reference or an elapsed
-  `expires`). Because every accepted member is one the resolver validates, verification is
-  byte-faithful to the signed proof configuration without carrying raw wire JSON.
-- **did:webvh proof shape and error mapping are schema-faithful** (#101). The `proof` member now
-  parses as either a single proof object or an array (the official log-entry schema's `oneOf`);
-  `created` is optional per that schema; and structurally malformed proof content (missing or
-  non-string required members, empty arrays, non-object elements, unsupported members) is reported
-  as `invalidDidLog` during resolution instead of `notFound` (or an unhandled
-  `KeyNotFoundException` / `InvalidOperationException` from Update/Deactivate, which now surface
-  `FormatException` like other malformed-log content). API note: `DataIntegrityProofValue.Created`
-  is now optional (`string?`).
+  is now verified under the full W3C Data Integrity algorithm — delegated to DataProofsDotnet's
+  `DataIntegrityProofPipeline` — and authorized by a did:webvh resolver: the `verificationMethod`
+  must be a `did:key` (DID==fragment anti-spoof) whose Ed25519 multibase appears verbatim in the
+  active `updateKeys`, used for `proofPurpose` `assertionMethod`. One authorized signer still
+  authorizes the entry — multiple valid authorized proofs remain supported and no threshold
+  semantics were introduced. `proofPurpose` was previously never checked at all. **Compatibility**:
+  NetDid's writer emits exactly one proof, and conforming single-proof logs validate unchanged; a
+  multi-proof log carrying invalid or unauthorized extras is now rejected as `invalidDidLog` —
+  intentional stricter conformance.
+- **Schema-defined proof members are supported and their semantics enforced** (#101). The
+  did:webvh v1.0 log-entry schema requires the controller-proof members "at minimum" and leaves
+  additional properties open, so a proof carrying `id`, `expires`, `previousProof`, or extensions
+  is preserved verbatim and validated by the Data Integrity pipeline rather than rejected: a
+  `previousProof` chain is resolved (a dangling reference is rejected), and an `expires` at or
+  before the entry's `versionTime` is treated as expired. Parsed proofs retain their exact wire
+  JSON, so those members verify correctly and round-trip byte-for-byte when Update/Deactivate
+  republish a fetched log (previously extra members were dropped, corrupting a foreign proof).
+  Array-valued `domain` and full proof chains remain limited by the underlying library and are not
+  did:webvh controller-proof features. `DataIntegrityProofValue.Created` is now optional (`string?`).
+- **Duplicate JSON members and malformed content in a fetched log are rejected as `invalidDidLog`**
+  (#101). Entries now parse with `AllowDuplicateProperties = false` (recursive), so a decoy
+  duplicate `proof` — or any duplicate member — can no longer silently drop a supplied member
+  (`System.Text.Json` keeps the last of a pair). JSON-access failures at the parse boundary,
+  including a string carrying an unpaired surrogate that parses as a token but throws on decode,
+  now map to `FormatException` → `invalidDidLog` instead of `notFound` (or, for Update/Deactivate,
+  an unhandled exception). The `proof` member parses as a single object or an array (schema
+  `oneOf`).
+- **Per-entry controller-proof verification work is explicitly bounded** (#101). Verifying each
+  proof re-canonicalizes the entry, and `created` is attacker-chosen and part of the signed
+  configuration, so one active key can mint arbitrarily many *distinct* valid proofs. The resolver
+  therefore imposes an explicit, documented resource limit on controller proofs per entry
+  (default 8, configurable); an entry beyond the limit is rejected as `invalidDidLog`. This is a
+  resource policy, not a conformance rule, and is far above any realistic co-signing arrangement
+  (real entries carry one proof).
 
 ### Security
 

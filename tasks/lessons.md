@@ -59,6 +59,29 @@
 - After a reworked fix that materially changes the design (removing a field, adding a trust check),
   re-run the FULL adversarial review on the NEW surface — do not assume the prior clean verdict
   carries over. The rework's own new dedup introduced a fresh soundness bug the second pass caught.
+- Do NOT hand-roll a subset of a complex signed-format algorithm (W3C Data Integrity: type/suite/
+  purpose/expires/previousProof-chains). Delegate verification to the library that owns it
+  (DataProofsDotnet's `DataIntegrityProofPipeline`) and contribute only the method-specific POLICY
+  via an `IVerificationMethodResolver` (did:key anti-spoof + updateKeys membership + assertionMethod),
+  plus `ProofVerificationOptions` (ExpectedProofPurpose, VerificationTime=versionTime for the
+  expires policy). Re-implementing DI semantics piecemeal produced three rounds of review findings
+  (issue #101 / PR #102). Feed the pipeline the entry serialized WITH full-fidelity proofs; an
+  entry-hash check already runs before proof validation, so the non-proof content is proven
+  byte-faithful to the signed bytes.
+- A "deterministic Ed25519 ⇒ one valid proof per key" work bound is FALSE: eddsa-jcs-2022 signs the
+  whole proof configuration, and `created` is attacker-chosen, so one key mints unlimited distinct
+  valid proofs by varying `created`. Never derive a work bound from signature determinism over a
+  mutable message. Bound verification with an explicit, documented, configurable resource budget
+  (proofs per entry) over an already size-capped fetch. (Issue #101 PR review round 2.)
+- A JSON-Schema field list that is "required at minimum" with additionalProperties OPEN means extra
+  members (`id`, `expires`) are CONFORMING; rejecting them is an interop regression, not hardening.
+  Preserve and VALIDATE them (or document a deliberate, labeled limitation) — do not silently reject
+  and call it "the profile." (Issue #101 PR review round 2, reversing my own round-1 narrowing.)
+- Map JSON-ACCESS failures at the parse trust boundary, not just JsonException. `JsonDocument.Parse`
+  accepts a token like `"\uD800"` but `GetString()` throws `InvalidOperationException` on decode; a
+  `catch (JsonException)`-only boundary lets it escape to `notFound`. Catch the JSON-access set
+  (`InvalidOperationException`/`KeyNotFoundException`/`OverflowException`/`ArgumentException`/
+  `JsonException`) → the format's invalid-content error. (Issue #101 PR review round 2, F3.)
 - Treat caller-supplied interface-typed collections (IReadOnlyList<T> etc.) as adversarial
   code at trust boundaries: an implementation can return different contents per
   enumeration (TOCTOU). Snapshot ONCE at entry and use the private copy for validation,

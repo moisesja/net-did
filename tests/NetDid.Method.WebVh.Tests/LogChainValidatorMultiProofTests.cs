@@ -18,12 +18,15 @@ namespace NetDid.Method.WebVh.Tests;
 /// Before the fix, <c>LogChainValidator.ValidateProof</c> implemented an existential rule —
 /// the entry was accepted as soon as one proof verified from an active update key, silently
 /// skipping every other supplied proof. did:webvh v1.0 §Authorized Keys requires the
-/// opposite: "Resolvers MUST reject an entry whose proof fails any check." These tests pin
-/// the universal rule (every supplied controller proof must be valid and authorized; one
-/// authorized signer suffices; no threshold semantics), the explicit proofPurpose /
-/// type / cryptosuite policy, the schema-supported single-proof-object shape, optional
-/// <c>created</c>, byte-faithful round-trip of foreign proof members, and the
-/// <c>invalidDidLog</c> error mapping for malformed proof content.
+/// opposite: "Resolvers MUST reject an entry whose proof fails any check." Verification now
+/// delegates every proof to DataProofsDotnet's Data Integrity pipeline with a did:webvh
+/// authorization resolver, an <c>assertionMethod</c> purpose expectation, and an
+/// <c>expires</c> policy pinned to the entry's <c>versionTime</c>. These tests pin the
+/// universal rule (every supplied controller proof must verify and be authorized; one
+/// authorized signer suffices; no threshold semantics), support for schema-defined members
+/// (<c>id</c>, <c>expires</c>) and their semantics, the single-proof-object shape, optional
+/// <c>created</c>, rejection of duplicate JSON members and malformed content
+/// (<c>invalidDidLog</c>), and the explicit per-entry proof budget.
 /// </summary>
 public class LogChainValidatorMultiProofTests
 {
@@ -72,7 +75,9 @@ public class LogChainValidatorMultiProofTests
         LogEntry entry,
         KeyPair keyPair,
         string proofPurpose = "assertionMethod",
-        string? created = null)
+        string? created = null,
+        string? expires = null,
+        string? id = null)
     {
         var vm = $"did:key:{keyPair.MultibasePublicKey}#{keyPair.MultibasePublicKey}";
         var proofOptions = new DataIntegrityProof
@@ -80,6 +85,8 @@ public class LogChainValidatorMultiProofTests
             Cryptosuite = EddsaJcs2022Cryptosuite.CryptosuiteName,
             VerificationMethod = vm,
             Created = created,
+            Expires = expires,
+            Id = id,
             ProofPurpose = proofPurpose,
         };
 
@@ -95,7 +102,10 @@ public class LogChainValidatorMultiProofTests
             VerificationMethod = proof.VerificationMethod!,
             Created = proof.Created,
             ProofPurpose = proof.ProofPurpose!,
-            ProofValue = proof.ProofValue!
+            ProofValue = proof.ProofValue!,
+            // Verbatim signed proof JSON: carries any id/expires so the signature covers them
+            // and they round-trip, exactly as a foreign implementation's proof would.
+            RawJson = JsonSerializer.Serialize(proof, DataProofsJsonOptions.Default)
         };
     }
 
@@ -226,11 +236,11 @@ public class LogChainValidatorMultiProofTests
             entries[0], attackerKp, created: authorizedProof.Created);
         var mixed = entries[0] with { Proof = [unauthorizedProof, authorizedProof] };
 
-        var act = () => new LogChainValidator(new EddsaJcs2022Cryptosuite())
+        var act = () => new LogChainValidator()
             .ValidateChain([mixed]);
 
         act.Should().Throw<LogChainValidationException>()
-            .WithMessage("*not an authorized update key*");
+            .WithMessage("*Proof validation failed*");
     }
 
     // ================================================================
@@ -332,11 +342,11 @@ public class LogChainValidatorMultiProofTests
         };
         var tampered = entries[0] with { Proof = [original, wrongType] };
 
-        var act = () => new LogChainValidator(new EddsaJcs2022Cryptosuite())
+        var act = () => new LogChainValidator()
             .ValidateChain([tampered]);
 
         act.Should().Throw<LogChainValidationException>()
-            .WithMessage("*unsupported type*");
+            .WithMessage("*version 1*");
     }
 
     [Fact]
@@ -357,11 +367,11 @@ public class LogChainValidatorMultiProofTests
         };
         var tampered = entries[0] with { Proof = [original, wrongSuite] };
 
-        var act = () => new LogChainValidator(new EddsaJcs2022Cryptosuite())
+        var act = () => new LogChainValidator()
             .ValidateChain([tampered]);
 
         act.Should().Throw<LogChainValidationException>()
-            .WithMessage("*unsupported cryptosuite*");
+            .WithMessage("*version 1*");
     }
 
     // ================================================================
@@ -510,34 +520,126 @@ public class LogChainValidatorMultiProofTests
     }
 
     // ================================================================
-    // Profile narrowing: proofs carrying features the resolver does
-    // not evaluate are rejected, not silently accepted (PR #102 review)
+    // Schema-defined proof members (id, expires) are supported and their
+    // semantics enforced via the Data Integrity pipeline (PR #102 review, finding 2)
     // ================================================================
 
-    [Theory]
-    [InlineData("previousProof", "urn:missing-proof")]
-    [InlineData("expires", "2000-01-01T00:00:00Z")]
-    [InlineData("id", "not a url")]
-    [InlineData("domain", "example.com")]
-    [InlineData("challenge", "abc123")]
-    [InlineData("@context", "https://w3id.org/security/data-integrity/v2")]
-    public async Task Issue101_ProofWithUnsupportedMember_ResolvesInvalidDidLog(
-        string member, string value)
+    [Fact]
+    public async Task Issue101_SignedProofWithFutureExpires_Resolves()
     {
-        // A proof carrying a Data Integrity feature outside the did:webvh controller-proof
-        // profile is rejected. Accepting it would claim a validation the resolver never
-        // performs (e.g. dangling previousProof, expiry policy, id-as-URL). The value is added
-        // at the JSON level so it participates in the wire proof the parser must reject.
+        // expires is schema-defined and additionalProperties is open, so a genuinely signed
+        // proof with a future expires must verify (not be rejected as unsupported).
+        var (kpA, signerA) = CreateEd25519();
+        var (did, entries, _) = await CreateLogAsync(signerA);
+
+        entries[0] = entries[0] with
+        {
+            Proof = [await SignEntryAsync(entries[0], kpA,
+                created: entries[0].Proof![0].Created, expires: "2099-12-31T23:59:59Z")]
+        };
+        var log = SerializeLog(entries);
+        Encoding.UTF8.GetString(log).Should().Contain("\"expires\"");
+
+        var result = await ResolveLogAsync(did, log);
+
+        result.ResolutionMetadata.Error.Should().BeNull();
+        result.DidDocument.Should().NotBeNull();
+    }
+
+    [Fact]
+    public async Task Issue101_SignedProofWithPastExpires_ResolvesInvalidDidLog()
+    {
+        // A proof whose expires precedes the entry's versionTime is expired: the resolver
+        // enforces the expires policy against versionTime and rejects it.
+        var (kpA, signerA) = CreateEd25519();
+        var (did, entries, _) = await CreateLogAsync(signerA);
+
+        entries[0] = entries[0] with
+        {
+            Proof = [await SignEntryAsync(entries[0], kpA,
+                created: entries[0].Proof![0].Created, expires: "2000-01-01T00:00:00Z")]
+        };
+
+        var result = await ResolveLogAsync(did, SerializeLog(entries));
+
+        result.DidDocument.Should().BeNull();
+        result.ResolutionMetadata.Error.Should().Be("invalidDidLog");
+    }
+
+    [Fact]
+    public async Task Issue101_SignedProofWithId_Resolves()
+    {
+        // id is schema-defined; a genuinely signed proof carrying it must verify and the id
+        // must round-trip on re-serialization.
+        var (kpA, signerA) = CreateEd25519();
+        var (did, entries, _) = await CreateLogAsync(signerA);
+
+        entries[0] = entries[0] with
+        {
+            Proof = [await SignEntryAsync(entries[0], kpA,
+                created: entries[0].Proof![0].Created, id: "urn:proof:1")]
+        };
+        var log = SerializeLog(entries);
+        Encoding.UTF8.GetString(log).Should().Contain("urn:proof:1");
+
+        var result = await ResolveLogAsync(did, log);
+
+        result.ResolutionMetadata.Error.Should().BeNull();
+        result.DidDocument.Should().NotBeNull();
+    }
+
+    [Fact]
+    public async Task Issue101_SignedProofWithDanglingPreviousProof_ResolvesInvalidDidLog()
+    {
+        // A previousProof reference that matches no proof id in the entry is a dangling chain
+        // reference; the Data Integrity pipeline rejects it. (Accepting it was a prior defect.)
+        var (kpA, signerA) = CreateEd25519();
+        var (did, entries, _) = await CreateLogAsync(signerA);
+
+        var signed = await SignEntryAsync(entries[0], kpA, created: entries[0].Proof![0].Created);
+        // Add a previousProof referencing a proof id that does not exist in the entry. The
+        // pipeline resolves chain references before checking the signature, so a dangling
+        // reference is rejected regardless of the signature.
+        var rawWithPrev = signed.RawJson!.TrimEnd('}')
+            + ",\"previousProof\":\"urn:missing\"}";
+        var proofWithPrev = new DataIntegrityProofValue
+        {
+            Type = signed.Type,
+            Cryptosuite = signed.Cryptosuite,
+            VerificationMethod = signed.VerificationMethod,
+            Created = signed.Created,
+            ProofPurpose = signed.ProofPurpose,
+            ProofValue = signed.ProofValue,
+            RawJson = rawWithPrev
+        };
+        entries[0] = entries[0] with { Proof = [proofWithPrev] };
+
+        var result = await ResolveLogAsync(did, SerializeLog(entries));
+
+        result.DidDocument.Should().BeNull();
+        result.ResolutionMetadata.Error.Should().Be("invalidDidLog");
+    }
+
+    // ================================================================
+    // Malformed Unicode escapes map to invalidDidLog (PR #102 review, finding 3)
+    // ================================================================
+
+    [Fact]
+    public async Task Issue101_ProofWithUnpairedSurrogate_ResolvesInvalidDidLog()
+    {
+        // "\uD800" is a token JsonDocument.Parse accepts but GetString throws on. The parse
+        // boundary must map that to FormatException -> invalidDidLog, never notFound.
         var (_, signerA) = CreateEd25519();
         var (did, _, jsonl) = await CreateLogAsync(signerA);
 
-        var mutated = MutateGenesisLine(jsonl, node =>
-            node["proof"]![0]!.AsObject()[member] = value);
+        var line = jsonl.Split('\n')[0];
+        var doctored = line.Replace(
+            "\"proofPurpose\":\"assertionMethod\"", "\"proofPurpose\":\"\\uD800\"");
 
-        var parse = () => LogEntrySerializer.ParseJsonLines(Encoding.UTF8.GetBytes(mutated));
-        parse.Should().Throw<FormatException>().WithMessage("*unsupported member*");
+        var parse = () => LogEntrySerializer.ParseJsonLines(Encoding.UTF8.GetBytes(doctored));
+        parse.Should().Throw<FormatException>();
 
-        var result = await ResolveLogAsync(did, Encoding.UTF8.GetBytes(mutated));
+        var result = await ResolveLogAsync(did, Encoding.UTF8.GetBytes(doctored));
         result.DidDocument.Should().BeNull();
         result.ResolutionMetadata.Error.Should().Be("invalidDidLog");
     }
@@ -630,20 +732,26 @@ public class LogChainValidatorMultiProofTests
     }
 
     // ================================================================
-    // Work is bounded: identical proofs verified once; large entry (finding 3)
+    // Verification work is bounded by an explicit proof budget (PR #102 review, finding 1)
     // ================================================================
 
     [Fact]
-    public async Task Issue101_ManyIdenticalValidProofs_Resolves()
+    public async Task Issue101_ProofCountAtBudget_Resolves()
     {
-        // Removing the arbitrary count cap must not reintroduce the amplification it guarded:
-        // byte-identical proofs are verified once (dedup), so a large repeated-proof array
-        // still resolves without re-canonicalizing the entry thousands of times.
-        var (_, signerA) = CreateEd25519();
+        // A count at the budget resolves (the budget bounds work; it does not reject small
+        // multi-proof entries). These are distinct valid proofs from one key (varying created),
+        // which the false "distinct <= active keys" claim wrongly assumed impossible.
+        var (kpA, signerA) = CreateEd25519();
         var (did, entries, _) = await CreateLogAsync(signerA);
 
-        var proof = entries[0].Proof![0];
-        entries[0] = entries[0] with { Proof = Enumerable.Repeat(proof, 5000).ToList() };
+        var baseInstant = DateTimeOffset.Parse(entries[0].Proof![0].Created!).UtcDateTime;
+        var proofs = new List<DataIntegrityProofValue>();
+        for (int i = 0; i < LogChainValidator.DefaultMaxProofsPerEntry; i++)
+        {
+            var created = baseInstant.AddSeconds(-1 - i).ToString("yyyy-MM-ddTHH:mm:ssZ");
+            proofs.Add(await SignEntryAsync(entries[0], kpA, created: created));
+        }
+        entries[0] = entries[0] with { Proof = proofs };
 
         var result = await ResolveLogAsync(did, SerializeLog(entries));
 
@@ -652,26 +760,21 @@ public class LogChainValidatorMultiProofTests
     }
 
     [Fact]
-    public async Task Issue101_DedupDoesNotSkipDistinctCreatedVariant_ResolvesInvalidDidLog()
+    public async Task Issue101_DistinctValidProofsBeyondBudget_ResolvesInvalidDidLog()
     {
-        // Dedup must not collide a valid created-less proof with a distinct invalid proof that
-        // only differs by carrying created:"" (a different, and invalid, signed configuration).
-        // A joined-string identity that maps null and "" to the same key would skip the invalid
-        // proof and wrongly accept the entry (PR #102 review, adversarial finding F1).
+        // The reviewer's amplification repro: one key mints many DISTINCT valid proofs by
+        // varying created. Beyond the budget the entry is rejected, bounding verification work.
         var (kpA, signerA) = CreateEd25519();
         var (did, entries, _) = await CreateLogAsync(signerA);
 
-        var validNoCreated = await SignEntryAsync(entries[0], kpA, created: null);
-        var invalidEmptyCreated = new DataIntegrityProofValue
+        var baseInstant = DateTimeOffset.Parse(entries[0].Proof![0].Created!).UtcDateTime;
+        var proofs = new List<DataIntegrityProofValue>();
+        for (int i = 0; i < LogChainValidator.DefaultMaxProofsPerEntry + 1; i++)
         {
-            Type = validNoCreated.Type,
-            Cryptosuite = validNoCreated.Cryptosuite,
-            VerificationMethod = validNoCreated.VerificationMethod,
-            Created = "",                       // present-but-empty: not a valid dateTimeStamp
-            ProofPurpose = validNoCreated.ProofPurpose,
-            ProofValue = validNoCreated.ProofValue
-        };
-        entries[0] = entries[0] with { Proof = [validNoCreated, invalidEmptyCreated] };
+            var created = baseInstant.AddSeconds(-1 - i).ToString("yyyy-MM-ddTHH:mm:ssZ");
+            proofs.Add(await SignEntryAsync(entries[0], kpA, created: created));
+        }
+        entries[0] = entries[0] with { Proof = proofs };
 
         var result = await ResolveLogAsync(did, SerializeLog(entries));
 
@@ -680,37 +783,29 @@ public class LogChainValidatorMultiProofTests
     }
 
     [Fact]
-    public async Task Issue101_LargeEntryWithRepeatedProofs_Resolves()
+    public async Task Issue101_ProofWithEmptyCreated_ResolvesInvalidDidLog()
     {
-        // Realistically large entry (many services) with repeated proofs: dedup bounds the
-        // per-proof whole-document canonicalization work to one verification.
+        // created:"" is present but not a valid dateTimeStamp; every supplied proof must verify,
+        // so an entry pairing a valid proof with this one is rejected.
         var (kpA, signerA) = CreateEd25519();
-        var (method, httpClient) = CreateMethod();
+        var (did, entries, _) = await CreateLogAsync(signerA);
 
-        var services = Enumerable.Range(0, 200).Select(i => new Service
+        var valid = await SignEntryAsync(entries[0], kpA, created: null);
+        var invalidEmptyCreated = new DataIntegrityProofValue
         {
-            Id = $"#svc-{i}",
-            Type = "TestService",
-            ServiceEndpoint = ServiceEndpointValue.FromUri($"https://example.com/svc/{i}")
-        }).ToList();
+            Type = valid.Type,
+            Cryptosuite = valid.Cryptosuite,
+            VerificationMethod = valid.VerificationMethod,
+            Created = "",                       // present-but-empty: not a valid dateTimeStamp
+            ProofPurpose = valid.ProofPurpose,
+            ProofValue = valid.ProofValue
+        };
+        entries[0] = entries[0] with { Proof = [valid, invalidEmptyCreated] };
 
-        var createResult = await method.CreateAsync(new DidWebVhCreateOptions
-        {
-            Domain = "example.com",
-            UpdateKey = signerA,
-            Services = services
-        });
-        var did = createResult.Did.Value;
-        var entries = LogEntrySerializer.ParseJsonLines(Encoding.UTF8.GetBytes(
-            (string)createResult.Artifacts![DidWebVhArtifacts.DidJsonl])).ToList();
+        var result = await ResolveLogAsync(did, SerializeLog(entries));
 
-        entries[0] = entries[0] with { Proof = Enumerable.Repeat(entries[0].Proof![0], 2000).ToList() };
-        httpClient.SetLogResponse(DidUrlMapper.MapToLogUrl(did), SerializeLog(entries));
-
-        var result = await method.ResolveAsync(did);
-
-        result.ResolutionMetadata.Error.Should().BeNull();
-        result.DidDocument.Should().NotBeNull();
+        result.DidDocument.Should().BeNull();
+        result.ResolutionMetadata.Error.Should().Be("invalidDidLog");
     }
 
     // ================================================================

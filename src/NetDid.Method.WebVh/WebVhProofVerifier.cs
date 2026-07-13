@@ -6,18 +6,22 @@ using NetDid.Method.WebVh.Model;
 namespace NetDid.Method.WebVh;
 
 /// <summary>
-/// Verifies <c>eddsa-jcs-2022</c> Data Integrity proofs on did:webvh log / witness entries via
+/// Verifies <c>eddsa-jcs-2022</c> Data Integrity proofs on did:webvh <b>witness</b> entries via
 /// DataProofsDotnet, and parses a <c>did:key</c> verificationMethod into its authorized
-/// multibase key (enforcing the DID==fragment anti-spoof rule). Relocated here from the
-/// removed <c>NetDid.Core.Crypto.DataIntegrity.DataIntegrityProofEngine</c>; the DID-method-aware
-/// parser has no home in DataProofsDotnet (whose dependency direction forbids DID parsing).
+/// multibase key (enforcing the DID==fragment anti-spoof rule). Controller proofs on log entries
+/// are verified by the full <c>DataIntegrityProofPipeline</c> (see <see cref="LogChainValidator"/>
+/// and <see cref="WebVhUpdateKeyResolver"/>); <see cref="ExtractDidKeyMultibase"/> is shared with
+/// that path. Relocated here from the removed
+/// <c>NetDid.Core.Crypto.DataIntegrity.DataIntegrityProofEngine</c>; the DID-method-aware parser
+/// has no home in DataProofsDotnet (whose dependency direction forbids DID parsing).
 /// </summary>
 internal static class WebVhProofVerifier
 {
     /// <summary>
-    /// Verifies a single proof's signature over the entry JSON (with the <c>proof</c> removed).
-    /// Returns the signer's multibase key when the signature is valid AND the verificationMethod
-    /// is a well-formed <c>did:key</c> (anti-spoof enforced); otherwise <c>null</c>.
+    /// Verifies a single witness proof's signature over the entry JSON (with the <c>proof</c>
+    /// removed). Returns the signer's multibase key when the signature is valid AND the
+    /// verificationMethod is a well-formed <c>did:key</c> (anti-spoof enforced); otherwise
+    /// <c>null</c>.
     /// </summary>
     public static string? VerifyAndExtractSigner(
         EddsaJcs2022Cryptosuite suite,
@@ -38,13 +42,12 @@ internal static class WebVhProofVerifier
             return null;
         }
 
-        // Reconstruct the proof from the modeled fields. For controller proofs the parser
-        // restricts the wire proof to exactly these members, so the reconstruction is
-        // byte-faithful to the signed proof configuration. Witness proofs (from did-witness.json)
-        // are not profile-restricted; a witness proof carrying any member outside this set drops
-        // it here and therefore fails signature verification — fail closed, never forge. Created
-        // is passed verbatim (no DateTimeOffset round-trip) so the hashed proof configuration is
-        // byte-identical to the one signed at creation time.
+        // Reconstruct the proof from the modeled fields. This path serves witness proofs (from
+        // did-witness.json); controller proofs in a log entry are verified by the full Data
+        // Integrity pipeline instead. A witness proof carrying any member outside this modeled
+        // set drops it here and therefore fails signature verification — fail closed, never
+        // forge. Created is passed verbatim (no DateTimeOffset round-trip) so the hashed proof
+        // configuration is byte-identical to the one signed at creation time.
         var proof = new DataIntegrityProof
         {
             Type = proofValue.Type,

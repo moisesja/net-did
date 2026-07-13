@@ -1074,34 +1074,36 @@ computed from the placeholder-bearing preliminary genesis, while the genesis ent
 after SCID substitution with `versionId` temporarily set to the SCID.
 
 **Controller proofs (issue #101).** A did:webvh entry requires at least one controller proof. One
-active update key is sufficient to authorize the entry. If multiple controller proofs are supplied,
-every supplied proof must be structurally valid, cryptographically valid (`type`
-`DataIntegrityProof`, `cryptosuite` `eddsa-jcs-2022`, `proofPurpose` `assertionMethod`), and signed
-by an active update key — per the spec's Authorized Keys rule, "Resolvers MUST reject an entry
-whose proof fails any check." Controller proofs do not use threshold semantics (that exception is
+active update key is sufficient to authorize the entry. Every supplied controller proof is verified
+under the full W3C Data Integrity algorithm — delegated to DataProofsDotnet's
+`DataIntegrityProofPipeline` — and authorized by NetDid's did:webvh policy: the `verificationMethod`
+must be a `did:key` (DID==fragment anti-spoof) whose Ed25519 multibase appears verbatim in the
+active `updateKeys`, used for `proofPurpose` `assertionMethod`. If any supplied proof fails any
+check the entry is rejected, per the spec's Authorized Keys rule ("Resolvers MUST reject an entry
+whose proof fails any check"). Controller proofs do not use threshold semantics (that exception is
 witness-specific). The official log-entry schema permits `proof` as a single proof object or an
-array; NetDid parses both (normalizing to a list and re-emitting the array form) and treats
-`created` as optional per that schema.
+array; NetDid parses both and treats `created` as optional per that schema.
 
-A did:webvh controller proof is restricted to the profile members `type`, `cryptosuite`,
-`verificationMethod`, `created` (optional), `proofPurpose`, and `proofValue`. A proof carrying any
-other Data Integrity feature — `id`, `expires`, `previousProof` (proof chains), `domain`,
-`challenge`, `@context`, or extensions — is rejected as unsupported, because did:webvh does not
-define these for controller proofs and the resolver does not evaluate them; accepting them would
-claim a validation (dangling-reference resolution, an expiry policy, id-as-URL) that is not
-performed. Because every accepted member is one the resolver validates, verification over the
-modeled fields is byte-faithful to the signed proof configuration. To keep universal validation
-sound the parser also rejects duplicate JSON members anywhere in a fetched entry
-(`AllowDuplicateProperties = false`): `System.Text.Json` keeps the last of a duplicate pair, so a
-decoy `proof` beside a valid one would otherwise be silently dropped. Malformed proof content in a
-fetched log MUST be reported as `invalidDidLog`, not as `notFound`.
+The did:webvh v1.0 schema requires the controller-proof members *at minimum* and leaves additional
+properties open, so schema-defined extras (`id`, `expires`) and other Data Integrity members are
+preserved verbatim (`DataIntegrityProofValue.RawJson`) and validated, not rejected: the pipeline
+resolves any `previousProof` chain and rejects a dangling reference, and a proof whose `expires` is
+at or before the entry's `versionTime` is treated as expired (the resolver pins the Data Integrity
+verification time to `versionTime`). Preserving the wire JSON also lets Update/Deactivate republish
+a fetched log without corrupting a foreign implementation's proof. Array-valued `domain` and full
+proof chains are limited by the underlying library and are not did:webvh controller-proof features.
+To keep universal validation sound the parser rejects duplicate JSON members anywhere in a fetched
+entry (`AllowDuplicateProperties = false`) — `System.Text.Json` keeps the last of a duplicate pair,
+so a decoy `proof` beside a valid one would otherwise be silently dropped — and maps JSON-access
+failures at the parse boundary (e.g. a string carrying an unpaired surrogate that decodes with an
+error) to `invalidDidLog`, never `notFound`.
 
-Every supplied proof is verified, and each verification re-canonicalizes the entry, so validation
-work is bounded rather than capped: verification stops at the first failing proof; byte-identical
-duplicate proofs are verified once; and because `eddsa-jcs-2022` (Ed25519) signatures are
-deterministic, an active key produces exactly one valid signature over a given entry, so the number
-of *distinct* proofs that can pass is at most the number of active update keys. No arbitrary
-per-entry proof count is imposed, so a conforming multi-proof log is never rejected on count.
+Verifying each proof re-canonicalizes the entry, and `created` is attacker-chosen and part of the
+signed configuration, so one active key can mint arbitrarily many *distinct* valid proofs. The
+resolver therefore imposes an explicit, configurable resource limit on controller proofs per entry
+(default 8); an entry beyond the limit is rejected as `invalidDidLog`. This is a resource policy,
+not a conformance rule — real entries carry a single controller proof, so the default is far above
+any realistic co-signing arrangement.
 
 `versionTime` is part of the hash- and proof-protected entry. NetDid formats it in UTC with
 the invariant Gregorian calendar, preserving fractional seconds when present while retaining

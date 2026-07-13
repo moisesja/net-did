@@ -29,7 +29,7 @@ public sealed class DidWebVhMethod : DidMethodBase
     {
         _httpClient = httpClient ?? throw new ArgumentNullException(nameof(httpClient));
         _suite = new EddsaJcs2022Cryptosuite();
-        _chainValidator = new LogChainValidator(_suite);
+        _chainValidator = new LogChainValidator();
         _witnessValidator = new WitnessValidator(_suite);
         _logger = logger ?? NullLogger<DidWebVhMethod>.Instance;
     }

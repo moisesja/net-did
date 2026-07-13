@@ -184,6 +184,17 @@ public static class LogEntrySerializer
         writer.WriteStartArray();
         foreach (var proof in proofs)
         {
+            // A proof parsed from a log re-emits verbatim (byte-identical), preserving members
+            // outside the modeled set (id, expires, extensions) that the signature covers, so
+            // republishing a fetched log during Update/Deactivate never corrupts another
+            // implementation's proof. A programmatically created proof has no RawJson and is
+            // written from the modeled members (the shape NetDid emits).
+            if (proof.RawJson is not null)
+            {
+                writer.WriteRawValue(proof.RawJson);
+                continue;
+            }
+
             writer.WriteStartObject();
             writer.WriteString("type", proof.Type);
             writer.WriteString("cryptosuite", proof.Cryptosuite);
@@ -215,48 +226,61 @@ public static class LogEntrySerializer
         }
 
         using (doc)
+        try
         {
-        var root = doc.RootElement;
+            var root = doc.RootElement;
 
-        foreach (var property in root.EnumerateObject())
-        {
-            if (property.Name is not ("versionId" or "versionTime" or "parameters" or "state" or "proof"))
+            foreach (var property in root.EnumerateObject())
+            {
+                if (property.Name is not ("versionId" or "versionTime" or "parameters" or "state" or "proof"))
+                    throw new FormatException(
+                        $"Unknown did:webvh log-entry property '{property.Name}'.");
+            }
+
+            var versionId = root.GetProperty("versionId").GetString()!;
+            if (!root.TryGetProperty("versionTime", out var versionTimeElement)
+                || versionTimeElement.ValueKind != JsonValueKind.String
+                || versionTimeElement.GetString() is not { } versionTime)
+            {
                 throw new FormatException(
-                    $"Unknown did:webvh log-entry property '{property.Name}'.");
+                    "did:webvh versionTime must be a non-null JSON string.");
+            }
+            var parameters = ParseParameters(root.GetProperty("parameters"));
+
+            // Parse state as a DID Document
+            var stateJson = root.GetProperty("state").GetRawText();
+            var state = DidDocumentSerializer.Deserialize(stateJson);
+
+            // Parse proof (optional here; chain validation requires one per entry). The schema
+            // permits a single proof object or an array of proof objects.
+            IReadOnlyList<DataIntegrityProofValue>? proof = null;
+            if (root.TryGetProperty("proof", out var proofProp))
+            {
+                proof = ParseProof(proofProp);
+            }
+
+            return new LogEntry
+            {
+                VersionId = versionId,
+                VersionTime = WebVhTimestamp.Parse(versionTime),
+                VersionTimeWireValue = versionTime,
+                VersionTimeRawJson = versionTimeElement.GetRawText(),
+                Parameters = parameters,
+                State = state,
+                Proof = proof
+            };
         }
-
-        var versionId = root.GetProperty("versionId").GetString()!;
-        if (!root.TryGetProperty("versionTime", out var versionTimeElement)
-            || versionTimeElement.ValueKind != JsonValueKind.String
-            || versionTimeElement.GetString() is not { } versionTime)
+        catch (Exception ex) when (ex is InvalidOperationException
+            or KeyNotFoundException
+            or OverflowException
+            or ArgumentException
+            or JsonException)
         {
-            throw new FormatException(
-                "did:webvh versionTime must be a non-null JSON string.");
-        }
-        var parameters = ParseParameters(root.GetProperty("parameters"));
-
-        // Parse state as a DID Document
-        var stateJson = root.GetProperty("state").GetRawText();
-        var state = DidDocumentSerializer.Deserialize(stateJson);
-
-        // Parse proof (optional here; chain validation requires one per entry). The schema
-        // permits a single proof object or an array of proof objects.
-        IReadOnlyList<DataIntegrityProofValue>? proof = null;
-        if (root.TryGetProperty("proof", out var proofProp))
-        {
-            proof = ParseProof(proofProp);
-        }
-
-        return new LogEntry
-        {
-            VersionId = versionId,
-            VersionTime = WebVhTimestamp.Parse(versionTime),
-            VersionTimeWireValue = versionTime,
-            VersionTimeRawJson = versionTimeElement.GetRawText(),
-            Parameters = parameters,
-            State = state,
-            Proof = proof
-        };
+            // Map JSON-access failures at this trust boundary to FormatException so a fetched
+            // log with malformed content (e.g. a string carrying an unpaired surrogate that
+            // parses as a token but throws on GetString) resolves as invalidDidLog, not notFound
+            // or an unhandled exception. Deliberate FormatExceptions above propagate unchanged.
+            throw new FormatException("did:webvh log entry contains malformed content.", ex);
         }
     }
 
@@ -399,30 +423,16 @@ public static class LogEntrySerializer
         return proofs.AsReadOnly();
     }
 
-    /// <summary>The complete did:webvh controller-proof member set (issue #101).</summary>
-    private static readonly HashSet<string> AllowedProofMembers = new(StringComparer.Ordinal)
-    {
-        "type", "cryptosuite", "verificationMethod", "created", "proofPurpose", "proofValue"
-    };
-
     private static DataIntegrityProofValue ParseProofObject(JsonElement element)
     {
         if (element.ValueKind != JsonValueKind.Object)
             throw new FormatException("Every did:webvh log-entry proof must be a JSON object.");
 
-        // Restrict to the did:webvh controller-proof profile. Any other Data Integrity member
-        // (id, expires, previousProof, domain, challenge, @context, extensions) is rejected as
-        // unsupported: did:webvh does not define these for controller proofs and the resolver
-        // does not evaluate them, so accepting them would claim a validation this method does
-        // not perform. Because every accepted member is one this model surfaces, verification
-        // over the modeled fields is byte-faithful to the signed proof configuration.
-        foreach (var member in element.EnumerateObject())
-        {
-            if (!AllowedProofMembers.Contains(member.Name))
-                throw new FormatException(
-                    $"did:webvh log-entry proof carries unsupported member '{member.Name}'.");
-        }
-
+        // The did:webvh v1.0 log-entry schema requires these members "at minimum" and leaves
+        // additional properties open, so extra Data Integrity members (id, expires, previousProof,
+        // @context, extensions) are preserved verbatim via RawJson — not rejected — and validated
+        // by the full Data Integrity algorithm at verification time. The modeled fields below are
+        // convenience metadata; RawJson is the fidelity source for verification and re-emission.
         return new DataIntegrityProofValue
         {
             Type = RequireProofString(element, "type"),
@@ -430,7 +440,8 @@ public static class LogEntrySerializer
             VerificationMethod = RequireProofString(element, "verificationMethod"),
             Created = OptionalProofString(element, "created"),
             ProofPurpose = RequireProofString(element, "proofPurpose"),
-            ProofValue = RequireProofString(element, "proofValue")
+            ProofValue = RequireProofString(element, "proofValue"),
+            RawJson = element.GetRawText()
         };
     }
 

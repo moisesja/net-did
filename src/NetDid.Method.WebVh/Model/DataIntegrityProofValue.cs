@@ -7,15 +7,15 @@ namespace NetDid.Method.WebVh.Model;
 /// <remarks>
 /// For log entries this models a <b>controller proof</b>. A did:webvh entry requires at
 /// least one controller proof, and one active update key is sufficient to authorize the
-/// entry. If multiple controller proofs are supplied, every supplied proof must be
-/// structurally valid, cryptographically valid (<c>type</c> <c>DataIntegrityProof</c>,
-/// <c>cryptosuite</c> <c>eddsa-jcs-2022</c>, <c>proofPurpose</c> <c>assertionMethod</c>),
-/// and signed by an active update key. Controller proofs do not use threshold semantics.
-/// A did:webvh controller proof is restricted to the members below; log entries whose proofs
-/// carry other Data Integrity features (<c>id</c>, <c>expires</c>, <c>previousProof</c>,
-/// <c>domain</c>, <c>challenge</c>, <c>@context</c>, or extensions) are rejected as
-/// unsupported, because did:webvh does not define them for controller proofs and the resolver
-/// does not evaluate them. See issue #101.
+/// entry. If multiple controller proofs are supplied, every supplied proof must verify under
+/// the full W3C Data Integrity algorithm (delegated to DataProofsDotnet) — the applicable
+/// <c>type</c>/<c>cryptosuite</c>/<c>proofPurpose</c>, a valid signature, any
+/// <c>previousProof</c> chain, and an unexpired <c>expires</c> relative to the entry's
+/// <c>versionTime</c> — and be signed by a key in the active <c>updateKeys</c>. Controller
+/// proofs do not use threshold semantics. The did:webvh v1.0 log-entry schema requires the
+/// members below "at minimum" and leaves additional properties open, so schema-defined extras
+/// (<c>id</c>, <c>expires</c>) and other Data Integrity members are preserved and validated
+/// rather than rejected. See issue #101.
 /// </remarks>
 public sealed class DataIntegrityProofValue
 {
@@ -40,4 +40,16 @@ public sealed class DataIntegrityProofValue
 
     /// <summary>The multibase-encoded signature value.</summary>
     public required string ProofValue { get; init; }
+
+    /// <summary>
+    /// Verbatim wire JSON of the proof object as parsed from a DID log; <c>null</c> for
+    /// programmatically constructed proofs. The <c>eddsa-jcs-2022</c> signature covers the whole
+    /// proof configuration, including schema-permitted members this type does not surface
+    /// (<c>id</c>, <c>expires</c>, and any extensions). This verbatim JSON is the input to Data
+    /// Integrity verification, and re-emitting it preserves those members byte-for-byte when
+    /// Update/Deactivate republish a fetched log. The setter is internal because it is
+    /// parser-populated fidelity data. When <c>null</c>, serialization falls back to the modeled
+    /// members above (the shape NetDid emits when it creates a proof).
+    /// </summary>
+    public string? RawJson { get; internal init; }
 }

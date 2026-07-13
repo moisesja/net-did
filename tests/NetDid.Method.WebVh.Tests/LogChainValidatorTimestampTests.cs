@@ -16,7 +16,7 @@ public sealed class LogChainValidatorTimestampTests
     public async Task ValidateChain_RejectsEqualAdjacentVersionTimes()
     {
         var (_, _, entries) = await CreateAuthenticatedChainAsync(time => time);
-        var validator = new LogChainValidator(_suite);
+        var validator = new LogChainValidator();
 
         var act = () => validator.ValidateChain(entries);
 
@@ -28,7 +28,7 @@ public sealed class LogChainValidatorTimestampTests
     public async Task ValidateChain_RejectsDecreasingAdjacentVersionTimes()
     {
         var (_, _, entries) = await CreateAuthenticatedChainAsync(time => time.AddTicks(-1));
-        var validator = new LogChainValidator(_suite);
+        var validator = new LogChainValidator();
 
         var act = () => validator.ValidateChain(entries);
 
@@ -40,7 +40,7 @@ public sealed class LogChainValidatorTimestampTests
     public async Task ValidateChain_AcceptsFractionalSecondIncrease()
     {
         var (_, _, entries) = await CreateAuthenticatedChainAsync(time => time.AddTicks(1));
-        var validator = new LogChainValidator(_suite);
+        var validator = new LogChainValidator();
 
         var act = () => validator.ValidateChain(entries);
 
@@ -108,7 +108,7 @@ public sealed class LogChainValidatorTimestampTests
         var (_, _, entries) = await CreateAuthenticatedChainAsync(
             time => time.AddTicks(1),
             new LogEntryParameters { Witness = malformedPolicy });
-        var validator = new LogChainValidator(_suite);
+        var validator = new LogChainValidator();
 
         var act = () => validator.ValidateChain(entries);
 
@@ -144,7 +144,7 @@ public sealed class LogChainValidatorTimestampTests
         var (_, _, entries) = await CreateAuthenticatedChainAsync(
             time => time.AddTicks(1),
             new LogEntryParameters { Witness = new WitnessConfig() });
-        var validator = new LogChainValidator(_suite);
+        var validator = new LogChainValidator();
 
         var act = () => validator.ValidateChain(entries);
 
@@ -192,7 +192,7 @@ public sealed class LogChainValidatorTimestampTests
             Encoding.UTF8.GetBytes((string)result.Artifacts![DidWebVhArtifacts.DidJsonl]));
 
         updatedEntries[2].VersionTime.Should().BeAfter(updatedEntries[1].VersionTime);
-        new LogChainValidator(_suite).ValidateChain(updatedEntries);
+        new LogChainValidator().ValidateChain(updatedEntries);
     }
 
     private async Task<(string Did, ISigner Signer, IReadOnlyList<LogEntry> Entries)>
