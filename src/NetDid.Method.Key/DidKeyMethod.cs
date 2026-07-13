@@ -54,7 +54,7 @@ public sealed class DidKeyMethod : DidMethodBase
         }
         else
         {
-            var keyPair = _keyGenerator.Generate(keyOptions.KeyType);
+            using var keyPair = _keyGenerator.Generate(keyOptions.KeyType);
             publicKey = keyPair.PublicKey;
         }
 

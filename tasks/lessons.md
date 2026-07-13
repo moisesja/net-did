@@ -46,3 +46,12 @@
 - Before implementing significant or breaking work from `main`, create a dedicated issue branch
   immediately after plan approval and before the first source edit; re-baselining `main` is not a
   substitute for establishing the implementation branch.
+- The ≥3-steps non-triviality test counts the WHOLE task workflow (tests, verification,
+  adversarial review, PR), not the size of the source diff. A two-line fix driven through the
+  full issue-fix cycle is non-trivial and requires plan approval BEFORE the first edit. Neither
+  a maintainer-authored issue that prescribes the exact fix, nor an "operating autonomously"
+  session mode, waives the plan-approval gate — autonomy governs how to work within the
+  workflow, not whether its gates apply. Do not invent carve-outs to skip approval; when in
+  doubt, present the plan and wait. Corollary (same thread): the gate is a BEFORE-work gate —
+  once the work is done and corrected, do not stage a retroactive approval pause on simple
+  remaining steps; acknowledge, capture the lesson, and finish.

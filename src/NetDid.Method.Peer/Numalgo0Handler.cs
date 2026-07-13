@@ -33,7 +33,7 @@ internal sealed class Numalgo0Handler
         else
         {
             keyType = options.InceptionKeyType!.Value;
-            var keyPair = _keyGenerator.Generate(keyType);
+            using var keyPair = _keyGenerator.Generate(keyType);
             publicKey = keyPair.PublicKey;
         }
 
