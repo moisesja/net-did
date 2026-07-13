@@ -277,18 +277,32 @@ public sealed record DidUpdateResult
     /// a document-only postcondition must require Unchanged (never treat "not reported" as
     /// "confirmed unchanged"). Deliberately coarse: a policy-only change (witness /
     /// pre-rotation commitments) also reports Changed — use UpdateKeyChange /
-    /// EffectiveUpdateKeys to reason about key rotation specifically (issue #91).
+    /// RevealedUpdateKeys / EffectiveUpdateKeys to reason about key rotation specifically
+    /// (issues #91, #98).
     public AuthorizationChangeStatus AuthorizationChange { get; init; }
 
     /// Whether the effective set of authorized update keys changed (did:webvh: effective
     /// updateKeys, compared order-insensitively before vs. after). Policy-only changes do
-    /// not trip this. Defaults to Unknown (fail closed); did:webvh also reports Unknown
-    /// whenever the resulting state keeps key pre-rotation active, because there the parameter-level key set does
-    /// not determine signing authority (see issue #93). Changed does not imply the old key
+    /// not trip this. Defaults to Unknown (fail closed); did:webvh reports Changed or
+    /// Unchanged even when the resulting state keeps key pre-rotation active, because both
+    /// effective updateKeys sets are known. Changed does not imply the old key
     /// lost authority (updates can add keys, including unexpected ones): an exclusive
-    /// key-rotation postcondition is UpdateKeyChange == Changed AND EffectiveUpdateKeys
-    /// set-equals the intended post-rotation key set. (issue #91)
+    /// key-rotation postcondition is UpdateKeyChange == Changed AND the appropriate complete
+    /// key evidence set-equals the intended set. (issues #91, #98)
     public AuthorizationChangeStatus UpdateKeyChange { get; init; }
+
+    /// The complete public-key set eligible to authorize the log entry JUST APPENDED
+    /// (multibase). When prior commitments do not govern this entry, this is the prior effective
+    /// updateKeys set (including an ordinary entry that activates pre-rotation for its successor).
+    /// When prior commitments do govern it, this is the current entry's explicit updateKeys set
+    /// after every member has been validated against those commitments. This does not mean every
+    /// listed key signed: a valid update proof needs only one eligible update key. Do not coalesce
+    /// this with EffectiveUpdateKeys as a generic post-change set; the properties answer different
+    /// current-entry and next-entry questions. null = the method
+    /// does not report the evidence (fail closed). Consumers enforcing an exclusive
+    /// authorization postcondition must compare the complete set for equality; membership
+    /// alone accepts unexpected additional keys. (issue #98)
+    public IReadOnlyList<string>? RevealedUpdateKeys { get; init; }
 
     /// The public keys authorized to sign the NEXT log entry (update or deactivation) —
     /// for did:webvh, the effective updateKeys of the new latest entry (multibase). NOT the
@@ -1146,7 +1160,7 @@ upgrading; conforming legacy policies with `threshold <= count(distinct ids)` re
 6. Sign with an authorized update key.
 7. Append to `did.jsonl`.
 8. If witnesses are configured, collect witness signatures into `did-witness.json`.
-9. Return the new log entry for the caller to publish, with `DidUpdateResult.AuthorizationChange` set to `Changed`/`Unchanged` according to whether the update altered the authorization material (`updateKeys` / `nextKeyHashes` / `witness`) so a method-agnostic caller can enforce a document-only postcondition. (The type defaults to `Unknown` for methods that do not report evidence, so the postcondition fails closed.) Additionally (issue #91), the driver reports key-specific rotation evidence: `UpdateKeyChange` is `Changed`/`Unchanged` according to whether the **effective `updateKeys` set** itself changed (order-insensitive set comparison — a witness-only change reports `AuthorizationChange = Changed` but `UpdateKeyChange = Unchanged`), and `EffectiveUpdateKeys` carries a read-only copy of the concrete keys authorized to sign the *next* log entry. The key evidence is withheld (`Unknown` / `null`) while the resulting state keeps pre-rotation active because `nextKeyHashes` contains hashes rather than the next keys. An entry that explicitly sets `nextKeyHashes: []` is still authorized under pre-rotation but returns the resulting state to ordinary authorization, so its effective `updateKeys` can again be reported as the next-entry signer set. All caller-supplied parameter collections are snapshotted exactly once at the start of the update, so validation, hashing/signing, the serialized artifact, and the reported evidence always observe identical values even if the caller's collections mutate mid-operation.
+9. Return the new log entry for the caller to publish, with `DidUpdateResult.AuthorizationChange` set to `Changed`/`Unchanged` according to whether the update altered the authorization material (`updateKeys` / `nextKeyHashes` / `witness`) so a method-agnostic caller can enforce a document-only postcondition. (The type defaults to `Unknown` for methods that do not report evidence, so the postcondition fails closed.) Additionally, the driver reports key-specific evidence (issues #91 and #98): `UpdateKeyChange` is always `Changed`/`Unchanged` according to whether the **effective `updateKeys` set** itself changed (order-insensitive set comparison — a witness-only or commitment-only change reports `AuthorizationChange = Changed` but `UpdateKeyChange = Unchanged`), including while the resulting state retains pre-rotation. `RevealedUpdateKeys` carries a read-only copy of the complete key set eligible to authorize the entry just appended: the prior effective keys when prior commitments did not govern that entry (including an ordinary entry that activates pre-rotation for its successor), or the current entry's explicit, commitment-validated keys when prior commitments did govern it. Eligibility does not mean every listed key signed; the proof is valid when one member signed. `EffectiveUpdateKeys` is a different, forward-looking value: it carries the concrete keys authorized to sign the *next* log entry and remains `null` while the resulting state has non-empty `nextKeyHashes`, because those hashes do not reveal their future preimages. The properties must not be coalesced into a generic post-change key set because they answer different current-entry and next-entry questions. An entry that explicitly sets `nextKeyHashes: []` is still authorized under pre-rotation but returns the resulting state to ordinary authorization, so its effective `updateKeys` can again be reported as the next-entry signer set. A consumer enforcing an exclusive postcondition compares the applicable complete evidence set for equality rather than checking membership, which would accept unexpected extra keys. All caller-supplied parameter collections are snapshotted exactly once at the start of the update, so validation, hashing/signing, the serialized artifact, and the reported evidence always observe identical values even if the caller's collections mutate mid-operation.
 
 ### 7.8 Deactivate
 

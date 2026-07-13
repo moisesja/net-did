@@ -19,6 +19,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   ownership contract the caller may dispose, so retaining generators must copy what they need
   before returning.
 
+### Fixed
+
+- **Continuous pre-rotation now retains complete key-change evidence** (#98).
+  `DidUpdateResult.UpdateKeyChange` reports `Changed` or `Unchanged` from the known effective
+  `updateKeys` sets even when the resulting did:webvh state has fresh non-empty commitments; it is
+  no longer replaced with `Unknown`. The new additive `RevealedUpdateKeys`
+  (`IReadOnlyList<string>?`) reports a read-only copy of the complete key set eligible to authorize
+  the entry just appended: the prior effective keys when prior commitments did not govern that
+  entry (including pre-rotation activation), or the current entry's explicit keys after every
+  member has been validated against the prior commitments when pre-rotation did govern it.
+  Eligibility does not assert that every listed key signed; one eligible update key can authorize
+  the proof. `EffectiveUpdateKeys` retains its distinct, forward-looking semantics
+  and remains `null` while active fresh commitments obscure the keys for the next entry. Consumers
+  enforcing exclusive rotation or authorization postconditions must compare the applicable
+  complete evidence set for equality, since membership checks accept unexpected extra keys.
+
 ## [2.2.0] - 2026-07-12
 
 ### Security
