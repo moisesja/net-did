@@ -164,6 +164,7 @@ public sealed class W3CReportFixture : IAsyncLifetime
         sb.AppendLine("| did:webvh URL mapping unsafe encodings (#49) | `Issue49_*` in `tests/NetDid.Method.WebVh.Tests/DidUrlMapperTests.cs` + `DidWebVhMethodTests.cs` |");
         sb.AppendLine("| did:webvh HTTP fetches lack resource limits (#51) | `tests/NetDid.Method.WebVh.Tests/DefaultWebVhHttpClientTests.cs` |");
         sb.AppendLine("| did:peer numalgo 2 malformed key segments (#52) | `Issue52_*` in `tests/NetDid.Method.Peer.Tests/DidPeerMethodTests.cs` |");
+        sb.AppendLine("| did:webvh multi-proof existential validation, unchecked proofPurpose, proof-shape/`created` schema gaps (#101) | `Issue101_*` in `tests/NetDid.Method.WebVh.Tests/LogChainValidatorMultiProofTests.cs` |");
         sb.AppendLine();
         sb.AppendLine("If a future audit finds a DID Core statement gap, add it to this");
         sb.AppendLine("suite. If it finds a method-specific behaviour, add it to that");

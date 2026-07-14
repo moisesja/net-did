@@ -1,4 +1,6 @@
 using System.Net;
+using System.Text;
+using System.Text.Json.Nodes;
 using FluentAssertions;
 using Microsoft.Extensions.DependencyInjection;
 using NetDid.Core;
@@ -93,6 +95,76 @@ public class ServiceRegistrationTests
         http.Timeout.Should().Be(Timeout.InfiniteTimeSpan);
     }
 
+    [Theory]
+    [InlineData(0)]
+    [InlineData(-1)]
+    public void Issue101_AddDidWebVh_RejectsControllerProofBudgetBelowOne(int invalidBudget)
+    {
+        var services = new ServiceCollection();
+
+        var act = () => services.AddNetDid(builder =>
+            builder.AddDidWebVh(
+                httpClientOptions: null,
+                maxControllerProofsPerEntry: invalidBudget));
+
+        act.Should().Throw<ArgumentOutOfRangeException>()
+            .Which.ParamName.Should().Be("maxControllerProofsPerEntry");
+    }
+
+    [Fact]
+    public async Task Issue101_AddDidWebVh_FlowsRaisedControllerProofBudgetIntoMethod()
+    {
+        const int raisedBudget = 9;
+        var logClient = new FixedLogWebVhHttpClient();
+        var services = new ServiceCollection();
+        services.AddNetDid(builder =>
+            builder.AddDidWebVh(
+                httpClientOptions: null,
+                maxControllerProofsPerEntry: raisedBudget));
+
+        // The last registration is the client consumed by the deferred IDidMethod factory.
+        services.AddSingleton<IWebVhHttpClient>(logClient);
+        using var provider = services.BuildServiceProvider();
+        var method = provider.GetServices<IDidMethod>()
+            .Single(candidate => candidate.MethodName == "webvh");
+
+        var key = provider.GetRequiredService<IKeyGenerator>().Generate(KeyType.Ed25519);
+        var signer = new KeyPairSigner(
+            key,
+            provider.GetRequiredService<ICryptoProvider>());
+        var created = await method.CreateAsync(new DidWebVhCreateOptions
+        {
+            Domain = "example.com",
+            UpdateKey = signer
+        });
+
+        var log = (string)created.Artifacts![DidWebVhArtifacts.DidJsonl];
+        var genesis = JsonNode.Parse(log)!.AsObject();
+        var originalProof = genesis["proof"]!.AsArray().Single()!;
+        var proofs = new JsonArray();
+        for (var i = 0; i < raisedBudget; i++)
+            proofs.Add(originalProof.DeepClone());
+        genesis["proof"] = proofs;
+        logClient.DidLog = Encoding.UTF8.GetBytes(genesis.ToJsonString());
+
+        var resolved = await method.ResolveAsync(created.Did.Value);
+
+        resolved.ResolutionMetadata.Error.Should().BeNull();
+        resolved.DidDocument.Should().NotBeNull();
+    }
+
+    [Fact]
+    public void Issue101_ExistingUntypedDefaultWebVhOptionsCall_RemainsSourceCompatible()
+    {
+        var services = new ServiceCollection();
+
+        services.AddNetDid(builder => builder.AddDidWebVh(default));
+
+        using var provider = services.BuildServiceProvider();
+        provider.GetServices<IDidMethod>()
+            .Should().ContainSingle(method => method.MethodName == "webvh");
+    }
+
     private sealed class FixedBodyHandler(byte[] body) : HttpMessageHandler
     {
         protected override Task<HttpResponseMessage> SendAsync(
@@ -111,6 +183,17 @@ public class ServiceRegistrationTests
             await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
             throw new InvalidOperationException("unreachable");
         }
+    }
+
+    private sealed class FixedLogWebVhHttpClient : IWebVhHttpClient
+    {
+        public byte[]? DidLog { get; set; }
+
+        public Task<byte[]?> FetchDidLogAsync(Uri logUrl, CancellationToken ct = default)
+            => Task.FromResult(DidLog);
+
+        public Task<byte[]?> FetchWitnessFileAsync(Uri witnessUrl, CancellationToken ct = default)
+            => Task.FromResult<byte[]?>(null);
     }
 
     [Fact]

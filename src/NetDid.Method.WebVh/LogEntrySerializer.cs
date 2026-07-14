@@ -1,3 +1,5 @@
+using System.Runtime.CompilerServices;
+using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using NetDid.Core;
@@ -12,6 +14,30 @@ namespace NetDid.Method.WebVh;
 /// </summary>
 public static class LogEntrySerializer
 {
+    private static readonly UTF8Encoding StrictUtf8 = new(
+        encoderShouldEmitUTF8Identifier: false,
+        throwOnInvalidBytes: true);
+
+    // Wire provenance is reference-identity metadata, not part of the public LogEntry value.
+    // A `with` clone deliberately has no provenance. The modeled fingerprint also detects
+    // in-place mutation through public nested collections before raw-backed serialization.
+    private static readonly ConditionalWeakTable<LogEntry, WireEntry> WireEntries = new();
+
+    // State-level provenance, keyed by the parsed DidDocument reference. A freshly built entry
+    // that carries a parsed state — a preserve-mode update's new head — must republish that
+    // state verbatim: the typed model drops signed nested members it does not surface, and the
+    // new head is hashed/signed over whatever is emitted here, so a modeled rewrite would
+    // silently erase them. Guard rules: a `with`-cloned document is a new reference with no
+    // provenance (modeled fallback), and any model-visible change invalidates the fingerprint
+    // (modeled fallback). The fingerprint is over the lossy modeled serialization, so a
+    // model-invisible in-place change (a nested raw-only member, or replacing a list element
+    // with a model-equal one) is NOT detected and stale raw would be re-emitted — but that is
+    // unreachable through a signed path: the only WireStates-registered document that reaches a
+    // signed head is the internal previousEntry.State parsed from the fetched log (no caller
+    // reference), and a caller-supplied NewDocument is deep-copied by
+    // DidWebVhMethod.SnapshotDocument, which produces a fresh unregistered reference.
+    private static readonly ConditionalWeakTable<DidDocument, WireState> WireStates = new();
+
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
@@ -22,7 +48,7 @@ public static class LogEntrySerializer
     /// <summary>Parse a did.jsonl file (byte[]) into a list of LogEntry objects.</summary>
     public static IReadOnlyList<LogEntry> ParseJsonLines(byte[] content)
     {
-        var text = Encoding.UTF8.GetString(content);
+        var text = DecodeUtf8(content);
         var lines = text.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
         var entries = new List<LogEntry>(lines.Length);
 
@@ -37,13 +63,39 @@ public static class LogEntrySerializer
     /// <summary>Serialize a single log entry to JSON string.</summary>
     public static string Serialize(LogEntry entry)
     {
-        return WriteEntry(entry, includeProof: true);
+        return WriteEntry(entry, includeProof: true, versionIdOverride: null);
     }
 
     /// <summary>Serialize a single log entry to JSON, excluding the proof field (for hashing/signing).</summary>
     public static string SerializeWithoutProof(LogEntry entry)
     {
-        return WriteEntry(entry, includeProof: false);
+        return WriteEntry(entry, includeProof: false, versionIdOverride: null);
+    }
+
+    /// <summary>
+    /// Serialize an entry without its proof while replacing only the top-level version id.
+    /// Parsed-wire provenance, when still current, remains the source for every other member.
+    /// </summary>
+    internal static string SerializeWithoutProof(LogEntry entry, string versionIdOverride)
+    {
+        ArgumentNullException.ThrowIfNull(versionIdOverride);
+        return WriteEntry(
+            entry,
+            includeProof: false,
+            versionIdOverride: versionIdOverride);
+    }
+
+    /// <summary>Decode fetched JSON bytes as strict UTF-8.</summary>
+    internal static string DecodeUtf8(byte[] content)
+    {
+        try
+        {
+            return StrictUtf8.GetString(content);
+        }
+        catch (DecoderFallbackException ex)
+        {
+            throw new FormatException("did:webvh content is not valid UTF-8.", ex);
+        }
     }
 
     /// <summary>Serialize a list of log entries to JSON Lines format (byte[]).</summary>
@@ -58,7 +110,21 @@ public static class LogEntrySerializer
         return Encoding.UTF8.GetBytes(sb.ToString());
     }
 
-    private static string WriteEntry(LogEntry entry, bool includeProof)
+    private static string WriteEntry(
+        LogEntry entry,
+        bool includeProof,
+        string? versionIdOverride)
+    {
+        if (TryGetCurrentWireEntry(entry, out var wireEntry))
+            return WriteWireEntry(entry, wireEntry.RawJson, includeProof, versionIdOverride);
+
+        return WriteModeledEntry(entry, includeProof, versionIdOverride);
+    }
+
+    private static string WriteModeledEntry(
+        LogEntry entry,
+        bool includeProof,
+        string? versionIdOverride)
     {
         using var stream = new MemoryStream();
         using var writer = new Utf8JsonWriter(stream, new JsonWriterOptions { Indented = false });
@@ -66,7 +132,7 @@ public static class LogEntrySerializer
         writer.WriteStartObject();
 
         // versionId
-        writer.WriteString("versionId", entry.VersionId);
+        writer.WriteString("versionId", versionIdOverride ?? entry.VersionId);
 
         // versionTime — ISO 8601 UTC
         writer.WritePropertyName("versionTime");
@@ -84,11 +150,17 @@ public static class LogEntrySerializer
         writer.WritePropertyName("parameters");
         WriteParameters(writer, entry.Parameters);
 
-        // state — the DID Document, serialized as JSON-LD
+        // state — a parsed document with current provenance re-emits its wire JSON verbatim;
+        // otherwise the DID Document is serialized as JSON-LD from the typed model.
         writer.WritePropertyName("state");
-        var stateJson = DidDocumentSerializer.Serialize(entry.State, DidContentTypes.JsonLd);
-        using (var stateDoc = JsonDocument.Parse(stateJson))
+        if (TryGetCurrentWireState(entry.State, out var stateWireJson))
         {
+            writer.WriteRawValue(stateWireJson);
+        }
+        else
+        {
+            var stateJson = DidDocumentSerializer.Serialize(entry.State, DidContentTypes.JsonLd);
+            using var stateDoc = JsonDocument.Parse(stateJson);
             stateDoc.RootElement.WriteTo(writer);
         }
 
@@ -104,6 +176,82 @@ public static class LogEntrySerializer
 
         return Encoding.UTF8.GetString(stream.ToArray());
     }
+
+    private static string WriteWireEntry(
+        LogEntry entry,
+        string rawJson,
+        bool includeProof,
+        string? versionIdOverride)
+    {
+        using var rawDocument = JsonDocument.Parse(
+            rawJson,
+            new JsonDocumentOptions { AllowDuplicateProperties = false });
+        using var stream = new MemoryStream();
+        using var writer = new Utf8JsonWriter(stream, new JsonWriterOptions { Indented = false });
+
+        writer.WriteStartObject();
+        foreach (var property in rawDocument.RootElement.EnumerateObject())
+        {
+            if (property.NameEquals("versionId"))
+            {
+                writer.WriteString("versionId", versionIdOverride ?? entry.VersionId);
+                continue;
+            }
+
+            if (property.NameEquals("proof"))
+            {
+                if (includeProof && entry.Proof is { Count: > 0 })
+                {
+                    writer.WritePropertyName("proof");
+                    WriteProofArray(writer, entry.Proof);
+                }
+
+                continue;
+            }
+
+            writer.WritePropertyName(property.Name);
+            property.Value.WriteTo(writer);
+        }
+
+        writer.WriteEndObject();
+        writer.Flush();
+        return Encoding.UTF8.GetString(stream.ToArray());
+    }
+
+    private static bool TryGetCurrentWireEntry(
+        LogEntry entry,
+        out WireEntry wireEntry)
+    {
+        if (!WireEntries.TryGetValue(entry, out wireEntry!))
+            return false;
+
+        var currentFingerprint = ComputeModeledFingerprint(entry);
+        return currentFingerprint.AsSpan().SequenceEqual(wireEntry.ModeledFingerprint);
+    }
+
+    private static byte[] ComputeModeledFingerprint(LogEntry entry)
+    {
+        var modeled = WriteModeledEntry(entry, includeProof: true, versionIdOverride: null);
+        return SHA256.HashData(Encoding.UTF8.GetBytes(modeled));
+    }
+
+    private static bool TryGetCurrentWireState(DidDocument state, out string stateWireJson)
+    {
+        stateWireJson = null!;
+        if (!WireStates.TryGetValue(state, out var wireState))
+            return false;
+
+        var currentFingerprint = ComputeModeledStateFingerprint(state);
+        if (!currentFingerprint.AsSpan().SequenceEqual(wireState.ModeledFingerprint))
+            return false;
+
+        stateWireJson = wireState.RawJson;
+        return true;
+    }
+
+    private static byte[] ComputeModeledStateFingerprint(DidDocument state)
+        => SHA256.HashData(Encoding.UTF8.GetBytes(
+            DidDocumentSerializer.Serialize(state, DidContentTypes.JsonLd)));
 
     private static void WriteParameters(Utf8JsonWriter writer, LogEntryParameters parameters)
     {
@@ -184,11 +332,23 @@ public static class LogEntrySerializer
         writer.WriteStartArray();
         foreach (var proof in proofs)
         {
+            // A proof parsed from a log re-emits verbatim (byte-identical), preserving members
+            // outside the modeled set (id, expires, extensions) that the signature covers, so
+            // republishing a fetched log during Update/Deactivate never corrupts another
+            // implementation's proof. A programmatically created proof has no RawJson and is
+            // written from the modeled members (the shape NetDid emits).
+            if (proof.RawJson is not null)
+            {
+                writer.WriteRawValue(proof.RawJson);
+                continue;
+            }
+
             writer.WriteStartObject();
             writer.WriteString("type", proof.Type);
             writer.WriteString("cryptosuite", proof.Cryptosuite);
             writer.WriteString("verificationMethod", proof.VerificationMethod);
-            writer.WriteString("created", proof.Created);
+            if (proof.Created is not null)
+                writer.WriteString("created", proof.Created);
             writer.WriteString("proofPurpose", proof.ProofPurpose);
             writer.WriteString("proofValue", proof.ProofValue);
             writer.WriteEndObject();
@@ -198,47 +358,87 @@ public static class LogEntrySerializer
 
     internal static LogEntry DeserializeEntry(string json)
     {
-        using var doc = JsonDocument.Parse(json);
-        var root = doc.RootElement;
-
-        foreach (var property in root.EnumerateObject())
+        JsonDocument doc;
+        try
         {
-            if (property.Name is not ("versionId" or "versionTime" or "parameters" or "state" or "proof"))
+            // Reject duplicate JSON members anywhere in the entry. .NET keeps the last of a
+            // duplicate pair, so a leading decoy "proof" beside a valid trailing one would let
+            // an unchecked proof ride along; universal proof validation only holds if the
+            // parser cannot silently drop a supplied member. See issue #101.
+            doc = JsonDocument.Parse(
+                json, new JsonDocumentOptions { AllowDuplicateProperties = false });
+        }
+        catch (JsonException ex)
+        {
+            throw new FormatException("did:webvh log entry is not valid JSON.", ex);
+        }
+
+        using (doc)
+        try
+        {
+            var root = doc.RootElement;
+
+            foreach (var property in root.EnumerateObject())
+            {
+                if (property.Name is not ("versionId" or "versionTime" or "parameters" or "state" or "proof"))
+                    throw new FormatException(
+                        $"Unknown did:webvh log-entry property '{property.Name}'.");
+            }
+
+            var versionId = root.GetProperty("versionId").GetString()!;
+            if (!root.TryGetProperty("versionTime", out var versionTimeElement)
+                || versionTimeElement.ValueKind != JsonValueKind.String
+                || versionTimeElement.GetString() is not { } versionTime)
+            {
                 throw new FormatException(
-                    $"Unknown did:webvh log-entry property '{property.Name}'.");
+                    "did:webvh versionTime must be a non-null JSON string.");
+            }
+            var parameters = ParseParameters(root.GetProperty("parameters"));
+
+            // Parse state as a DID Document, retaining its wire JSON as state-level provenance
+            // (registered before the whole-entry provenance below so the entry fingerprint is
+            // computed over the same raw-state-backed output it will be compared against).
+            var stateJson = root.GetProperty("state").GetRawText();
+            var state = DidDocumentSerializer.Deserialize(stateJson);
+            WireStates.Add(state, new WireState(
+                stateJson, ComputeModeledStateFingerprint(state)));
+
+            // Parse proof (optional here; chain validation requires one per entry). The schema
+            // permits a single proof object or an array of proof objects.
+            IReadOnlyList<DataIntegrityProofValue>? proof = null;
+            if (root.TryGetProperty("proof", out var proofProp))
+            {
+                proof = ParseProof(proofProp);
+            }
+
+            var entry = new LogEntry
+            {
+                VersionId = versionId,
+                VersionTime = WebVhTimestamp.Parse(versionTime),
+                VersionTimeWireValue = versionTime,
+                VersionTimeRawJson = versionTimeElement.GetRawText(),
+                Parameters = parameters,
+                State = state,
+                Proof = proof
+            };
+
+            WireEntries.Add(
+                entry,
+                new WireEntry(root.GetRawText(), ComputeModeledFingerprint(entry)));
+            return entry;
         }
-
-        var versionId = root.GetProperty("versionId").GetString()!;
-        if (!root.TryGetProperty("versionTime", out var versionTimeElement)
-            || versionTimeElement.ValueKind != JsonValueKind.String
-            || versionTimeElement.GetString() is not { } versionTime)
+        catch (Exception ex) when (ex is InvalidOperationException
+            or KeyNotFoundException
+            or OverflowException
+            or ArgumentException
+            or JsonException)
         {
-            throw new FormatException(
-                "did:webvh versionTime must be a non-null JSON string.");
+            // Map JSON-access failures at this trust boundary to FormatException so a fetched
+            // log with malformed content (e.g. a string carrying an unpaired surrogate that
+            // parses as a token but throws on GetString) resolves as invalidDidLog, not notFound
+            // or an unhandled exception. Deliberate FormatExceptions above propagate unchanged.
+            throw new FormatException("did:webvh log entry contains malformed content.", ex);
         }
-        var parameters = ParseParameters(root.GetProperty("parameters"));
-
-        // Parse state as a DID Document
-        var stateJson = root.GetProperty("state").GetRawText();
-        var state = DidDocumentSerializer.Deserialize(stateJson);
-
-        // Parse proof array (optional)
-        IReadOnlyList<DataIntegrityProofValue>? proof = null;
-        if (root.TryGetProperty("proof", out var proofProp))
-        {
-            proof = ParseProofArray(proofProp);
-        }
-
-        return new LogEntry
-        {
-            VersionId = versionId,
-            VersionTime = WebVhTimestamp.Parse(versionTime),
-            VersionTimeWireValue = versionTime,
-            VersionTimeRawJson = versionTimeElement.GetRawText(),
-            Parameters = parameters,
-            State = state,
-            Proof = proof
-        };
     }
 
     private static LogEntryParameters ParseParameters(JsonElement element)
@@ -354,16 +554,116 @@ public static class LogEntrySerializer
         }
     }
 
-    private static IReadOnlyList<DataIntegrityProofValue> ParseProofArray(JsonElement element)
+    /// <summary>
+    /// Parses the log entry's <c>proof</c> member. The official did:webvh v1.0 log-entry
+    /// schema permits a single Data Integrity proof object or an array of them; both are
+    /// normalized to one list. Every structural violation throws <see cref="FormatException"/>
+    /// so callers at the trust boundary map it to <c>invalidDidLog</c> (issue #101).
+    /// </summary>
+    private static IReadOnlyList<DataIntegrityProofValue> ParseProof(JsonElement element)
     {
-        return element.EnumerateArray().Select(e => new DataIntegrityProofValue
+        if (element.ValueKind == JsonValueKind.Object)
+            return new List<DataIntegrityProofValue> { ParseProofObject(element) }.AsReadOnly();
+
+        if (element.ValueKind != JsonValueKind.Array)
+            throw new FormatException(
+                "did:webvh log-entry proof must be a proof object or an array of proof objects.");
+
+        var proofs = new List<DataIntegrityProofValue>();
+        var proofIds = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var proofElement in element.EnumerateArray())
         {
-            Type = e.GetProperty("type").GetString()!,
-            Cryptosuite = e.GetProperty("cryptosuite").GetString()!,
-            VerificationMethod = e.GetProperty("verificationMethod").GetString()!,
-            Created = e.GetProperty("created").GetString()!,
-            ProofPurpose = e.GetProperty("proofPurpose").GetString()!,
-            ProofValue = e.GetProperty("proofValue").GetString()!
-        }).ToList();
+            var proof = ParseProofObject(proofElement);
+            if (proofElement.TryGetProperty("id", out var idElement))
+            {
+                var id = idElement.GetString()!;
+                if (!proofIds.Add(id))
+                {
+                    throw new FormatException(
+                        $"did:webvh log-entry proof id '{id}' is duplicated within the proof set.");
+                }
+            }
+
+            proofs.Add(proof);
+        }
+
+        if (proofs.Count == 0)
+            throw new FormatException(
+                "did:webvh log-entry proof array must contain at least one proof.");
+
+        return proofs.AsReadOnly();
+    }
+
+    private static DataIntegrityProofValue ParseProofObject(JsonElement element)
+    {
+        if (element.ValueKind != JsonValueKind.Object)
+            throw new FormatException("Every did:webvh log-entry proof must be a JSON object.");
+
+        ValidateOptionalProofId(element);
+
+        // The did:webvh v1.0 log-entry schema requires these members "at minimum" and leaves
+        // additional properties open, so extra Data Integrity members (id, expires, previousProof,
+        // @context, extensions) are preserved verbatim via RawJson. NetDid's conservative
+        // absolute-URI policy is enforced at this application-schema boundary; the remaining
+        // supported semantics are delegated to the Data Integrity pipeline. The modeled fields
+        // below are convenience metadata; RawJson is the fidelity source for proof verification
+        // and re-emission.
+        return new DataIntegrityProofValue
+        {
+            Type = RequireProofString(element, "type"),
+            Cryptosuite = RequireProofString(element, "cryptosuite"),
+            VerificationMethod = RequireProofString(element, "verificationMethod"),
+            Created = OptionalProofString(element, "created"),
+            ProofPurpose = RequireProofString(element, "proofPurpose"),
+            ProofValue = RequireProofString(element, "proofValue"),
+            RawJson = element.GetRawText()
+        };
+    }
+
+    private static void ValidateOptionalProofId(JsonElement proof)
+    {
+        if (!proof.TryGetProperty("id", out _))
+            return;
+
+        var id = OptionalProofString(proof, "id")!;
+        if (id.Length == 0
+            || !string.Equals(id, id.Trim(), StringComparison.Ordinal)
+            || !Uri.TryCreate(id, UriKind.Absolute, out var uri)
+            || !uri.IsAbsoluteUri
+            || !uri.IsWellFormedOriginalString())
+        {
+            throw new FormatException(
+                "did:webvh log-entry proof member 'id' must be a non-empty, " +
+                "System.Uri-compatible absolute URI without surrounding whitespace when present.");
+        }
+    }
+
+    private sealed record WireEntry(string RawJson, byte[] ModeledFingerprint);
+
+    private sealed record WireState(string RawJson, byte[] ModeledFingerprint);
+
+    private static string RequireProofString(JsonElement proof, string name)
+    {
+        if (!proof.TryGetProperty(name, out var value)
+            || value.ValueKind != JsonValueKind.String
+            || value.GetString() is not { } text)
+        {
+            throw new FormatException(
+                $"did:webvh log-entry proof member '{name}' must be a non-null JSON string.");
+        }
+
+        return text;
+    }
+
+    private static string? OptionalProofString(JsonElement proof, string name)
+    {
+        if (!proof.TryGetProperty(name, out var value))
+            return null;
+
+        if (value.ValueKind != JsonValueKind.String || value.GetString() is not { } text)
+            throw new FormatException(
+                $"did:webvh log-entry proof member '{name}' must be a JSON string when present.");
+
+        return text;
     }
 }

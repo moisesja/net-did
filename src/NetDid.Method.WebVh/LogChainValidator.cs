@@ -12,11 +12,26 @@ namespace NetDid.Method.WebVh;
 /// </summary>
 internal sealed class LogChainValidator
 {
-    private readonly EddsaJcs2022Cryptosuite _suite;
+    /// <summary>
+    /// Default upper bound on controller proofs verified per entry. Verifying each proof
+    /// re-canonicalizes the entry document, so this is an explicit resource policy (not a
+    /// conformance rule) that bounds per-entry verification work to
+    /// <c>bound × entry-size</c> over an already size-capped log. Real entries carry a single
+    /// controller proof; the default is far above any realistic co-signing arrangement.
+    /// Configurable via the constructor. An entry exceeding it is rejected as invalidDidLog.
+    /// </summary>
+    internal const int DefaultMaxControllerProofsPerEntry = 8;
 
-    public LogChainValidator(EddsaJcs2022Cryptosuite suite)
+    private readonly DataIntegrityProofPipeline _pipeline;
+    private readonly int _maxControllerProofsPerEntry;
+
+    public LogChainValidator(
+        int maxControllerProofsPerEntry = DefaultMaxControllerProofsPerEntry)
     {
-        _suite = suite;
+        ArgumentOutOfRangeException.ThrowIfLessThan(maxControllerProofsPerEntry, 1);
+
+        _pipeline = new DataIntegrityProofPipeline();
+        _maxControllerProofsPerEntry = maxControllerProofsPerEntry;
     }
 
     /// <summary>
@@ -24,9 +39,10 @@ internal sealed class LogChainValidator
     /// Returns the effective parameters at the final entry on success.
     /// Throws LogChainValidationException on failure.
     /// </summary>
-    public LogEntryParameters ValidateChain(IReadOnlyList<LogEntry> entries)
+    public Task<LogEntryParameters> ValidateChainAsync(
+        IReadOnlyList<LogEntry> entries, CancellationToken ct = default)
     {
-        return ValidateChain(entries, entries.Count);
+        return ValidateChainAsync(entries, entries.Count, ct);
     }
 
     /// <summary>
@@ -34,9 +50,10 @@ internal sealed class LogChainValidator
     /// Returns the effective parameters at the last validated entry.
     /// Throws LogChainValidationException on failure.
     /// </summary>
-    public LogEntryParameters ValidateChain(IReadOnlyList<LogEntry> entries, int upToCount)
+    public async Task<LogEntryParameters> ValidateChainAsync(
+        IReadOnlyList<LogEntry> entries, int upToCount, CancellationToken ct = default)
     {
-        var perEntry = ValidateChainWithPerEntryParams(entries, upToCount);
+        var perEntry = await ValidateChainWithPerEntryParamsAsync(entries, upToCount, ct);
         return perEntry[^1];
     }
 
@@ -45,8 +62,8 @@ internal sealed class LogChainValidator
     /// Index 0 = genesis entry's effective params, etc.
     /// Throws LogChainValidationException on failure.
     /// </summary>
-    public IReadOnlyList<LogEntryParameters> ValidateChainWithPerEntryParams(
-        IReadOnlyList<LogEntry> entries, int upToCount)
+    public async Task<IReadOnlyList<LogEntryParameters>> ValidateChainWithPerEntryParamsAsync(
+        IReadOnlyList<LogEntry> entries, int upToCount, CancellationToken ct = default)
     {
         if (entries.Count == 0)
             throw new LogChainValidationException(0, "DID log is empty.");
@@ -56,7 +73,16 @@ internal sealed class LogChainValidator
 
         // Validate genesis entry
         var genesis = entries[0];
-        ValidateGenesisEntry(genesis);
+        await ValidateGenesisEntryAsync(genesis, ct);
+
+        // did:webvh v1.0: "The SCID segment of state.id MUST be byte-for-byte identical to the
+        // scid value in the DID and the first entry's parameters.scid. This check MUST apply to
+        // every entry's state.id, not just the first. A mismatch MUST terminate resolution."
+        // SCID-level (not full-DID) comparison keeps portable host/path renames valid. Enforced
+        // here so resolution, update, and deactivation share one identity gate: the driver can
+        // never build on a log its own resolver rejects.
+        var scid = genesis.Parameters.Scid!;
+        ValidateStateScidConsistency(genesis, scid, 1);
 
         var effectiveParams = genesis.Parameters;
         result.Add(effectiveParams);
@@ -67,7 +93,8 @@ internal sealed class LogChainValidator
             var previous = entries[i - 1];
             var current = entries[i];
 
-            ValidateSubsequentEntry(current, previous, effectiveParams, i + 1);
+            ValidateStateScidConsistency(current, scid, i + 1);
+            await ValidateSubsequentEntryAsync(current, previous, effectiveParams, i + 1, ct);
 
             // Merge parameters for the next iteration
             effectiveParams = current.Parameters.MergeWith(effectiveParams);
@@ -77,7 +104,7 @@ internal sealed class LogChainValidator
         return result;
     }
 
-    private void ValidateGenesisEntry(LogEntry genesis)
+    private async Task ValidateGenesisEntryAsync(LogEntry genesis, CancellationToken ct)
     {
         // Version number must be 1
         if (genesis.VersionNumber != 1)
@@ -104,8 +131,7 @@ internal sealed class LogChainValidator
         // post-SCID entry whose versionId is the SCID itself; it is the input to the genesis
         // entry-hash calculation and to reverse-substitution for SCID verification.
         var scid = genesis.Parameters.Scid;
-        var genesisForHashing = genesis with { VersionId = scid };
-        var entryJsonForHashing = LogEntrySerializer.SerializeWithoutProof(genesisForHashing);
+        var entryJsonForHashing = LogEntrySerializer.SerializeWithoutProof(genesis, scid);
 
         var computedEntryHash = ScidGenerator.ComputeEntryHash(entryJsonForHashing);
         if (computedEntryHash != genesis.EntryHash)
@@ -128,14 +154,15 @@ internal sealed class LogChainValidator
 
         ValidateUpdateKeys(genesisUpdateKeys, 1);
 
-        ValidateProof(genesis, genesisUpdateKeys, 1);
+        await ValidateProofAsync(genesis, genesisUpdateKeys, 1, ct);
     }
 
-    private void ValidateSubsequentEntry(
+    private async Task ValidateSubsequentEntryAsync(
         LogEntry current,
         LogEntry previous,
         LogEntryParameters effectiveParams,
-        int expectedVersion)
+        int expectedVersion,
+        CancellationToken ct)
     {
         // Check if previous entry was deactivated
         if (effectiveParams.Deactivated == true)
@@ -161,8 +188,9 @@ internal sealed class LogChainValidator
 
         // Verify entry hash: the hash input's versionId is exactly the previous entry's
         // full published versionId.
-        var entryForHashing = current with { VersionId = previous.VersionId };
-        var entryJsonWithoutProof = LogEntrySerializer.SerializeWithoutProof(entryForHashing);
+        var entryJsonWithoutProof = LogEntrySerializer.SerializeWithoutProof(
+            current,
+            previous.VersionId);
         var computedHash = ScidGenerator.ComputeEntryHash(entryJsonWithoutProof);
 
         if (computedHash != current.EntryHash)
@@ -191,7 +219,39 @@ internal sealed class LogChainValidator
                     $"No updateKeys authorize version {expectedVersion}.");
         }
 
-        ValidateProof(current, authorizedKeys, expectedVersion);
+        await ValidateProofAsync(current, authorizedKeys, expectedVersion, ct);
+    }
+
+    /// <summary>
+    /// Enforces the per-entry identity rule: every validated entry's <c>state.id</c> must be a
+    /// did:webvh DID whose SCID segment equals the genesis <c>parameters.scid</c> byte-for-byte.
+    /// The comparison is deliberately SCID-level — under portability only the host/path portion
+    /// of <c>state.id</c> may change; the SCID is immutable for the life of the DID.
+    /// </summary>
+    private static void ValidateStateScidConsistency(LogEntry entry, string scid, int version)
+    {
+        var stateId = entry.State.Id.Value;
+        if (string.IsNullOrEmpty(stateId))
+            throw new LogChainValidationException(version,
+                $"Entry {version} document has no id; every entry's state.id must carry the log's SCID.");
+
+        string entryScid;
+        try
+        {
+            entryScid = DidUrlMapper.ExtractScid(stateId);
+        }
+        catch (ArgumentException)
+        {
+            throw new LogChainValidationException(version,
+                $"Entry {version} state.id is not a valid did:webvh DID.");
+        }
+
+        if (!stateId.StartsWith("did:webvh:", StringComparison.Ordinal)
+            || !string.Equals(entryScid, scid, StringComparison.Ordinal))
+        {
+            throw new LogChainValidationException(version,
+                $"Entry {version} state.id SCID does not match the log's SCID.");
+        }
     }
 
     /// <summary>
@@ -213,37 +273,83 @@ internal sealed class LogChainValidator
             throw new LogChainValidationException(version, error);
     }
 
-    private void ValidateProof(LogEntry entry, IReadOnlyList<string>? authorizedKeys, int version)
+    /// <summary>
+    /// Enforces the did:webvh v1.0 controller-proof rule: an entry requires at least one proof,
+    /// and <b>every</b> supplied proof must pass the checks implemented by DataProofsDotnet's
+    /// <see cref="DataIntegrityProofPipeline"/> plus NetDid's application-boundary checks, and be
+    /// authorized by the active <paramref name="authorizedKeys"/>. "Resolvers MUST reject an
+    /// entry whose proof fails any check" — existential acceptance would admit logs that
+    /// stricter conforming resolvers reject (issue #101). One authorized signer suffices to
+    /// authorize the entry; there is no threshold semantics for controller proofs.
+    /// </summary>
+    /// <remarks>
+    /// The pipeline verifies each proof's signature over the entry (with the <c>proof</c>
+    /// removed), enforces the required type/cryptosuite/purpose, resolves any
+    /// <c>previousProof</c> chain, and rejects a proof whose <c>expires</c> is at or before the
+    /// entry's <c>versionTime</c>. Authorization — a <c>did:key</c> verificationMethod (anti-spoof)
+    /// whose Ed25519 multibase is verbatim in the active updateKeys, used for
+    /// <c>assertionMethod</c> — is supplied by <see cref="WebVhUpdateKeyResolver"/>. Verifying
+    /// each proof re-canonicalizes the entry, so the proof count is bounded by
+    /// <see cref="_maxControllerProofsPerEntry"/> as an explicit resource policy (see
+    /// <see cref="DefaultMaxControllerProofsPerEntry"/>).
+    /// </remarks>
+    private async Task ValidateProofAsync(
+        LogEntry entry, IReadOnlyList<string> authorizedKeys, int version, CancellationToken ct)
     {
-        if (entry.Proof is null || entry.Proof.Count == 0)
+        // Snapshot once: an IReadOnlyList implementation could present different contents
+        // per enumeration, letting a proof escape validation.
+        var proofs = entry.Proof?.ToArray();
+        if (proofs is not { Length: > 0 })
             throw new LogChainValidationException(version,
                 $"No proof found at version {version}.");
 
-        var entryJsonWithoutProof = LogEntrySerializer.SerializeWithoutProof(entry);
+        // Bound verification work before doing any: the pipeline verifies every proof and each
+        // verification re-canonicalizes the entry document. `created` is attacker-chosen and
+        // part of the signed proof configuration, so one active key can mint arbitrarily many
+        // distinct valid proofs — the count, not key diversity, is what must be capped.
+        if (proofs.Length > _maxControllerProofsPerEntry)
+            throw new LogChainValidationException(version,
+                $"Entry at version {version} declares {proofs.Length} controller proofs, " +
+                $"exceeding the resolver's limit of {_maxControllerProofsPerEntry}.");
 
-        // At least one proof must be valid from an authorized update key
-        foreach (var proofValue in entry.Proof)
+        // Verify against the entry as published (full-fidelity proofs via RawJson): the pipeline
+        // removes the proof member, JCS-canonicalizes the rest, and checks every proof. Its
+        // resolver authorizes only did:key methods whose Ed25519 multibase is an active update
+        // key used for assertionMethod; VerificationTime pins the expires policy to versionTime.
+        // Serialization is inside the try so any failure is reported as a chain-validation error
+        // (invalidDidLog), never as notFound.
+        var resolver = new WebVhUpdateKeyResolver(authorizedKeys);
+        var options = new ProofVerificationOptions
         {
-            // Verify the signature; the returned multibase is the signer's did:key id with
-            // the DID==fragment anti-spoof check already enforced. Null => invalid signature
-            // or malformed verificationMethod.
-            var signerKey = WebVhProofVerifier.VerifyAndExtractSigner(_suite, entryJsonWithoutProof, proofValue);
-            if (signerKey is null)
-                continue;
+            ExpectedProofPurpose = "assertionMethod",
+            VerificationTime = entry.VersionTime
+        };
 
-            // Verify the signer is an authorized update key. Exact equality between the
-            // signer's multibase key and an entry in authorizedKeys — substring matching would
-            // allow a proof with verificationMethod = "did:key:<attacker>#<authorized>" to be
-            // signed by the attacker yet authorized as the legitimate key.
-            if (authorizedKeys is null)
-                return; // Valid proof, no key restriction
-
-            if (authorizedKeys.Contains(signerKey, StringComparer.Ordinal))
-                return; // Valid proof from authorized key
+        DocumentVerificationResult result;
+        try
+        {
+            var securedDocumentJson = LogEntrySerializer.Serialize(entry);
+            using var document = System.Text.Json.JsonDocument.Parse(securedDocumentJson);
+            result = await _pipeline.VerifyAsync(document.RootElement, resolver, options, ct);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            // A verification path must never throw for hostile input.
+            throw new LogChainValidationException(version,
+                $"Proof verification failed at version {version} ({ex.GetType().Name}).");
         }
 
-        throw new LogChainValidationException(version,
-            $"No valid proof from an authorized update key at version {version}.");
+        if (!result.Verified)
+        {
+            var reason = result.ProofResults
+                .SelectMany(r => r.Problems)
+                .Select(p => p.Message)
+                .FirstOrDefault(m => m is not null)
+                ?? result.Problems.Select(p => p.Message).FirstOrDefault(m => m is not null)
+                ?? "a controller proof failed Data Integrity verification or is not from an active update key";
+            throw new LogChainValidationException(version,
+                $"Proof validation failed at version {version}: {reason}");
+        }
     }
 
     private static IReadOnlyList<string> ValidatePreRotation(

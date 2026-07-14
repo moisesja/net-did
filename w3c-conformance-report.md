@@ -1,6 +1,6 @@
 # W3C DID Core Conformance Report
 
-Generated: 2026-07-11T19:02:32Z
+Generated: 2026-07-13T18:31:36Z
 
 ## Scope and limitations
 
@@ -20,6 +20,7 @@ tests in these locations:
 | did:webvh URL mapping unsafe encodings (#49) | `Issue49_*` in `tests/NetDid.Method.WebVh.Tests/DidUrlMapperTests.cs` + `DidWebVhMethodTests.cs` |
 | did:webvh HTTP fetches lack resource limits (#51) | `tests/NetDid.Method.WebVh.Tests/DefaultWebVhHttpClientTests.cs` |
 | did:peer numalgo 2 malformed key segments (#52) | `Issue52_*` in `tests/NetDid.Method.Peer.Tests/DidPeerMethodTests.cs` |
+| did:webvh multi-proof existential validation, unchecked proofPurpose, proof-shape/`created` schema gaps (#101) | `Issue101_*` in `tests/NetDid.Method.WebVh.Tests/LogChainValidatorMultiProofTests.cs` |
 
 If a future audit finds a DID Core statement gap, add it to this
 suite. If it finds a method-specific behaviour, add it to that

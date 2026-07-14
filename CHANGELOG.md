@@ -7,6 +7,97 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Preserve-mode did:webvh updates carry the previous document verbatim into the new signed
+  entry** (#101). An `UpdateAsync` with `NewDocument == null` previously rebuilt the appended head
+  from the reduced typed model, silently dropping signed nested document members the model does not
+  surface (for example a member inside a `verificationMethod` object) before hashing and signing the
+  reduced state. The preserved state is now re-emitted from its retained wire JSON, so signed nested
+  members survive into the new head. A state-level provenance fingerprint falls back to modeled
+  serialization for a deliberately changed document, so a genuine consumer edit still wins over stale
+  wire bytes.
+- **A mutable or dynamic `NewDocument` can no longer diverge the published log from the signed
+  bytes** (#101). `UpdateCoreAsync` now deep-copies the caller's `DidWebVhUpdateOptions.NewDocument`
+  exactly once at the trust boundary (one JSON-LD round-trip). Entry hashing, signing across the
+  async boundary, the published `did.jsonl`, the `did.json` compatibility artifact, and
+  `DidUpdateResult.DidDocument` all observe that single private snapshot, so a caller-supplied
+  collection that returns different contents per enumeration cannot publish bytes that differ from
+  what was hashed and signed (the same trust-boundary treatment already applied to parameter
+  collections). Observable change: `DidUpdateResult.DidDocument` is now the private snapshot, not the
+  caller's supplied instance.
+- **Resolution enforces the SCID identity of every validated entry, not just the target** (#101).
+  did:webvh v1.0 requires the SCID segment of `state.id` to be byte-for-byte identical to the DID's
+  SCID and the first entry's `parameters.scid` "for every entry's `state.id`, not just the first,"
+  independently of portability. `LogChainValidator` now checks this for the genesis and every
+  subsequent entry it validates (only the host/path portion may change under portability), so a
+  genuinely signed log whose intermediate or genesis entry claims a foreign SCID — or omits
+  `state.id` — is rejected as `invalidDidLog`. Historical resolution still validates only the
+  selected prefix, so a corrupt later tail does not revoke an already-established version.
+  **Compatibility**: Update/Deactivate on an SCID-inconsistent (e.g. forged) log now throw
+  `LogChainValidationException` during chain validation rather than the previous `ArgumentException`;
+  both still reject the log.
+- **did:webvh entries with invalid or unauthorized extra controller proofs are now rejected**
+  (#101). `LogChainValidator` previously accepted an entry as soon as one proof verified from an
+  active update key, silently skipping every other supplied proof; did:webvh v1.0 requires
+  "Resolvers MUST reject an entry whose proof fails any check." Every supplied controller proof
+  is now processed by DataProofsDotnet's `DataIntegrityProofPipeline` and authorized by a
+  did:webvh resolver: the `verificationMethod`
+  must be a `did:key` (DID==fragment anti-spoof) whose Ed25519 multibase appears verbatim in the
+  active `updateKeys`, used for `proofPurpose` `assertionMethod`. One authorized signer still
+  authorizes the entry — multiple valid authorized proofs remain supported and no threshold
+  semantics were introduced. `proofPurpose` was previously never checked at all. **Compatibility**:
+  NetDid's writer emits exactly one proof, and conforming single-proof logs validate unchanged; a
+  multi-proof log carrying invalid or unauthorized extras is now rejected as `invalidDidLog` —
+  intentional stricter conformance.
+- **Schema-defined proof members are preserved and supported where their semantics are enforced**
+  (#101). The
+  did:webvh v1.0 log-entry schema requires the controller-proof members "at minimum" and leaves
+  additional properties open. A present proof `id` must pass NetDid's conservative
+  `System.Uri`-compatible absolute-URI check without surrounding whitespace; DID, URN, and HTTPS
+  forms are accepted, but this is explicitly not full WHATWG valid-URL-string conformance. Duplicate
+  proof ids are rejected so an unordered proof set cannot resolve a `previousProof` differently by
+  array order. A `previousProof` chain is resolved (a dangling reference is rejected), and an
+  `expires` at or before the entry's `versionTime` is treated as expired. Other extensions are
+  preserved verbatim and remain signature-bound, but NetDid does not claim application semantics
+  for every extension.
+  Parsed proof-object JSON round-trips byte-for-byte when Update/Deactivate republish a fetched log;
+  a single-object enclosing `proof` value is normalized to an array, which is also schema-valid and
+  does not change the proof signature. Array-valued `domain` remains unsupported by the pinned
+  DataProofsDotnet model and is an explicit upstream compatibility limitation.
+  `DataIntegrityProofValue.Created` is now optional (`string?`).
+- **Fetched entries are verified from their complete semantic JSON, not a reduced typed model**
+  (#101). Private parser provenance retains nested `parameters` and `state` members that the public
+  model does not surface. Entry hashes, controller proofs, and witness proofs all use that retained
+  content with only the protocol-required `versionId` replacement or `proof` removal. This closes a
+  reproduced post-sign nested-member injection that previously resolved and appeared in
+  `IncludeLog`. Update/Deactivate preserve those members in prior fetched entries. A modeled
+  fingerprint prevents stale provenance from overriding a public clone or in-place model mutation.
+- **Duplicate JSON members, invalid UTF-8, and malformed content in a fetched log are rejected as `invalidDidLog`**
+  (#101). Entries now parse with `AllowDuplicateProperties = false` (recursive), so a decoy
+  duplicate `proof` — or any duplicate member — can no longer silently drop a supplied member
+  (`System.Text.Json` keeps the last of a pair). JSON-access failures at the parse boundary,
+  including a string carrying an unpaired surrogate that parses as a token but throws on decode,
+  now map to `FormatException` → `invalidDidLog` instead of `notFound` (or, for Update/Deactivate,
+  an unhandled exception). did.jsonl and witness files use strict UTF-8 decoding, so invalid bytes
+  cannot normalize into a different signed string. The `proof` member parses as a single object or
+  an array (schema `oneOf`).
+- **Per-entry controller-proof verification work is explicitly bounded** (#101). Verifying each
+  proof re-canonicalizes the entry, and `created` is attacker-chosen and part of the signed
+  configuration, so one active key can mint arbitrarily many *distinct* valid proofs. The resolver
+  therefore imposes an explicit, documented resource limit on controller proofs per entry
+  (default 8); an entry beyond the limit is rejected as `invalidDidLog`. Direct callers configure
+  it with the additive `DidWebVhMethod(client, logger, maxControllerProofsPerEntry)` constructor and
+  DI callers with `AddDidWebVh(httpClientOptions, maxControllerProofsPerEntry)`. The existing
+  signatures remain source- and binary-compatible. Values must be positive; raising the limit
+  increases attacker-controlled canonicalization and signature work. This is a resource policy,
+  not a conformance rule (real entries carry one proof).
+- **Historical `IncludeLog` no longer exposes an unvalidated tail** (#101). Resolution by
+  `versionId` or `versionTime` returns only the exact raw and parsed log prefix through the selected
+  version. Latest resolution still returns the complete fetched log text. Once an earlier target
+  has been selected and validated, a later cryptographically invalid or unauthorized entry does
+  not appear in that target's artifacts.
+
 ### Security
 
 - Fresh-key creation in `DidKeyMethod` (did:key) and `Numalgo0Handler` (did:peer:0) now disposes

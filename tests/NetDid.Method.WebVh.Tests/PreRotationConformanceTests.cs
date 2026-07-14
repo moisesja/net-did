@@ -195,11 +195,11 @@ public class PreRotationConformanceTests
             NextKeyHashes =
             [PreRotationManager.ComputeKeyCommitment(futureKey.MultibasePublicKey)]
         }, futureKey);
-        var validator = new LogChainValidator(new EddsaJcs2022Cryptosuite());
+        var validator = new LogChainValidator();
 
-        validator.Invoking(v => v.ValidateChain([genesis, activation]))
-            .Should().Throw<LogChainValidationException>()
-            .WithMessage("*authorized update key*");
+        await validator.Awaiting(v => v.ValidateChainAsync([genesis, activation]))
+            .Should().ThrowAsync<LogChainValidationException>()
+            .WithMessage("*Proof validation failed*");
     }
 
     [Fact]
@@ -275,12 +275,12 @@ public class PreRotationConformanceTests
             [key2.MultibasePublicKey, key3.MultibasePublicKey, extraKey.MultibasePublicKey],
             NextKeyHashes = []
         }, key3);
-        var validator = new LogChainValidator(new EddsaJcs2022Cryptosuite());
+        var validator = new LogChainValidator();
 
-        validator.Invoking(v => v.ValidateChain([genesis, valid]))
-            .Should().NotThrow();
-        validator.Invoking(v => v.ValidateChain([genesis, invalid]))
-            .Should().Throw<LogChainValidationException>()
+        await validator.Awaiting(v => v.ValidateChainAsync([genesis, valid]))
+            .Should().NotThrowAsync();
+        await validator.Awaiting(v => v.ValidateChainAsync([genesis, invalid]))
+            .Should().ThrowAsync<LogChainValidationException>()
             .WithMessage("*commitment does not match*");
     }
 
@@ -319,13 +319,13 @@ public class PreRotationConformanceTests
         };
         var validEntry = await AppendEntryAsync(genesis, parameters, committedKey);
         var invalidEntry = await AppendEntryAsync(genesis, parameters, previousKey);
-        var validator = new LogChainValidator(new EddsaJcs2022Cryptosuite());
+        var validator = new LogChainValidator();
 
-        validator.Invoking(v => v.ValidateChain([genesis, validEntry]))
-            .Should().NotThrow();
-        validator.Invoking(v => v.ValidateChain([genesis, invalidEntry]))
-            .Should().Throw<LogChainValidationException>()
-            .WithMessage("*authorized update key*");
+        await validator.Awaiting(v => v.ValidateChainAsync([genesis, validEntry]))
+            .Should().NotThrowAsync();
+        await validator.Awaiting(v => v.ValidateChainAsync([genesis, invalidEntry]))
+            .Should().ThrowAsync<LogChainValidationException>()
+            .WithMessage("*Proof validation failed*");
     }
 
     [Fact]
@@ -378,7 +378,7 @@ public class PreRotationConformanceTests
         finalParameters.Deactivated.Should().BeTrue();
         finalParameters.UpdateKeys.Should().Equal(committedKey.MultibasePublicKey);
         finalParameters.NextKeyHashes.Should().NotBeNull().And.BeEmpty();
-        new LogChainValidator(new EddsaJcs2022Cryptosuite()).ValidateChain(entries);
+        await new LogChainValidator().ValidateChainAsync(entries);
 
         httpClient.SetLogResponse(DidUrlMapper.MapToLogUrl(did), deactivatedLog);
         var resolved = await method.ResolveAsync(did);
@@ -585,10 +585,10 @@ public class PreRotationConformanceTests
                 Witness = genesis.Parameters.Witness
             }
         };
-        var validator = new LogChainValidator(new EddsaJcs2022Cryptosuite());
+        var validator = new LogChainValidator();
 
-        validator.Invoking(v => v.ValidateChain([invalidGenesis]))
-            .Should().Throw<LogChainValidationException>()
+        await validator.Awaiting(v => v.ValidateChainAsync([invalidGenesis]))
+            .Should().ThrowAsync<LogChainValidationException>()
             .WithMessage("*Unsupported did:webvh method version*");
     }
 

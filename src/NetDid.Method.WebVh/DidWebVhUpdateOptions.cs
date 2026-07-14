@@ -20,7 +20,14 @@ public sealed record DidWebVhUpdateOptions : DidUpdateOptions
     /// </summary>
     public required ISigner SigningKey { get; init; }
 
-    /// <summary>The updated DID Document. If null, the previous document is preserved.</summary>
+    /// <summary>
+    /// The updated DID Document. If null, the previous document is preserved verbatim — the new
+    /// entry republishes the fetched state bytes, including signed nested members the typed
+    /// model does not surface. When supplied, the document is deep-copied exactly once at the
+    /// start of the update (one JSON-LD serialization round-trip): hashing, signing, the
+    /// published log, and <see cref="NetDid.Core.Model.DidUpdateResult.DidDocument"/> all
+    /// reflect that private snapshot, never a later state of this instance.
+    /// </summary>
     public DidDocument? NewDocument { get; init; }
 
     /// <summary>Parameter updates to apply. If null, parameters are unchanged.</summary>

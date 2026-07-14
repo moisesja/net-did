@@ -153,10 +153,10 @@ public class DidWebVhMethodTests
             VersionId = $"1-{genesis.Parameters.Scid}"
         };
 
-        var act = () => new LogChainValidator(new EddsaJcs2022Cryptosuite())
-            .ValidateChain([legacyGenesis]);
+        var act = () => new LogChainValidator()
+            .ValidateChainAsync([legacyGenesis]);
 
-        act.Should().Throw<LogChainValidationException>()
+        await act.Should().ThrowAsync<LogChainValidationException>()
             .WithMessage("*Genesis entry hash*");
     }
 
@@ -194,10 +194,10 @@ public class DidWebVhMethodTests
             Proof = [await SignEntryAsync(legacyGenesis, signer)]
         };
 
-        var act = () => new LogChainValidator(new EddsaJcs2022Cryptosuite())
-            .ValidateChain([legacyGenesis]);
+        var act = () => new LogChainValidator()
+            .ValidateChainAsync([legacyGenesis]);
 
-        act.Should().Throw<LogChainValidationException>()
+        await act.Should().ThrowAsync<LogChainValidationException>()
             .WithMessage("*Genesis entry hash*");
     }
 
@@ -882,10 +882,10 @@ public class DidWebVhMethodTests
             Proof = [await SignEntryAsync(nonConformantEntry, signer)]
         };
 
-        var act = () => new LogChainValidator(new EddsaJcs2022Cryptosuite())
-            .ValidateChain([genesis, nonConformantEntry]);
+        var act = () => new LogChainValidator()
+            .ValidateChainAsync([genesis, nonConformantEntry]);
 
-        act.Should().Throw<LogChainValidationException>()
+        await act.Should().ThrowAsync<LogChainValidationException>()
             .WithMessage("*Entry hash mismatch at version 2*");
     }
 
@@ -1981,6 +1981,97 @@ public class DidWebVhMethodTests
         entries.Should().HaveCount(2);
         entries[0].VersionNumber.Should().Be(1);
         entries[1].VersionNumber.Should().Be(2);
+        ((string)resolveResult.Artifacts[DidWebVhArtifacts.DidJsonl])
+            .Should().Be(updatedLog, "latest resolution validates and exposes the complete fetched log");
+    }
+
+    [Fact]
+    public async Task Issue37_Resolve_HistoricalIncludeLog_ExposesOnlyValidatedPrefix()
+    {
+        var (method, httpClient) = CreateMethod();
+        var signer = CreateEd25519Signer();
+
+        var createResult = await method.CreateAsync(new DidWebVhCreateOptions
+        {
+            Domain = "example.com",
+            UpdateKey = signer
+        });
+        var did = createResult.Did.Value;
+        var updateResult = await method.UpdateAsync(did, new DidWebVhUpdateOptions
+        {
+            CurrentLogContent = Encoding.UTF8.GetBytes(
+                (string)createResult.Artifacts![DidWebVhArtifacts.DidJsonl]),
+            SigningKey = signer
+        });
+
+        var updatedLog = (string)updateResult.Artifacts![DidWebVhArtifacts.DidJsonl];
+        var lines = updatedLog.Split('\n');
+        var crlfLog = string.Join("\r\n", lines);
+        var entries = LogEntrySerializer.ParseJsonLines(Encoding.UTF8.GetBytes(crlfLog));
+        httpClient.SetLogResponse(
+            DidUrlMapper.MapToLogUrl(did), Encoding.UTF8.GetBytes(crlfLog));
+
+        var result = await method.ResolveAsync(did, new DidResolutionOptions
+        {
+            VersionId = entries[0].VersionId,
+            IncludeLog = true
+        });
+
+        result.ResolutionMetadata.Error.Should().BeNull();
+        var exposedEntries = (IReadOnlyList<LogEntry>)result.Artifacts![DidWebVhArtifacts.LogEntries];
+        exposedEntries.Should().ContainSingle()
+            .Which.VersionId.Should().Be(entries[0].VersionId);
+        ((string)result.Artifacts[DidWebVhArtifacts.DidJsonl]).Should().Be(lines[0],
+            "the raw artifact must end exactly at the validated entry, without the CRLF separator");
+    }
+
+    [Fact]
+    public async Task Issue101_Resolve_HistoricalIncludeLog_DoesNotExposeInvalidTail()
+    {
+        var (method, httpClient) = CreateMethod();
+        var signer = CreateEd25519Signer();
+
+        var createResult = await method.CreateAsync(new DidWebVhCreateOptions
+        {
+            Domain = "example.com",
+            UpdateKey = signer
+        });
+        var did = createResult.Did.Value;
+        var updateResult = await method.UpdateAsync(did, new DidWebVhUpdateOptions
+        {
+            CurrentLogContent = Encoding.UTF8.GetBytes(
+                (string)createResult.Artifacts![DidWebVhArtifacts.DidJsonl]),
+            SigningKey = signer
+        });
+
+        var updatedLog = (string)updateResult.Artifacts![DidWebVhArtifacts.DidJsonl];
+        var entries = LogEntrySerializer.ParseJsonLines(Encoding.UTF8.GetBytes(updatedLog));
+        var lines = updatedLog.Split('\n');
+        lines[1] = lines[1].Replace(
+            entries[1].Proof![0].ProofValue, "zInvalidUncheckedTailProof");
+        var corruptedLog = string.Join('\n', lines);
+        httpClient.SetLogResponse(
+            DidUrlMapper.MapToLogUrl(did), Encoding.UTF8.GetBytes(corruptedLog));
+
+        var result = await method.ResolveAsync(did, new DidResolutionOptions
+        {
+            VersionId = entries[0].VersionId,
+            IncludeLog = true
+        });
+
+        result.ResolutionMetadata.Error.Should().BeNull();
+        result.DidDocument.Should().NotBeNull();
+        var exposedEntries = (IReadOnlyList<LogEntry>)result.Artifacts![DidWebVhArtifacts.LogEntries];
+        exposedEntries.Should().ContainSingle()
+            .Which.VersionId.Should().Be(entries[0].VersionId);
+        var exposedJsonl = (string)result.Artifacts[DidWebVhArtifacts.DidJsonl];
+        exposedJsonl.Should().Be(lines[0]);
+        exposedJsonl.Should().NotContain("zInvalidUncheckedTailProof");
+
+        var dictionaryView = (IDictionary<string, object>)result.Artifacts;
+        var mutate = () => dictionaryView[DidWebVhArtifacts.DidJsonl] = corruptedLog;
+        mutate.Should().Throw<NotSupportedException>(
+            "cached resolution artifacts must not be caller-mutable");
     }
 
     [Fact]
@@ -2640,11 +2731,63 @@ public class DidWebVhMethodTests
         var entries = LogEntrySerializer.ParseJsonLines(Encoding.UTF8.GetBytes(updatedLog));
         entries[^1].Parameters.UpdateKeys.Should().BeEquivalentTo([newKey.MultibasePublicKey]);
 
-        var effective = new LogChainValidator(new EddsaJcs2022Cryptosuite()).ValidateChain(entries);
+        var effective = await new LogChainValidator().ValidateChainAsync(entries);
         effective.UpdateKeys.Should().BeEquivalentTo([newKey.MultibasePublicKey]);
 
         updateResult.UpdateKeyChange.Should().Be(AuthorizationChangeStatus.Changed);
         updateResult.EffectiveUpdateKeys.Should().BeEquivalentTo([newKey.MultibasePublicKey]);
+    }
+
+    [Fact]
+    public async Task Issue101_Update_DynamicNewDocumentCollection_PublishedLogMatchesSignedSnapshot()
+    {
+        // A NewDocument whose collections yield different contents per enumeration must not be
+        // able to desynchronize the entry hash, the signed bytes, and the published log —
+        // hashing, signing, publication, and the reported document must all reflect a single
+        // snapshot taken at the trust boundary.
+        var (method, httpClient) = CreateMethod();
+        var (did, log, signer) = await CreateWebVhDidAsync(method);
+
+        var firstService = new Service
+        {
+            Id = "#service-first",
+            Type = "ExampleService",
+            ServiceEndpoint = ServiceEndpointValue.FromUri("https://example.com/first")
+        };
+        var laterService = new Service
+        {
+            Id = "#service-later",
+            Type = "ExampleService",
+            ServiceEndpoint = ServiceEndpointValue.FromUri("https://example.com/later")
+        };
+        var newDocument = new DidDocument
+        {
+            Id = new Did(did),
+            Service = new FlippingList<Service>([firstService], [laterService])
+        };
+
+        var updateResult = await method.UpdateAsync(did, new DidWebVhUpdateOptions
+        {
+            CurrentLogContent = Encoding.UTF8.GetBytes(log),
+            SigningKey = signer,
+            NewDocument = newDocument
+        });
+
+        // The published log verifies end-to-end and carries the first (snapshot) read.
+        var updatedLog = (string)updateResult.Artifacts![DidWebVhArtifacts.DidJsonl];
+        httpClient.SetLogResponse(
+            DidUrlMapper.MapToLogUrl(did), Encoding.UTF8.GetBytes(updatedLog));
+        var resolved = await method.ResolveAsync(did);
+
+        resolved.ResolutionMetadata.Error.Should().BeNull(
+            "the published bytes must be the same single snapshot that was hashed and signed");
+        resolved.DidDocument!.Service.Should().ContainSingle()
+            .Which.Id.Should().Be("#service-first");
+
+        // The reported document is the private snapshot, not the caller's live instance.
+        updateResult.DidDocument.Should().NotBeSameAs(newDocument);
+        updateResult.DidDocument!.Service.Should().ContainSingle()
+            .Which.Id.Should().Be("#service-first");
     }
 
     [Fact]
@@ -2668,7 +2811,7 @@ public class DidWebVhMethodTests
 
         var updatedLog = (string)updateResult.Artifacts![DidWebVhArtifacts.DidJsonl];
         var entries = LogEntrySerializer.ParseJsonLines(Encoding.UTF8.GetBytes(updatedLog));
-        var effective = new LogChainValidator(new EddsaJcs2022Cryptosuite()).ValidateChain(entries);
+        var effective = await new LogChainValidator().ValidateChainAsync(entries);
 
         updateResult.EffectiveUpdateKeys.Should().BeEquivalentTo(effective.UpdateKeys);
     }
@@ -2737,7 +2880,7 @@ public class DidWebVhMethodTests
         var entries = LogEntrySerializer.ParseJsonLines(Encoding.UTF8.GetBytes(updatedLog));
         entries[^1].Parameters.NextKeyHashes.Should().BeEquivalentTo([honestCommitment]);
 
-        var effective = new LogChainValidator(new EddsaJcs2022Cryptosuite()).ValidateChain(entries);
+        var effective = await new LogChainValidator().ValidateChainAsync(entries);
         effective.NextKeyHashes.Should().BeEquivalentTo([honestCommitment]);
 
         // Pre-rotation hides only the following entry's keys. This activation entry was still
@@ -2955,7 +3098,7 @@ public class DidWebVhMethodTests
         var entries = LogEntrySerializer.ParseJsonLines(Encoding.UTF8.GetBytes(updatedLog));
         entries[^1].Parameters.UpdateKeys.Should().BeEquivalentTo(
             [key2.MultibasePublicKey, key2B.MultibasePublicKey]);
-        new LogChainValidator(new EddsaJcs2022Cryptosuite()).ValidateChain(entries)
+        (await new LogChainValidator().ValidateChainAsync(entries))
             .UpdateKeys.Should().BeEquivalentTo(
                 [key2.MultibasePublicKey, key2B.MultibasePublicKey]);
 
@@ -3134,8 +3277,10 @@ public class DidWebVhMethodTests
         var victimDid = victim.Did.Value;
 
         // Attacker crafts a validly-signed log whose latest entry claims the victim DID and whose
-        // authority is the attacker's own key. RequireAppendableLogForDid's State.Id check passes;
-        // the genesis-SCID binding must reject it.
+        // authority is the attacker's own key. Such a log is internally SCID-inconsistent
+        // (state.id carries the victim's SCID, parameters.scid the forge's own hash), so the
+        // per-entry identity rule (#101) rejects it during chain validation — before the
+        // genesis-SCID binding that used to catch it (issue #82) is even reached.
         var attackerKey = CreateEd25519Signer();
         var forgedLog = await ForgeGenesisClaimingDidAsync(victimDid, attackerKey);
 
@@ -3146,7 +3291,7 @@ public class DidWebVhMethodTests
             NewDocument = new DidDocument { Id = new Did(victimDid) }
         });
 
-        await act.Should().ThrowAsync<ArgumentException>().WithMessage("*genesis SCID*");
+        await act.Should().ThrowAsync<LogChainValidationException>().WithMessage("*SCID*");
     }
 
     [Fact]
@@ -3172,6 +3317,8 @@ public class DidWebVhMethodTests
             SigningKey = attackerKey
         });
 
-        await act.Should().ThrowAsync<ArgumentException>().WithMessage("*genesis SCID*");
+        // The forged log is internally SCID-inconsistent, so the per-entry identity rule
+        // (#101) rejects it during chain validation (see the Update variant above).
+        await act.Should().ThrowAsync<LogChainValidationException>().WithMessage("*SCID*");
     }
 }

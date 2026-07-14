@@ -1,3 +1,4 @@
+using System.Collections.ObjectModel;
 using System.Globalization;
 using System.Text;
 using System.Text.Json;
@@ -7,6 +8,7 @@ using DataProofsDotnet.DataIntegrity;
 using NetDid.Core;
 using NetCrypto;
 using NetDid.Core.Model;
+using NetDid.Core.Serialization;
 using NetDid.Method.WebVh.Model;
 
 namespace NetDid.Method.WebVh;
@@ -17,6 +19,13 @@ namespace NetDid.Method.WebVh;
 /// </summary>
 public sealed class DidWebVhMethod : DidMethodBase
 {
+    /// <summary>
+    /// Default maximum controller proofs verified per log entry. This is a resolver resource
+    /// policy, not a did:webvh conformance limit.
+    /// </summary>
+    public const int DefaultMaxControllerProofsPerEntry =
+        LogChainValidator.DefaultMaxControllerProofsPerEntry;
+
     private readonly IWebVhHttpClient _httpClient;
     private readonly EddsaJcs2022Cryptosuite _suite;
     private readonly LogChainValidator _chainValidator;
@@ -25,11 +34,29 @@ public sealed class DidWebVhMethod : DidMethodBase
 
     internal const string MethodVersion = "did:webvh:1.0";
 
+    /// <summary>
+    /// Creates a did:webvh method using <see cref="DefaultMaxControllerProofsPerEntry"/>.
+    /// </summary>
     public DidWebVhMethod(IWebVhHttpClient httpClient, ILogger<DidWebVhMethod>? logger = null)
+        : this(httpClient, logger, DefaultMaxControllerProofsPerEntry)
+    {
+    }
+
+    /// <summary>Creates a did:webvh method with a caller-specified controller-proof budget.</summary>
+    /// <param name="httpClient">Client used to fetch did:webvh artifacts.</param>
+    /// <param name="logger">Optional resolver logger.</param>
+    /// <param name="maxControllerProofsPerEntry">
+    /// Maximum controller proofs verified per log entry. Must be at least one. Raising this value
+    /// increases the canonicalization and signature-verification work an untrusted log can cause.
+    /// </param>
+    public DidWebVhMethod(
+        IWebVhHttpClient httpClient,
+        ILogger<DidWebVhMethod>? logger,
+        int maxControllerProofsPerEntry)
     {
         _httpClient = httpClient ?? throw new ArgumentNullException(nameof(httpClient));
         _suite = new EddsaJcs2022Cryptosuite();
-        _chainValidator = new LogChainValidator(_suite);
+        _chainValidator = new LogChainValidator(maxControllerProofsPerEntry);
         _witnessValidator = new WitnessValidator(_suite);
         _logger = logger ?? NullLogger<DidWebVhMethod>.Instance;
     }
@@ -219,14 +246,15 @@ public sealed class DidWebVhMethod : DidMethodBase
             if (entries.Count == 0)
                 return DidResolutionResult.NotFound(did);
 
-            // Determine the target entry index before validation
-            // This allows versioned queries to succeed even if later entries are invalid
+            // Determine the target entry index before validation. For an exact historical target,
+            // validation below is intentionally limited to the selected prefix.
             var targetIndex = FindTargetIndex(entries, options);
             if (targetIndex < 0)
                 return DidResolutionResult.NotFound(did);
 
             // Validate the chain up to the target version
-            var perEntryParams = _chainValidator.ValidateChainWithPerEntryParams(entries, targetIndex + 1);
+            var perEntryParams = await _chainValidator.ValidateChainWithPerEntryParamsAsync(
+                entries, targetIndex + 1, ct);
             var effectiveParams = perEntryParams[^1];
 
             var targetEntry = entries[targetIndex];
@@ -316,18 +344,19 @@ public sealed class DidWebVhMethod : DidMethodBase
             // A directly requested deactivation entry suppresses the DID Document. For a prior
             // version of a DID that was validly deactivated later, retain that historical
             // document but mark its metadata deactivated as required by did:webvh v1.0. A parsed
-            // tail that fails chain, identity, or witness validation never contaminates a valid
-            // historical resolution.
+            // tail beyond the selected target that fails chain, identity, or witness validation
+            // does not contaminate that target's resolution artifacts.
             var isDeactivated = effectiveParams.Deactivated == true;
             var deactivatedForMetadata = isDeactivated;
             if (!isDeactivated && targetIndex < entries.Count - 1)
             {
                 try
                 {
-                    var fullPerEntryParams = _chainValidator.ValidateChainWithPerEntryParams(
-                        entries, entries.Count);
-                    if (fullPerEntryParams[^1].Deactivated == true &&
-                        HasConsistentScid(entries, entries[0].Parameters.Scid))
+                    // Per-entry state.id SCID consistency is enforced inside chain validation,
+                    // so a tail claiming a foreign identity fails here and is not asserted.
+                    var fullPerEntryParams = await _chainValidator.ValidateChainWithPerEntryParamsAsync(
+                        entries, entries.Count, ct);
+                    if (fullPerEntryParams[^1].Deactivated == true)
                     {
                         var fullChainWitnessesValid = true;
                         if (WitnessValidator.RequiresWitness(fullPerEntryParams, entries.Count - 1))
@@ -362,11 +391,20 @@ public sealed class DidWebVhMethod : DidMethodBase
             IReadOnlyDictionary<string, object>? artifacts = null;
             if (options?.IncludeLog == true)
             {
-                artifacts = new Dictionary<string, object>
-                {
-                    [DidWebVhArtifacts.DidJsonl] = Encoding.UTF8.GetString(logContent),
-                    [DidWebVhArtifacts.LogEntries] = entries
-                };
+                var resolvesLatest = targetIndex == entries.Count - 1;
+                IReadOnlyList<LogEntry> exposedEntries = resolvesLatest
+                    ? entries
+                    : entries.Take(targetIndex + 1).ToList().AsReadOnly();
+                var exposedJsonl = resolvesLatest
+                    ? LogEntrySerializer.DecodeUtf8(logContent)
+                    : GetRawJsonLinesPrefix(logContent, targetIndex + 1);
+
+                artifacts = new ReadOnlyDictionary<string, object>(
+                    new Dictionary<string, object>
+                    {
+                        [DidWebVhArtifacts.DidJsonl] = exposedJsonl,
+                        [DidWebVhArtifacts.LogEntries] = exposedEntries
+                    });
             }
 
             return new DidResolutionResult
@@ -424,7 +462,7 @@ public sealed class DidWebVhMethod : DidMethodBase
 
         // Parse and validate existing log
         var entries = LogEntrySerializer.ParseJsonLines(updateOptions.CurrentLogContent);
-        var effectiveParams = _chainValidator.ValidateChain(entries);
+        var effectiveParams = await _chainValidator.ValidateChainAsync(entries, ct);
 
         // Bind the supplied log and new document to the target DID. Without these checks the
         // driver could emit a log the resolver rejects on identity grounds (resolution enforces
@@ -433,7 +471,17 @@ public sealed class DidWebVhMethod : DidMethodBase
         // witness thresholds, are orthogonal — a witness-policy update still needs matching proofs
         // published for the resulting log to resolve.)
         RequireAppendableLogForDid(entries, effectiveParams, did);
-        if (updateOptions.NewDocument is not null && updateOptions.NewDocument.Id.Value != did)
+
+        // Snapshot the caller's document exactly once at the trust boundary. The document is
+        // read by validation, entry hashing, signing (across an await), the published log, and
+        // the compatibility artifact; a mutable or dynamic collection inside a live caller
+        // instance could otherwise present different contents to each stage, publishing bytes
+        // that diverge from the hashed and signed bytes. Every check below — including the Id
+        // binding — runs against this private copy.
+        var snapshotDocument = updateOptions.NewDocument is { } callerDocument
+            ? SnapshotDocument(callerDocument)
+            : null;
+        if (snapshotDocument is not null && snapshotDocument.Id.Value != did)
             throw new ArgumentException(
                 $"NewDocument.Id must equal the DID being updated ('{did}').", nameof(options));
 
@@ -486,8 +534,9 @@ public sealed class DidWebVhMethod : DidMethodBase
 
         var previousEntry = entries[^1];
 
-        // Build updated document
-        var newDocument = updateOptions.NewDocument ?? previousEntry.State;
+        // Build updated document: the caller's snapshot, or the previous parsed document
+        // (whose wire provenance carries signed nested members into the new head verbatim).
+        var newDocument = snapshotDocument ?? previousEntry.State;
 
         RequireValidWitnessPolicy(newParams.Witness, nameof(options));
 
@@ -592,7 +641,7 @@ public sealed class DidWebVhMethod : DidMethodBase
 
         // Parse and validate existing log
         var entries = LogEntrySerializer.ParseJsonLines(deactivateOptions.CurrentLogContent);
-        var effectiveParams = _chainValidator.ValidateChain(entries);
+        var effectiveParams = await _chainValidator.ValidateChainAsync(entries, ct);
 
         // Bind the supplied log to the target DID (see issue #82 and UpdateCoreAsync).
         RequireAppendableLogForDid(entries, effectiveParams, did);
@@ -816,6 +865,18 @@ public sealed class DidWebVhMethod : DidMethodBase
     }
 
     /// <summary>
+    /// Deep-copies a caller-supplied DID Document through one JSON-LD serialization round-trip,
+    /// so hashing, signing, publication, and the reported result all observe a single read of
+    /// the caller's (possibly mutable or dynamic) collections. The round-trip is the same
+    /// projection publication applies — the log entry's <c>state</c> is always emitted as
+    /// JSON-LD — so it changes no published bytes; a document without an explicit
+    /// <c>@context</c> materializes the same default context publication would add.
+    /// </summary>
+    private static DidDocument SnapshotDocument(DidDocument document)
+        => DidDocumentSerializer.Deserialize(
+            DidDocumentSerializer.Serialize(document, DidContentTypes.JsonLd));
+
+    /// <summary>
     /// Copies a caller-supplied witness policy so its entry list cannot change between
     /// validation and serialization. <see cref="WitnessEntry"/> itself is sealed with init-only
     /// members, so copying the list suffices; the internal wire-presence flags are preserved so
@@ -851,7 +912,7 @@ public sealed class DidWebVhMethod : DidMethodBase
             throw new ArgumentException(
                 "The supplied DID log is already deactivated and cannot be updated.");
 
-        // entries is non-empty here: ValidateChain has already run and throws on an empty log.
+        // entries is non-empty here: ValidateChainAsync has already run and throws on an empty log.
         if (entries[^1].State.Id.Value != did)
             throw new ArgumentException(
                 $"The supplied CurrentLogContent does not belong to the DID being operated on ('{did}').");
@@ -883,32 +944,6 @@ public sealed class DidWebVhMethod : DidMethodBase
         return false;
     }
 
-    private static bool HasConsistentScid(
-        IReadOnlyList<LogEntry> entries,
-        string? expectedScid)
-    {
-        if (string.IsNullOrEmpty(expectedScid))
-            return false;
-
-        foreach (var entry in entries)
-        {
-            try
-            {
-                if (!string.Equals(
-                        DidUrlMapper.ExtractScid(entry.State.Id.Value),
-                        expectedScid,
-                        StringComparison.Ordinal))
-                    return false;
-            }
-            catch
-            {
-                return false;
-            }
-        }
-
-        return true;
-    }
-
     /// <summary>Order-insensitive, ordinal set equality; a null list is treated as empty.</summary>
     private static bool StringSetEquals(IReadOnlyList<string>? a, IReadOnlyList<string>? b)
     {
@@ -936,6 +971,51 @@ public sealed class DidWebVhMethod : DidMethodBase
             .Select(entry => entry.Id.Normalize(NormalizationForm.FormC))
             .ToHashSet(StringComparer.Ordinal);
         return idsA.SetEquals(idsB);
+    }
+
+    /// <summary>
+    /// Returns the original JSON Lines content through the requested non-blank record.
+    /// The line separator after that record is excluded so an unchecked later record cannot
+    /// leak through the raw artifact. Parsing has already proven that the requested number of
+    /// records exists; failure here therefore indicates an internal parser/prefix mismatch.
+    /// </summary>
+    private static string GetRawJsonLinesPrefix(byte[] content, int entryCount)
+    {
+        var text = LogEntrySerializer.DecodeUtf8(content);
+        var lineStart = 0;
+        var entriesSeen = 0;
+
+        while (lineStart < text.Length)
+        {
+            var newlineIndex = text.IndexOf('\n', lineStart);
+            var lineEnd = newlineIndex >= 0 ? newlineIndex : text.Length;
+            var hasContent = false;
+            for (var i = lineStart; i < lineEnd; i++)
+            {
+                if (!char.IsWhiteSpace(text[i]))
+                {
+                    hasContent = true;
+                    break;
+                }
+            }
+
+            if (hasContent && ++entriesSeen == entryCount)
+            {
+                var prefixEnd = lineEnd;
+                if (prefixEnd > lineStart && text[prefixEnd - 1] == '\r')
+                    prefixEnd--;
+
+                return text[..prefixEnd];
+            }
+
+            if (newlineIndex < 0)
+                break;
+
+            lineStart = newlineIndex + 1;
+        }
+
+        throw new InvalidOperationException(
+            "The parsed did:webvh log does not contain the requested JSON Lines prefix.");
     }
 
     /// <summary>

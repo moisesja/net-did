@@ -14,8 +14,9 @@ public record DidResolutionOptions
 
     /// <summary>
     /// When <c>true</c>, methods that maintain a history (e.g. did:webvh) populate
-    /// <see cref="DidResolutionResult.Artifacts"/> with the parsed log. Methods without
-    /// history ignore this flag. Default: <c>false</c>.
+    /// <see cref="DidResolutionResult.Artifacts"/> with the validated history used for the
+    /// resolution. A historical query exposes history only through the selected version. Methods
+    /// without history ignore this flag. Default: <c>false</c>.
     /// </summary>
     public bool IncludeLog { get; init; } = false;
 

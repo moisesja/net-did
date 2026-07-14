@@ -1,4 +1,3 @@
-using System.Text;
 using System.Text.Json;
 using DataProofsDotnet.DataIntegrity;
 using NetDid.Method.WebVh.Model;
@@ -245,7 +244,7 @@ internal sealed class WitnessValidator
     {
         try
         {
-            var json = Encoding.UTF8.GetString(content);
+            var json = LogEntrySerializer.DecodeUtf8(content);
             using var doc = JsonDocument.Parse(json);
             var root = doc.RootElement;
 
