@@ -197,8 +197,8 @@ public class PreRotationConformanceTests
         }, futureKey);
         var validator = new LogChainValidator();
 
-        validator.Invoking(v => v.ValidateChain([genesis, activation]))
-            .Should().Throw<LogChainValidationException>()
+        await validator.Awaiting(v => v.ValidateChainAsync([genesis, activation]))
+            .Should().ThrowAsync<LogChainValidationException>()
             .WithMessage("*Proof validation failed*");
     }
 
@@ -277,10 +277,10 @@ public class PreRotationConformanceTests
         }, key3);
         var validator = new LogChainValidator();
 
-        validator.Invoking(v => v.ValidateChain([genesis, valid]))
-            .Should().NotThrow();
-        validator.Invoking(v => v.ValidateChain([genesis, invalid]))
-            .Should().Throw<LogChainValidationException>()
+        await validator.Awaiting(v => v.ValidateChainAsync([genesis, valid]))
+            .Should().NotThrowAsync();
+        await validator.Awaiting(v => v.ValidateChainAsync([genesis, invalid]))
+            .Should().ThrowAsync<LogChainValidationException>()
             .WithMessage("*commitment does not match*");
     }
 
@@ -321,10 +321,10 @@ public class PreRotationConformanceTests
         var invalidEntry = await AppendEntryAsync(genesis, parameters, previousKey);
         var validator = new LogChainValidator();
 
-        validator.Invoking(v => v.ValidateChain([genesis, validEntry]))
-            .Should().NotThrow();
-        validator.Invoking(v => v.ValidateChain([genesis, invalidEntry]))
-            .Should().Throw<LogChainValidationException>()
+        await validator.Awaiting(v => v.ValidateChainAsync([genesis, validEntry]))
+            .Should().NotThrowAsync();
+        await validator.Awaiting(v => v.ValidateChainAsync([genesis, invalidEntry]))
+            .Should().ThrowAsync<LogChainValidationException>()
             .WithMessage("*Proof validation failed*");
     }
 
@@ -378,7 +378,7 @@ public class PreRotationConformanceTests
         finalParameters.Deactivated.Should().BeTrue();
         finalParameters.UpdateKeys.Should().Equal(committedKey.MultibasePublicKey);
         finalParameters.NextKeyHashes.Should().NotBeNull().And.BeEmpty();
-        new LogChainValidator().ValidateChain(entries);
+        await new LogChainValidator().ValidateChainAsync(entries);
 
         httpClient.SetLogResponse(DidUrlMapper.MapToLogUrl(did), deactivatedLog);
         var resolved = await method.ResolveAsync(did);
@@ -587,8 +587,8 @@ public class PreRotationConformanceTests
         };
         var validator = new LogChainValidator();
 
-        validator.Invoking(v => v.ValidateChain([invalidGenesis]))
-            .Should().Throw<LogChainValidationException>()
+        await validator.Awaiting(v => v.ValidateChainAsync([invalidGenesis]))
+            .Should().ThrowAsync<LogChainValidationException>()
             .WithMessage("*Unsupported did:webvh method version*");
     }
 

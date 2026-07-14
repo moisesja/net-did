@@ -18,9 +18,9 @@ public sealed class LogChainValidatorTimestampTests
         var (_, _, entries) = await CreateAuthenticatedChainAsync(time => time);
         var validator = new LogChainValidator();
 
-        var act = () => validator.ValidateChain(entries);
+        var act = () => validator.ValidateChainAsync(entries);
 
-        act.Should().Throw<LogChainValidationException>()
+        await act.Should().ThrowAsync<LogChainValidationException>()
             .WithMessage("*strictly later*");
     }
 
@@ -30,9 +30,9 @@ public sealed class LogChainValidatorTimestampTests
         var (_, _, entries) = await CreateAuthenticatedChainAsync(time => time.AddTicks(-1));
         var validator = new LogChainValidator();
 
-        var act = () => validator.ValidateChain(entries);
+        var act = () => validator.ValidateChainAsync(entries);
 
-        act.Should().Throw<LogChainValidationException>()
+        await act.Should().ThrowAsync<LogChainValidationException>()
             .WithMessage("*strictly later*");
     }
 
@@ -42,9 +42,9 @@ public sealed class LogChainValidatorTimestampTests
         var (_, _, entries) = await CreateAuthenticatedChainAsync(time => time.AddTicks(1));
         var validator = new LogChainValidator();
 
-        var act = () => validator.ValidateChain(entries);
+        var act = () => validator.ValidateChainAsync(entries);
 
-        act.Should().NotThrow();
+        await act.Should().NotThrowAsync();
     }
 
     [Fact]
@@ -110,9 +110,9 @@ public sealed class LogChainValidatorTimestampTests
             new LogEntryParameters { Witness = malformedPolicy });
         var validator = new LogChainValidator();
 
-        var act = () => validator.ValidateChain(entries);
+        var act = () => validator.ValidateChainAsync(entries);
 
-        act.Should().Throw<LogChainValidationException>()
+        await act.Should().ThrowAsync<LogChainValidationException>()
             .WithMessage("*duplicated*");
     }
 
@@ -146,9 +146,9 @@ public sealed class LogChainValidatorTimestampTests
             new LogEntryParameters { Witness = new WitnessConfig() });
         var validator = new LogChainValidator();
 
-        var act = () => validator.ValidateChain(entries);
+        var act = () => validator.ValidateChainAsync(entries);
 
-        act.Should().NotThrow();
+        await act.Should().NotThrowAsync();
     }
 
     [Theory]
@@ -192,7 +192,7 @@ public sealed class LogChainValidatorTimestampTests
             Encoding.UTF8.GetBytes((string)result.Artifacts![DidWebVhArtifacts.DidJsonl]));
 
         updatedEntries[2].VersionTime.Should().BeAfter(updatedEntries[1].VersionTime);
-        new LogChainValidator().ValidateChain(updatedEntries);
+        await new LogChainValidator().ValidateChainAsync(updatedEntries);
     }
 
     private async Task<(string Did, ISigner Signer, IReadOnlyList<LogEntry> Entries)>

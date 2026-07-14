@@ -257,9 +257,9 @@ public class LogChainValidatorMultiProofTests
         var mixed = entries[0] with { Proof = [unauthorizedProof, authorizedProof] };
 
         var act = () => new LogChainValidator()
-            .ValidateChain([mixed]);
+            .ValidateChainAsync([mixed]);
 
-        act.Should().Throw<LogChainValidationException>()
+        await act.Should().ThrowAsync<LogChainValidationException>()
             .WithMessage("*Proof validation failed*");
     }
 
@@ -363,9 +363,9 @@ public class LogChainValidatorMultiProofTests
         var tampered = entries[0] with { Proof = [original, wrongType] };
 
         var act = () => new LogChainValidator()
-            .ValidateChain([tampered]);
+            .ValidateChainAsync([tampered]);
 
-        act.Should().Throw<LogChainValidationException>()
+        await act.Should().ThrowAsync<LogChainValidationException>()
             .WithMessage("*version 1*");
     }
 
@@ -388,9 +388,9 @@ public class LogChainValidatorMultiProofTests
         var tampered = entries[0] with { Proof = [original, wrongSuite] };
 
         var act = () => new LogChainValidator()
-            .ValidateChain([tampered]);
+            .ValidateChainAsync([tampered]);
 
-        act.Should().Throw<LogChainValidationException>()
+        await act.Should().ThrowAsync<LogChainValidationException>()
             .WithMessage("*version 1*");
     }
 

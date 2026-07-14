@@ -39,9 +39,10 @@ internal sealed class LogChainValidator
     /// Returns the effective parameters at the final entry on success.
     /// Throws LogChainValidationException on failure.
     /// </summary>
-    public LogEntryParameters ValidateChain(IReadOnlyList<LogEntry> entries)
+    public Task<LogEntryParameters> ValidateChainAsync(
+        IReadOnlyList<LogEntry> entries, CancellationToken ct = default)
     {
-        return ValidateChain(entries, entries.Count);
+        return ValidateChainAsync(entries, entries.Count, ct);
     }
 
     /// <summary>
@@ -49,9 +50,10 @@ internal sealed class LogChainValidator
     /// Returns the effective parameters at the last validated entry.
     /// Throws LogChainValidationException on failure.
     /// </summary>
-    public LogEntryParameters ValidateChain(IReadOnlyList<LogEntry> entries, int upToCount)
+    public async Task<LogEntryParameters> ValidateChainAsync(
+        IReadOnlyList<LogEntry> entries, int upToCount, CancellationToken ct = default)
     {
-        var perEntry = ValidateChainWithPerEntryParams(entries, upToCount);
+        var perEntry = await ValidateChainWithPerEntryParamsAsync(entries, upToCount, ct);
         return perEntry[^1];
     }
 
@@ -60,8 +62,8 @@ internal sealed class LogChainValidator
     /// Index 0 = genesis entry's effective params, etc.
     /// Throws LogChainValidationException on failure.
     /// </summary>
-    public IReadOnlyList<LogEntryParameters> ValidateChainWithPerEntryParams(
-        IReadOnlyList<LogEntry> entries, int upToCount)
+    public async Task<IReadOnlyList<LogEntryParameters>> ValidateChainWithPerEntryParamsAsync(
+        IReadOnlyList<LogEntry> entries, int upToCount, CancellationToken ct = default)
     {
         if (entries.Count == 0)
             throw new LogChainValidationException(0, "DID log is empty.");
@@ -71,7 +73,7 @@ internal sealed class LogChainValidator
 
         // Validate genesis entry
         var genesis = entries[0];
-        ValidateGenesisEntry(genesis);
+        await ValidateGenesisEntryAsync(genesis, ct);
 
         // did:webvh v1.0: "The SCID segment of state.id MUST be byte-for-byte identical to the
         // scid value in the DID and the first entry's parameters.scid. This check MUST apply to
@@ -92,7 +94,7 @@ internal sealed class LogChainValidator
             var current = entries[i];
 
             ValidateStateScidConsistency(current, scid, i + 1);
-            ValidateSubsequentEntry(current, previous, effectiveParams, i + 1);
+            await ValidateSubsequentEntryAsync(current, previous, effectiveParams, i + 1, ct);
 
             // Merge parameters for the next iteration
             effectiveParams = current.Parameters.MergeWith(effectiveParams);
@@ -102,7 +104,7 @@ internal sealed class LogChainValidator
         return result;
     }
 
-    private void ValidateGenesisEntry(LogEntry genesis)
+    private async Task ValidateGenesisEntryAsync(LogEntry genesis, CancellationToken ct)
     {
         // Version number must be 1
         if (genesis.VersionNumber != 1)
@@ -152,14 +154,15 @@ internal sealed class LogChainValidator
 
         ValidateUpdateKeys(genesisUpdateKeys, 1);
 
-        ValidateProof(genesis, genesisUpdateKeys, 1);
+        await ValidateProofAsync(genesis, genesisUpdateKeys, 1, ct);
     }
 
-    private void ValidateSubsequentEntry(
+    private async Task ValidateSubsequentEntryAsync(
         LogEntry current,
         LogEntry previous,
         LogEntryParameters effectiveParams,
-        int expectedVersion)
+        int expectedVersion,
+        CancellationToken ct)
     {
         // Check if previous entry was deactivated
         if (effectiveParams.Deactivated == true)
@@ -216,7 +219,7 @@ internal sealed class LogChainValidator
                     $"No updateKeys authorize version {expectedVersion}.");
         }
 
-        ValidateProof(current, authorizedKeys, expectedVersion);
+        await ValidateProofAsync(current, authorizedKeys, expectedVersion, ct);
     }
 
     /// <summary>
@@ -290,7 +293,8 @@ internal sealed class LogChainValidator
     /// <see cref="_maxControllerProofsPerEntry"/> as an explicit resource policy (see
     /// <see cref="DefaultMaxControllerProofsPerEntry"/>).
     /// </remarks>
-    private void ValidateProof(LogEntry entry, IReadOnlyList<string> authorizedKeys, int version)
+    private async Task ValidateProofAsync(
+        LogEntry entry, IReadOnlyList<string> authorizedKeys, int version, CancellationToken ct)
     {
         // Snapshot once: an IReadOnlyList implementation could present different contents
         // per enumeration, letting a proof escape validation.
@@ -326,11 +330,7 @@ internal sealed class LogChainValidator
         {
             var securedDocumentJson = LogEntrySerializer.Serialize(entry);
             using var document = System.Text.Json.JsonDocument.Parse(securedDocumentJson);
-            // The resolver completes synchronously, so this does not block on real I/O.
-            result = _pipeline
-                .VerifyAsync(document.RootElement, resolver, options)
-                .GetAwaiter()
-                .GetResult();
+            result = await _pipeline.VerifyAsync(document.RootElement, resolver, options, ct);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {

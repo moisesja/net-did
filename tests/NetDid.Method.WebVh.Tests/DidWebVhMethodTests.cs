@@ -154,9 +154,9 @@ public class DidWebVhMethodTests
         };
 
         var act = () => new LogChainValidator()
-            .ValidateChain([legacyGenesis]);
+            .ValidateChainAsync([legacyGenesis]);
 
-        act.Should().Throw<LogChainValidationException>()
+        await act.Should().ThrowAsync<LogChainValidationException>()
             .WithMessage("*Genesis entry hash*");
     }
 
@@ -195,9 +195,9 @@ public class DidWebVhMethodTests
         };
 
         var act = () => new LogChainValidator()
-            .ValidateChain([legacyGenesis]);
+            .ValidateChainAsync([legacyGenesis]);
 
-        act.Should().Throw<LogChainValidationException>()
+        await act.Should().ThrowAsync<LogChainValidationException>()
             .WithMessage("*Genesis entry hash*");
     }
 
@@ -883,9 +883,9 @@ public class DidWebVhMethodTests
         };
 
         var act = () => new LogChainValidator()
-            .ValidateChain([genesis, nonConformantEntry]);
+            .ValidateChainAsync([genesis, nonConformantEntry]);
 
-        act.Should().Throw<LogChainValidationException>()
+        await act.Should().ThrowAsync<LogChainValidationException>()
             .WithMessage("*Entry hash mismatch at version 2*");
     }
 
@@ -2731,7 +2731,7 @@ public class DidWebVhMethodTests
         var entries = LogEntrySerializer.ParseJsonLines(Encoding.UTF8.GetBytes(updatedLog));
         entries[^1].Parameters.UpdateKeys.Should().BeEquivalentTo([newKey.MultibasePublicKey]);
 
-        var effective = new LogChainValidator().ValidateChain(entries);
+        var effective = await new LogChainValidator().ValidateChainAsync(entries);
         effective.UpdateKeys.Should().BeEquivalentTo([newKey.MultibasePublicKey]);
 
         updateResult.UpdateKeyChange.Should().Be(AuthorizationChangeStatus.Changed);
@@ -2811,7 +2811,7 @@ public class DidWebVhMethodTests
 
         var updatedLog = (string)updateResult.Artifacts![DidWebVhArtifacts.DidJsonl];
         var entries = LogEntrySerializer.ParseJsonLines(Encoding.UTF8.GetBytes(updatedLog));
-        var effective = new LogChainValidator().ValidateChain(entries);
+        var effective = await new LogChainValidator().ValidateChainAsync(entries);
 
         updateResult.EffectiveUpdateKeys.Should().BeEquivalentTo(effective.UpdateKeys);
     }
@@ -2880,7 +2880,7 @@ public class DidWebVhMethodTests
         var entries = LogEntrySerializer.ParseJsonLines(Encoding.UTF8.GetBytes(updatedLog));
         entries[^1].Parameters.NextKeyHashes.Should().BeEquivalentTo([honestCommitment]);
 
-        var effective = new LogChainValidator().ValidateChain(entries);
+        var effective = await new LogChainValidator().ValidateChainAsync(entries);
         effective.NextKeyHashes.Should().BeEquivalentTo([honestCommitment]);
 
         // Pre-rotation hides only the following entry's keys. This activation entry was still
@@ -3098,7 +3098,7 @@ public class DidWebVhMethodTests
         var entries = LogEntrySerializer.ParseJsonLines(Encoding.UTF8.GetBytes(updatedLog));
         entries[^1].Parameters.UpdateKeys.Should().BeEquivalentTo(
             [key2.MultibasePublicKey, key2B.MultibasePublicKey]);
-        new LogChainValidator().ValidateChain(entries)
+        (await new LogChainValidator().ValidateChainAsync(entries))
             .UpdateKeys.Should().BeEquivalentTo(
                 [key2.MultibasePublicKey, key2B.MultibasePublicKey]);
 

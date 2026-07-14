@@ -17,9 +17,9 @@ public class ControllerProofBudgetTests
         var entry = await CreateGenesisWithProofCountAsync(
             LogChainValidator.DefaultMaxControllerProofsPerEntry + 1);
 
-        var act = () => new LogChainValidator().ValidateChain([entry]);
+        var act = () => new LogChainValidator().ValidateChainAsync([entry]);
 
-        act.Should().Throw<LogChainValidationException>()
+        await act.Should().ThrowAsync<LogChainValidationException>()
             .WithMessage("*exceeding the resolver's limit of 8*");
     }
 
@@ -29,9 +29,9 @@ public class ControllerProofBudgetTests
         var raisedBudget = LogChainValidator.DefaultMaxControllerProofsPerEntry + 1;
         var entry = await CreateGenesisWithProofCountAsync(raisedBudget);
 
-        var act = () => new LogChainValidator(raisedBudget).ValidateChain([entry]);
+        var act = () => new LogChainValidator(raisedBudget).ValidateChainAsync([entry]);
 
-        act.Should().NotThrow();
+        await act.Should().NotThrowAsync();
     }
 
     [Fact]
@@ -39,9 +39,9 @@ public class ControllerProofBudgetTests
     {
         var entry = await CreateGenesisWithProofCountAsync(2);
 
-        var act = () => new LogChainValidator(1).ValidateChain([entry]);
+        var act = () => new LogChainValidator(1).ValidateChainAsync([entry]);
 
-        act.Should().Throw<LogChainValidationException>()
+        await act.Should().ThrowAsync<LogChainValidationException>()
             .WithMessage("*exceeding the resolver's limit of 1*");
     }
 

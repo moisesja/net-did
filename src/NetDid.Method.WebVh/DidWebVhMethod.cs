@@ -253,7 +253,8 @@ public sealed class DidWebVhMethod : DidMethodBase
                 return DidResolutionResult.NotFound(did);
 
             // Validate the chain up to the target version
-            var perEntryParams = _chainValidator.ValidateChainWithPerEntryParams(entries, targetIndex + 1);
+            var perEntryParams = await _chainValidator.ValidateChainWithPerEntryParamsAsync(
+                entries, targetIndex + 1, ct);
             var effectiveParams = perEntryParams[^1];
 
             var targetEntry = entries[targetIndex];
@@ -353,8 +354,8 @@ public sealed class DidWebVhMethod : DidMethodBase
                 {
                     // Per-entry state.id SCID consistency is enforced inside chain validation,
                     // so a tail claiming a foreign identity fails here and is not asserted.
-                    var fullPerEntryParams = _chainValidator.ValidateChainWithPerEntryParams(
-                        entries, entries.Count);
+                    var fullPerEntryParams = await _chainValidator.ValidateChainWithPerEntryParamsAsync(
+                        entries, entries.Count, ct);
                     if (fullPerEntryParams[^1].Deactivated == true)
                     {
                         var fullChainWitnessesValid = true;
@@ -461,7 +462,7 @@ public sealed class DidWebVhMethod : DidMethodBase
 
         // Parse and validate existing log
         var entries = LogEntrySerializer.ParseJsonLines(updateOptions.CurrentLogContent);
-        var effectiveParams = _chainValidator.ValidateChain(entries);
+        var effectiveParams = await _chainValidator.ValidateChainAsync(entries, ct);
 
         // Bind the supplied log and new document to the target DID. Without these checks the
         // driver could emit a log the resolver rejects on identity grounds (resolution enforces
@@ -640,7 +641,7 @@ public sealed class DidWebVhMethod : DidMethodBase
 
         // Parse and validate existing log
         var entries = LogEntrySerializer.ParseJsonLines(deactivateOptions.CurrentLogContent);
-        var effectiveParams = _chainValidator.ValidateChain(entries);
+        var effectiveParams = await _chainValidator.ValidateChainAsync(entries, ct);
 
         // Bind the supplied log to the target DID (see issue #82 and UpdateCoreAsync).
         RequireAppendableLogForDid(entries, effectiveParams, did);
@@ -911,7 +912,7 @@ public sealed class DidWebVhMethod : DidMethodBase
             throw new ArgumentException(
                 "The supplied DID log is already deactivated and cannot be updated.");
 
-        // entries is non-empty here: ValidateChain has already run and throws on an empty log.
+        // entries is non-empty here: ValidateChainAsync has already run and throws on an empty log.
         if (entries[^1].State.Id.Value != did)
             throw new ArgumentException(
                 $"The supplied CurrentLogContent does not belong to the DID being operated on ('{did}').");
