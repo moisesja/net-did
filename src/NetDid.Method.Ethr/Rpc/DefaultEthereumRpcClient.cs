@@ -64,6 +64,8 @@ public sealed class DefaultEthereumRpcClient : IEthereumRpcClient
                 Topics          = topicArray,
                 Data            = obj["data"]!.GetValue<string>(),
                 BlockNumber     = obj["blockNumber"]!.GetValue<string>(),
+                // logIndex may be absent on some responses; default to 0 (stable within a block).
+                LogIndex        = obj["logIndex"] is JsonNode li ? ParseHexUlong(li.GetValue<string>()) : 0,
                 TransactionHash = obj["transactionHash"]?.GetValue<string>(),
             });
         }

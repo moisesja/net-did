@@ -196,6 +196,10 @@ public sealed class DidEthrMethod : DidMethodBase
                 .Where(e => e.BlockNumber <= version).ToList();
 
             // Expire delegates/attributes/services against the requested block's timestamp.
+            // Historical resolution necessarily trusts the node's block timestamp as the
+            // reference clock (there is no other clock for a past block); this grants a
+            // hostile node no power it lacks over validTo itself. Default (non-historical)
+            // resolution uses the trusted local UtcNow below.
             var ts = await rpc.GetBlockTimestampAsync(version, ct);
             referenceTime = DateTimeOffset.FromUnixTimeSeconds((long)ts);
         }
@@ -307,7 +311,11 @@ public sealed class DidEthrMethod : DidMethodBase
             ulong nextBlock = 0;
             var validEventsThisBlock = 0;
 
-            foreach (var log in logs)
+            // Canonical intra-block order: sort by logIndex rather than trusting the node's
+            // response array order, so a same-block add→revoke of one key always applies in
+            // chain order (the block-level OrderBy in ResolveFromChainAsync is stable and
+            // preserves this).
+            foreach (var log in logs.OrderBy(l => l.LogIndex))
             {
                 try
                 {

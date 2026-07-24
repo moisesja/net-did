@@ -94,6 +94,29 @@ public class DidEthrResolveCorrectnessTests
             .Should().Contain(e => e.Reference != null && e.Reference.Contains("#delegate-2"));
     }
 
+    [Fact]
+    public async Task ResolveAsync_SameBlockResponseOutOfOrder_LogIndexRestoresChainOrder()
+    {
+        // The node returns the two same-block events in REVERSE array order (revoke first),
+        // but with correct logIndex. Sorting by logIndex must still apply add→revoke, so the
+        // key is absent — proving we don't trust the response array order.
+        const ulong block = 70;
+        var future = (ulong)(DateTimeOffset.UtcNow.ToUnixTimeSeconds() + 3600);
+        var rpc = RpcWith(block, b => b == block
+            ? new[]
+              {
+                  DelegateLog(Identity, DelegateAddr, "veriKey", validTo: 1,      prev: block, block, logIndex: 1), // revoke (idx 1)
+                  DelegateLog(Identity, DelegateAddr, "veriKey", validTo: future, prev: 0,     block, logIndex: 0), // add (idx 0)
+              }
+            : []);
+
+        var result = await MakeMethod(rpc).ResolveAsync($"did:ethr:sepolia:{Identity}");
+
+        result.ResolutionMetadata.Error.Should().BeNull();
+        result.DidDocument!.VerificationMethod.Should().ContainSingle()
+            .Which.Id.Should().EndWith("#controller");
+    }
+
     // ── #2 Incomplete history must fail CLOSED (notFound) ────────────────────────
 
     [Fact]
@@ -219,7 +242,8 @@ public class DidEthrResolveCorrectnessTests
     }
 
     private static EthereumLogEntry DelegateLog(
-        string identity, string delegate20, string delegateType, ulong validTo, ulong prev, ulong block)
+        string identity, string delegate20, string delegateType,
+        ulong validTo, ulong prev, ulong block, ulong logIndex = 0)
     {
         var delHex = delegate20.StartsWith("0x") ? delegate20[2..] : delegate20;
         var typeWord = new byte[32];
@@ -235,6 +259,7 @@ public class DidEthrResolveCorrectnessTests
             Topics = [Erc1056Topics.DIDDelegateChanged, PadAddress(identity)],
             Data = data,
             BlockNumber = "0x" + block.ToString("x"),
+            LogIndex = logIndex,
         };
     }
 
