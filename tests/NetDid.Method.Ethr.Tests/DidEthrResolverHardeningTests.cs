@@ -104,6 +104,21 @@ public class DidEthrResolverHardeningTests
         result.ResolutionMetadata.Error.Should().BeOneOf("notFound", null);
     }
 
+    // ── Finding 2 (identifier): non-hex 66-char id must map to invalidDid ────────
+
+    [Fact]
+    public async Task ResolveAsync_NonHexPublicKeyIdentifier_ReturnsInvalidDid()
+    {
+        // 66-char (0x + 64) method-specific id that is NOT valid hex previously threw a
+        // raw FormatException out of ResolveAsync; it must map to invalidDid.
+        var rpc = Substitute.For<IEthereumRpcClient>();
+        var nonHex = "0x" + new string('z', 64);
+
+        var result = await MakeMethod(rpc).ResolveAsync($"did:ethr:sepolia:{nonHex}");
+
+        result.ResolutionMetadata.Error.Should().Be("invalidDid");
+    }
+
     // ── Finding 3 (simulated): RPC client shape-exception escapes the walker ─────
 
     [Fact]

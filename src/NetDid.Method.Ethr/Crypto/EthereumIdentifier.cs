@@ -103,8 +103,20 @@ public sealed record EthrIdentifier(
 
         if (hexBody.Length == 66)
         {
-            // Compressed secp256k1 public key
-            var pubKeyBytes = Convert.FromHexString(hexBody);
+            // Compressed secp256k1 public key. Convert malformed hex to
+            // ArgumentException at this boundary so resolution maps it to invalidDid
+            // instead of leaking a raw FormatException out of ResolveAsync.
+            byte[] pubKeyBytes;
+            try
+            {
+                pubKeyBytes = Convert.FromHexString(hexBody);
+            }
+            catch (FormatException ex)
+            {
+                throw new ArgumentException(
+                    $"Method-specific id is not valid hex: {methodSpecificId}",
+                    nameof(methodSpecificId), ex);
+            }
             var address = EthereumAddress.FromCompressedPublicKey(pubKeyBytes);
             return new EthrIdentifier(
                 Network: network,
