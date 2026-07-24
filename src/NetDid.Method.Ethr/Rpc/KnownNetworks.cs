@@ -77,7 +77,7 @@ public static class KnownNetworks
     {
         Name            = "artis:sigma1",
         RpcUrl          = "",
-        ChainId         = "0x3C401",     // 246529
+        ChainId         = "0x3C301",     // 246529
         RegistryAddress = LegacyRegistry,
         LegacyNonce     = true,
     };
@@ -124,7 +124,7 @@ public static class KnownNetworks
     {
         Name            = "artis:tau1",
         RpcUrl          = "",
-        ChainId         = "0x3C401",    // 246785 — note: shares chain ID encoding w/ sigma1 in hex
+        ChainId         = "0x3C401",    // 246785
         RegistryAddress = LegacyRegistry,
         LegacyNonce     = true,
     };
