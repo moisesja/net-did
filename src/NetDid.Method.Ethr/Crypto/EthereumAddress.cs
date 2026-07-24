@@ -1,5 +1,4 @@
 using System.Text;
-using NBitcoin.Secp256k1;
 using NetCrypto;
 
 namespace NetDid.Method.Ethr.Crypto;
@@ -20,19 +19,12 @@ public static class EthereumAddress
         if (compressed33.Length != 33)
             throw new ArgumentException("Expected 33-byte compressed public key.", nameof(compressed33));
 
-        // TODO(https://github.com/moisesja/crypto-dotnet/issues/19): replace this direct
-        // NBitcoin.Secp256k1 call with NetCrypto's public compressed→uncompressed
-        // decompression API once it ships (NetCrypto > 1.2.0). This is the only
-        // non-NetCrypto crypto call remaining in did:ethr.
-        if (!ECPubKey.TryCreate(compressed33, null, out _, out var pubKey) || pubKey is null)
-            throw new ArgumentException("Invalid secp256k1 compressed public key.", nameof(compressed33));
-
-        // Uncompress: 65-byte [04 | X(32) | Y(32)]
-        Span<byte> uncompressed = stackalloc byte[65];
-        pubKey.WriteToSpan(compressed: false, uncompressed, out _);
+        // Uncompress via NetCrypto (crypto-dotnet#19): 65-byte [04 | X(32) | Y(32)].
+        // Throws ArgumentException if the key is not a valid point on the curve.
+        var uncompressed = KeyType.Secp256k1.ToUncompressed(compressed33);
 
         // Keccak-256 of the 64-byte public key body (skip 0x04 prefix)
-        var hash = Keccak256.Hash(uncompressed[1..]);
+        var hash = Keccak256.Hash(uncompressed.AsSpan(1));
 
         // Take last 20 bytes as address
         var address20 = hash[^20..];

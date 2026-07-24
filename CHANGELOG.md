@@ -24,6 +24,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`VerificationMethod.AdditionalProperties`** — Added `IReadOnlyDictionary<string, JsonElement>?` to `VerificationMethod` (in `NetDid.Core`) to support `publicKeyHex` for unknown key types per the did:ethr spec.
 - New sample: `NetDid.Samples.DidEthr`.
 
+### Changed
+
+- **`NetCrypto` 1.2.0 → 1.3.0** — consumes the new public `KeyTypeExtensions.ToUncompressed`
+  (crypto-dotnet#19, requested for this work) for secp256k1 point decompression in Ethereum
+  address derivation, eliminating did:ethr's last direct third-party crypto call
+  (`NBitcoin.Secp256k1.ECPubKey`). All did:ethr cryptography now flows through `NetCrypto`.
+
 ## [2.3.0] - 2026-07-13
 
 ### Fixed
