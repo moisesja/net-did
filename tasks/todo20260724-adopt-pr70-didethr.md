@@ -52,6 +52,28 @@ Remaining non-NetCrypto crypto: exactly one TODO-annotated call —
 `src/NetDid.Method.Ethr/Crypto/EthereumAddress.cs` (`ECPubKey.TryCreate` decompression),
 blocked on crypto-dotnet#19.
 
-**Resume when NetCrypto ships the API** (see "Paused" checklist above): bump pin, swap the
-call, drop `using NBitcoin.Secp256k1;`, run `net-did-verify` + `adversarial-review`,
-open PR crediting @mirceanis / linking #70, stop before merge.
+## Review (resumed & completed — 2026-07-24, NetCrypto 1.3.0 shipped)
+
+**State: hardened & verified on `feat/did-ethr-resolver`. PR opened; NOT merged (Moises reviews).**
+
+- NetCrypto pin 1.2.0 → 1.3.0; `EthereumAddress` now uses public `KeyType.Secp256k1.ToUncompressed`
+  (crypto-dotnet#19, closed). `using NBitcoin.Secp256k1;` removed — `git grep NBitcoin` in ethr = 0.
+  **did:ethr now consumes crypto exclusively from NetCrypto.**
+- `adversarial-review` run (worktree-isolated agents): **crypto swap CLEAN** (5 probes refuted,
+  byte-identical addresses proven). Trust-boundary lens found **5 CONFIRMED** pre-existing resolver
+  issues (1 CRITICAL DoS); user chose "fix all 5":
+  1. CRITICAL unbounded event-walk → hop cap (1k) + event cap (5k) + **aggregate byte budget (32 MiB)**.
+  2/3/5 resolver-never-throws contract only half-enforced → top-level error boundary → `notFound`
+     (caller cancellation still propagates); non-hex identifier → `invalidDid`.
+  4. RPC client no size/timeout → 16 MiB streamed cap + owned per-request timeout +
+     malformed/oversize → `EthereumInteractionException` at the boundary.
+- **Re-attack** on the fixes: error boundary / RPC caps / timeout coverage / JSON-depth all HOLD.
+  Found 3 residuals (one root cause: count-only bounds) → closed with the aggregate byte budget +
+  a **120s overall resolution deadline** (bounds the VersionTime timestamp fan-out too) + realistic caps.
+- Inherent residual (accepted, documented in CHANGELOG): a single untrusted RPC endpoint can return a
+  self-consistent but fabricated history — integrity, not availability. Use a trusted endpoint.
+- Verified: 0-warning Release build; **1221 tests, 0 failures** (Core 375, Key 52, Peer 48, WebVh 411,
+  Ethr 84, W3C 233, DI 18); W3C conformance 233/233 (did:ethr 66/66); all samples green incl. live
+  Sepolia resolve under the new bounds.
+
+All task boxes above complete. PR: see `gh pr view`. Do not merge — Moises reviews.
