@@ -149,3 +149,23 @@
   doubt, present the plan and wait. Corollary (same thread): the gate is a BEFORE-work gate —
   once the work is done and corrected, do not stage a retroactive approval pause on simple
   remaining steps; acknowledge, capture the lesson, and finish.
+- A DoS bound on untrusted-remote traversal must cover COUNT *and* aggregate BYTES *and*
+  aggregate WALL-CLOCK — a count-only cap is byte- and time-blind. did:ethr resolution added
+  a hop cap + event-count cap, but an adversarial re-attack showed: (a) one large-value
+  attribute event per hop stays under the count cap yet retains ~response-cap bytes/hop →
+  multi-GB heap OOM; (b) the VersionTime path fanned out one `eth_getBlockByNumber` per event
+  with no overall deadline (and `versionTime` is attacker-supplyable via the DID-URL query);
+  (c) hops × per-request timeout = hours. Fix all three with ONE coherent pass: an aggregate
+  retained-byte budget (32 MiB), an overall resolution deadline via a linked CTS spanning the
+  whole walk + post-walk fan-out (when the DEADLINE token fires, `ct.IsCancellationRequested`
+  is false so it maps to notFound instead of propagating), and realistic count caps. A
+  per-request cap does NOT imply an aggregate cap. (PR #104, did:ethr adoption of #70.)
+- Adopting a fork PR of a whole new subsystem is NOT just conflict resolution — the adopted code
+  becomes ours and needs the full gate. Here the crypto swap reviewed clean but the trust-boundary
+  lens found 5 pre-existing CONFIRMED issues (1 CRITICAL) in the contributor's resolver, and a
+  re-attack found 3 more residuals in our own fixes. Run `adversarial-review` on the ENTIRE adopted
+  diff (worktree-isolated agents), and re-attack the fixes — the first fix pass often has a deeper
+  residual (count caps → aggregate caps). Converge when residuals collapse to one inherent, DOCUMENTED
+  trust property (a single untrusted RPC endpoint can forge a self-consistent history — integrity, not
+  availability), not to "no more findings". Preserve the original author's commits (merge, don't squash)
+  so credit survives when the superseding PR lands. (PR #104 adopting #70 by @mirceanis.)
