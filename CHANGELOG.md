@@ -31,6 +31,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   address derivation, eliminating did:ethr's last direct third-party crypto call
   (`NBitcoin.Secp256k1.ECPubKey`). All did:ethr cryptography now flows through `NetCrypto`.
 
+### Security
+
+- **did:ethr resolution hardened against a hostile RPC node** (adversarial review of the
+  adopted PR #70). The RPC endpoint is untrusted; every response byte is attacker-controlled.
+  - **Bounded event-chain walk**: `DidEthrMethod` now caps the `previousChange` traversal
+    (block hops and total collected events), so a node fabricating an unbounded chain can no
+    longer drive resolution into millions of sequential `eth_getLogs` calls or unbounded memory.
+  - **Resolver never throws**: the RPC → decode → build path is wrapped so malformed wire data
+    (non-hex/overflowing fields, bad JSON shape, hostile-but-decodable events) maps to a
+    `notFound` resolution error instead of escaping `ResolveAsync`; caller cancellation still
+    propagates.
+  - **RPC client resource limits**: `DefaultEthereumRpcClient` enforces a 16 MiB response cap
+    (by declared and actual bytes) and an independent per-request timeout, and surfaces
+    malformed/oversize responses as `EthereumInteractionException` at the trust boundary.
+
 ## [2.3.0] - 2026-07-13
 
 ### Fixed

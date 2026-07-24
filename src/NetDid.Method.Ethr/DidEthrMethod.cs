@@ -43,6 +43,14 @@ public sealed class DidEthrMethod : DidMethodBase
     /// <summary>did:ethr only accepts secp256k1 keys for DID creation.</summary>
     public override IReadOnlyList<KeyType> SupportedKeyTypes { get; } = [KeyType.Secp256k1];
 
+    // Defensive bounds against a hostile RPC node fabricating an unbounded
+    // previousChange chain (each hop is one eth_getLogs round-trip) or a single
+    // identity accumulating an unbounded number of events. Both are far above any
+    // realistic on-chain identity history; exceeding either aborts resolution
+    // (mapped to a resolution error) instead of looping / allocating without limit.
+    private const int MaxEventChainHops  = 10_000;
+    private const int MaxCollectedEvents = 50_000;
+
     // ── Create ────────────────────────────────────────────────────────────────
 
     protected override async Task<DidCreateResult> CreateCoreAsync(
@@ -104,6 +112,30 @@ public sealed class DidEthrMethod : DidMethodBase
             return DidResolutionResult.NotFound(did);
         }
         var rpc     = _rpcFactory.GetOrCreate(network);
+
+        // Everything past this point consumes UNTRUSTED data from the RPC node
+        // (event bytes, hex fields, JSON shape). A resolver must never throw out
+        // of ResolveAsync — it must return resolutionMetadata.error. Map any such
+        // failure to notFound, but let genuine caller cancellation propagate.
+        try
+        {
+            return await ResolveFromChainAsync(did, identifier, network, rpc, options, ct);
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "did:ethr resolution failed against RPC data for {Did}", did);
+            return DidResolutionResult.NotFound(did);
+        }
+    }
+
+    private async Task<DidResolutionResult> ResolveFromChainAsync(
+        string did, EthrIdentifier identifier, EthereumNetworkConfig network,
+        IEthereumRpcClient rpc, DidResolutionOptions? options, CancellationToken ct)
+    {
         var chainId = await ResolveChainId(network, rpc, ct);
 
         // Determine version / block ceiling
@@ -204,8 +236,19 @@ public sealed class DidEthrMethod : DidMethodBase
         ulong fromBlock, List<Erc1056Event> accumulator, CancellationToken ct)
     {
         var currentBlock = fromBlock;
+        var hops = 0;
         while (currentBlock > 0)
         {
+            // Bound the number of block hops: a hostile node can point every
+            // previousChange one block lower, turning the walk into an arbitrarily
+            // long chain of sequential eth_getLogs calls (DoS). The "strictly less
+            // than currentBlock" advance below prevents same-block cycles but not
+            // length, so cap the traversal explicitly.
+            if (++hops > MaxEventChainHops)
+                throw new EthereumInteractionException(
+                    $"did:ethr event chain for identity {identityAddress} exceeded " +
+                    $"{MaxEventChainHops} block hops; aborting to avoid unbounded RPC traversal.");
+
             var paddedIdentity = "0x" + identityAddress[2..].PadLeft(64, '0').ToLowerInvariant();
             var filter = new EthereumLogFilter
             {
@@ -245,6 +288,12 @@ public sealed class DidEthrMethod : DidMethodBase
                             StringComparison.OrdinalIgnoreCase))
                         continue;
                     accumulator.Add(ev);
+                    // Bound total events: a hostile node can pack a single block with
+                    // unbounded matching logs (memory DoS) even within the hop cap.
+                    if (accumulator.Count > MaxCollectedEvents)
+                        throw new EthereumInteractionException(
+                            $"did:ethr event chain for identity {identityAddress} exceeded " +
+                            $"{MaxCollectedEvents} events; aborting to bound memory use.");
                     // Advance only when previousChange points to a strictly earlier block.
                     if (ev.PreviousChange < currentBlock && ev.PreviousChange > nextBlock)
                         nextBlock = ev.PreviousChange;
