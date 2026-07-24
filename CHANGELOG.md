@@ -35,16 +35,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **did:ethr resolution hardened against a hostile RPC node** (adversarial review of the
   adopted PR #70). The RPC endpoint is untrusted; every response byte is attacker-controlled.
-  - **Bounded event-chain walk**: `DidEthrMethod` now caps the `previousChange` traversal
-    (block hops and total collected events), so a node fabricating an unbounded chain can no
-    longer drive resolution into millions of sequential `eth_getLogs` calls or unbounded memory.
+  - **Bounded event-chain walk on every axis a node controls**: `DidEthrMethod` caps the
+    `previousChange` traversal by block hops, total collected events, **aggregate retained
+    bytes** (the count cap alone is byte-blind — a large-value attribute per hop could still
+    exhaust the heap), and an **overall resolution deadline** spanning the walk and the
+    post-walk per-block timestamp fan-out. A node fabricating an unbounded chain can no longer
+    drive resolution into excessive `eth_getLogs` calls, unbounded memory, or multi-hour hangs.
   - **Resolver never throws**: the RPC → decode → build path is wrapped so malformed wire data
     (non-hex/overflowing fields, bad JSON shape, hostile-but-decodable events) maps to a
-    `notFound` resolution error instead of escaping `ResolveAsync`; caller cancellation still
-    propagates.
+    `notFound` resolution error instead of escaping `ResolveAsync`; a non-hex identifier maps to
+    `invalidDid`; caller cancellation still propagates.
   - **RPC client resource limits**: `DefaultEthereumRpcClient` enforces a 16 MiB response cap
-    (by declared and actual bytes) and an independent per-request timeout, and surfaces
+    (by declared and actual streamed bytes) and an independent per-request timeout, and surfaces
     malformed/oversize responses as `EthereumInteractionException` at the trust boundary.
+  - A single untrusted RPC endpoint remains the trust anchor for resolution (it can still return
+    a self-consistent but fabricated event history); these bounds constrain availability/DoS, not
+    that inherent integrity property. Use a trusted endpoint.
 
 ## [2.3.0] - 2026-07-13
 

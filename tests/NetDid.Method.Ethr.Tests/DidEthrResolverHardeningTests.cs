@@ -70,8 +70,8 @@ public class DidEthrResolverHardeningTests
         // A single block packed with more matching logs than the event cap → the
         // accumulator would grow without bound. Resolution must abort to notFound.
         const ulong block = 1;
-        var flood = new List<EthereumLogEntry>(50_001);
-        for (var i = 0; i < 50_001; i++)
+        var flood = new List<EthereumLogEntry>(6_000);
+        for (var i = 0; i < 6_000; i++)   // > MaxCollectedEvents (5_000)
             flood.Add(OwnerChangedLog(Identity, Identity, block, prev: 0)[0]);
 
         var rpc = Substitute.For<IEthereumRpcClient>();
@@ -83,6 +83,46 @@ public class DidEthrResolverHardeningTests
         var result = await MakeMethod(rpc).ResolveAsync($"did:ethr:sepolia:{Identity}");
 
         result.ResolutionMetadata.Error.Should().Be("notFound");
+    }
+
+    [Fact]
+    public async Task ResolveAsync_ByteBlindEventChain_AbortsOnAggregateBytes()
+    {
+        // The event COUNT cap is byte-blind: one large-value attribute per hop stays
+        // under it, yet retains ~value-size heap per hop. The aggregate-byte budget
+        // must abort before the heap is exhausted. Few hops, big values → notFound.
+        const int  valueBytes = 4 * 1024 * 1024;   // 4 MiB per attribute value
+        var big = new byte[valueBytes];
+
+        var rpc = Substitute.For<IEthereumRpcClient>();
+        rpc.CallAsync(default!, default!, default)
+           .ReturnsForAnyArgs("0x" + (100UL).ToString("x64"));
+        rpc.GetLogsAsync(Arg.Any<EthereumLogFilter>(), Arg.Any<CancellationToken>())
+           .Returns(call =>
+           {
+               var block = call.Arg<EthereumLogFilter>().FromBlock;
+               // one big-value attribute per hop, descending → count stays tiny,
+               // retained bytes climb past the 32 MiB budget within ~9 hops.
+               var log = ServiceAttributeLog(Identity, "did/svc/Big", big, validTo: 0xffffffff, block, prev: block - 1);
+               return Task.FromResult<IReadOnlyList<EthereumLogEntry>>([log]);
+           });
+
+        var result = await MakeMethod(rpc).ResolveAsync($"did:ethr:sepolia:{Identity}");
+
+        result.ResolutionMetadata.Error.Should().Be("notFound");
+    }
+
+    [Fact]
+    public async Task ResolveAsync_NonHexAddressIdentifier_ReturnsInvalidDid()
+    {
+        // 40-char (0x + 40) address form with non-hex chars must map to invalidDid,
+        // not flow a garbage address into the RPC layer (notFound).
+        var rpc = Substitute.For<IEthereumRpcClient>();
+        var nonHex = "0x" + new string('g', 40);
+
+        var result = await MakeMethod(rpc).ResolveAsync($"did:ethr:sepolia:{nonHex}");
+
+        result.ResolutionMetadata.Error.Should().Be("invalidDid");
     }
 
     // ── Finding 2: non-hex / overflowing wire fields escape as exceptions ────────
@@ -208,7 +248,7 @@ public class DidEthrResolverHardeningTests
     }
 
     private static EthereumLogEntry ServiceAttributeLog(
-        string identity, string name, byte[] value, ulong validTo, ulong block)
+        string identity, string name, byte[] value, ulong validTo, ulong block, ulong prev = 0)
     {
         // DIDAttributeChanged data layout:
         //   name(32) | valueOffset(32) | validTo(32) | previousChange(32)
@@ -220,7 +260,7 @@ public class DidEthrResolverHardeningTests
             + Convert.ToHexString(nameWord).ToLowerInvariant()
             + (128UL).ToString("x64")     // valueOffset → byte 128 (the length word)
             + validTo.ToString("x64")
-            + (0UL).ToString("x64")       // previousChange
+            + prev.ToString("x64")        // previousChange
             + ((ulong)value.Length).ToString("x64");
         if (value.Length > 0)
         {

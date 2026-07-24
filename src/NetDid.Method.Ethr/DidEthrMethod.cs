@@ -43,13 +43,21 @@ public sealed class DidEthrMethod : DidMethodBase
     /// <summary>did:ethr only accepts secp256k1 keys for DID creation.</summary>
     public override IReadOnlyList<KeyType> SupportedKeyTypes { get; } = [KeyType.Secp256k1];
 
-    // Defensive bounds against a hostile RPC node fabricating an unbounded
-    // previousChange chain (each hop is one eth_getLogs round-trip) or a single
-    // identity accumulating an unbounded number of events. Both are far above any
-    // realistic on-chain identity history; exceeding either aborts resolution
-    // (mapped to a resolution error) instead of looping / allocating without limit.
-    private const int MaxEventChainHops  = 10_000;
-    private const int MaxCollectedEvents = 50_000;
+    // Defensive bounds against a hostile RPC node. The endpoint is untrusted, so
+    // resolution must be bounded on every axis a node controls — not just count:
+    //   • hops / events  — a fabricated previousChange chain (one eth_getLogs per
+    //                       hop) or an event flood. Far above any realistic history.
+    //   • aggregate bytes — the event count cap is byte-blind: one large-value
+    //                       attribute per hop stays under it yet retains ~response-cap
+    //                       bytes per hop → multi-GB heap. Bound total retained bytes.
+    //   • aggregate time  — hops × the per-request timeout is hours; an overall
+    //                       resolution deadline (see ResolveCoreAsync) bounds wall-clock,
+    //                       covering the post-walk per-event block-timestamp fan-out too.
+    // Exceeding any bound aborts resolution, mapped to a resolution error.
+    private const int  MaxEventChainHops   = 1_000;
+    private const int  MaxCollectedEvents  = 5_000;
+    private const long MaxCollectedBytes   = 32L * 1024 * 1024; // 32 MiB retained
+    private static readonly TimeSpan ResolutionDeadline = TimeSpan.FromSeconds(120);
 
     // ── Create ────────────────────────────────────────────────────────────────
 
@@ -117,9 +125,17 @@ public sealed class DidEthrMethod : DidMethodBase
         // (event bytes, hex fields, JSON shape). A resolver must never throw out
         // of ResolveAsync — it must return resolutionMetadata.error. Map any such
         // failure to notFound, but let genuine caller cancellation propagate.
+        //
+        // An overall deadline bounds total wall-clock across the walk and the
+        // post-walk block-timestamp fan-out, so a slow-drip node cannot tie up
+        // resolution for hours within the per-request timeouts. When THIS token
+        // fires (not the caller's), ct.IsCancellationRequested is false, so it
+        // falls through to notFound rather than propagating as cancellation.
+        using var deadlineCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        deadlineCts.CancelAfter(ResolutionDeadline);
         try
         {
-            return await ResolveFromChainAsync(did, identifier, network, rpc, options, ct);
+            return await ResolveFromChainAsync(did, identifier, network, rpc, options, deadlineCts.Token);
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
@@ -237,6 +253,7 @@ public sealed class DidEthrMethod : DidMethodBase
     {
         var currentBlock = fromBlock;
         var hops = 0;
+        long collectedBytes = 0;
         while (currentBlock > 0)
         {
             // Bound the number of block hops: a hostile node can point every
@@ -294,6 +311,14 @@ public sealed class DidEthrMethod : DidMethodBase
                         throw new EthereumInteractionException(
                             $"did:ethr event chain for identity {identityAddress} exceeded " +
                             $"{MaxCollectedEvents} events; aborting to bound memory use.");
+                    // Bound total RETAINED bytes: the event count cap is byte-blind, so
+                    // a few large-value attribute events per hop could still exhaust the
+                    // heap. Attribute values are the only wire-sized retained field.
+                    collectedBytes += (ev as AttributeChangedEvent)?.Value.Length ?? 0;
+                    if (collectedBytes > MaxCollectedBytes)
+                        throw new EthereumInteractionException(
+                            $"did:ethr event chain for identity {identityAddress} exceeded " +
+                            $"{MaxCollectedBytes} retained bytes; aborting to bound memory use.");
                     // Advance only when previousChange points to a strictly earlier block.
                     if (ev.PreviousChange < currentBlock && ev.PreviousChange > nextBlock)
                         nextBlock = ev.PreviousChange;

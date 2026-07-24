@@ -93,7 +93,12 @@ public sealed record EthrIdentifier(
 
         if (hexBody.Length == 40)
         {
-            // Plain Ethereum address
+            // Plain Ethereum address. Reject non-hex here so it maps to invalidDid,
+            // rather than flowing a garbage address into the RPC layer (notFound).
+            if (!IsHex(hexBody))
+                throw new ArgumentException(
+                    $"Method-specific id is not a valid hex address: {methodSpecificId}",
+                    nameof(methodSpecificId));
             return new EthrIdentifier(
                 Network: network,
                 IdentityAddress: "0x" + hexBody.ToLowerInvariant(),
@@ -127,5 +132,13 @@ public sealed record EthrIdentifier(
 
         throw new ArgumentException(
             $"Invalid method-specific id length (expected 40 or 66 hex chars after 0x): {hexBody.Length}");
+    }
+
+    private static bool IsHex(ReadOnlySpan<char> s)
+    {
+        foreach (var c in s)
+            if (!Uri.IsHexDigit(c))
+                return false;
+        return true;
     }
 }
