@@ -336,6 +336,76 @@ public class DidDocumentSerializerTests
     }
 
     [Fact]
+    public void RoundTrip_VerificationMethod_PublicKeyHex_IsPreserved()
+    {
+        // A did:ethr VM whose ONLY key material is publicKeyHex (an unknown key type)
+        // must survive serialize → deserialize → serialize, not be silently dropped.
+        var doc = new DidDocument
+        {
+            Id = new Did("did:ethr:sepolia:0xabc"),
+            VerificationMethod = new List<VerificationMethod>
+            {
+                new()
+                {
+                    Id = "did:ethr:sepolia:0xabc#delegate-1",
+                    Type = "CustomKeyType",
+                    Controller = new Did("did:ethr:sepolia:0xabc"),
+                    AdditionalProperties = new Dictionary<string, JsonElement>
+                    {
+                        ["publicKeyHex"] = JsonSerializer.SerializeToElement("0xdeadbeef")
+                    }
+                }
+            }
+        };
+
+        var back = DidDocumentSerializer.Deserialize(
+            DidDocumentSerializer.Serialize(doc, DidContentTypes.Json));
+
+        var vm = back.VerificationMethod!.Single();
+        vm.AdditionalProperties.Should().ContainKey("publicKeyHex");
+        vm.AdditionalProperties!["publicKeyHex"].GetString().Should().Be("0xdeadbeef");
+
+        // Emitted again on the second serialization (write path is not lossy either).
+        DidDocumentSerializer.Serialize(back, DidContentTypes.Json)
+            .Should().Contain("publicKeyHex").And.Contain("0xdeadbeef");
+    }
+
+    [Fact]
+    public void Serialize_VerificationMethod_AdditionalPropCannotShadowSanitizedJwk()
+    {
+        // A colliding additional "publicKeyJwk" carrying private material must neither
+        // duplicate the member nor bypass the public-only JWK sanitizer.
+        var privateJwk = JsonSerializer.SerializeToElement(new Dictionary<string, string>
+        {
+            ["kty"] = "OKP", ["crv"] = "Ed25519", ["x"] = "pub", ["d"] = "PRIVATE_KEY_MATERIAL"
+        });
+        var doc = new DidDocument
+        {
+            Id = new Did("did:example:123"),
+            VerificationMethod = new List<VerificationMethod>
+            {
+                new()
+                {
+                    Id = "did:example:123#key-1",
+                    Type = "JsonWebKey2020",
+                    Controller = new Did("did:example:123"),
+                    PublicKeyJwk = new JsonWebKey { Kty = "OKP", Crv = "Ed25519", X = "pub" },
+                    AdditionalProperties = new Dictionary<string, JsonElement>
+                    {
+                        ["publicKeyJwk"] = privateJwk
+                    }
+                }
+            }
+        };
+
+        var json = DidDocumentSerializer.Serialize(doc, DidContentTypes.Json);
+
+        System.Text.RegularExpressions.Regex.Matches(json, "\"publicKeyJwk\"").Count
+            .Should().Be(1, "the additional publicKeyJwk must be suppressed, not duplicated");
+        json.Should().NotContain("PRIVATE_KEY_MATERIAL");
+    }
+
+    [Fact]
     public void SerializeToUtf8_ProducesValidUtf8()
     {
         var doc = CreateMinimalDocument();

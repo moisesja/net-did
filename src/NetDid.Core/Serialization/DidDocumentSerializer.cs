@@ -299,6 +299,18 @@ public static class DidDocumentSerializer
             if (root.TryGetProperty("controller", out var ctrlElement) && ctrlElement.ValueKind == JsonValueKind.String)
                 controller = new Did(ctrlElement.GetString()!);
 
+            // Preserve unknown members (e.g. did:ethr's publicKeyHex, the ONLY key material
+            // on those VMs) so a round-trip does not silently drop them. Mirrors ServiceJsonConverter.
+            Dictionary<string, JsonElement>? additional = null;
+            foreach (var prop in root.EnumerateObject())
+            {
+                if (prop.Name is "id" or "type" or "controller"
+                    or "publicKeyMultibase" or "publicKeyJwk" or "blockchainAccountId")
+                    continue;
+                additional ??= new Dictionary<string, JsonElement>();
+                additional[prop.Name] = prop.Value.Clone();
+            }
+
             return new VerificationMethod
             {
                 Id = root.GetProperty("id").GetString()!,
@@ -306,7 +318,8 @@ public static class DidDocumentSerializer
                 Controller = controller,
                 PublicKeyMultibase = publicKeyMultibase,
                 PublicKeyJwk = publicKeyJwk,
-                BlockchainAccountId = blockchainAccountId
+                BlockchainAccountId = blockchainAccountId,
+                AdditionalProperties = additional
             };
         }
 
@@ -333,6 +346,12 @@ public static class DidDocumentSerializer
             if (value.AdditionalProperties is not null)
                 foreach (var (key, val) in value.AdditionalProperties)
                 {
+                    // Never let an additional member shadow a reserved one already written
+                    // above — a colliding "publicKeyJwk" would duplicate the member and
+                    // bypass the private-key sanitizer in WriteJwk.
+                    if (key is "id" or "type" or "controller"
+                        or "publicKeyMultibase" or "publicKeyJwk" or "blockchainAccountId")
+                        continue;
                     writer.WritePropertyName(key);
                     val.WriteTo(writer);
                 }

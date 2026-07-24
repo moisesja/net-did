@@ -110,9 +110,18 @@ public sealed class LogEntryWireProvenanceTests
 
         var serialized = JsonNode.Parse(LogEntrySerializer.Serialize(changed))!;
 
+        // The deliberate id edit wins — proving the MODELED path produced this output, not
+        // stale wire JSON (which still carries the original id).
         serialized["state"]!["id"]!.GetValue<string>().Should().Be("did:example:changed");
-        serialized["state"]!["verificationMethod"]![0]!["x-wire-extension"].Should().BeNull(
-            "a clone with deliberate public-model changes must fall back to modeled serialization, not stale provenance");
+
+        // Verification-method extensions now round-trip through the model
+        // (VerificationMethodJsonConverter captures AdditionalProperties — the did:ethr
+        // publicKeyHex fix), so a nested member is no longer silently dropped on modeled
+        // fallback. This strengthens #101's intent (never drop signed nested members): the
+        // consumer's id edit wins AND the untouched nested member survives.
+        serialized["state"]!["verificationMethod"]![0]!["x-wire-extension"]!["nested"]!
+            .GetValue<bool>().Should().BeTrue(
+                "verification-method extensions are modeled and must survive modeled serialization");
     }
 
     [Fact]
