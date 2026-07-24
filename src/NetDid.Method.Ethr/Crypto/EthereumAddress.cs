@@ -1,6 +1,6 @@
 using System.Text;
-using acryptohashnet;
 using NBitcoin.Secp256k1;
+using NetCrypto;
 
 namespace NetDid.Method.Ethr.Crypto;
 
@@ -20,6 +20,10 @@ public static class EthereumAddress
         if (compressed33.Length != 33)
             throw new ArgumentException("Expected 33-byte compressed public key.", nameof(compressed33));
 
+        // TODO(https://github.com/moisesja/crypto-dotnet/issues/19): replace this direct
+        // NBitcoin.Secp256k1 call with NetCrypto's public compressed→uncompressed
+        // decompression API once it ships (NetCrypto > 1.2.0). This is the only
+        // non-NetCrypto crypto call remaining in did:ethr.
         if (!ECPubKey.TryCreate(compressed33, null, out _, out var pubKey) || pubKey is null)
             throw new ArgumentException("Invalid secp256k1 compressed public key.", nameof(compressed33));
 
@@ -28,8 +32,7 @@ public static class EthereumAddress
         pubKey.WriteToSpan(compressed: false, uncompressed, out _);
 
         // Keccak-256 of the 64-byte public key body (skip 0x04 prefix)
-        var keccak = new Keccak256();
-        var hash = keccak.ComputeHash(uncompressed[1..].ToArray());
+        var hash = Keccak256.Hash(uncompressed[1..]);
 
         // Take last 20 bytes as address
         var address20 = hash[^20..];
@@ -49,8 +52,7 @@ public static class EthereumAddress
         var lowercaseHex = Convert.ToHexString(address20).ToLowerInvariant();
 
         // Keccak-256 of the lowercase hex string (ASCII bytes)
-        var keccak = new Keccak256();
-        var hash = keccak.ComputeHash(Encoding.ASCII.GetBytes(lowercaseHex));
+        var hash = Keccak256.Hash(Encoding.ASCII.GetBytes(lowercaseHex));
 
         // For each char at position i: uppercase if the corresponding nibble of hash >= 8
         var result = new char[lowercaseHex.Length];

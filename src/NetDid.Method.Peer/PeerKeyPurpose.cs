@@ -1,3 +1,4 @@
+using NetCrypto;
 using NetDid.Core;
 
 namespace NetDid.Method.Peer;

@@ -1,4 +1,5 @@
 using FluentAssertions;
+using NetCrypto;
 using NetDid.Method.WebVh;
 
 namespace NetDid.Method.WebVh.Tests;
@@ -125,9 +126,76 @@ public class DidUrlMapperTests
     }
 
     [Fact]
-    public void Issue49_MapToLogUrl_IpV4Host_Maps()
+    public async Task Create_LocalhostDomain_ThrowsBeforeProducingArtifacts()
     {
-        var url = DidUrlMapper.MapToLogUrl("did:webvh:QmTest:192.168.1.10");
-        url.Should().Be(new Uri("https://192.168.1.10/.well-known/did.jsonl"));
+        var client = new RecordingWebVhHttpClient();
+        var method = new DidWebVhMethod(client);
+        var keyPair = new DefaultKeyGenerator().Generate(KeyType.Ed25519);
+        var signer = new KeyPairSigner(keyPair, new DefaultCryptoProvider());
+
+        var act = () => method.CreateAsync(new DidWebVhCreateOptions
+        {
+            Domain = "localhost",
+            UpdateKey = signer
+        });
+
+        await act.Should().ThrowAsync<ArgumentException>();
+        client.FetchCount.Should().Be(0);
+    }
+
+    [Fact]
+    public async Task Resolve_LocalhostDid_ReturnsNotFoundWithoutCallingCustomClient()
+    {
+        var client = new RecordingWebVhHttpClient();
+        var method = new DidWebVhMethod(client);
+
+        var result = await method.ResolveAsync("did:webvh:QmTest:localhost");
+
+        result.DidDocument.Should().BeNull();
+        result.ResolutionMetadata.Error.Should().Be("notFound");
+        client.FetchCount.Should().Be(0);
+    }
+
+    [Theory]
+    [InlineData("did:webvh:QmTest:localhost")]
+    [InlineData("did:webvh:QmTest:sub.localhost")]
+    [InlineData("did:webvh:QmTest:0.0.0.0")]
+    [InlineData("did:webvh:QmTest:10.0.0.5")]
+    [InlineData("did:webvh:QmTest:127.0.0.1")]
+    [InlineData("did:webvh:QmTest:2130706433")]
+    [InlineData("did:webvh:QmTest:0177.0.0.1")]
+    [InlineData("did:webvh:QmTest:0x7f000001")]
+    [InlineData("did:webvh:QmTest:localhost。")]
+    [InlineData("did:webvh:QmTest:localhost．")]
+    [InlineData("did:webvh:QmTest:localhost｡")]
+    [InlineData("did:webvh:QmTest:１２７。０。０。１")]
+    [InlineData("did:webvh:QmTest:127。0。0。1")]
+    [InlineData("did:webvh:QmTest:169.254.169.254")]
+    [InlineData("did:webvh:QmTest:172.16.0.1")]
+    [InlineData("did:webvh:QmTest:172.31.255.255")]
+    [InlineData("did:webvh:QmTest:192.168.1.10")]
+    [InlineData("did:webvh:QmTest:192.168.1.10%3A8443")]
+    public void SecurityAdvisory_MapToLogUrl_NonPublicHost_Throws(string did)
+    {
+        var act = () => DidUrlMapper.MapToLogUrl(did);
+
+        act.Should().Throw<ArgumentException>();
+    }
+
+    private sealed class RecordingWebVhHttpClient : IWebVhHttpClient
+    {
+        public int FetchCount { get; private set; }
+
+        public Task<byte[]?> FetchDidLogAsync(Uri logUrl, CancellationToken ct = default)
+        {
+            FetchCount++;
+            return Task.FromResult<byte[]?>(null);
+        }
+
+        public Task<byte[]?> FetchWitnessFileAsync(Uri witnessUrl, CancellationToken ct = default)
+        {
+            FetchCount++;
+            return Task.FromResult<byte[]?>(null);
+        }
     }
 }

@@ -549,5 +549,6 @@ tmp/
 temp/
 
 # End of https://www.toptal.com/developers/gitignore/api/visualstudio
+.claude/settings.json
 
 .idea/

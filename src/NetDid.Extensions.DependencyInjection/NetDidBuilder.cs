@@ -1,8 +1,7 @@
 using Microsoft.Extensions.DependencyInjection;
-using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Logging;
 using NetDid.Core;
-using NetDid.Core.Crypto;
+using NetCrypto;
 using NetDid.Core.Resolution;
 using NetDid.Method.Ethr;
 using NetDid.Method.Ethr.Rpc;
@@ -25,9 +24,10 @@ public sealed class NetDidBuilder
     {
         Services = services;
 
-        // Register shared infrastructure (idempotent via TryAdd)
-        services.TryAddSingleton<IKeyGenerator, DefaultKeyGenerator>();
-        services.TryAddSingleton<ICryptoProvider, DefaultCryptoProvider>();
+        // Register shared crypto infrastructure (ICryptoProvider, IBbsCryptoProvider,
+        // IKeyGenerator) from NetCrypto. Idempotent via TryAdd; IKeyStore is intentionally
+        // not registered (matches prior behaviour).
+        services.AddNetCrypto();
     }
 
     /// <summary>Register the did:key method.</summary>
@@ -46,17 +46,45 @@ public sealed class NetDidBuilder
         return this;
     }
 
-    /// <summary>Register the did:webvh method. Uses IHttpClientFactory for HTTP requests.</summary>
+    /// <summary>
+    /// Register the did:webvh method with the default controller-proof verification budget.
+    /// Uses IHttpClientFactory for HTTP requests.
+    /// </summary>
     public NetDidBuilder AddDidWebVh(WebVhHttpClientOptions? httpClientOptions = null)
+        => AddDidWebVh(
+            httpClientOptions,
+            DidWebVhMethod.DefaultMaxControllerProofsPerEntry);
+
+    /// <summary>
+    /// Register the did:webvh method with a caller-specified upper bound on controller proofs
+    /// verified per log entry. Uses IHttpClientFactory for HTTP requests.
+    /// </summary>
+    /// <param name="httpClientOptions">Resource limits for fetching did:webvh artifacts.</param>
+    /// <param name="maxControllerProofsPerEntry">
+    /// Maximum controller proofs verified per entry. Must be at least one. Raising this limit
+    /// increases the canonicalization and signature-verification work an untrusted log can cause.
+    /// </param>
+    public NetDidBuilder AddDidWebVh(
+        WebVhHttpClientOptions? httpClientOptions,
+        int maxControllerProofsPerEntry)
     {
+        ArgumentOutOfRangeException.ThrowIfLessThan(maxControllerProofsPerEntry, 1);
+
         Services.AddSingleton(httpClientOptions ?? new WebVhHttpClientOptions());
-        Services.AddHttpClient<DefaultWebVhHttpClient>();
+        // WebVhHttpClientOptions.Timeout is the sole time authority for this
+        // library-owned client: neutralize HttpClient.Timeout (100s framework
+        // default), which would otherwise silently cap configured values above it.
+        Services.AddHttpClient<DefaultWebVhHttpClient>()
+            .ConfigureHttpClient(c => c.Timeout = Timeout.InfiniteTimeSpan)
+            .ConfigurePrimaryHttpMessageHandler(
+                DefaultWebVhHttpClient.CreateSecurePrimaryHandler);
         Services.AddSingleton<IWebVhHttpClient>(sp =>
             sp.GetRequiredService<DefaultWebVhHttpClient>());
         Services.AddSingleton<IDidMethod>(sp =>
             new DidWebVhMethod(
                 sp.GetRequiredService<IWebVhHttpClient>(),
-                sp.GetRequiredService<ICryptoProvider>()));
+                logger: null,
+                maxControllerProofsPerEntry: maxControllerProofsPerEntry));
         return this;
     }
 

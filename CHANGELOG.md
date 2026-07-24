@@ -9,9 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **`NetDid.Method.Ethr`** — Phase 1 implementation of the `did:ethr` DID method.
+- **`NetDid.Method.Ethr`** — Phase 1 implementation of the `did:ethr` DID method (adopted from
+  PR #70 by @mirceanis; all cryptography consumed exclusively from `NetCrypto`).
   - **`DidEthrMethod`**: Implements `Create` and `Resolve` capabilities (advertises `Create | Resolve | ServiceEndpoints`). `Update` and `Deactivate` stubs throw `OperationNotSupportedException` (Phase 2).
-  - **`EthereumAddress`**: Derives EIP-55 checksummed Ethereum addresses from compressed secp256k1 public keys using Keccak-256 (`acryptohashnet`).
+  - **`EthereumAddress`**: Derives EIP-55 checksummed Ethereum addresses from compressed secp256k1 public keys using Keccak-256 (`NetCrypto.Keccak256`).
   - **`EthrIdentifier`**: Parses method-specific identifiers supporting named networks (`mainnet`, `sepolia`, `goerli`, `polygon`), hex chain IDs (`0x…`), plain 20-byte addresses, and full 33-byte compressed public keys.
   - **`AbiEncoder` / `AbiDecoder`**: Minimal Ethereum ABI codec for the two read-only ERC-1056 call signatures (`changed`, `identityOwner`) and all three event data layouts (`DIDOwnerChanged`, `DIDDelegateChanged`, `DIDAttributeChanged`).
   - **`Erc1056EventParser`**: Parses raw `eth_getLogs` entries into typed events by dispatching on Keccak-256 topic hashes.
@@ -22,6 +23,464 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`NetDidBuilder.AddDidEthr(networks)`** — DI extension method in `NetDid.Extensions.DependencyInjection`.
 - **`VerificationMethod.AdditionalProperties`** — Added `IReadOnlyDictionary<string, JsonElement>?` to `VerificationMethod` (in `NetDid.Core`) to support `publicKeyHex` for unknown key types per the did:ethr spec.
 - New sample: `NetDid.Samples.DidEthr`.
+
+## [2.3.0] - 2026-07-13
+
+### Fixed
+
+- **Preserve-mode did:webvh updates carry the previous document verbatim into the new signed
+  entry** (#101). An `UpdateAsync` with `NewDocument == null` previously rebuilt the appended head
+  from the reduced typed model, silently dropping signed nested document members the model does not
+  surface (for example a member inside a `verificationMethod` object) before hashing and signing the
+  reduced state. The preserved state is now re-emitted from its retained wire JSON, so signed nested
+  members survive into the new head. A state-level provenance fingerprint falls back to modeled
+  serialization for a deliberately changed document, so a genuine consumer edit still wins over stale
+  wire bytes.
+- **A mutable or dynamic `NewDocument` can no longer diverge the published log from the signed
+  bytes** (#101). `UpdateCoreAsync` now deep-copies the caller's `DidWebVhUpdateOptions.NewDocument`
+  exactly once at the trust boundary (one JSON-LD round-trip). Entry hashing, signing across the
+  async boundary, the published `did.jsonl`, the `did.json` compatibility artifact, and
+  `DidUpdateResult.DidDocument` all observe that single private snapshot, so a caller-supplied
+  collection that returns different contents per enumeration cannot publish bytes that differ from
+  what was hashed and signed (the same trust-boundary treatment already applied to parameter
+  collections). Observable change: `DidUpdateResult.DidDocument` is now the private snapshot, not the
+  caller's supplied instance.
+- **Resolution enforces the SCID identity of every validated entry, not just the target** (#101).
+  did:webvh v1.0 requires the SCID segment of `state.id` to be byte-for-byte identical to the DID's
+  SCID and the first entry's `parameters.scid` "for every entry's `state.id`, not just the first,"
+  independently of portability. `LogChainValidator` now checks this for the genesis and every
+  subsequent entry it validates (only the host/path portion may change under portability), so a
+  genuinely signed log whose intermediate or genesis entry claims a foreign SCID — or omits
+  `state.id` — is rejected as `invalidDidLog`. Historical resolution still validates only the
+  selected prefix, so a corrupt later tail does not revoke an already-established version.
+  **Compatibility**: Update/Deactivate on an SCID-inconsistent (e.g. forged) log now throw
+  `LogChainValidationException` during chain validation rather than the previous `ArgumentException`;
+  both still reject the log.
+- **did:webvh entries with invalid or unauthorized extra controller proofs are now rejected**
+  (#101). `LogChainValidator` previously accepted an entry as soon as one proof verified from an
+  active update key, silently skipping every other supplied proof; did:webvh v1.0 requires
+  "Resolvers MUST reject an entry whose proof fails any check." Every supplied controller proof
+  is now processed by DataProofsDotnet's `DataIntegrityProofPipeline` and authorized by a
+  did:webvh resolver: the `verificationMethod`
+  must be a `did:key` (DID==fragment anti-spoof) whose Ed25519 multibase appears verbatim in the
+  active `updateKeys`, used for `proofPurpose` `assertionMethod`. One authorized signer still
+  authorizes the entry — multiple valid authorized proofs remain supported and no threshold
+  semantics were introduced. `proofPurpose` was previously never checked at all. **Compatibility**:
+  NetDid's writer emits exactly one proof, and conforming single-proof logs validate unchanged; a
+  multi-proof log carrying invalid or unauthorized extras is now rejected as `invalidDidLog` —
+  intentional stricter conformance.
+- **Schema-defined proof members are preserved and supported where their semantics are enforced**
+  (#101). The
+  did:webvh v1.0 log-entry schema requires the controller-proof members "at minimum" and leaves
+  additional properties open. A present proof `id` must pass NetDid's conservative
+  `System.Uri`-compatible absolute-URI check without surrounding whitespace; DID, URN, and HTTPS
+  forms are accepted, but this is explicitly not full WHATWG valid-URL-string conformance. Duplicate
+  proof ids are rejected so an unordered proof set cannot resolve a `previousProof` differently by
+  array order. A `previousProof` chain is resolved (a dangling reference is rejected), and an
+  `expires` at or before the entry's `versionTime` is treated as expired. Other extensions are
+  preserved verbatim and remain signature-bound, but NetDid does not claim application semantics
+  for every extension.
+  Parsed proof-object JSON round-trips byte-for-byte when Update/Deactivate republish a fetched log;
+  a single-object enclosing `proof` value is normalized to an array, which is also schema-valid and
+  does not change the proof signature. Array-valued `domain` remains unsupported by the pinned
+  DataProofsDotnet model and is an explicit upstream compatibility limitation.
+  `DataIntegrityProofValue.Created` is now optional (`string?`).
+- **Fetched entries are verified from their complete semantic JSON, not a reduced typed model**
+  (#101). Private parser provenance retains nested `parameters` and `state` members that the public
+  model does not surface. Entry hashes, controller proofs, and witness proofs all use that retained
+  content with only the protocol-required `versionId` replacement or `proof` removal. This closes a
+  reproduced post-sign nested-member injection that previously resolved and appeared in
+  `IncludeLog`. Update/Deactivate preserve those members in prior fetched entries. A modeled
+  fingerprint prevents stale provenance from overriding a public clone or in-place model mutation.
+- **Duplicate JSON members, invalid UTF-8, and malformed content in a fetched log are rejected as `invalidDidLog`**
+  (#101). Entries now parse with `AllowDuplicateProperties = false` (recursive), so a decoy
+  duplicate `proof` — or any duplicate member — can no longer silently drop a supplied member
+  (`System.Text.Json` keeps the last of a pair). JSON-access failures at the parse boundary,
+  including a string carrying an unpaired surrogate that parses as a token but throws on decode,
+  now map to `FormatException` → `invalidDidLog` instead of `notFound` (or, for Update/Deactivate,
+  an unhandled exception). did.jsonl and witness files use strict UTF-8 decoding, so invalid bytes
+  cannot normalize into a different signed string. The `proof` member parses as a single object or
+  an array (schema `oneOf`).
+- **Per-entry controller-proof verification work is explicitly bounded** (#101). Verifying each
+  proof re-canonicalizes the entry, and `created` is attacker-chosen and part of the signed
+  configuration, so one active key can mint arbitrarily many *distinct* valid proofs. The resolver
+  therefore imposes an explicit, documented resource limit on controller proofs per entry
+  (default 8); an entry beyond the limit is rejected as `invalidDidLog`. Direct callers configure
+  it with the additive `DidWebVhMethod(client, logger, maxControllerProofsPerEntry)` constructor and
+  DI callers with `AddDidWebVh(httpClientOptions, maxControllerProofsPerEntry)`. The existing
+  signatures remain source- and binary-compatible. Values must be positive; raising the limit
+  increases attacker-controlled canonicalization and signature work. This is a resource policy,
+  not a conformance rule (real entries carry one proof).
+- **Historical `IncludeLog` no longer exposes an unvalidated tail** (#101). Resolution by
+  `versionId` or `versionTime` returns only the exact raw and parsed log prefix through the selected
+  version. Latest resolution still returns the complete fetched log text. Once an earlier target
+  has been selected and validated, a later cryptographically invalid or unauthorized entry does
+  not appear in that target's artifacts.
+
+### Security
+
+- Fresh-key creation in `DidKeyMethod` (did:key) and `Numalgo0Handler` (did:peer:0) now disposes
+  the generated NetCrypto `KeyPair` as soon as its public key has been copied out, deterministically
+  zeroizing the private half instead of leaving it in process memory until garbage collection
+  (#97, ND-E8 follow-up to NetCrypto 1.2.0's `KeyPair : IDisposable`). Created DIDs and documents
+  are byte-identical, and `ExistingKey` paths (caller-owned `ISigner` custody) are unaffected. No
+  behavior change for conforming `IKeyGenerator` implementations; an implementation that retains a
+  reference to the `KeyPair` it returned will now observe it disposed after create — per NetCrypto's
+  ownership contract the caller may dispose, so retaining generators must copy what they need
+  before returning.
+
+### Fixed
+
+- **Continuous pre-rotation now retains complete key-change evidence** (#98).
+  `DidUpdateResult.UpdateKeyChange` reports `Changed` or `Unchanged` from the known effective
+  `updateKeys` sets even when the resulting did:webvh state has fresh non-empty commitments; it is
+  no longer replaced with `Unknown`. The new additive `RevealedUpdateKeys`
+  (`IReadOnlyList<string>?`) reports a read-only copy of the complete key set eligible to authorize
+  the entry just appended: the prior effective keys when prior commitments did not govern that
+  entry (including pre-rotation activation), or the current entry's explicit keys after every
+  member has been validated against the prior commitments when pre-rotation did govern it.
+  Eligibility does not assert that every listed key signed; one eligible update key can authorize
+  the proof. `EffectiveUpdateKeys` retains its distinct, forward-looking semantics
+  and remains `null` while active fresh commitments obscure the keys for the next entry. Consumers
+  enforcing exclusive rotation or authorization postconditions must compare the applicable
+  complete evidence set for equality, since membership checks accept unexpected extra keys.
+
+## [2.2.0] - 2026-07-12
+
+### Security
+
+- **Breaking did:webvh v1.0 pre-rotation conformance fix** (#93). Pre-rotation is now activated
+  solely by a non-empty prior effective `nextKeyHashes`, as required by v1.0. An entry governed by
+  pre-rotation must explicitly carry non-empty `updateKeys` and an explicit `nextKeyHashes` array,
+  every member of its complete current key set must match a prior commitment, and its proof must be
+  signed by one of those current revealed keys. Ordinary entries remain authorized by the previous
+  effective `updateKeys`; consequently, the entry that first activates pre-rotation is still signed
+  by a prior key, while the entry that sets `nextKeyHashes: []` is still signed under pre-rotation
+  and only its successor returns to ordinary authorization. Writer and resolver now enforce the same
+  state machine, rejecting the old-key-signed chains NetDid previously emitted and accepted.
+    - The removed pre-v1.0 `prerotation` wire parameter is no longer emitted and is rejected in v1.0
+      logs. The redundant public `DidWebVhCreateOptions.EnablePreRotation` and
+      `DidWebVhParameterUpdates.Prerotation` switches were removed; callers activate or deactivate the
+      feature directly with non-empty or empty commitment arrays.
+    - Deactivation while pre-rotation is active now emits explicit committed `updateKeys` and
+      `nextKeyHashes: []`, and must be signed by the revealed committed key. Previously Deactivate
+      emitted only `deactivated: true` and signed with the prior key, producing an invalid v1.0 entry.
+      Resolving a deactivated DID now suppresses its DID Document, and resolving a valid prior version
+      reports later verified deactivation in document metadata.
+    - Key-rotation evidence remains fail-closed (`Unknown` / `null`) while the resulting state has
+      non-empty commitments, because hashes do not reveal the next signer keys. An entry that ends
+      pre-rotation can now report its effective `updateKeys`, which concretely authorize its successor.
+    - Validation now rejects unsupported `method` versions, unknown log-entry/parameter properties,
+      and every declared `updateKeys` value that is not a valid Ed25519 Multikey. The v1.0 `watchers`
+      parameter is preserved through parsing, hashing, proof verification, creation, and updates so
+      strict property validation does not reject a defined v1.0 field.
+
+### Changed
+
+- **Breaking did:webvh v1.0 hash-wire and genesis-flow conformance fix** (#95). SCIDs,
+  `versionId` entry hashes, and pre-rotation `nextKeyHashes` commitments are now encoded as bare
+  base58btc strings over complete SHA-256 multihashes (`0x12 0x20 <32-byte digest>`), as required
+  by v1.0. Previously NetDid omitted the multihash digest-length byte and then added a multibase
+  `z` prefix, producing values that were self-consistent only within NetDid and incompatible with
+  conforming implementations.
+    - Genesis creation and validation now derive the SCID and first entry hash independently:
+      `versionId: "{SCID}"` is used for SCID generation, the substituted SCID is the predecessor for
+      the genesis entry-hash calculation, and the published value is `1-<entryHash>`. Previously
+      NetDid hashed `1-{SCID}`, published `1-<SCID>`, and incorrectly required both hashes to be equal.
+    - Update and deactivation entry hashes now use the previous entry's full published `versionId`
+      directly as the hash input's `versionId`. Previously NetDid prepended the new version number to
+      that predecessor value; writer and validator shared the defect, masking another interop failure.
+    - This intentionally changes every NetDid-generated did:webvh identifier, every entry
+      `versionId`, and every key commitment. Logs emitted by earlier versions used a non-v1.0 wire
+      format and are not accepted as v1.0 logs after upgrading; no production migration path is
+      provided because did:webvh has not yet had a production deployment in this project.
+    - Literal known-answer tests now pin the SCID, entry-hash, and key-commitment encodings and verify
+      the 34-byte multihash structure, so writer/resolver self-consistency cannot mask this regression.
+
+### Added
+
+- **`DidUpdateResult` now exposes key-specific rotation evidence** (#91). New additive properties:
+  `UpdateKeyChange` (`AuthorizationChangeStatus`, default `Unknown` — fail closed) reports whether the
+  effective set of authorized update keys changed, compared order-insensitively before vs. after the
+  update; unlike the coarse `AuthorizationChange`, a witness-config-only change does not trip it.
+  `EffectiveUpdateKeys` (`IReadOnlyList<string>?`) carries a read-only copy of the keys authorized to
+  sign the _next_ log entry (for did:webvh, the effective `updateKeys` of the new latest entry;
+  multibase) — `null` means the method reports no evidence, empty means no keys are authorized (a
+  frozen DID, explicitly permitted by did:webvh v1.0). A rotation consumer requires
+  `UpdateKeyChange == Changed` and, for an exclusive rotation, `EffectiveUpdateKeys` set-equal to its
+  intended post-rotation key set — membership checks alone would accept unexpected extra keys.
+  `AuthorizationChange` semantics are unchanged.
+    - The did:webvh driver **withholds the key evidence (fail closed: `Unknown` / `null`) while the
+      resulting state keeps key pre-rotation active**: the parameter-level `nextKeyHashes` do not reveal
+      the keys authorized to sign the next entry. An entry that ends pre-rotation with
+      `nextKeyHashes: []` can report its effective `updateKeys` because those keys concretely authorize
+      its successor (#93).
+    - Update hardening: all caller-supplied parameter collections (`UpdateKeys`, `NextKeyHashes`, witness
+      list) are snapshotted exactly once at the start of `UpdateAsync`, so pre-rotation validation, the
+      change comparison, hashing/signing, the serialized `did.jsonl`, and the reported evidence always
+      observe identical values — a mutable or dynamic `IReadOnlyList` can no longer present different
+      contents to different stages of the operation (TOCTOU).
+
+## [2.1.0] - 2026-07-11
+
+### Security
+
+- **did:webvh log validation now requires strictly increasing `versionTime` values** (#87).
+  Every post-genesis entry must be later than its predecessor by parsed instant; equal and decreasing
+  timestamps invalidate even a correctly hashed and signed chain. Resolve maps fetched violations and
+  malformed/missing/non-string timestamp tokens to `invalidDidLog`, while Update and Deactivate reject
+  non-monotonic caller-supplied logs through the shared validator. Exact authenticated timestamp tokens
+  and fractional precision remain unchanged during hash/proof reconstruction. Historical resolution stops
+  before later timestamps outside the requested time and exposes metadata only from the validated prefix,
+  so a corrupt tail cannot inject an unvalidated `Updated` value. Writers advance future-dated inputs by
+  one tick when necessary and fail cleanly if `DateTimeOffset.MaxValue` cannot be advanced.
+
+- **Breaking security/spec alignment — did:webvh witness thresholds now count distinct verified ids** (#88).
+  Genesis and every later witness-policy declaration are validated before taking effect. `{}` is the only
+  disabling form; configured policies require a threshold from 1 through the number of distinct witnesses
+  and a non-empty list of unique, NFC-canonical, bare Ed25519 `did:key` DIDs. Missing/partial fields,
+  duplicates, malformed/unsupported keys, null entries, and zero or out-of-range thresholds fail closed;
+  fetched malformed policies resolve as `invalidDidLog`, and Create/Update reject them with
+  `ArgumentException`. Threshold evaluation counts each cryptographically verified configured signer once,
+  regardless of duplicate proofs or historical weight values, while preserving the existing activation,
+  replacement, lowering, and disabling transition rules.
+
+    `WitnessEntry.Weight` remains available for source compatibility but is now semantically inert and is
+    omitted from newly produced log entries. Parsed legacy `weight` members are retained only so immutable
+    historical entries can be reconstructed for hash/proof verification. Legacy policies remain usable when
+    `threshold <= count(distinct witness ids)`; weighted policies that relied on a threshold greater than the
+    distinct-id count are invalid under did:webvh 1.0 and must migrate to a conforming witness set/history
+    before upgrading.
+
+- **did:webvh fetches are now time-bounded (default 30 s) instead of inheriting the 100 s `HttpClient` default** (#80).
+  `WebVhHttpClientOptions` gains a `Timeout` knob (default 30 seconds; `Timeout.InfiniteTimeSpan` disables) that
+  `DefaultWebVhHttpClient` enforces per fetch with a linked cancellation token covering the _total_ fetch — response
+  headers and body read. Previously a host that completed the TCP/TLS handshake and then withheld headers pinned each
+  resolution for the framework-default 100 seconds (a request-holding amplification vector for servers resolving
+  attacker-influenced DIDs), and — worse than the issue described — a host that dripped the body slowly could hold the
+  fetch open indefinitely, because under `HttpCompletionOption.ResponseHeadersRead` the `HttpClient.Timeout` stops
+  applying once headers arrive. The per-fetch token closes both windows in both construction paths (bare
+  `new HttpClient()` fallback and the DI-registered typed client, which already receives the registered options
+  singleton). On both library-constructed clients `HttpClient.Timeout` is neutralized (`InfiniteTimeSpan`) so the
+  knob turns in both directions: without this, `HttpClient.Timeout` enforces its 100 s default independently and a
+  configured `Timeout` above 100 s would silently still cap at 100 s. A caller-injected `HttpClient` keeps its own
+  `Timeout` as an independent cap. A timed-out fetch normalizes to a failed fetch (resolution reports `notFound`), preserving the #81
+  contract: only genuine caller-token cancellation propagates as `OperationCanceledException`, including when URI
+  security preflight would reject the request before dispatch. `Timeout` is validated at construction
+  (`ArgumentOutOfRangeException` unless positive, within `CancelAfter`'s portable `Int32.MaxValue`-millisecond range,
+  or `InfiniteTimeSpan`): zero would otherwise silently cancel every fetch, while negative or overly large values
+  would throw from `CancelAfter` at fetch time — all flagged by adversarial review. Consumers needing different HTTP
+  behavior can still inject their own configured `HttpClient`/`IWebVhHttpClient`.
+
+- **Breaking security change — remediated all five `did:webvh` findings in GHSA-3vhp-h4rr-r254.**
+  Create and Resolve now reject localhost names and loopback, private, link-local, unspecified, and
+  other non-public IP literals at DID-to-URL mapping time. This intentionally removes prior support
+  for DIDs anchored at `localhost` or private IP literals, and injecting a custom
+  `IWebVhHttpClient` does not bypass the mapper-level rejection. Local integration tests should use
+  a public-looking domain such as `example.com` with a fake `IWebVhHttpClient`; applications that
+  require an internal test endpoint must keep the DID host public-looking and map it inside their
+  custom client.
+  Witness authorization now
+  evaluates each transition against the correct policy: genesis and the first activation use the
+  policy they declare, while an already-active policy governs the entry that lowers, replaces, or
+  disables it. Invalid early proofs no longer consume a witness's vote, weights are bound to the
+  exact cryptographically verified `did:key` signer instead of a `verificationMethod` prefix, and
+  each signer is counted once. This prevents a compromised update key from disabling the witness
+  second factor and prevents malformed proofs from suppressing valid witness approvals.
+- **Hardened the default `did:webvh` resolver transport against SSRF and DNS rebinding.** Loopback,
+  private, link-local, unspecified, special/transition, and other non-public IPv4/IPv6 destinations
+  are rejected after IDNA/literal normalization and again after DNS resolution. Mixed public/private
+  answers fail closed; the socket connects directly to the vetted address; redirects and proxies are
+  disabled; and `AddDidWebVh()` installs the same secure handler. Caller-supplied custom HTTP clients
+  remain responsible for equivalent destination and redirect policy.
+- **Made `did:webvh` log timestamps deterministic and fully authenticity-preserving.** Hashed/signed
+  `versionTime` and proof `created` values use invariant UTC Gregorian formatting, retain fractional
+  precision without changing existing whole-second output, and preserve the exact parsed JSON token
+  during hash/proof verification. Cross-culture parsing is invariant, fractional or lexical mirror
+  rewrites invalidate the chain, fractional precision drives historical selection, malformed
+  `versionTime` queries no longer silently fall back to the latest version, and fetched log entries
+  with a non-UTC or otherwise invalid `versionTime` resolve as `invalidDidLog` rather than the
+  misleading `notFound`. The default transport intentionally rejects NAT64 address ranges and
+  disables forward proxies; NAT64-dependent IPv6-only or mandatory-egress-proxy deployments must
+  supply a custom `IWebVhHttpClient` and explicitly own the resulting egress policy. Update and
+  Deactivate do not perform network access and can still process caller-supplied legacy logs, but
+  artifacts retaining a now-rejected private-host DID cannot be resolved by this version.
+- **did:webvh resolution now binds the DID's self-certifying SCID to the genesis entry** (#82). Resolution previously
+  anchored identity only on the latest entry's `state.id` — an attacker-controllable document field — and validated the
+  genesis SCID for internal self-consistency only. It never compared the SCID embedded in the requested DID string
+  (`did:webvh:<SCID>:<domain>`) against the genesis entry's actual SCID. An attacker able to serve `did.jsonl` at the
+  victim's URL (subdomain/host takeover, malicious CDN, or on-path MITM) could therefore serve a self-consistent genesis
+  signed by _their own_ key, with `state.id` set to the victim's literal DID, and the resolver would return the
+  attacker's document with attacker keys as the authoritative resolution of the victim's unchanged DID. This defeated
+  the self-certifying property that is did:webvh's entire security gain over did:web. `ResolveCoreAsync` now rejects
+  (`invalidDidLog`) any log whose genesis SCID differs from the SCID in the requested DID, and the same binding is
+  enforced on the write path (see below), so the writer cannot emit a log the resolver rejects on DID/SCID identity
+  grounds (other resolution checks, e.g. witness thresholds, remain orthogonal). Discovered by an adversarial audit
+  while fixing the Update/Deactivate binding below.
+
+### Fixed
+
+- **did:webvh resolution no longer swallows caller-initiated cancellation** (#81). `DidWebVhMethod.ResolveCoreAsync`
+  wrapped the whole resolve in a broad `catch (Exception)` that converted a caller-cancelled `CancellationToken`'s
+  `OperationCanceledException`/`TaskCanceledException` (surfaced through the HTTP fetch) into
+  `DidResolutionResult.NotFound`, so a consumer that cancelled resolution could not distinguish "the DID doesn't
+  exist" from "I cancelled". A `catch (OperationCanceledException) when (ct.IsCancellationRequested)` clause now
+  rethrows genuine cooperative cancellation. The `when` filter deliberately preserves the existing normalization of
+  an `HttpClient.Timeout`-driven `TaskCanceledException` (caller token not cancelled) to a `notFound` resolution
+  failure — configurable timeouts are tracked separately in #80. The broad catches in `DidKeyMethod`/`DidPeerMethod`
+  are untouched: those paths are CPU-bound and never observe the token, so no cancellation can reach them.
+
+- **did:webvh Update/Deactivate now bind their inputs to the target DID** (#82). `DidWebVhMethod.UpdateCoreAsync`
+  and `DeactivateCoreAsync` previously validated the caller-supplied `CurrentLogContent` chain and authorized the
+  `SigningKey` against _that log's_ `updateKeys` without checking that the log actually belonged to the `did` being
+  operated on, and Update accepted a `NewDocument` without checking `NewDocument.Id == did`. An "update of A" could
+  therefore be driven entirely by B's log + B's key (returning a document claiming `Id = A`), and the driver could
+  emit an appended log that its own resolver rejects (resolution enforces `state.id == did`) — publishing it would
+  brick the identity. Both operations now reject, with `ArgumentException`, a log whose latest entry's `state.id`
+  differs from `did`, a log whose **genesis SCID** differs from the SCID in `did` (the self-certification binding
+  above, applied writer-side so an attacker-owned log cannot authorize an update of the victim DID merely by claiming
+  its id), a log that is already deactivated, and (Update) a `NewDocument` whose `Id` differs from `did`. This makes
+  the write path match the read path's invariants.
+
+### Added
+
+- **`DidUpdateResult.AuthorizationChange`** (#82) — a method-agnostic signal of whether an update changed the
+  method's authorization material, typed as the new **`AuthorizationChangeStatus`** enum (`Unknown` / `Unchanged` /
+  `Changed`). did:webvh keeps update authority (`updateKeys` and related parameters) in the log parameters rather
+  than the DID Document, so a caller reading back `DidUpdateResult.DidDocument` could not otherwise tell a
+  document-only edit apart from a (possibly smuggled) key rotation. The did:webvh driver reports `Changed` /
+  `Unchanged` by comparing the effective `updateKeys` / `nextKeyHashes` / legacy `prerotation` / `witness` configuration
+  before and after the update (`ttl` is excluded as a non-authority caching hint; witness ids are compared as a
+  set because list order and legacy weights do not affect did:webvh 1.0 authorization). The default is **`Unknown` so absence
+  of evidence fails closed** — a method that does not evaluate change evidence (including any third-party
+  `IDidMethod`) leaves the value at `Unknown`, and a consumer enforcing a document-only postcondition must require
+  `Unchanged` explicitly rather than treat "not reported" as "confirmed unchanged."
+
+### Changed
+
+- **Bumped `NetCrypto` `1.1.0` → `1.2.0`.** A backward-compatible refresh of the cryptography
+  provider; net-did's own public API is unchanged. The full test suite — Core, did:key, did:peer,
+  did:webvh (including Data Integrity), the DI extensions, and all W3C conformance assertions —
+  passes against 1.2.0 with a clean Release build (no warnings). Consumers using `NetCrypto` types
+  transitively pick up 1.2.0 automatically.
+
+## [2.0.1] - 2026-06-14
+
+### Changed
+
+- **Bumped `NetCrypto` `1.0.0` → `1.1.0`.** A backward-compatible (additive + hardening) refresh of
+  the cryptography provider; net-did's own public API is unchanged. NetCrypto 1.1.0 adds
+  `IKeyStore.DeriveSharedSecretAsync` (HSM-friendly ECDH), a `Base64Url` codec, and unified AEAD
+  size metadata, and tightens EC public-key validation (wrong-length NIST EC keys now throw a
+  parameter-named `ArgumentException` rather than an opaque `CryptographicException`). Consumers
+  using NetCrypto types transitively pick these up automatically. `DataProofsDotnet.Core`
+  `0.1.0-preview.1` (pinned to NetCrypto `>= 1.0.0`) resolves cleanly to 1.1.0 — the full suite,
+  including did:webvh Data Integrity and all 182 W3C conformance assertions, passes against it.
+
+## [2.0.0] - 2026-06-13
+
+The crypto/proof externalization refactor. net-did now carries **only DID-method logic** — every
+cryptographic primitive comes from [**NetCrypto**](https://www.nuget.org/packages/NetCrypto) (#75),
+and did:webvh Data Integrity proofs come from
+[**DataProofsDotnet**](https://www.nuget.org/packages/DataProofsDotnet.Core) (#76). JCS
+canonicalization is owned by **NetCid**. No crypto primitive, signer, key model, JWK converter,
+JCS canonicalizer, or Data Integrity engine remains in net-did source.
+
+### Changed (BREAKING)
+
+- **did:webvh Data Integrity now uses the conformant `eddsa-jcs-2022` cryptosuite from
+  DataProofsDotnet** (#76). net-did previously signed `JCS(document-only)` — a non-conformant
+  input. did:webvh log/witness proofs are now created and verified via
+  `DataProofsDotnet.DataIntegrity.EddsaJcs2022Cryptosuite`, which signs the spec-correct
+  `hashData = SHA-256(JCS(proofConfig)) ‖ SHA-256(JCS(document))`. **This changes the signed
+  bytes: did:webvh logs and witness proofs produced by net-did before 2.0.0 will not verify
+  under 2.0.0, and vice-versa.** net-did regenerates proofs deterministically, so there are no
+  shipped golden proof fixtures to migrate. The `eddsa-jcs-2022` cryptosuite identifier and the
+  did:webvh log wire shape are unchanged (the proof carries the same `type`/`cryptosuite`/
+  `verificationMethod`/`created`/`proofPurpose`/`proofValue` fields) — only the `proofValue`
+  bytes change — so the did:webvh method version is **not** bumped. One consequence of the
+  conformant algorithm: the `verificationMethod` is now part of the signed proof configuration,
+  so it can no longer be altered (e.g. adding/removing the `#fragment`) after signing without
+  re-signing.
+- **`DidWebVhMethod` no longer takes an `ICryptoProvider`** (#76). Its constructor is now
+  `DidWebVhMethod(IWebVhHttpClient httpClient, ILogger<DidWebVhMethod>? logger = null)` — the
+  cryptosuite is self-contained. `services.AddNetDid(...).AddDidWebVh()` is unaffected.
+- **Cryptographic primitives moved to NetCrypto** (#75): The crypto primitive, key-type,
+  signer, keystore, JWK, and KDF surface that previously lived under `NetDid.Core` is now
+  provided by NetCrypto. The affected public types **changed namespace** from
+  `NetDid.Core` / `NetDid.Core.Crypto` / `NetDid.Core.KeyStore` / `NetDid.Core.Jwk` to
+  **`NetCrypto`**: `ICryptoProvider`, `IBbsCryptoProvider`, `ISigner`, `IKeyGenerator`,
+  `IKeyStore`, `DefaultCryptoProvider`, `DefaultBbsCryptoProvider`, `DefaultKeyGenerator`,
+  `KeyType`, `KeyTypeExtensions`, `EcPointValidator`, `EcdsaSignatureFormat`, `KeyPair`,
+  `KeyPairSigner`, `KeyStoreSigner`, `StoredKeyInfo`, `PublicKeyReference`, `InMemoryKeyStore`,
+  `JwkConverter`, and `ConcatKdf`. Consumers must replace `using NetDid.Core.Crypto;` (and the
+  `.KeyStore` / `.Jwk` / `.Crypto.Kdf` namespaces) with `using NetCrypto;`. The method,
+  property, and enum-ordinal signatures are otherwise unchanged, so behavior is identical — the
+  W3C conformance suite (`did:key` / `did:peer` vectors, multibase + JWK round-trips) is
+  byte-for-byte green across the swap.
+- **`KeyTypeExtensions.ToKeyType(ulong)` renamed to `FromMulticodec(ulong)`** (#75): clearer
+  name for "map a multicodec code to a `KeyType`". Call sites updated.
+- **`AddNetDid(...)` now registers crypto services via `NetCrypto.AddNetCrypto()`** (#75):
+  the DI container resolves `ICryptoProvider`, `IBbsCryptoProvider`, and `IKeyGenerator` from
+  NetCrypto (still `TryAddSingleton`, `IKeyStore` still not auto-registered — unchanged
+  behavior). The BBS-absent path now surfaces as `NetCrypto.BbsUnavailableException`
+  (a `CryptographicException`) rather than `PlatformNotSupportedException`.
+
+### Removed
+
+- **In-repo crypto sources** (#75): deleted the `NetDid.Core/Crypto/` primitive cluster
+  (`DefaultCryptoProvider`, `KeyType`, `KeyTypeExtensions`, `EcPointValidator`,
+  `EcdsaSignatureFormat`, `KeyPair`, `KeyPairSigner`, `KeyStoreSigner`, `DefaultKeyGenerator`,
+  `StoredKeyInfo`, `PublicKeyReference`, `DefaultBbsCryptoProvider`, `Native/ZkryptiumNative`,
+  `Kdf/ConcatKdf`), the `I*` crypto interfaces, `KeyStore/InMemoryKeyStore`, and
+  `Jwk/JwkConverter`.
+- **Self-hosted zkryptium native FFI** (#75): removed the `native/zkryptium-ffi/` Rust crate,
+  the bundled `runtimes/**` BBS dylib, the `runtimes` pack directive, and
+  `<AllowUnsafeBlocks>` from `NetDid.Core.csproj`. The BBS native payload now flows
+  transitively from the NetCrypto NuGet package (all 5 RIDs).
+- **In-repo Data Integrity engine and JCS canonicalizer** (#76): deleted
+  `NetDid.Core/Crypto/DataIntegrity/` (`DataIntegrityProofEngine`, the net-did `DataIntegrityProof`
+  model) and `NetDid.Core/Crypto/Jcs/JsonCanonicalization`. did:webvh proofs come from
+  DataProofsDotnet; SCID/entryHash JCS canonicalization comes from `NetCid.JcsCanonicalizer`. The
+  security-critical `did:key` proof-signer parser (the DID==fragment anti-spoof check, with no
+  upstream home) was relocated into an internal `NetDid.Method.WebVh` helper. `NetDid.Core` no
+  longer contains a `Crypto/` directory.
+
+### Dependencies
+
+- Added `NetCrypto` `1.0.0` (#75) and `DataProofsDotnet.Core` `0.1.0-preview.1` (#76, referenced
+  by `NetDid.Method.WebVh`). Bumped `NetCid` `1.5.0` → `1.6.0`. Dropped the direct
+  `NSec.Cryptography`, `NBitcoin.Secp256k1`, and `Nethermind.Crypto.Bls` references — they are
+  now transitive via NetCrypto. `Microsoft.IdentityModel.Tokens` is retained
+  (`VerificationMethod.PublicKeyJwk` + JWK round-trips).
+
+> **Preview dependency (conscious call).** `NetDid.Method.WebVh` `2.0.0` takes a **transitive
+> dependency on `DataProofsDotnet.Core 0.1.0-preview.1`**, a prerelease package. Consumers that
+> otherwise pin only stable packages will pull in this preview when they use `did:webvh`. The
+> contract net-did relies on (`EddsaJcs2022Cryptosuite` / `DataIntegrityProof` /
+> `PublicKeyMaterial` / `ProofVerificationResult`) is API-frozen, so the risk is the release
+> channel, not the surface. net-did will move to the stable `DataProofsDotnet.Core 1.0.0` (and
+> publish a corresponding net-did patch) as soon as it ships. `did:key` and `did:peer` have no
+> preview dependencies. If a fully-stable dependency tree is required before adopting `did:webvh`,
+> pin `NetDid.Method.WebVh` to the `1.x` line until then.
+
+## [1.3.1] - 2026-06-03
+
+### Added
+
+- **Verification-relationship authorization primitive** (#71): New `IVerificationRelationshipResolver` (in `NetDid.Core.Resolution`) answers the W3C DID Core §5.3 question "does the controller's DID document authorize this verification method for this relationship?" Replaces the `bareDid(verificationMethod) == controller` string heuristic, which is sound only for `did:key` and breaks on cross-DID references and per-purpose key separation (hot key under `capabilityInvocation`, cold key under `capabilityDelegation`). Returns a tri-state `VerificationRelationshipAuthorizationResult` (`Authorized` / `NotAuthorized` / `ControllerNotResolvable`) so verifiers can fail closed while still surfacing the underlying resolution error code. Registered as a singleton by `services.AddNetDid(...)`; unblocks `zcap-dotnet#65` controller-authorization soundness for non-`did:key` methods. The relationship-list selector formerly private to `DefaultDidUrlDereferencer` is promoted to `DidDocument.GetRelationshipEntries(VerificationRelationship)` for reuse. Full rationale in PRD §10.5.
+
+- **`DidWebVhArtifacts` constants for artifact dictionary keys** (#37 follow-up): New `public static class NetDid.Method.WebVh.DidWebVhArtifacts` exposes `DidJsonl`, `DidJson`, `DidWitnessJson`, and `LogEntries` as `public const string`. Internal Create/Update/Deactivate/Resolve sites and the test suite now bind to these symbols instead of duplicating the string literals (`"did.jsonl"`, etc.), so a typo in an external consumer like `net-wallet-mcp`'s `wallet.export_did_log` is a compile error instead of a runtime `KeyNotFoundException`. The string values themselves are unchanged; existing consumers that still pass the literal continue to work.
+
+- **Expose the parsed did:webvh log on `DidResolutionResult`** (#37): `DidResolutionOptions` gains `IncludeLog` (default `false`); when set, `DidWebVhMethod.ResolveCoreAsync` surfaces the log that it already fetches, parses, and validates internally via a new `DidResolutionResult.Artifacts` dictionary — `Artifacts["did.jsonl"]` (UTF-8 `string`, matching the `did.jsonl` artifact already emitted by `CreateAsync` / `UpdateAsync` / `DeactivateAsync`) and `Artifacts["log.entries"]` (`IReadOnlyList<LogEntry>`, the parsed chain). Unblocks `net-wallet-mcp`'s `wallet.export_did_log` (FR-006, P7) without adding a separate `GetLogAsync` round-trip. Methods without history (`did:key`, `did:peer`) ignore the flag and leave `Artifacts` null; callers can branch on the new `DidMethodCapabilities.History` flag (declared by `did:webvh`, not by `did:key` / `did:peer`). `GetCacheDiscriminator()` now mixes in `IncludeLog` so a no-log cached result cannot shadow a fresh request that wants the log. The `Artifacts` value is `IReadOnlyDictionary<string, object>?`, matching the existing pattern on `DidCreateResult` / `DidUpdateResult` / `DidDeactivateResult`.
+
+### Changed
+
+- **Defensive read-only container for the parsed log chain** (#37 follow-up): `LogEntrySerializer.ParseJsonLines` now returns the result via `List<LogEntry>.AsReadOnly()` (`System.Collections.ObjectModel.ReadOnlyCollection<LogEntry>`) instead of handing out the concrete backing `List<LogEntry>` typed as `IReadOnlyList<LogEntry>`. Consumers that receive `Artifacts[DidWebVhArtifacts.LogEntries]` can no longer downcast to `List<LogEntry>` and `Add`/`Remove`/`Clear` the container — the `LogEntry` records were already immutable from the original PR, so the chain is now fully tamper-proof at both element and container level. Internal callers (`new List<LogEntry>(entries) { newEntry }` in Update/Deactivate, indexing in `ResolveCoreAsync`, `ValidateAllWitnesses(IReadOnlyList<LogEntry>)`) are source-compatible since `ReadOnlyCollection<T>` satisfies every signature the previous `List<T>` did.
+
+- **`LogEntry` is now an immutable record** (#37): `NetDid.Method.WebVh.Model.LogEntry` was a `sealed class` with `set`-accessible `VersionId` and `Proof`; both internal flows (post-hash version-id assignment, post-sign proof attachment, validator save-mutate-restore) and one path in `LogChainValidator` mutated entries in place. It is now a `sealed record` whose `VersionId` and `Proof` are `init`-only; all internal mutation sites were refactored to `with` expressions. Two consequences for callers: (1) entries handed out via the new `IncludeLog` surface cannot be tampered with after resolution, and (2) `LogEntry` now uses structural equality — which is a behavior change for anyone who was comparing entries by reference. Internal grep showed no such comparisons; external code that wraps `LogEntry` should review.
+
+- **NuGet dependency refresh**: Updated all centrally managed package versions to the latest stable releases on nuget.org. Crypto: `NSec.Cryptography` 24.4.0 → 26.4.0, `NBitcoin.Secp256k1` 3.1.5 → 4.0.0. Microsoft.Extensions.\* (`Caching.Memory`, `Logging.Abstractions`, `DependencyInjection`, `DependencyInjection.Abstractions`, `Http`) moved off the 10.0.0-preview channel onto stable `10.0.8`. `Microsoft.IdentityModel.Tokens` 8.3.0 → 8.19.1, `Microsoft.SourceLink.GitHub` 8.0.0 → 10.0.300. Testing: `Microsoft.NET.Test.Sdk` 17.12.0 → 18.6.0, `xunit.runner.visualstudio` 2.8.2 → 3.1.5 (still compatible with xunit v2), `coverlet.collector` 6.0.3 → 10.0.1. `FluentAssertions` intentionally held at 7.0.0 — v8 introduced a paid commercial license (Xceed) that is unsuitable for this open-source library. `Nethermind.Crypto.Bls`, `NetCid`, `xunit`, and `NSubstitute` were already on the latest stable versions and were not changed. All 775 tests across the 6 test projects pass on the new dependency set with no build warnings.
 
 ## [1.3.0] - 2026-05-22
 

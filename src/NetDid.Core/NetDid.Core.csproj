@@ -3,8 +3,7 @@
   <PropertyGroup>
     <PackageId>NetDid.Core</PackageId>
     <Version>$(NetDidVersion)</Version>
-    <Description>Core abstractions, DID document model, crypto primitives, and encoding for the NetDid multi-method DID library.</Description>
-    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <Description>Core abstractions, DID document model, and DID-method logic for the NetDid multi-method DID library. Cryptographic primitives are provided by NetCrypto.</Description>
   </PropertyGroup>
 
   <ItemGroup>
@@ -12,19 +11,12 @@
   </ItemGroup>
 
   <ItemGroup>
-    <PackageReference Include="NSec.Cryptography" />
-    <PackageReference Include="NBitcoin.Secp256k1" />
-    <PackageReference Include="Nethermind.Crypto.Bls" />
+    <PackageReference Include="NetCrypto" />
     <PackageReference Include="NetCid" />
     <PackageReference Include="Microsoft.Extensions.Caching.Memory" />
     <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" />
     <PackageReference Include="Microsoft.IdentityModel.Tokens" />
     <PackageReference Include="Microsoft.SourceLink.GitHub" PrivateAssets="All" />
-  </ItemGroup>
-
-  <!-- Native BBS+ library (zkryptium-ffi) per platform -->
-  <ItemGroup>
-    <None Include="runtimes\**\native\*" Pack="true" PackagePath="runtimes" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
   <ItemGroup>

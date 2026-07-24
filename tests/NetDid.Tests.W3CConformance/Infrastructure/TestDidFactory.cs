@@ -1,6 +1,6 @@
 using System.Text;
 using NetDid.Core;
-using NetDid.Core.Crypto;
+using NetCrypto;
 using NetDid.Core.Model;
 using NetDid.Core.Resolution;
 using NetDid.Method.Ethr;
@@ -27,7 +27,7 @@ public sealed class TestDidFactory
     {
         _keyMethod = new DidKeyMethod(_keyGen);
         _peerMethod = new DidPeerMethod(_keyGen);
-        _webVhMethod = new DidWebVhMethod(_webVhHttpClient, _crypto);
+        _webVhMethod = new DidWebVhMethod(_webVhHttpClient);
         _ethrMethod = new DidEthrMethod(
             new MockEthereumRpcClientFactory(_mockEthrRpc),
             [KnownNetworks.Mainnet with { RpcUrl = "http://localhost" }],
@@ -118,7 +118,7 @@ public sealed class TestDidFactory
         });
 
         // Set up mock HTTP so resolve works
-        var logContent = (string)result.Artifacts!["did.jsonl"];
+        var logContent = (string)result.Artifacts![DidWebVhArtifacts.DidJsonl];
         var logUrl = DidUrlMapper.MapToLogUrl(result.Did.Value);
         _webVhHttpClient.SetLogResponse(logUrl, Encoding.UTF8.GetBytes(logContent));
 
@@ -146,7 +146,7 @@ public sealed class TestDidFactory
         });
 
         // Set up mock HTTP so resolve works
-        var logContent = (string)result.Artifacts!["did.jsonl"];
+        var logContent = (string)result.Artifacts![DidWebVhArtifacts.DidJsonl];
         var logUrl = DidUrlMapper.MapToLogUrl(result.Did.Value);
         _webVhHttpClient.SetLogResponse(logUrl, Encoding.UTF8.GetBytes(logContent));
 

@@ -1,5 +1,5 @@
-using acryptohashnet;
 using System.Text;
+using NetCrypto;
 
 namespace NetDid.Method.Ethr.Erc1056;
 
@@ -20,8 +20,7 @@ public static class Erc1056Topics
 
     private static string ComputeTopic(string signature)
     {
-        var keccak = new Keccak256();
-        var hash = keccak.ComputeHash(Encoding.ASCII.GetBytes(signature));
+        var hash = Keccak256.Hash(Encoding.ASCII.GetBytes(signature));
         return "0x" + Convert.ToHexString(hash).ToLowerInvariant();
     }
 }

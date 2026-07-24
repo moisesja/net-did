@@ -1,5 +1,5 @@
-using acryptohashnet;
 using System.Text;
+using NetCrypto;
 
 namespace NetDid.Method.Ethr.Abi;
 
@@ -24,8 +24,7 @@ public static class AbiEncoder
 
     private static byte[] ComputeSelector(string signature)
     {
-        var keccak = new Keccak256();
-        var hash = keccak.ComputeHash(Encoding.ASCII.GetBytes(signature));
+        var hash = Keccak256.Hash(Encoding.ASCII.GetBytes(signature));
         return hash[..4];
     }
 

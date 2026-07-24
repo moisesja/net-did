@@ -8,6 +8,6 @@ namespace NetDid.Method.Ethr;
 /// </summary>
 public sealed record DidEthrDeactivateOptions : DidDeactivateOptions
 {
-    public required NetDid.Core.ISigner ControllerKey { get; init; }
+    public required NetCrypto.ISigner ControllerKey { get; init; }
     public bool UseMetaTransaction { get; init; } = false;
 }

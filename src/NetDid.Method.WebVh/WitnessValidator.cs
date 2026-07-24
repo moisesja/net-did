@@ -1,6 +1,5 @@
-using System.Text;
 using System.Text.Json;
-using NetDid.Core.Crypto.DataIntegrity;
+using DataProofsDotnet.DataIntegrity;
 using NetDid.Method.WebVh.Model;
 
 namespace NetDid.Method.WebVh;
@@ -10,24 +9,29 @@ namespace NetDid.Method.WebVh;
 /// </summary>
 internal sealed class WitnessValidator
 {
-    private readonly DataIntegrityProofEngine _proofEngine;
+    private readonly EddsaJcs2022Cryptosuite _suite;
 
-    public WitnessValidator(DataIntegrityProofEngine proofEngine)
+    public WitnessValidator(EddsaJcs2022Cryptosuite suite)
     {
-        _proofEngine = proofEngine;
+        _suite = suite;
     }
 
     /// <summary>
     /// Validate witness proofs for a log entry.
-    /// Returns true if the total weight of valid witness proofs meets the threshold.
+    /// Returns true if the count of distinct valid witness proofs meets the threshold.
+    /// This entry-local helper is retained for direct validation and focused tests;
+    /// production resolution uses <see cref="ValidateAllWitnesses"/> so later proofs
+    /// can provide cumulative coverage for earlier governed entries.
     /// </summary>
     public bool ValidateWitnesses(
         WitnessFile witnessFile,
         LogEntry entry,
         WitnessConfig witnessConfig)
     {
-        if (witnessConfig.Threshold <= 0)
-            return true; // No witness requirement
+        if (WitnessPolicyValidator.GetValidationError(witnessConfig) is not null)
+            return false;
+        if (witnessConfig.IsDisabled)
+            return true;
 
         // Find the witness proof entry matching this log version
         var proofEntry = witnessFile.Entries.FirstOrDefault(e => e.VersionId == entry.VersionId);
@@ -37,36 +41,24 @@ internal sealed class WitnessValidator
         // The data that witnesses signed is the log entry without proof
         var entryJsonWithoutProof = LogEntrySerializer.SerializeWithoutProof(entry);
 
-        var totalWeight = 0;
+        var approvalCount = 0;
+        var countedSignerKeys = new HashSet<string>(StringComparer.Ordinal);
 
         foreach (var witnessProof in proofEntry.Proofs)
         {
-            // Find this witness in the config
-            var witness = witnessConfig.Witnesses?.FirstOrDefault(w =>
-            {
-                // The witness proof's verificationMethod should reference the witness's did:key
-                return witnessProof.VerificationMethod.StartsWith(w.Id);
-            });
+            var signerKey = WebVhProofVerifier.VerifyAndExtractSigner(
+                _suite, entryJsonWithoutProof, witnessProof);
+            if (signerKey is null)
+                continue;
 
-            if (witness is null) continue;
+            var witness = FindWitnessForSigner(witnessConfig, signerKey);
+            if (witness is null || !countedSignerKeys.Add(signerKey))
+                continue;
 
-            // Convert to Core proof type for verification
-            var proof = new DataIntegrityProof
-            {
-                Cryptosuite = witnessProof.Cryptosuite,
-                VerificationMethod = witnessProof.VerificationMethod,
-                Created = DateTimeOffset.Parse(witnessProof.Created),
-                ProofPurpose = witnessProof.ProofPurpose,
-                ProofValue = witnessProof.ProofValue
-            };
-
-            if (_proofEngine.VerifyProof(entryJsonWithoutProof, proof))
-            {
-                totalWeight += witness.Weight;
-            }
+            approvalCount++;
         }
 
-        return totalWeight >= witnessConfig.Threshold;
+        return approvalCount >= witnessConfig.Threshold;
     }
 
     /// <summary>
@@ -82,11 +74,11 @@ internal sealed class WitnessValidator
     {
         for (int i = 0; i <= upToIndex; i++)
         {
-            var entryParams = perEntryParams[i];
-            if (entryParams.Witness is not { Threshold: > 0 })
+            var witnessConfig = GetAuthorizingWitnessConfig(perEntryParams, i);
+            if (witnessConfig is not { Threshold: > 0 })
                 continue; // This entry does not require witnessing
 
-            if (!ValidateWitnessesWithCoverage(witnessFile, entries, i, upToIndex, entryParams.Witness))
+            if (!ValidateWitnessesWithCoverage(witnessFile, entries, i, upToIndex, witnessConfig))
                 return false;
         }
 
@@ -94,9 +86,28 @@ internal sealed class WitnessValidator
     }
 
     /// <summary>
+    /// Returns whether any entry through <paramref name="upToIndex"/> is governed by a positive
+    /// witness threshold. Genesis and the first activation are governed by their declared
+    /// configuration; once active, the previous entry's effective configuration governs the
+    /// transition that replaces or disables it.
+    /// </summary>
+    internal static bool RequiresWitness(
+        IReadOnlyList<LogEntryParameters> perEntryParams,
+        int upToIndex)
+    {
+        for (int i = 0; i <= upToIndex; i++)
+        {
+            if (GetAuthorizingWitnessConfig(perEntryParams, i) is { Threshold: > 0 })
+                return true;
+        }
+
+        return false;
+    }
+
+    /// <summary>
     /// Validate witness coverage for a specific entry by checking proofs at this version
     /// or any later version up to upToIndex. A later proof implies approval of all
-    /// prior entries. Each witness is counted only once (deduplication by witness ID).
+    /// prior entries. Each verified signer key is counted only once.
     /// </summary>
     private bool ValidateWitnessesWithCoverage(
         WitnessFile witnessFile,
@@ -105,11 +116,13 @@ internal sealed class WitnessValidator
         int upToIndex,
         WitnessConfig witnessConfig)
     {
-        if (witnessConfig.Threshold <= 0)
+        if (WitnessPolicyValidator.GetValidationError(witnessConfig) is not null)
+            return false;
+        if (witnessConfig.IsDisabled)
             return true;
 
-        var totalWeight = 0;
-        var countedWitnessIds = new HashSet<string>();
+        var approvalCount = 0;
+        var countedSignerKeys = new HashSet<string>(StringComparer.Ordinal);
 
         // Check proofs from this version through the latest validated version
         for (int j = entryIndex; j <= upToIndex; j++)
@@ -123,29 +136,48 @@ internal sealed class WitnessValidator
 
             foreach (var witnessProof in proofEntry.Proofs)
             {
-                var witness = witnessConfig.Witnesses?.FirstOrDefault(w =>
-                    witnessProof.VerificationMethod.StartsWith(w.Id));
+                // A malformed proof must not consume the witness's one counted vote. Derive the
+                // signer only from a successfully verified proof, then bind one approval to that
+                // exact configured did:key rather than to a verificationMethod string prefix.
+                var signerKey = WebVhProofVerifier.VerifyAndExtractSigner(_suite, entryJson, witnessProof);
+                if (signerKey is null)
+                    continue;
 
-                if (witness is null) continue;
-                if (!countedWitnessIds.Add(witness.Id)) continue; // Already counted
+                var witness = FindWitnessForSigner(witnessConfig, signerKey);
+                if (witness is null || !countedSignerKeys.Add(signerKey))
+                    continue;
 
-                var proof = new DataIntegrityProof
-                {
-                    Cryptosuite = witnessProof.Cryptosuite,
-                    VerificationMethod = witnessProof.VerificationMethod,
-                    Created = DateTimeOffset.Parse(witnessProof.Created),
-                    ProofPurpose = witnessProof.ProofPurpose,
-                    ProofValue = witnessProof.ProofValue
-                };
-
-                if (_proofEngine.VerifyProof(entryJson, proof))
-                {
-                    totalWeight += witness.Weight;
-                }
+                approvalCount++;
             }
         }
 
-        return totalWeight >= witnessConfig.Threshold;
+        return approvalCount >= witnessConfig.Threshold;
+    }
+
+    private static WitnessConfig? GetAuthorizingWitnessConfig(
+        IReadOnlyList<LogEntryParameters> perEntryParams,
+        int entryIndex)
+    {
+        // Genesis declares its own policy. The first transition from no active witnesses to a
+        // positive policy is also immediately governed by the newly declared policy. Once a
+        // positive policy is active, however, it governs the entry that replaces or disables it;
+        // the new policy takes effect only after that entry is published.
+        if (entryIndex == 0)
+            return perEntryParams[0].Witness;
+
+        var previous = perEntryParams[entryIndex - 1].Witness;
+        return previous is { Threshold: > 0 }
+            ? previous
+            : perEntryParams[entryIndex].Witness;
+    }
+
+    private static WitnessEntry? FindWitnessForSigner(WitnessConfig witnessConfig, string signerKey)
+    {
+        return witnessConfig.Witnesses?.FirstOrDefault(witness =>
+            string.Equals(
+                WebVhProofVerifier.ExtractDidKeyMultibase(witness.Id),
+                signerKey,
+                StringComparison.Ordinal));
     }
 
     /// <summary>
@@ -212,7 +244,7 @@ internal sealed class WitnessValidator
     {
         try
         {
-            var json = Encoding.UTF8.GetString(content);
+            var json = LogEntrySerializer.DecodeUtf8(content);
             using var doc = JsonDocument.Parse(json);
             var root = doc.RootElement;
 

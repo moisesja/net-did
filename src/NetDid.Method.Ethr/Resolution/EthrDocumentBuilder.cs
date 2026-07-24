@@ -1,6 +1,5 @@
 using NetCid;
-using NetDid.Core.Crypto;
-using NetDid.Core.Jwk;
+using NetCrypto;
 using NetDid.Core.Model;
 using NetDid.Method.Ethr.Crypto;
 using NetDid.Method.Ethr.Erc1056;

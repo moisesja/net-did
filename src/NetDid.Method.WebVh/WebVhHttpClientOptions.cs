@@ -7,6 +7,9 @@ namespace NetDid.Method.WebVh;
 /// </summary>
 public sealed record WebVhHttpClientOptions
 {
+    private static readonly TimeSpan MaxFiniteTimeout =
+        TimeSpan.FromMilliseconds(int.MaxValue);
+
     /// <summary>
     /// Maximum bytes accepted for <c>did.jsonl</c>. Default: 5 MiB.
     /// Responses with a larger <c>Content-Length</c> are rejected before
@@ -20,4 +23,35 @@ public sealed record WebVhHttpClientOptions
     /// Same enforcement as <see cref="MaxDidLogBytes"/>.
     /// </summary>
     public long MaxWitnessFileBytes { get; init; } = 1L * 1024 * 1024;
+
+    /// <summary>
+    /// Maximum wall-clock time for a single fetch, covering both response
+    /// headers and the full body read. Default: 30 seconds. A fetch that
+    /// exceeds this is treated as a failed fetch (the DID resolves as
+    /// <c>notFound</c>); cancellation requested by the caller's own token is
+    /// unaffected and still propagates. Must be positive and no greater
+    /// than <c>TimeSpan.FromMilliseconds(int.MaxValue)</c>, or
+    /// <see cref="System.Threading.Timeout.InfiniteTimeSpan"/> to disable.
+    /// For clients the library constructs itself (the parameterless
+    /// <see cref="DefaultWebVhHttpClient"/> fallback and the
+    /// <c>AddDidWebVh</c> registration) this is the sole time bound —
+    /// <see cref="HttpClient.Timeout"/> is neutralized so values above its
+    /// 100-second framework default are honored, and disabling therefore
+    /// removes ALL time bounds, letting a hostile host pin a fetch
+    /// indefinitely. A caller-injected <see cref="HttpClient"/> keeps its own
+    /// <see cref="HttpClient.Timeout"/> as an independent cap on
+    /// time-to-headers.
+    /// </summary>
+    public TimeSpan Timeout
+    {
+        get => _timeout;
+        init => _timeout = value == System.Threading.Timeout.InfiniteTimeSpan
+            || (value > TimeSpan.Zero && value <= MaxFiniteTimeout)
+            ? value
+            : throw new ArgumentOutOfRangeException(nameof(Timeout), value,
+                $"Timeout must be positive and at most {MaxFiniteTimeout}, " +
+                "or Timeout.InfiniteTimeSpan to disable.");
+    }
+
+    private readonly TimeSpan _timeout = TimeSpan.FromSeconds(30);
 }

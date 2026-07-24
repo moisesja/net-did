@@ -1,6 +1,6 @@
 # W3C DID Core Conformance Report
 
-Generated: 2026-05-29T15:21:40Z
+Generated: 2026-07-24T16:56:43Z
 
 ## Scope and limitations
 
@@ -20,6 +20,7 @@ tests in these locations:
 | did:webvh URL mapping unsafe encodings (#49) | `Issue49_*` in `tests/NetDid.Method.WebVh.Tests/DidUrlMapperTests.cs` + `DidWebVhMethodTests.cs` |
 | did:webvh HTTP fetches lack resource limits (#51) | `tests/NetDid.Method.WebVh.Tests/DefaultWebVhHttpClientTests.cs` |
 | did:peer numalgo 2 malformed key segments (#52) | `Issue52_*` in `tests/NetDid.Method.Peer.Tests/DidPeerMethodTests.cs` |
+| did:webvh multi-proof existential validation, unchecked proofPurpose, proof-shape/`created` schema gaps (#101) | `Issue101_*` in `tests/NetDid.Method.WebVh.Tests/LogChainValidatorMultiProofTests.cs` |
 
 If a future audit finds a DID Core statement gap, add it to this
 suite. If it finds a method-specific behaviour, add it to that
@@ -114,7 +115,7 @@ method's test project and link it here.
 | Statement | Description | did:ethr | did:key | did:peer | did:webvh |
 |-----------|-------------|----------|----------|----------|----------|
 | 7.2-1 | Fragment dereferencing returns VerificationMethod | PASS | PASS | PASS | PASS |
-| 7.2-10 | ContentType is set on successful dereference | PASS | PASS | PASS | PASS |
+| 7.2-10 | Unsupported Accept returns representationNotSupported | PASS | PASS | PASS | PASS |
 | 7.2-11 | Error is null on successful dereference | PASS | PASS | PASS | PASS |
 | 7.2-12 | Error is set on failed dereference | PASS | PASS | PASS | PASS |
 | 7.2-2 | Returned VM id contains the requested fragment | PASS | PASS | PASS | PASS |

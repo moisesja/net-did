@@ -1,6 +1,6 @@
 using NetCid;
 using NetDid.Core;
-using NetDid.Core.Crypto;
+using NetCrypto;
 using NetDid.Core.Model;
 
 namespace NetDid.Method.Peer;
@@ -145,7 +145,7 @@ internal sealed class Numalgo2Handler
         // Any failure throws and the outer DidPeerMethod.ResolveCoreAsync returns invalidDid.
         var decoded = Multibase.Decode(multibaseKey);
         var (codec, rawKey) = Multicodec.Decode(decoded);
-        var keyType = KeyTypeExtensions.ToKeyType(codec);
+        var keyType = KeyTypeExtensions.FromMulticodec(codec);
 
         if (!keyType.IsValidKeyLength(rawKey.Length))
             throw new ArgumentException(

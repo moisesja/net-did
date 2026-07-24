@@ -1,4 +1,4 @@
-using NetDid.Core.Crypto;
+using NetCrypto;
 
 namespace NetDid.Core.Resolution;
 

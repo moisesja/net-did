@@ -13,7 +13,7 @@ public sealed record DidEthrUpdateOptions : DidUpdateOptions
     public IReadOnlyList<DidEthrDelegate>? AddDelegates { get; init; }
     public IReadOnlyList<DidEthrDelegate>? RevokeDelegates { get; init; }
     public string? NewOwnerAddress { get; init; }
-    public required NetDid.Core.ISigner ControllerKey { get; init; }
+    public required NetCrypto.ISigner ControllerKey { get; init; }
     public bool UseMetaTransaction { get; init; } = false;
 }
 

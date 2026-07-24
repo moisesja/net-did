@@ -1,3 +1,4 @@
+using NetCrypto;
 using NetDid.Core;
 using NetDid.Core.Model;
 using NetDid.Method.WebVh.Model;
@@ -27,16 +28,18 @@ public sealed record DidWebVhCreateOptions : DidCreateOptions
     /// <summary>Services to include in the DID Document.</summary>
     public IReadOnlyList<Service>? Services { get; init; }
 
-    /// <summary>Enable pre-rotation key commitment.</summary>
-    public bool EnablePreRotation { get; init; } = false;
-
-    /// <summary>Hashes of next update keys (required when EnablePreRotation is true).</summary>
+    /// <summary>
+    /// Hashes of next update keys. A non-empty array activates pre-rotation for the next entry.
+    /// </summary>
     public IReadOnlyList<string>? PreRotationCommitments { get; init; }
+
+    /// <summary>URLs of services that have agreed to watch this DID.</summary>
+    public IReadOnlyList<string>? Watchers { get; init; }
 
     /// <summary>Witness DIDs (must be did:key DIDs).</summary>
     public IReadOnlyList<string>? WitnessDids { get; init; }
 
-    /// <summary>Minimum total weight of witness proofs required.</summary>
+    /// <summary>Minimum number of distinct verified witness approvals required.</summary>
     public int WitnessThreshold { get; init; } = 0;
 
     /// <summary>Witness proofs to include in the did-witness.json artifact.</summary>

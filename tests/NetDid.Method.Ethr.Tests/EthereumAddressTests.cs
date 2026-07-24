@@ -1,6 +1,5 @@
-using acryptohashnet;
 using FluentAssertions;
-using NetDid.Core.Crypto;
+using NetCrypto;
 using NetDid.Method.Ethr.Crypto;
 using Xunit;
 
@@ -19,8 +18,7 @@ public class EthereumAddressTests
     {
         // The Ethereum Yellow Paper / EIP-712 canonical empty-string Keccak-256.
         // This value differs from NIST SHA3-256 (different padding byte).
-        var keccak = new Keccak256();
-        var hash = keccak.ComputeHash([]);
+        var hash = Keccak256.Hash([]);
         Convert.ToHexString(hash).ToLowerInvariant()
             .Should().Be("c5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470");
     }

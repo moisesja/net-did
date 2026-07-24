@@ -3,7 +3,9 @@ namespace NetDid.Method.WebVh.Model;
 /// <summary>
 /// The "parameters" block inside a did:webvh log entry.
 /// For the genesis entry, all required fields are populated.
-/// For subsequent entries, only changed parameters are included (unchanged = empty object {}).
+/// For subsequent entries, only changed parameters are normally included (unchanged = empty
+/// object {}). While a prior non-empty nextKeyHashes activates pre-rotation, the current entry
+/// must explicitly include both updateKeys and nextKeyHashes even when their values are unchanged.
 /// </summary>
 public sealed class LogEntryParameters
 {
@@ -16,14 +18,14 @@ public sealed class LogEntryParameters
     /// <summary>Authorized update keys (multibase-encoded Ed25519 public keys).</summary>
     public IReadOnlyList<string>? UpdateKeys { get; init; }
 
-    /// <summary>Whether pre-rotation is enabled.</summary>
-    public bool? Prerotation { get; init; }
-
     /// <summary>Whether this DID has been deactivated.</summary>
     public bool? Deactivated { get; init; }
 
     /// <summary>Hashes of next update keys (for pre-rotation).</summary>
     public IReadOnlyList<string>? NextKeyHashes { get; init; }
+
+    /// <summary>URLs of services that have agreed to watch this DID.</summary>
+    public IReadOnlyList<string>? Watchers { get; init; }
 
     /// <summary>Whether the DID is portable (can be moved to another domain).</summary>
     public bool? Portable { get; init; }
@@ -45,9 +47,9 @@ public sealed class LogEntryParameters
             Method = Method ?? previous.Method,
             Scid = Scid ?? previous.Scid,
             UpdateKeys = UpdateKeys ?? previous.UpdateKeys,
-            Prerotation = Prerotation ?? previous.Prerotation,
             Deactivated = Deactivated ?? previous.Deactivated,
             NextKeyHashes = NextKeyHashes ?? previous.NextKeyHashes,
+            Watchers = Watchers ?? previous.Watchers,
             Portable = Portable ?? previous.Portable,
             Ttl = Ttl ?? previous.Ttl,
             Witness = Witness ?? previous.Witness

@@ -18,6 +18,14 @@ A specification-compliant .NET library for Decentralized Identifiers (DIDs). Net
 - **DI integration**: `services.AddNetDid()` for Microsoft.Extensions.DependencyInjection, or use standalone with zero framework opinions
 - **Fluent document builder**: `new DidDocumentBuilder(did).AddVerificationMethod(...).Build()`
 
+> **Cryptography is provided by [NetCrypto](https://www.nuget.org/packages/NetCrypto).** NetDid
+> carries no cryptographic primitives — key generation, signing, verification, key agreement,
+> BBS+, JWK conversion, and the native crypto payloads all come from NetCrypto (the
+> [`crypto-dotnet`](https://github.com/moisesja/crypto-dotnet) project). `did:webvh` Data Integrity
+> proofs are produced and verified by
+> [DataProofsDotnet](https://www.nuget.org/packages/DataProofsDotnet.Core). Types like `KeyType`,
+> `DefaultKeyGenerator`, `ISigner`, and `InMemoryKeyStore` live in the `NetCrypto` namespace.
+
 ## Installation
 
 ```bash
@@ -27,16 +35,17 @@ dotnet add package NetDid.Method.Peer   # did:peer method
 dotnet add package NetDid.Method.WebVh  # did:webvh method
 dotnet add package NetDid.Method.Ethr   # did:ethr method
 dotnet add package NetDid.Extensions.DependencyInjection  # Microsoft DI integration
+dotnet add package NetCrypto            # key generation, signing, JWK (NetCrypto namespace)
 ```
 
-> **Note**: NetDid targets .NET 10. Ensure you have the [.NET 10 SDK](https://dotnet.microsoft.com/download/dotnet/10.0) installed.
+> **Note**: NetDid targets .NET 10. Ensure you have the [.NET 10 SDK](https://dotnet.microsoft.com/download/dotnet/10.0) installed. NetCrypto is pulled in transitively by the NetDid packages; add it explicitly only if you use its types directly (as the examples below do).
 
 ## Quick Start
 
 ### Generate a Key Pair
 
 ```csharp
-using NetDid.Core.Crypto;
+using NetCrypto;
 
 var keyGen = new DefaultKeyGenerator();
 var keyPair = keyGen.Generate(KeyType.Ed25519);
@@ -63,7 +72,7 @@ bool valid = crypto.Verify(KeyType.Ed25519, keyPair.PublicKey, data, signature);
 ### Create a did:key
 
 ```csharp
-using NetDid.Core.Crypto;
+using NetCrypto;
 using NetDid.Method.Key;
 
 var keyGen = new DefaultKeyGenerator();
@@ -149,7 +158,7 @@ var result = await didKey.CreateAsync(new DidKeyCreateOptions
 Functionally identical to `did:key` but with a `did:peer:0` prefix. Useful when you want peer DID semantics with a single key.
 
 ```csharp
-using NetDid.Core.Crypto;
+using NetCrypto;
 using NetDid.Method.Peer;
 
 var keyGen = new DefaultKeyGenerator();
@@ -347,7 +356,7 @@ var cfg = KnownNetworks.Mainnet with { RpcUrl = "https://mainnet.gateway.tenderl
 ### Create a did:webvh
 
 ```csharp
-using NetDid.Core.Crypto;
+using NetCrypto;
 using NetDid.Core.Model;
 using NetDid.Method.WebVh;
 
@@ -357,7 +366,7 @@ var updateKey = keyGen.Generate(KeyType.Ed25519);
 var signer = new KeyPairSigner(updateKey, crypto);
 
 var httpClient = new DefaultWebVhHttpClient();
-var didWebVh = new DidWebVhMethod(httpClient, crypto);
+var didWebVh = new DidWebVhMethod(httpClient);
 
 var result = await didWebVh.CreateAsync(new DidWebVhCreateOptions
 {
@@ -392,6 +401,14 @@ Console.WriteLine(resolved.DocumentMetadata!.VersionId);  // "1-z6Rk8Rx..."
 
 Resolution fetches the `did.jsonl` log over HTTPS, validates the hash chain and Data Integrity Proofs, and returns the latest DID Document.
 
+Every supplied controller proof on an entry is processed by DataProofsDotnet's Data Integrity pipeline and authorized against the active `updateKeys`: NetDid requires an anti-spoofed `did:key` verification method, Ed25519 `eddsa-jcs-2022`, `assertionMethod`, a valid signature, and an active update key. One authorized signer authorizes the entry, but any invalid or unauthorized extra proof rejects the log as `invalidDidLog`; controller proofs have no threshold semantics. NetDid applies a conservative `System.Uri`-compatible absolute-URI check to a present proof `id` (without surrounding whitespace), rejects duplicate proof ids, resolves `previousProof` references, and treats `expires` at or before the entry's `versionTime` as expired. This accepts the DID, URN, and HTTPS forms used by the SDK, but it is not full WHATWG valid-URL-string conformance and can reject other standards-valid forms. Unknown proof members remain signature-bound and their proof-object JSON is preserved, but NetDid does not claim application semantics for every extension. In particular, array-valued `domain` is not supported by the pinned DataProofsDotnet model. A wire `proof` may be a single object or an array and `created` is optional; reserialization preserves each parsed proof object but normalizes a single-object container to an array. Duplicate JSON members, invalid UTF-8, and malformed content are rejected as `invalidDidLog`.
+
+Fetched entry hashing and controller/witness verification retain every JSON member under `parameters` and `state`, including nested extensions that the typed DID model does not surface. This prevents a post-sign extension injection from disappearing during model reconstruction. Update and Deactivate also preserve those members in prior fetched entries; deliberate public-model mutations fall back to modeled serialization instead of stale wire data. An update that preserves the document (`NewDocument == null`) likewise carries the previous state's signed nested members into the new signed entry rather than dropping them in a modeled rewrite. A supplied `NewDocument` is deep-copied once at the start of the update, so hashing, signing, the published log, and the returned document all reflect a single snapshot — a caller collection that changes contents between reads cannot publish bytes that differ from what was signed.
+
+Resolution enforces did:webvh's per-entry SCID identity: the SCID segment of every validated entry's `state.id` must match the DID's SCID (only host/path may differ under portability). A signed log whose genesis or an intermediate entry claims a foreign SCID, or omits `state.id`, is rejected as `invalidDidLog`; historical resolution validates only the prefix through the selected version.
+
+Verification work per entry is bounded by a controller-proof limit (default 8). Direct consumers can set it with `new DidWebVhMethod(client, logger: null, maxControllerProofsPerEntry: 16)` and DI consumers with `builder.AddDidWebVh(httpClientOptions: null, maxControllerProofsPerEntry: 16)`; raising it increases attacker-controlled canonicalization and signature work. The existing two-argument constructor and one-argument registration call remain source- and binary-compatible. With `DidResolutionOptions.IncludeLog`, latest resolution exposes the fully validated log, while historical resolution exposes only the validated prefix through the selected version.
+
 ### Update (append to log)
 
 ```csharp
@@ -414,6 +431,30 @@ var updateResult = await didWebVh.UpdateAsync(result.Did.Value, new DidWebVhUpda
 // Re-host the updated did.jsonl
 ```
 
+The result carries authorization-change evidence for method-agnostic callers.
+`AuthorizationChange` reports whether *any* authorization material changed
+(`updateKeys` / `nextKeyHashes` / witness config); `UpdateKeyChange`
+reports whether the effective `updateKeys` set itself changed, including while the
+resulting state keeps pre-rotation active. `RevealedUpdateKeys` is the complete set
+eligible to authorize the entry just appended: the prior effective keys when prior
+commitments did not govern that entry (including an entry that activates pre-rotation
+for its successor), or the current entry's explicit keys when prior commitments did
+govern it and every member passed commitment validation. Eligibility does not mean
+every listed key signed; one eligible update key can authorize the proof.
+`EffectiveUpdateKeys` is forward-looking and lists the keys authorized to sign the
+*next* log entry. Do not coalesce the two nullable key properties into a generic
+post-change key set; they answer different current-entry and next-entry questions.
+
+For an exclusive rotation or authorization postcondition, require the expected status
+and compare the applicable complete key set for equality; membership checks alone
+would accept unexpected extra keys. Both statuses and nullable key sets fail closed for
+methods that report no evidence. The did:webvh driver reports
+`UpdateKeyChange == Changed` or `Unchanged` and `RevealedUpdateKeys` even during
+continuous pre-rotation, but keeps `EffectiveUpdateKeys` null when the resulting state
+has non-empty `nextKeyHashes`: commitments are hashes, so they cannot reveal the keys
+that will authorize the next entry. An entry that sets `nextKeyHashes: []` ends
+pre-rotation after that entry and restores concrete next-entry evidence.
+
 ### Pre-rotation (key commitment)
 
 ```csharp
@@ -424,12 +465,15 @@ var result = await didWebVh.CreateAsync(new DidWebVhCreateOptions
 {
     Domain = "example.com",
     UpdateKey = signer,
-    EnablePreRotation = true,
     PreRotationCommitments = [commitment]
 });
 ```
 
-Pre-rotation commits to the next update key hash at creation time. Every subsequent update must rotate to the committed key, preventing unauthorized key changes even if the current key is compromised.
+Pre-rotation commits to the next update key hash at creation time. The next entry must explicitly
+place the committed key in `updateKeys`, carry `nextKeyHashes`, and be signed by that committed key.
+This prevents a compromised current key from rotating control to an uncommitted key. Commitments
+are did:webvh v1.0 bare-base58btc encodings of complete SHA-256 multihashes (`Qm...`, with no
+multibase `z` prefix).
 
 ### Deactivate
 
@@ -459,7 +503,7 @@ DidDocument restored = DidDocumentSerializer.Deserialize(jsonLd, DidContentTypes
 ## Key Store
 
 ```csharp
-using NetDid.Core.KeyStore;
+using NetCrypto;
 
 var store = new InMemoryKeyStore(keyGen, crypto);
 var info = await store.GenerateAsync("my-signing-key", KeyType.Ed25519);
@@ -537,13 +581,18 @@ public class MyService(IDidManager manager)
 
 ## Architecture
 
-NetDid is built around a small set of core interfaces:
+NetDid is built around a small set of core interfaces (in `NetDid.Core`):
 
 | Interface | Purpose |
 |-----------|---------|
 | `IDidManager` | Unified DID lifecycle manager — routes CRUD operations across registered methods |
 | `IDidMethod` | Single DID method implementation (create, resolve, update, deactivate) |
 | `IDidResolver` | Standalone DID resolution (for consumers who only need to resolve) |
+
+The cryptographic interfaces are provided by **NetCrypto** (the `NetCrypto` namespace):
+
+| Interface | Purpose |
+|-----------|---------|
 | `IKeyStore` | Pluggable key storage — swap in HSM, vault, or cloud KMS |
 | `ISigner` | Signing abstraction — works with in-memory keys or secure enclaves |
 | `IKeyGenerator` | Key pair generation and derivation for all supported key types |
@@ -569,20 +618,20 @@ DID string
 ```
 netdid/
 ├── src/
-│   ├── NetDid.Core/                         # Core abstractions, crypto, encoding, serialization
+│   ├── NetDid.Core/                         # Core abstractions, DID model, encoding, serialization
 │   ├── NetDid.Method.Key/                   # did:key method
 │   ├── NetDid.Method.Peer/                  # did:peer method (numalgo 0, 2, 4)
 │   ├── NetDid.Method.WebVh/                 # did:webvh method (full CRUD)
 │   ├── NetDid.Method.Ethr/                  # did:ethr method (Create + Resolve)
 │   └── NetDid.Extensions.DependencyInjection/  # Microsoft DI integration
 ├── tests/
-│   ├── NetDid.Core.Tests/                   # 392 unit tests
-│   ├── NetDid.Method.Key.Tests/             # 33 tests
-│   ├── NetDid.Method.Peer.Tests/            # 40 tests
-│   ├── NetDid.Method.WebVh.Tests/           # 124 tests
-│   ├── NetDid.Method.Ethr.Tests/            # 63 tests
-│   ├── NetDid.Tests.W3CConformance/         # 175 W3C conformance tests
-│   └── NetDid.Extensions.DependencyInjection.Tests/  # 11 tests
+│   ├── NetDid.Core.Tests/                   # 375 unit tests
+│   ├── NetDid.Method.Key.Tests/             # 52 tests
+│   ├── NetDid.Method.Peer.Tests/            # 48 tests
+│   ├── NetDid.Method.WebVh.Tests/           # 411 tests
+│   ├── NetDid.Method.Ethr.Tests/            # 65 tests
+│   ├── NetDid.Tests.W3CConformance/         # 233 W3C conformance tests
+│   └── NetDid.Extensions.DependencyInjection.Tests/  # 18 tests
 ├── samples/
 │   ├── NetDid.Samples.DidKey/               # did:key usage examples
 │   ├── NetDid.Samples.DidPeer/              # did:peer usage examples
@@ -642,13 +691,14 @@ NetDid targets the following specifications:
 
 ## W3C Conformance
 
-NetDid is fully conformant with [W3C Decentralized Identifiers (DIDs) v1.0](https://www.w3.org/TR/did-core/) (W3C Recommendation, 2022-07-19). All 182 conformance tests pass across the three implemented methods:
+NetDid is fully conformant with [W3C Decentralized Identifiers (DIDs) v1.0](https://www.w3.org/TR/did-core/) (W3C Recommendation, 2022-07-19). All 255 conformance statements pass across the four implemented methods:
 
 | Method | Tests |
 |---|---|
+| did:ethr | 66/66 |
 | did:key | 57/57 |
 | did:peer | 67/67 |
-| did:webvh | 58/58 |
+| did:webvh | 65/65 |
 
 See [w3c-conformance-report.md](w3c-conformance-report.md) for the full report.
 

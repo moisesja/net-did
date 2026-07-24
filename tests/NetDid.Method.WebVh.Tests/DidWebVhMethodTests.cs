@@ -1,7 +1,12 @@
+using System.Security.Cryptography;
 using System.Text;
+using System.Text.Json;
+using DataProofsDotnet.DataIntegrity;
 using FluentAssertions;
+using NetCid;
 using NetDid.Core;
-using NetDid.Core.Crypto;
+using NetCrypto;
+using NetDid.Core.Exceptions;
 using NetDid.Core.Model;
 using NetDid.Method.WebVh;
 using NetDid.Method.WebVh.Model;
@@ -16,7 +21,7 @@ public class DidWebVhMethodTests
     private (DidWebVhMethod Method, MockWebVhHttpClient HttpClient) CreateMethod()
     {
         var httpClient = new MockWebVhHttpClient();
-        var method = new DidWebVhMethod(httpClient, _crypto);
+        var method = new DidWebVhMethod(httpClient);
         return (method, httpClient);
     }
 
@@ -49,8 +54,8 @@ public class DidWebVhMethodTests
         result.DidDocument.VerificationMethod.Should().HaveCountGreaterOrEqualTo(1);
         result.DidDocument.Authentication.Should().NotBeEmpty();
         result.DidDocument.AssertionMethod.Should().NotBeEmpty();
-        result.Artifacts.Should().ContainKey("did.jsonl");
-        result.Artifacts.Should().ContainKey("did.json");
+        result.Artifacts.Should().ContainKey(DidWebVhArtifacts.DidJsonl);
+        result.Artifacts.Should().ContainKey(DidWebVhArtifacts.DidJson);
     }
 
     [Fact]
@@ -106,7 +111,7 @@ public class DidWebVhMethodTests
             UpdateKey = signer
         });
 
-        var logContent = (string)result.Artifacts!["did.jsonl"];
+        var logContent = (string)result.Artifacts![DidWebVhArtifacts.DidJsonl];
         logContent.Should().NotBeEmpty();
 
         // Parse the generated log
@@ -115,7 +120,85 @@ public class DidWebVhMethodTests
         entries[0].VersionNumber.Should().Be(1);
         entries[0].Parameters.Method.Should().Be("did:webvh:1.0");
         entries[0].Parameters.Scid.Should().NotBeNullOrEmpty();
+        entries[0].Parameters.Scid.Should().NotBe(entries[0].EntryHash,
+            "did:webvh v1.0 derives the SCID and genesis entry hash in separate stages");
+        entries[0].Parameters.Scid.Should().HaveLength(46).And.NotStartWith("z");
+        entries[0].EntryHash.Should().HaveLength(46).And.NotStartWith("z");
+
+        var genesisForHashing = entries[0] with { VersionId = entries[0].Parameters.Scid! };
+        var genesisJsonForHashing = LogEntrySerializer.SerializeWithoutProof(genesisForHashing);
+        ScidGenerator.ComputeEntryHash(genesisJsonForHashing).Should().Be(entries[0].EntryHash);
+
+        var genesisTemplate = genesisJsonForHashing.Replace(
+            entries[0].Parameters.Scid!, ScidGenerator.Placeholder);
+        ScidGenerator.ComputeScid(genesisTemplate).Should().Be(entries[0].Parameters.Scid);
         entries[0].Proof.Should().HaveCount(1);
+    }
+
+    [Fact]
+    public async Task Create_LegacyGenesisUsingScidAsEntryHash_IsRejected()
+    {
+        var (method, _) = CreateMethod();
+        var signer = CreateEd25519Signer();
+        var result = await method.CreateAsync(new DidWebVhCreateOptions
+        {
+            Domain = "example.com",
+            UpdateKey = signer
+        });
+
+        var logContent = (string)result.Artifacts![DidWebVhArtifacts.DidJsonl];
+        var genesis = LogEntrySerializer.ParseJsonLines(Encoding.UTF8.GetBytes(logContent))[0];
+        var legacyGenesis = genesis with
+        {
+            VersionId = $"1-{genesis.Parameters.Scid}"
+        };
+
+        var act = () => new LogChainValidator()
+            .ValidateChainAsync([legacyGenesis]);
+
+        await act.Should().ThrowAsync<LogChainValidationException>()
+            .WithMessage("*Genesis entry hash*");
+    }
+
+    [Fact]
+    public async Task Create_LegacyCodecTaggedMultibaseEntryHash_IsRejected()
+    {
+        var (method, _) = CreateMethod();
+        var signer = CreateEd25519Signer();
+        var result = await method.CreateAsync(new DidWebVhCreateOptions
+        {
+            Domain = "example.com",
+            UpdateKey = signer
+        });
+
+        var logContent = (string)result.Artifacts![DidWebVhArtifacts.DidJsonl];
+        var genesis = LogEntrySerializer.ParseJsonLines(Encoding.UTF8.GetBytes(logContent))[0];
+        var genesisForHashing = genesis with
+        {
+            VersionId = genesis.Parameters.Scid!,
+            Proof = null
+        };
+        using var document = JsonDocument.Parse(
+            LogEntrySerializer.SerializeWithoutProof(genesisForHashing));
+        var canonicalBytes = JcsCanonicalizer.Canonicalize(document.RootElement);
+        var digest = SHA256.HashData(canonicalBytes);
+        var legacyEntryHash = Multibase.Encode(
+            Multicodec.Prefix(MultihashCode.Sha2_256, digest),
+            MultibaseEncoding.Base58Btc);
+        var legacyGenesis = genesisForHashing with
+        {
+            VersionId = $"1-{legacyEntryHash}"
+        };
+        legacyGenesis = legacyGenesis with
+        {
+            Proof = [await SignEntryAsync(legacyGenesis, signer)]
+        };
+
+        var act = () => new LogChainValidator()
+            .ValidateChainAsync([legacyGenesis]);
+
+        await act.Should().ThrowAsync<LogChainValidationException>()
+            .WithMessage("*Genesis entry hash*");
     }
 
     [Fact]
@@ -145,13 +228,12 @@ public class DidWebVhMethodTests
         {
             Domain = "example.com",
             UpdateKey = signer,
-            EnablePreRotation = true,
             PreRotationCommitments = [commitment]
         });
 
-        var logContent = (string)result.Artifacts!["did.jsonl"];
+        var logContent = (string)result.Artifacts![DidWebVhArtifacts.DidJsonl];
         var entries = LogEntrySerializer.ParseJsonLines(Encoding.UTF8.GetBytes(logContent));
-        entries[0].Parameters.Prerotation.Should().BeTrue();
+        logContent.Should().NotContain("\"prerotation\"");
         entries[0].Parameters.NextKeyHashes.Should().Contain(commitment);
     }
 
@@ -173,7 +255,7 @@ public class DidWebVhMethodTests
         });
 
         // Set up mock HTTP response
-        var logContent = (string)createResult.Artifacts!["did.jsonl"];
+        var logContent = (string)createResult.Artifacts![DidWebVhArtifacts.DidJsonl];
         var logUrl = DidUrlMapper.MapToLogUrl(createResult.Did.Value);
         httpClient.SetLogResponse(logUrl, Encoding.UTF8.GetBytes(logContent));
 
@@ -220,6 +302,47 @@ public class DidWebVhMethodTests
         result.ResolutionMetadata.Error.Should().Be("methodNotSupported");
     }
 
+    /// <summary>
+    /// Stands in for the HTTP layer surfacing an exception mid-fetch, as
+    /// DefaultWebVhHttpClient does when the token is cancelled or HttpClient times out.
+    /// </summary>
+    private sealed class ThrowingWebVhHttpClient(Func<CancellationToken, Exception> exceptionFactory) : IWebVhHttpClient
+    {
+        public Task<byte[]?> FetchDidLogAsync(Uri logUrl, CancellationToken ct = default)
+            => Task.FromException<byte[]?>(exceptionFactory(ct));
+
+        public Task<byte[]?> FetchWitnessFileAsync(Uri witnessUrl, CancellationToken ct = default)
+            => Task.FromException<byte[]?>(exceptionFactory(ct));
+    }
+
+    [Fact]
+    public async Task Issue81_Resolve_CallerCancellation_PropagatesOperationCanceledException()
+    {
+        var method = new DidWebVhMethod(new ThrowingWebVhHttpClient(ct => new OperationCanceledException(ct)));
+        using var cts = new CancellationTokenSource();
+        cts.Cancel();
+
+        var act = () => method.ResolveAsync("did:webvh:QmNotExist:example.com", options: null, cts.Token);
+
+        await act.Should().ThrowAsync<OperationCanceledException>();
+    }
+
+    [Fact]
+    public async Task Issue81_Resolve_HttpTimeoutWithoutCallerCancellation_ReturnsNotFound()
+    {
+        // HttpClient.Timeout surfaces as TaskCanceledException (inner TimeoutException on
+        // .NET 5+) while the caller's token is NOT cancelled — that must stay a resolution
+        // failure, not propagate as cancellation.
+        var method = new DidWebVhMethod(new ThrowingWebVhHttpClient(
+            _ => new TaskCanceledException("The request was canceled due to the configured HttpClient.Timeout.",
+                new TimeoutException())));
+
+        var result = await method.ResolveAsync("did:webvh:QmNotExist:example.com");
+
+        result.DidDocument.Should().BeNull();
+        result.ResolutionMetadata.Error.Should().Be("notFound");
+    }
+
     // ================================================================
     // UPDATE TESTS
     // ================================================================
@@ -237,7 +360,7 @@ public class DidWebVhMethodTests
             UpdateKey = signer
         });
 
-        var logContent = (string)createResult.Artifacts!["did.jsonl"];
+        var logContent = (string)createResult.Artifacts![DidWebVhArtifacts.DidJsonl];
         var did = createResult.Did.Value;
 
         // Update — add a service
@@ -270,10 +393,10 @@ public class DidWebVhMethodTests
 
         updateResult.DidDocument.Service.Should().HaveCount(1);
         updateResult.DidDocument.Service![0].Type.Should().Be("TurtleShellPds");
-        updateResult.Artifacts.Should().ContainKey("did.jsonl");
+        updateResult.Artifacts.Should().ContainKey(DidWebVhArtifacts.DidJsonl);
 
         // Verify the updated log has 2 entries
-        var updatedLog = (string)updateResult.Artifacts!["did.jsonl"];
+        var updatedLog = (string)updateResult.Artifacts![DidWebVhArtifacts.DidJsonl];
         var entries = LogEntrySerializer.ParseJsonLines(Encoding.UTF8.GetBytes(updatedLog));
         entries.Should().HaveCount(2);
         entries[1].VersionNumber.Should().Be(2);
@@ -301,7 +424,7 @@ public class DidWebVhMethodTests
             ]
         });
 
-        var logContent = (string)createResult.Artifacts!["did.jsonl"];
+        var logContent = (string)createResult.Artifacts![DidWebVhArtifacts.DidJsonl];
         var did = createResult.Did.Value;
 
         // Update
@@ -325,7 +448,7 @@ public class DidWebVhMethodTests
             NewDocument = updatedDoc
         });
 
-        var updatedLog = (string)updateResult.Artifacts!["did.jsonl"];
+        var updatedLog = (string)updateResult.Artifacts![DidWebVhArtifacts.DidJsonl];
 
         // Resolve
         var logUrl = DidUrlMapper.MapToLogUrl(did);
@@ -351,7 +474,7 @@ public class DidWebVhMethodTests
             UpdateKey = originalKey
         });
 
-        var logContent = (string)createResult.Artifacts!["did.jsonl"];
+        var logContent = (string)createResult.Artifacts![DidWebVhArtifacts.DidJsonl];
         var did = createResult.Did.Value;
 
         // Rotate to a new key
@@ -367,7 +490,7 @@ public class DidWebVhMethodTests
             }
         });
 
-        var updatedLog = (string)updateResult.Artifacts!["did.jsonl"];
+        var updatedLog = (string)updateResult.Artifacts![DidWebVhArtifacts.DidJsonl];
         var entries = LogEntrySerializer.ParseJsonLines(Encoding.UTF8.GetBytes(updatedLog));
 
         // The effective updateKeys should be the new key after the update
@@ -387,7 +510,7 @@ public class DidWebVhMethodTests
             UpdateKey = authorizedKey
         });
 
-        var logContent = (string)createResult.Artifacts!["did.jsonl"];
+        var logContent = (string)createResult.Artifacts![DidWebVhArtifacts.DidJsonl];
         var did = createResult.Did.Value;
 
         var act = () => method.UpdateAsync(did, new DidWebVhUpdateOptions
@@ -416,7 +539,7 @@ public class DidWebVhMethodTests
             UpdateKey = signer
         });
 
-        var logContent = (string)createResult.Artifacts!["did.jsonl"];
+        var logContent = (string)createResult.Artifacts![DidWebVhArtifacts.DidJsonl];
         var did = createResult.Did.Value;
 
         // Deactivate
@@ -427,16 +550,47 @@ public class DidWebVhMethodTests
         });
 
         deactivateResult.Success.Should().BeTrue();
-        deactivateResult.Artifacts.Should().ContainKey("did.jsonl");
+        deactivateResult.Artifacts.Should().ContainKey(DidWebVhArtifacts.DidJsonl);
 
         // Resolve should show deactivated
-        var updatedLog = (string)deactivateResult.Artifacts!["did.jsonl"];
+        var updatedLog = (string)deactivateResult.Artifacts![DidWebVhArtifacts.DidJsonl];
         var logUrl = DidUrlMapper.MapToLogUrl(did);
         httpClient.SetLogResponse(logUrl, Encoding.UTF8.GetBytes(updatedLog));
 
         var resolveResult = await method.ResolveAsync(did);
-        resolveResult.DidDocument.Should().NotBeNull();
+        resolveResult.DidDocument.Should().BeNull();
         resolveResult.DocumentMetadata!.Deactivated.Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task Resolve_PriorVersionOfDeactivatedDid_ReturnsDocumentWithDeactivatedMetadata()
+    {
+        var (method, httpClient) = CreateMethod();
+        var signer = CreateEd25519Signer();
+        var created = await method.CreateAsync(new DidWebVhCreateOptions
+        {
+            Domain = "example.com",
+            UpdateKey = signer
+        });
+        var initialLog = Encoding.UTF8.GetBytes(
+            (string)created.Artifacts![DidWebVhArtifacts.DidJsonl]);
+        var genesisVersionId = LogEntrySerializer.ParseJsonLines(initialLog)[0].VersionId;
+        var deactivated = await method.DeactivateAsync(created.Did.Value, new DidWebVhDeactivateOptions
+        {
+            CurrentLogContent = initialLog,
+            SigningKey = signer
+        });
+        httpClient.SetLogResponse(
+            DidUrlMapper.MapToLogUrl(created.Did.Value),
+            Encoding.UTF8.GetBytes((string)deactivated.Artifacts![DidWebVhArtifacts.DidJsonl]));
+
+        var resolved = await method.ResolveAsync(created.Did.Value, new DidWebVhResolveOptions
+        {
+            VersionId = genesisVersionId
+        });
+
+        resolved.DidDocument.Should().NotBeNull();
+        resolved.DocumentMetadata!.Deactivated.Should().BeTrue();
     }
 
     [Fact]
@@ -452,7 +606,7 @@ public class DidWebVhMethodTests
             UpdateKey = authorizedKey
         });
 
-        var logContent = (string)createResult.Artifacts!["did.jsonl"];
+        var logContent = (string)createResult.Artifacts![DidWebVhArtifacts.DidJsonl];
         var did = createResult.Did.Value;
 
         var act = () => method.DeactivateAsync(did, new DidWebVhDeactivateOptions
@@ -481,32 +635,30 @@ public class DidWebVhMethodTests
         {
             Domain = "example.com",
             UpdateKey = key1,
-            EnablePreRotation = true,
             PreRotationCommitments = [commitment2]
         });
 
-        var logContent = (string)createResult.Artifacts!["did.jsonl"];
+        var logContent = (string)createResult.Artifacts![DidWebVhArtifacts.DidJsonl];
         var did = createResult.Did.Value;
 
-        // Rotate to key2 — signed by key1 (the current authorized key),
-        // with key2 becoming the new updateKey (validator checks commitment)
+        // Rotate to key2 — the previously committed key both appears in this entry's
+        // updateKeys and signs the entry, as required by did:webvh v1.0.
         var key3 = CreateEd25519Signer();
         var commitment3 = PreRotationManager.ComputeKeyCommitment(key3.MultibasePublicKey);
 
         var updateResult = await method.UpdateAsync(did, new DidWebVhUpdateOptions
         {
             CurrentLogContent = Encoding.UTF8.GetBytes(logContent),
-            SigningKey = key1,
+            SigningKey = key2,
             ParameterUpdates = new DidWebVhParameterUpdates
             {
                 UpdateKeys = [key2.MultibasePublicKey],
-                Prerotation = true,
                 NextKeyHashes = [commitment3]
             }
         });
 
         // Verify the update succeeded and is resolvable
-        var updatedLog = (string)updateResult.Artifacts!["did.jsonl"];
+        var updatedLog = (string)updateResult.Artifacts![DidWebVhArtifacts.DidJsonl];
         var logUrl = DidUrlMapper.MapToLogUrl(did);
         httpClient.SetLogResponse(logUrl, Encoding.UTF8.GetBytes(updatedLog));
 
@@ -605,7 +757,7 @@ public class DidWebVhMethodTests
             UpdateKey = signer
         });
 
-        var logContent = (string)createResult.Artifacts!["did.jsonl"];
+        var logContent = (string)createResult.Artifacts![DidWebVhArtifacts.DidJsonl];
         var did = createResult.Did.Value;
 
         // First update
@@ -614,7 +766,7 @@ public class DidWebVhMethodTests
             CurrentLogContent = Encoding.UTF8.GetBytes(logContent),
             SigningKey = signer
         });
-        logContent = (string)update1.Artifacts!["did.jsonl"];
+        logContent = (string)update1.Artifacts![DidWebVhArtifacts.DidJsonl];
 
         // Second update
         var update2 = await method.UpdateAsync(did, new DidWebVhUpdateOptions
@@ -622,7 +774,7 @@ public class DidWebVhMethodTests
             CurrentLogContent = Encoding.UTF8.GetBytes(logContent),
             SigningKey = signer
         });
-        logContent = (string)update2.Artifacts!["did.jsonl"];
+        logContent = (string)update2.Artifacts![DidWebVhArtifacts.DidJsonl];
 
         // Third update
         var update3 = await method.UpdateAsync(did, new DidWebVhUpdateOptions
@@ -630,7 +782,7 @@ public class DidWebVhMethodTests
             CurrentLogContent = Encoding.UTF8.GetBytes(logContent),
             SigningKey = signer
         });
-        logContent = (string)update3.Artifacts!["did.jsonl"];
+        logContent = (string)update3.Artifacts![DidWebVhArtifacts.DidJsonl];
 
         // Verify 4 entries total
         var entries = LogEntrySerializer.ParseJsonLines(Encoding.UTF8.GetBytes(logContent));
@@ -661,7 +813,7 @@ public class DidWebVhMethodTests
             UpdateKey = signer
         });
 
-        var logContent = (string)createResult.Artifacts!["did.jsonl"];
+        var logContent = (string)createResult.Artifacts![DidWebVhArtifacts.DidJsonl];
         var did = createResult.Did.Value;
 
         // First update
@@ -670,7 +822,7 @@ public class DidWebVhMethodTests
             CurrentLogContent = Encoding.UTF8.GetBytes(logContent),
             SigningKey = signer
         });
-        logContent = (string)update1.Artifacts!["did.jsonl"];
+        logContent = (string)update1.Artifacts![DidWebVhArtifacts.DidJsonl];
 
         // Second update
         var update2 = await method.UpdateAsync(did, new DidWebVhUpdateOptions
@@ -678,28 +830,63 @@ public class DidWebVhMethodTests
             CurrentLogContent = Encoding.UTF8.GetBytes(logContent),
             SigningKey = signer
         });
-        logContent = (string)update2.Artifacts!["did.jsonl"];
+        logContent = (string)update2.Artifacts![DidWebVhArtifacts.DidJsonl];
 
         var entries = LogEntrySerializer.ParseJsonLines(Encoding.UTF8.GetBytes(logContent));
         entries.Should().HaveCount(3);
 
-        // Verify each entry's hash is computed using the PREVIOUS entry's versionId
-        // by re-computing: set versionId to "{N}-{previous.VersionId}", hash, compare
+        // Verify each entry's hash is computed using exactly the PREVIOUS entry's full versionId.
         for (int i = 1; i < entries.Count; i++)
         {
             var current = entries[i];
             var previous = entries[i - 1];
             var version = i + 1;
 
-            var savedVersionId = current.VersionId;
-            current.VersionId = $"{version}-{previous.VersionId}";
-            var json = LogEntrySerializer.SerializeWithoutProof(current);
+            var entryForHashing = current with { VersionId = previous.VersionId };
+            var json = LogEntrySerializer.SerializeWithoutProof(entryForHashing);
             var computedHash = ScidGenerator.ComputeEntryHash(json);
-            current.VersionId = savedVersionId;
 
             current.EntryHash.Should().Be(computedHash,
                 $"version {version} entry hash should chain to previous versionId");
         }
+    }
+
+    [Fact]
+    public async Task Issue14_CurrentVersionPrefixedToHashInput_IsRejected()
+    {
+        var (method, _) = CreateMethod();
+        var signer = CreateEd25519Signer();
+        var created = await method.CreateAsync(new DidWebVhCreateOptions
+        {
+            Domain = "example.com",
+            UpdateKey = signer
+        });
+
+        var logContent = (string)created.Artifacts![DidWebVhArtifacts.DidJsonl];
+        var genesis = LogEntrySerializer.ParseJsonLines(Encoding.UTF8.GetBytes(logContent))[0];
+        var nonConformantHashInput = new LogEntry
+        {
+            VersionId = $"2-{genesis.VersionId}",
+            VersionTime = genesis.VersionTime.AddTicks(1),
+            Parameters = new LogEntryParameters(),
+            State = genesis.State
+        };
+        var nonConformantHash = ScidGenerator.ComputeEntryHash(
+            LogEntrySerializer.SerializeWithoutProof(nonConformantHashInput));
+        var nonConformantEntry = nonConformantHashInput with
+        {
+            VersionId = $"2-{nonConformantHash}"
+        };
+        nonConformantEntry = nonConformantEntry with
+        {
+            Proof = [await SignEntryAsync(nonConformantEntry, signer)]
+        };
+
+        var act = () => new LogChainValidator()
+            .ValidateChainAsync([genesis, nonConformantEntry]);
+
+        await act.Should().ThrowAsync<LogChainValidationException>()
+            .WithMessage("*Entry hash mismatch at version 2*");
     }
 
     [Fact]
@@ -714,7 +901,7 @@ public class DidWebVhMethodTests
             Domain = "example.com",
             UpdateKey = signer
         });
-        var logContent = (string)createResult.Artifacts!["did.jsonl"];
+        var logContent = (string)createResult.Artifacts![DidWebVhArtifacts.DidJsonl];
         var did = createResult.Did.Value;
 
         var update1 = await method.UpdateAsync(did, new DidWebVhUpdateOptions
@@ -722,14 +909,14 @@ public class DidWebVhMethodTests
             CurrentLogContent = Encoding.UTF8.GetBytes(logContent),
             SigningKey = signer
         });
-        logContent = (string)update1.Artifacts!["did.jsonl"];
+        logContent = (string)update1.Artifacts![DidWebVhArtifacts.DidJsonl];
 
         var update2 = await method.UpdateAsync(did, new DidWebVhUpdateOptions
         {
             CurrentLogContent = Encoding.UTF8.GetBytes(logContent),
             SigningKey = signer
         });
-        logContent = (string)update2.Artifacts!["did.jsonl"];
+        logContent = (string)update2.Artifacts![DidWebVhArtifacts.DidJsonl];
 
         // Tamper with version 2's versionId (simulate rewriting history)
         var lines = logContent.Split('\n', StringSplitOptions.RemoveEmptyEntries);
@@ -759,7 +946,7 @@ public class DidWebVhMethodTests
     {
         var (method, httpClient) = CreateMethod();
         var signer = CreateEd25519Signer();
-        var witnessDid = "did:key:z6MkWitnessKey";
+        var witnessDid = $"did:key:{CreateEd25519Signer().MultibasePublicKey}";
 
         var createResult = await method.CreateAsync(new DidWebVhCreateOptions
         {
@@ -769,7 +956,7 @@ public class DidWebVhMethodTests
             WitnessThreshold = 1
         });
 
-        var logContent = (string)createResult.Artifacts!["did.jsonl"];
+        var logContent = (string)createResult.Artifacts![DidWebVhArtifacts.DidJsonl];
         var did = createResult.Did.Value;
         var logUrl = DidUrlMapper.MapToLogUrl(did);
         httpClient.SetLogResponse(logUrl, Encoding.UTF8.GetBytes(logContent));
@@ -785,7 +972,7 @@ public class DidWebVhMethodTests
     {
         var (method, httpClient) = CreateMethod();
         var signer = CreateEd25519Signer();
-        var witnessDid = "did:key:z6MkWitnessKey";
+        var witnessDid = $"did:key:{CreateEd25519Signer().MultibasePublicKey}";
 
         var createResult = await method.CreateAsync(new DidWebVhCreateOptions
         {
@@ -795,7 +982,7 @@ public class DidWebVhMethodTests
             WitnessThreshold = 1
         });
 
-        var logContent = (string)createResult.Artifacts!["did.jsonl"];
+        var logContent = (string)createResult.Artifacts![DidWebVhArtifacts.DidJsonl];
         var did = createResult.Did.Value;
         var logUrl = DidUrlMapper.MapToLogUrl(did);
         httpClient.SetLogResponse(logUrl, Encoding.UTF8.GetBytes(logContent));
@@ -879,12 +1066,12 @@ public class DidWebVhMethodTests
         // A witness proof at version 3 should satisfy the witness requirement
         // for version 1, since witnessing version 3 implies approval of all prior entries.
         var crypto = new DefaultCryptoProvider();
-        var proofEngine = new NetDid.Core.Crypto.DataIntegrity.DataIntegrityProofEngine(crypto);
-        var validator = new WitnessValidator(proofEngine);
+        var suite = new EddsaJcs2022Cryptosuite();
+        var validator = new WitnessValidator(suite);
 
         // Create 3 log entries, all requiring witnessing
         var witnessSigner = new KeyPairSigner(
-            new DefaultKeyGenerator().Generate(Core.Crypto.KeyType.Ed25519), crypto);
+            new DefaultKeyGenerator().Generate(KeyType.Ed25519), crypto);
         var witnessDidKey = $"did:key:{witnessSigner.MultibasePublicKey}";
         var witnessVm = $"{witnessDidKey}#{witnessSigner.MultibasePublicKey}";
 
@@ -913,9 +1100,18 @@ public class DidWebVhMethodTests
 
         // Create witness proofs ONLY for version 3
         var entry3Json = LogEntrySerializer.SerializeWithoutProof(entries[2]);
-        var proof3 = await proofEngine.CreateProofAsync(
-            entry3Json, witnessSigner, "assertionMethod",
-            entries[2].VersionTime, CancellationToken.None);
+        var proof3Created = entries[2].VersionTime.ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ");
+        using var entry3Doc = JsonDocument.Parse(entry3Json);
+        var proof3 = await suite.CreateProofAsync(
+            entry3Doc.RootElement,
+            new DataIntegrityProof
+            {
+                Cryptosuite = EddsaJcs2022Cryptosuite.CryptosuiteName,
+                VerificationMethod = witnessVm,
+                Created = proof3Created,
+                ProofPurpose = "assertionMethod",
+            },
+            witnessSigner);
 
         var witnessFile = new WitnessFile
         {
@@ -928,12 +1124,12 @@ public class DidWebVhMethodTests
                     [
                         new DataIntegrityProofValue
                         {
-                            Type = proof3.Type,
-                            Cryptosuite = proof3.Cryptosuite,
-                            VerificationMethod = proof3.VerificationMethod,
-                            Created = proof3.Created.ToString("yyyy-MM-ddTHH:mm:ssZ"),
-                            ProofPurpose = proof3.ProofPurpose,
-                            ProofValue = proof3.ProofValue
+                            Type = DataIntegrityProof.DataIntegrityProofType,
+                            Cryptosuite = EddsaJcs2022Cryptosuite.CryptosuiteName,
+                            VerificationMethod = witnessVm,
+                            Created = proof3Created,
+                            ProofPurpose = "assertionMethod",
+                            ProofValue = proof3.ProofValue!
                         }
                     ]
                 }
@@ -965,7 +1161,7 @@ public class DidWebVhMethodTests
             UpdateKey = signer
         });
 
-        var logContent = (string)createResult.Artifacts!["did.jsonl"];
+        var logContent = (string)createResult.Artifacts![DidWebVhArtifacts.DidJsonl];
         var realDid = createResult.Did.Value;
 
         // Host the log at the correct URL
@@ -1003,7 +1199,7 @@ public class DidWebVhMethodTests
             UpdateKey = signer
         });
 
-        var logContent = (string)createResult.Artifacts!["did.jsonl"];
+        var logContent = (string)createResult.Artifacts![DidWebVhArtifacts.DidJsonl];
         var did = createResult.Did.Value;
         var logUrl = DidUrlMapper.MapToLogUrl(did);
         httpClient.SetLogResponse(logUrl, Encoding.UTF8.GetBytes(logContent));
@@ -1048,7 +1244,7 @@ public class DidWebVhMethodTests
             UpdateKey = signer
         });
 
-        var logContent = (string)createResult.Artifacts!["did.jsonl"];
+        var logContent = (string)createResult.Artifacts![DidWebVhArtifacts.DidJsonl];
         var did = createResult.Did.Value;
         var logUrl = DidUrlMapper.MapToLogUrl(did);
         httpClient.SetLogResponse(logUrl, Encoding.UTF8.GetBytes(logContent));
@@ -1074,7 +1270,7 @@ public class DidWebVhMethodTests
             UpdateKey = signer
         });
 
-        var logContent = (string)createResult.Artifacts!["did.jsonl"];
+        var logContent = (string)createResult.Artifacts![DidWebVhArtifacts.DidJsonl];
         var did = createResult.Did.Value;
         var logUrl = DidUrlMapper.MapToLogUrl(did);
         httpClient.SetLogResponse(logUrl, Encoding.UTF8.GetBytes(logContent));
@@ -1101,7 +1297,7 @@ public class DidWebVhMethodTests
             Domain = "example.com",
             UpdateKey = signer
         });
-        var logContent = (string)createResult.Artifacts!["did.jsonl"];
+        var logContent = (string)createResult.Artifacts![DidWebVhArtifacts.DidJsonl];
         var did = createResult.Did.Value;
 
         var updateResult = await method.UpdateAsync(did, new DidWebVhUpdateOptions
@@ -1109,7 +1305,7 @@ public class DidWebVhMethodTests
             CurrentLogContent = Encoding.UTF8.GetBytes(logContent),
             SigningKey = signer
         });
-        logContent = (string)updateResult.Artifacts!["did.jsonl"];
+        logContent = (string)updateResult.Artifacts![DidWebVhArtifacts.DidJsonl];
 
         var entries = LogEntrySerializer.ParseJsonLines(Encoding.UTF8.GetBytes(logContent));
         var v1VersionId = entries[0].VersionId;
@@ -1139,7 +1335,7 @@ public class DidWebVhMethodTests
             Domain = "example.com",
             UpdateKey = signer
         });
-        var logContent = (string)createResult.Artifacts!["did.jsonl"];
+        var logContent = (string)createResult.Artifacts![DidWebVhArtifacts.DidJsonl];
         var did = createResult.Did.Value;
 
         var updateResult = await method.UpdateAsync(did, new DidWebVhUpdateOptions
@@ -1147,7 +1343,7 @@ public class DidWebVhMethodTests
             CurrentLogContent = Encoding.UTF8.GetBytes(logContent),
             SigningKey = signer
         });
-        logContent = (string)updateResult.Artifacts!["did.jsonl"];
+        logContent = (string)updateResult.Artifacts![DidWebVhArtifacts.DidJsonl];
 
         var entries = LogEntrySerializer.ParseJsonLines(Encoding.UTF8.GetBytes(logContent));
         var v1VersionId = entries[0].VersionId;
@@ -1188,11 +1384,10 @@ public class DidWebVhMethodTests
         {
             Domain = "example.com",
             UpdateKey = key1,
-            EnablePreRotation = true,
             PreRotationCommitments = [commitment2]
         });
 
-        var logContent = (string)createResult.Artifacts!["did.jsonl"];
+        var logContent = (string)createResult.Artifacts![DidWebVhArtifacts.DidJsonl];
         var did = createResult.Did.Value;
 
         // Try to update with TTL change only — no updateKeys
@@ -1222,11 +1417,10 @@ public class DidWebVhMethodTests
         {
             Domain = "example.com",
             UpdateKey = key1,
-            EnablePreRotation = true,
             PreRotationCommitments = [commitment2]
         });
 
-        var logContent = (string)createResult.Artifacts!["did.jsonl"];
+        var logContent = (string)createResult.Artifacts![DidWebVhArtifacts.DidJsonl];
         var did = createResult.Did.Value;
 
         // Update with both TTL change and key rotation — should succeed
@@ -1236,12 +1430,11 @@ public class DidWebVhMethodTests
         var updateResult = await method.UpdateAsync(did, new DidWebVhUpdateOptions
         {
             CurrentLogContent = Encoding.UTF8.GetBytes(logContent),
-            SigningKey = key1,
+            SigningKey = key2,
             ParameterUpdates = new DidWebVhParameterUpdates
             {
                 Ttl = 300,
                 UpdateKeys = [key2.MultibasePublicKey],
-                Prerotation = true,
                 NextKeyHashes = [commitment3]
             }
         });
@@ -1249,7 +1442,7 @@ public class DidWebVhMethodTests
         updateResult.DidDocument.Should().NotBeNull();
 
         // Verify it resolves
-        var updatedLog = (string)updateResult.Artifacts!["did.jsonl"];
+        var updatedLog = (string)updateResult.Artifacts![DidWebVhArtifacts.DidJsonl];
         var logUrl = DidUrlMapper.MapToLogUrl(did);
         httpClient.SetLogResponse(logUrl, Encoding.UTF8.GetBytes(updatedLog));
 
@@ -1267,6 +1460,7 @@ public class DidWebVhMethodTests
     {
         var (method, _) = CreateMethod();
         var signer = CreateEd25519Signer();
+        var witnessDid = $"did:key:{CreateEd25519Signer().MultibasePublicKey}";
 
         var witnessProofs = new List<WitnessProofEntry>
         {
@@ -1292,13 +1486,13 @@ public class DidWebVhMethodTests
         {
             Domain = "example.com",
             UpdateKey = signer,
-            WitnessDids = ["did:key:z6MkTest"],
+            WitnessDids = [witnessDid],
             WitnessThreshold = 1,
             WitnessProofs = witnessProofs
         });
 
-        result.Artifacts.Should().ContainKey("did-witness.json");
-        var witnessContent = (string)result.Artifacts!["did-witness.json"];
+        result.Artifacts.Should().ContainKey(DidWebVhArtifacts.DidWitnessJson);
+        var witnessContent = (string)result.Artifacts![DidWebVhArtifacts.DidWitnessJson];
         var witnessFile = WitnessValidator.ParseWitnessFile(Encoding.UTF8.GetBytes(witnessContent));
         witnessFile.Should().NotBeNull();
         witnessFile!.Entries.Should().HaveCount(1);
@@ -1318,7 +1512,7 @@ public class DidWebVhMethodTests
             UpdateKey = signer
         });
 
-        result.Artifacts.Should().NotContainKey("did-witness.json");
+        result.Artifacts.Should().NotContainKey(DidWebVhArtifacts.DidWitnessJson);
     }
 
     [Fact]
@@ -1456,13 +1650,14 @@ public class DidWebVhMethodTests
     {
         var (method, _) = CreateMethod();
         var signer = CreateEd25519Signer();
+        var witnessDid = $"did:key:{CreateEd25519Signer().MultibasePublicKey}";
 
         // Create
         var createResult = await method.CreateAsync(new DidWebVhCreateOptions
         {
             Domain = "example.com",
             UpdateKey = signer,
-            WitnessDids = ["did:key:z6MkTest"],
+            WitnessDids = [witnessDid],
             WitnessThreshold = 1,
             WitnessProofs =
             [
@@ -1485,8 +1680,8 @@ public class DidWebVhMethodTests
             ]
         });
 
-        var logContent = (string)createResult.Artifacts!["did.jsonl"];
-        var existingWitness = (string)createResult.Artifacts["did-witness.json"];
+        var logContent = (string)createResult.Artifacts![DidWebVhArtifacts.DidJsonl];
+        var existingWitness = (string)createResult.Artifacts[DidWebVhArtifacts.DidWitnessJson];
         var did = createResult.Did.Value;
 
         // Update with new witness proofs, merging with existing
@@ -1516,8 +1711,8 @@ public class DidWebVhMethodTests
             ]
         });
 
-        updateResult.Artifacts.Should().ContainKey("did-witness.json");
-        var mergedContent = (string)updateResult.Artifacts!["did-witness.json"];
+        updateResult.Artifacts.Should().ContainKey(DidWebVhArtifacts.DidWitnessJson);
+        var mergedContent = (string)updateResult.Artifacts![DidWebVhArtifacts.DidWitnessJson];
         var merged = WitnessValidator.ParseWitnessFile(Encoding.UTF8.GetBytes(mergedContent));
         merged.Should().NotBeNull();
         merged!.Entries.Should().HaveCount(2);
@@ -1535,7 +1730,7 @@ public class DidWebVhMethodTests
             UpdateKey = signer
         });
 
-        var logContent = (string)createResult.Artifacts!["did.jsonl"];
+        var logContent = (string)createResult.Artifacts![DidWebVhArtifacts.DidJsonl];
         var did = createResult.Did.Value;
 
         var deactivateResult = await method.DeactivateAsync(did, new DidWebVhDeactivateOptions
@@ -1563,8 +1758,8 @@ public class DidWebVhMethodTests
             ]
         });
 
-        deactivateResult.Artifacts.Should().ContainKey("did-witness.json");
-        var witnessContent = (string)deactivateResult.Artifacts!["did-witness.json"];
+        deactivateResult.Artifacts.Should().ContainKey(DidWebVhArtifacts.DidWitnessJson);
+        var witnessContent = (string)deactivateResult.Artifacts![DidWebVhArtifacts.DidWitnessJson];
         var witnessFile = WitnessValidator.ParseWitnessFile(Encoding.UTF8.GetBytes(witnessContent));
         witnessFile.Should().NotBeNull();
         witnessFile!.Entries.Should().HaveCount(1);
@@ -1582,11 +1777,10 @@ public class DidWebVhMethodTests
         {
             Domain = "example.com",
             UpdateKey = key1,
-            EnablePreRotation = true,
             PreRotationCommitments = [commitment2]
         });
 
-        var logContent = (string)createResult.Artifacts!["did.jsonl"];
+        var logContent = (string)createResult.Artifacts![DidWebVhArtifacts.DidJsonl];
         var did = createResult.Did.Value;
 
         // Manually construct an update entry WITHOUT updateKeys to bypass the API check
@@ -1598,17 +1792,16 @@ public class DidWebVhMethodTests
         var updateResult = await method.UpdateAsync(did, new DidWebVhUpdateOptions
         {
             CurrentLogContent = Encoding.UTF8.GetBytes(logContent),
-            SigningKey = key1,
+            SigningKey = key2,
             ParameterUpdates = new DidWebVhParameterUpdates
             {
                 UpdateKeys = [key2.MultibasePublicKey],
-                Prerotation = true,
                 NextKeyHashes = [commitment3]
             }
         });
 
         // The update succeeds at the API level; verify the log resolves correctly
-        var updatedLog = (string)updateResult.Artifacts!["did.jsonl"];
+        var updatedLog = (string)updateResult.Artifacts![DidWebVhArtifacts.DidJsonl];
         var logUrl = DidUrlMapper.MapToLogUrl(did);
         httpClient.SetLogResponse(logUrl, Encoding.UTF8.GetBytes(updatedLog));
 
@@ -1657,5 +1850,1475 @@ public class DidWebVhMethodTests
         });
 
         await act.Should().ThrowAsync<ArgumentException>();
+    }
+
+    // ================================================================
+    // Issue #37: IncludeLog — expose parsed log on DidResolutionResult
+    // ================================================================
+
+    [Fact]
+    public async Task Issue37_Resolve_WithoutIncludeLog_ArtifactsIsNull()
+    {
+        var (method, httpClient) = CreateMethod();
+        var signer = CreateEd25519Signer();
+
+        var createResult = await method.CreateAsync(new DidWebVhCreateOptions
+        {
+            Domain = "example.com",
+            UpdateKey = signer
+        });
+        var logContent = (string)createResult.Artifacts![DidWebVhArtifacts.DidJsonl];
+        httpClient.SetLogResponse(
+            DidUrlMapper.MapToLogUrl(createResult.Did.Value),
+            Encoding.UTF8.GetBytes(logContent));
+
+        var resolveResult = await method.ResolveAsync(createResult.Did.Value);
+
+        resolveResult.Artifacts.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task Issue37_Resolve_WithIncludeLog_ReturnsParsedEntries()
+    {
+        var (method, httpClient) = CreateMethod();
+        var signer = CreateEd25519Signer();
+
+        var createResult = await method.CreateAsync(new DidWebVhCreateOptions
+        {
+            Domain = "example.com",
+            UpdateKey = signer
+        });
+        var logContent = (string)createResult.Artifacts![DidWebVhArtifacts.DidJsonl];
+        httpClient.SetLogResponse(
+            DidUrlMapper.MapToLogUrl(createResult.Did.Value),
+            Encoding.UTF8.GetBytes(logContent));
+
+        var resolveResult = await method.ResolveAsync(
+            createResult.Did.Value,
+            new DidResolutionOptions { IncludeLog = true });
+
+        resolveResult.Artifacts.Should().NotBeNull();
+        resolveResult.Artifacts!.Should().ContainKey(DidWebVhArtifacts.LogEntries);
+        var entries = (IReadOnlyList<LogEntry>)resolveResult.Artifacts![DidWebVhArtifacts.LogEntries];
+        entries.Should().HaveCount(1);
+        entries[0].VersionNumber.Should().Be(1);
+        entries[0].State.Id.Value.Should().Be(createResult.Did.Value);
+    }
+
+    [Fact]
+    public async Task Issue37_Resolve_WithIncludeLog_ReturnsRawJsonl()
+    {
+        var (method, httpClient) = CreateMethod();
+        var signer = CreateEd25519Signer();
+
+        var createResult = await method.CreateAsync(new DidWebVhCreateOptions
+        {
+            Domain = "example.com",
+            UpdateKey = signer
+        });
+        var createdLog = (string)createResult.Artifacts![DidWebVhArtifacts.DidJsonl];
+        httpClient.SetLogResponse(
+            DidUrlMapper.MapToLogUrl(createResult.Did.Value),
+            Encoding.UTF8.GetBytes(createdLog));
+
+        var resolveResult = await method.ResolveAsync(
+            createResult.Did.Value,
+            new DidResolutionOptions { IncludeLog = true });
+
+        resolveResult.Artifacts.Should().ContainKey(DidWebVhArtifacts.DidJsonl);
+        var resolvedLog = (string)resolveResult.Artifacts![DidWebVhArtifacts.DidJsonl];
+        resolvedLog.Should().Be(createdLog);
+    }
+
+    [Fact]
+    public async Task Issue37_Resolve_AfterUpdate_LogContainsAllEntries()
+    {
+        var (method, httpClient) = CreateMethod();
+        var signer = CreateEd25519Signer();
+
+        var createResult = await method.CreateAsync(new DidWebVhCreateOptions
+        {
+            Domain = "example.com",
+            UpdateKey = signer
+        });
+        var did = createResult.Did.Value;
+
+        // Update once
+        var updatedDoc = new DidDocument
+        {
+            Id = createResult.Did,
+            VerificationMethod = createResult.DidDocument.VerificationMethod,
+            Authentication = createResult.DidDocument.Authentication,
+            AssertionMethod = createResult.DidDocument.AssertionMethod,
+            CapabilityInvocation = createResult.DidDocument.CapabilityInvocation,
+            CapabilityDelegation = createResult.DidDocument.CapabilityDelegation,
+            AlsoKnownAs = createResult.DidDocument.AlsoKnownAs,
+            Service =
+            [
+                new Service
+                {
+                    Id = $"{did}#pds",
+                    Type = "TurtleShellPds",
+                    ServiceEndpoint = ServiceEndpointValue.FromUri("https://example.com/pds")
+                }
+            ]
+        };
+        var updateResult = await method.UpdateAsync(did, new DidWebVhUpdateOptions
+        {
+            CurrentLogContent = Encoding.UTF8.GetBytes((string)createResult.Artifacts![DidWebVhArtifacts.DidJsonl]),
+            SigningKey = signer,
+            NewDocument = updatedDoc
+        });
+
+        var updatedLog = (string)updateResult.Artifacts![DidWebVhArtifacts.DidJsonl];
+        httpClient.SetLogResponse(
+            DidUrlMapper.MapToLogUrl(did), Encoding.UTF8.GetBytes(updatedLog));
+
+        var resolveResult = await method.ResolveAsync(
+            did, new DidResolutionOptions { IncludeLog = true });
+
+        var entries = (IReadOnlyList<LogEntry>)resolveResult.Artifacts![DidWebVhArtifacts.LogEntries];
+        entries.Should().HaveCount(2);
+        entries[0].VersionNumber.Should().Be(1);
+        entries[1].VersionNumber.Should().Be(2);
+        ((string)resolveResult.Artifacts[DidWebVhArtifacts.DidJsonl])
+            .Should().Be(updatedLog, "latest resolution validates and exposes the complete fetched log");
+    }
+
+    [Fact]
+    public async Task Issue37_Resolve_HistoricalIncludeLog_ExposesOnlyValidatedPrefix()
+    {
+        var (method, httpClient) = CreateMethod();
+        var signer = CreateEd25519Signer();
+
+        var createResult = await method.CreateAsync(new DidWebVhCreateOptions
+        {
+            Domain = "example.com",
+            UpdateKey = signer
+        });
+        var did = createResult.Did.Value;
+        var updateResult = await method.UpdateAsync(did, new DidWebVhUpdateOptions
+        {
+            CurrentLogContent = Encoding.UTF8.GetBytes(
+                (string)createResult.Artifacts![DidWebVhArtifacts.DidJsonl]),
+            SigningKey = signer
+        });
+
+        var updatedLog = (string)updateResult.Artifacts![DidWebVhArtifacts.DidJsonl];
+        var lines = updatedLog.Split('\n');
+        var crlfLog = string.Join("\r\n", lines);
+        var entries = LogEntrySerializer.ParseJsonLines(Encoding.UTF8.GetBytes(crlfLog));
+        httpClient.SetLogResponse(
+            DidUrlMapper.MapToLogUrl(did), Encoding.UTF8.GetBytes(crlfLog));
+
+        var result = await method.ResolveAsync(did, new DidResolutionOptions
+        {
+            VersionId = entries[0].VersionId,
+            IncludeLog = true
+        });
+
+        result.ResolutionMetadata.Error.Should().BeNull();
+        var exposedEntries = (IReadOnlyList<LogEntry>)result.Artifacts![DidWebVhArtifacts.LogEntries];
+        exposedEntries.Should().ContainSingle()
+            .Which.VersionId.Should().Be(entries[0].VersionId);
+        ((string)result.Artifacts[DidWebVhArtifacts.DidJsonl]).Should().Be(lines[0],
+            "the raw artifact must end exactly at the validated entry, without the CRLF separator");
+    }
+
+    [Fact]
+    public async Task Issue101_Resolve_HistoricalIncludeLog_DoesNotExposeInvalidTail()
+    {
+        var (method, httpClient) = CreateMethod();
+        var signer = CreateEd25519Signer();
+
+        var createResult = await method.CreateAsync(new DidWebVhCreateOptions
+        {
+            Domain = "example.com",
+            UpdateKey = signer
+        });
+        var did = createResult.Did.Value;
+        var updateResult = await method.UpdateAsync(did, new DidWebVhUpdateOptions
+        {
+            CurrentLogContent = Encoding.UTF8.GetBytes(
+                (string)createResult.Artifacts![DidWebVhArtifacts.DidJsonl]),
+            SigningKey = signer
+        });
+
+        var updatedLog = (string)updateResult.Artifacts![DidWebVhArtifacts.DidJsonl];
+        var entries = LogEntrySerializer.ParseJsonLines(Encoding.UTF8.GetBytes(updatedLog));
+        var lines = updatedLog.Split('\n');
+        lines[1] = lines[1].Replace(
+            entries[1].Proof![0].ProofValue, "zInvalidUncheckedTailProof");
+        var corruptedLog = string.Join('\n', lines);
+        httpClient.SetLogResponse(
+            DidUrlMapper.MapToLogUrl(did), Encoding.UTF8.GetBytes(corruptedLog));
+
+        var result = await method.ResolveAsync(did, new DidResolutionOptions
+        {
+            VersionId = entries[0].VersionId,
+            IncludeLog = true
+        });
+
+        result.ResolutionMetadata.Error.Should().BeNull();
+        result.DidDocument.Should().NotBeNull();
+        var exposedEntries = (IReadOnlyList<LogEntry>)result.Artifacts![DidWebVhArtifacts.LogEntries];
+        exposedEntries.Should().ContainSingle()
+            .Which.VersionId.Should().Be(entries[0].VersionId);
+        var exposedJsonl = (string)result.Artifacts[DidWebVhArtifacts.DidJsonl];
+        exposedJsonl.Should().Be(lines[0]);
+        exposedJsonl.Should().NotContain("zInvalidUncheckedTailProof");
+
+        var dictionaryView = (IDictionary<string, object>)result.Artifacts;
+        var mutate = () => dictionaryView[DidWebVhArtifacts.DidJsonl] = corruptedLog;
+        mutate.Should().Throw<NotSupportedException>(
+            "cached resolution artifacts must not be caller-mutable");
+    }
+
+    [Fact]
+    public void Issue37_DidWebVhMethod_AdvertisesHistoryCapability()
+    {
+        var (method, _) = CreateMethod();
+        method.Capabilities.HasFlag(DidMethodCapabilities.History).Should().BeTrue();
+    }
+
+    [Fact]
+    public void Issue37_DidResolutionOptions_CacheDiscriminator_DistinguishesIncludeLog()
+    {
+        var without = new DidResolutionOptions();
+        var with = new DidResolutionOptions { IncludeLog = true };
+
+        without.GetCacheDiscriminator().Should().NotBe(with.GetCacheDiscriminator());
+    }
+
+    // ================================================================
+    // ISSUE 82 — Update/Deactivate must bind their inputs to the target
+    // DID, and DidUpdateResult must expose authorization-change evidence.
+    // https://github.com/moisesja/net-did/issues/82
+    // ================================================================
+
+    /// <summary>Creates a fresh did:webvh DID and returns (did, log bytes-as-string, its update signer).</summary>
+    private async Task<(string Did, string Log, ISigner Signer)> CreateWebVhDidAsync(
+        DidWebVhMethod method, string? path = null)
+    {
+        var signer = CreateEd25519Signer();
+        var result = await method.CreateAsync(new DidWebVhCreateOptions
+        {
+            Domain = "example.com",
+            Path = path,
+            UpdateKey = signer
+        });
+        return (result.Did.Value, (string)result.Artifacts![DidWebVhArtifacts.DidJsonl], signer);
+    }
+
+    [Fact]
+    public async Task Issue82_Update_LogOfDifferentDid_Throws()
+    {
+        // Reproduction #1: an "update of A" driven entirely by B's log + B's signer, with a
+        // document claiming Id = A, must be rejected — otherwise the driver mints a log its
+        // own resolver rejects.
+        var (method, _) = CreateMethod();
+        var (didA, _, _) = await CreateWebVhDidAsync(method, "alice");
+        var (_, logB, signerB) = await CreateWebVhDidAsync(method, "bob");
+
+        var act = () => method.UpdateAsync(didA, new DidWebVhUpdateOptions
+        {
+            CurrentLogContent = Encoding.UTF8.GetBytes(logB),
+            SigningKey = signerB,
+            NewDocument = new DidDocument { Id = new Did(didA) }
+        });
+
+        await act.Should().ThrowAsync<ArgumentException>().WithMessage("*does not belong*");
+    }
+
+    [Fact]
+    public async Task Issue82_Update_NewDocumentIdMismatch_Throws()
+    {
+        var (method, _) = CreateMethod();
+        var (didA, logA, signerA) = await CreateWebVhDidAsync(method, "alice");
+        var (didB, _, _) = await CreateWebVhDidAsync(method, "bob");
+
+        var act = () => method.UpdateAsync(didA, new DidWebVhUpdateOptions
+        {
+            CurrentLogContent = Encoding.UTF8.GetBytes(logA),
+            SigningKey = signerA,
+            NewDocument = new DidDocument { Id = new Did(didB) }
+        });
+
+        await act.Should().ThrowAsync<ArgumentException>().WithMessage("*NewDocument.Id*");
+    }
+
+    [Fact]
+    public async Task Issue82_Update_NewDocumentMissingId_Throws()
+    {
+        var (method, _) = CreateMethod();
+        var (didA, logA, signerA) = await CreateWebVhDidAsync(method, "alice");
+
+        // A document with no Id (default(Did).Value == null) must not be accepted for an update.
+        var act = () => method.UpdateAsync(didA, new DidWebVhUpdateOptions
+        {
+            CurrentLogContent = Encoding.UTF8.GetBytes(logA),
+            SigningKey = signerA,
+            NewDocument = new DidDocument()
+        });
+
+        await act.Should().ThrowAsync<ArgumentException>().WithMessage("*NewDocument.Id*");
+    }
+
+    [Fact]
+    public async Task Issue82_Update_OnDeactivatedLog_Throws()
+    {
+        var (method, _) = CreateMethod();
+        var (didA, logA, signerA) = await CreateWebVhDidAsync(method, "alice");
+
+        var deactivated = await method.DeactivateAsync(didA, new DidWebVhDeactivateOptions
+        {
+            CurrentLogContent = Encoding.UTF8.GetBytes(logA),
+            SigningKey = signerA
+        });
+        var deactivatedLog = (string)deactivated.Artifacts![DidWebVhArtifacts.DidJsonl];
+
+        var act = () => method.UpdateAsync(didA, new DidWebVhUpdateOptions
+        {
+            CurrentLogContent = Encoding.UTF8.GetBytes(deactivatedLog),
+            SigningKey = signerA,
+            NewDocument = new DidDocument { Id = new Did(didA) }
+        });
+
+        await act.Should().ThrowAsync<ArgumentException>().WithMessage("*deactivated*");
+    }
+
+    [Fact]
+    public async Task Issue82_Deactivate_LogOfDifferentDid_Throws()
+    {
+        var (method, _) = CreateMethod();
+        var (didA, _, _) = await CreateWebVhDidAsync(method, "alice");
+        var (_, logB, signerB) = await CreateWebVhDidAsync(method, "bob");
+
+        var act = () => method.DeactivateAsync(didA, new DidWebVhDeactivateOptions
+        {
+            CurrentLogContent = Encoding.UTF8.GetBytes(logB),
+            SigningKey = signerB
+        });
+
+        await act.Should().ThrowAsync<ArgumentException>().WithMessage("*does not belong*");
+    }
+
+    [Fact]
+    public async Task Issue82_Deactivate_OnDeactivatedLog_Throws()
+    {
+        var (method, _) = CreateMethod();
+        var (didA, logA, signerA) = await CreateWebVhDidAsync(method, "alice");
+
+        var deactivated = await method.DeactivateAsync(didA, new DidWebVhDeactivateOptions
+        {
+            CurrentLogContent = Encoding.UTF8.GetBytes(logA),
+            SigningKey = signerA
+        });
+        var deactivatedLog = (string)deactivated.Artifacts![DidWebVhArtifacts.DidJsonl];
+
+        var act = () => method.DeactivateAsync(didA, new DidWebVhDeactivateOptions
+        {
+            CurrentLogContent = Encoding.UTF8.GetBytes(deactivatedLog),
+            SigningKey = signerA
+        });
+
+        await act.Should().ThrowAsync<ArgumentException>().WithMessage("*deactivated*");
+    }
+
+    [Fact]
+    public async Task Issue82_Update_DocumentOnlyEdit_ReportsUnchanged()
+    {
+        var (method, httpClient) = CreateMethod();
+        var signerA = CreateEd25519Signer();
+        var createA = await method.CreateAsync(new DidWebVhCreateOptions
+        {
+            Domain = "example.com",
+            Path = "alice",
+            UpdateKey = signerA
+        });
+        var didA = createA.Did.Value;
+        var logA = (string)createA.Artifacts![DidWebVhArtifacts.DidJsonl];
+
+        // Document-only edit: add a service, touch no parameters.
+        var editedDoc = createA.DidDocument with
+        {
+            Service =
+            [
+                new Service
+                {
+                    Id = $"{didA}#pds",
+                    Type = "TurtleShellPds",
+                    ServiceEndpoint = ServiceEndpointValue.FromUri("https://example.com/pds")
+                }
+            ]
+        };
+
+        var updateResult = await method.UpdateAsync(didA, new DidWebVhUpdateOptions
+        {
+            CurrentLogContent = Encoding.UTF8.GetBytes(logA),
+            SigningKey = signerA,
+            NewDocument = editedDoc
+        });
+
+        updateResult.AuthorizationChange.Should().Be(AuthorizationChangeStatus.Unchanged);
+
+        // Writer/reader parity: the appended log must resolve for the target DID.
+        var updatedLog = (string)updateResult.Artifacts![DidWebVhArtifacts.DidJsonl];
+        var logUrl = DidUrlMapper.MapToLogUrl(didA);
+        httpClient.SetLogResponse(logUrl, Encoding.UTF8.GetBytes(updatedLog));
+        var resolved = await method.ResolveAsync(didA);
+        resolved.DidDocument.Should().NotBeNull();
+        resolved.DidDocument!.Id.Value.Should().Be(didA);
+
+        // Preserve-document case (NewDocument == null) is likewise not an authority change.
+        var preserveResult = await method.UpdateAsync(didA, new DidWebVhUpdateOptions
+        {
+            CurrentLogContent = Encoding.UTF8.GetBytes(logA),
+            SigningKey = signerA
+        });
+        preserveResult.AuthorizationChange.Should().Be(AuthorizationChangeStatus.Unchanged);
+    }
+
+    [Fact]
+    public async Task Issue82_Update_KeyRotation_ReportsChanged()
+    {
+        // Reproduction #2: a smuggled updateKeys rotation is invisible in DidDocument but must
+        // be flagged so a method-agnostic caller can reject an unintended authority change.
+        var (method, _) = CreateMethod();
+        var (didA, logA, signerA) = await CreateWebVhDidAsync(method, "alice");
+        var newKey = CreateEd25519Signer();
+
+        var updateResult = await method.UpdateAsync(didA, new DidWebVhUpdateOptions
+        {
+            CurrentLogContent = Encoding.UTF8.GetBytes(logA),
+            SigningKey = signerA,
+            ParameterUpdates = new DidWebVhParameterUpdates
+            {
+                UpdateKeys = [newKey.MultibasePublicKey]
+            }
+        });
+
+        updateResult.AuthorizationChange.Should().Be(AuthorizationChangeStatus.Changed);
+    }
+
+    [Fact]
+    public async Task Issue82_Update_SameUpdateKeysSupplied_ReportsUnchanged()
+    {
+        // Re-supplying the identical authorized key set is a no-op for authority.
+        var (method, _) = CreateMethod();
+        var (didA, logA, signerA) = await CreateWebVhDidAsync(method, "alice");
+
+        var updateResult = await method.UpdateAsync(didA, new DidWebVhUpdateOptions
+        {
+            CurrentLogContent = Encoding.UTF8.GetBytes(logA),
+            SigningKey = signerA,
+            ParameterUpdates = new DidWebVhParameterUpdates
+            {
+                UpdateKeys = [signerA.MultibasePublicKey]
+            }
+        });
+
+        updateResult.AuthorizationChange.Should().Be(AuthorizationChangeStatus.Unchanged);
+    }
+
+    [Fact]
+    public async Task Issue82_Update_NextKeyHashesActivation_ReportsChanged()
+    {
+        var (method, _) = CreateMethod();
+        var (didA, logA, signerA) = await CreateWebVhDidAsync(method, "alice");
+        var nextKey = CreateEd25519Signer();
+        var commitment = PreRotationManager.ComputeKeyCommitment(nextKey.MultibasePublicKey);
+
+        var updateResult = await method.UpdateAsync(didA, new DidWebVhUpdateOptions
+        {
+            CurrentLogContent = Encoding.UTF8.GetBytes(logA),
+            SigningKey = signerA,
+            ParameterUpdates = new DidWebVhParameterUpdates
+            {
+                NextKeyHashes = [commitment]
+            }
+        });
+
+        updateResult.AuthorizationChange.Should().Be(AuthorizationChangeStatus.Changed);
+    }
+
+    [Fact]
+    public async Task Issue82_Update_WitnessChange_ReportsChanged()
+    {
+        var (method, _) = CreateMethod();
+        var (didA, logA, signerA) = await CreateWebVhDidAsync(method, "alice");
+        var witnessSigner = CreateEd25519Signer();
+
+        var updateResult = await method.UpdateAsync(didA, new DidWebVhUpdateOptions
+        {
+            CurrentLogContent = Encoding.UTF8.GetBytes(logA),
+            SigningKey = signerA,
+            ParameterUpdates = new DidWebVhParameterUpdates
+            {
+                Witness = new WitnessConfig
+                {
+                    Threshold = 1,
+                    Witnesses = [new WitnessEntry { Id = $"did:key:{witnessSigner.MultibasePublicKey}", Weight = 1 }]
+                }
+            }
+        });
+
+        updateResult.AuthorizationChange.Should().Be(AuthorizationChangeStatus.Changed);
+    }
+
+    // ================================================================
+    // ISSUE #91: KEY-SPECIFIC ROTATION EVIDENCE
+    // (UpdateKeyChange must not conflate key rotation with policy-only
+    // changes; EffectiveUpdateKeys exposes the newly authorized set)
+    // ================================================================
+
+    [Fact]
+    public async Task Issue91_Update_KeyRotation_ReportsUpdateKeyChangedAndNewEffectiveSet()
+    {
+        var (method, _) = CreateMethod();
+        var (didA, logA, signerA) = await CreateWebVhDidAsync(method, "alice");
+        var newKey = CreateEd25519Signer();
+
+        var updateResult = await method.UpdateAsync(didA, new DidWebVhUpdateOptions
+        {
+            CurrentLogContent = Encoding.UTF8.GetBytes(logA),
+            SigningKey = signerA,
+            ParameterUpdates = new DidWebVhParameterUpdates
+            {
+                UpdateKeys = [newKey.MultibasePublicKey]
+            }
+        });
+
+        updateResult.UpdateKeyChange.Should().Be(AuthorizationChangeStatus.Changed);
+        // Invariant: a key change is always an authorization change.
+        updateResult.AuthorizationChange.Should().Be(AuthorizationChangeStatus.Changed);
+        // Exclusive-rotation postcondition: the complete effective set equals the intended
+        // post-rotation set (which also implies the retired key is gone).
+        updateResult.EffectiveUpdateKeys.Should().BeEquivalentTo([newKey.MultibasePublicKey]);
+        updateResult.EffectiveUpdateKeys.Should().NotContain(signerA.MultibasePublicKey);
+        // The ordinary-mode entry was authorized by the prior effective set, not by the
+        // newly installed set that will authorize the following entry.
+        updateResult.RevealedUpdateKeys.Should().BeEquivalentTo([signerA.MultibasePublicKey]);
+        updateResult.RevealedUpdateKeys.Should().NotContain(newKey.MultibasePublicKey);
+    }
+
+    [Fact]
+    public async Task Issue91_Update_AdditiveKeyChange_OldKeyRetainsAuthority()
+    {
+        // "Changed" does NOT imply the previous key lost authority — an additive update trips
+        // UpdateKeyChange while the old key remains in the effective set. This is why an
+        // exclusive-rotation consumer must require EffectiveUpdateKeys to set-equal its
+        // intended post-rotation set; membership checks alone accept supersets like this one.
+        var (method, _) = CreateMethod();
+        var (didA, logA, signerA) = await CreateWebVhDidAsync(method, "alice");
+        var newKey = CreateEd25519Signer();
+
+        var updateResult = await method.UpdateAsync(didA, new DidWebVhUpdateOptions
+        {
+            CurrentLogContent = Encoding.UTF8.GetBytes(logA),
+            SigningKey = signerA,
+            ParameterUpdates = new DidWebVhParameterUpdates
+            {
+                UpdateKeys = [signerA.MultibasePublicKey, newKey.MultibasePublicKey]
+            }
+        });
+
+        updateResult.UpdateKeyChange.Should().Be(AuthorizationChangeStatus.Changed);
+        updateResult.AuthorizationChange.Should().Be(AuthorizationChangeStatus.Changed);
+        updateResult.EffectiveUpdateKeys.Should().BeEquivalentTo(
+            [signerA.MultibasePublicKey, newKey.MultibasePublicKey]);
+    }
+
+    [Fact]
+    public async Task Issue91_Update_WitnessOnlyChange_ReportsUpdateKeyUnchanged()
+    {
+        // The headline #91 discriminator: a policy-only change reports the coarse
+        // AuthorizationChange as Changed but must NOT read as a key rotation.
+        var (method, _) = CreateMethod();
+        var (didA, logA, signerA) = await CreateWebVhDidAsync(method, "alice");
+        var witnessSigner = CreateEd25519Signer();
+
+        var updateResult = await method.UpdateAsync(didA, new DidWebVhUpdateOptions
+        {
+            CurrentLogContent = Encoding.UTF8.GetBytes(logA),
+            SigningKey = signerA,
+            ParameterUpdates = new DidWebVhParameterUpdates
+            {
+                Witness = new WitnessConfig
+                {
+                    Threshold = 1,
+                    Witnesses = [new WitnessEntry { Id = $"did:key:{witnessSigner.MultibasePublicKey}", Weight = 1 }]
+                }
+            }
+        });
+
+        updateResult.AuthorizationChange.Should().Be(AuthorizationChangeStatus.Changed);
+        updateResult.UpdateKeyChange.Should().Be(AuthorizationChangeStatus.Unchanged);
+        updateResult.EffectiveUpdateKeys.Should().BeEquivalentTo([signerA.MultibasePublicKey]);
+    }
+
+    [Fact]
+    public async Task Issue91_Update_PreRotationActivation_ReportsCurrentEntryEvidence()
+    {
+        // Enabling pre-rotation hides the next entry's concrete signers, so
+        // EffectiveUpdateKeys remains withheld. The activation entry itself is ordinary-mode,
+        // however, and the prior effective updateKeys are concrete authorization evidence.
+        var (method, _) = CreateMethod();
+        var (didA, logA, signerA) = await CreateWebVhDidAsync(method, "alice");
+        var nextKey = CreateEd25519Signer();
+        var commitment = PreRotationManager.ComputeKeyCommitment(nextKey.MultibasePublicKey);
+
+        var updateResult = await method.UpdateAsync(didA, new DidWebVhUpdateOptions
+        {
+            CurrentLogContent = Encoding.UTF8.GetBytes(logA),
+            SigningKey = signerA,
+            ParameterUpdates = new DidWebVhParameterUpdates
+            {
+                NextKeyHashes = [commitment]
+            }
+        });
+
+        // This policy-only change does not change the effective updateKeys set.
+        updateResult.AuthorizationChange.Should().Be(AuthorizationChangeStatus.Changed);
+        updateResult.UpdateKeyChange.Should().Be(AuthorizationChangeStatus.Unchanged);
+        updateResult.EffectiveUpdateKeys.Should().BeNull();
+        updateResult.RevealedUpdateKeys.Should().BeEquivalentTo([signerA.MultibasePublicKey]);
+    }
+
+    [Fact]
+    public async Task Issue91_Update_DocumentOnlyEdit_ReportsUnchangedWithCarriedForwardKeys()
+    {
+        var (method, _) = CreateMethod();
+        var (didA, logA, signerA) = await CreateWebVhDidAsync(method, "alice");
+
+        var updateResult = await method.UpdateAsync(didA, new DidWebVhUpdateOptions
+        {
+            CurrentLogContent = Encoding.UTF8.GetBytes(logA),
+            SigningKey = signerA,
+            NewDocument = null // preserve path — no document, no parameter change
+        });
+
+        updateResult.AuthorizationChange.Should().Be(AuthorizationChangeStatus.Unchanged);
+        updateResult.UpdateKeyChange.Should().Be(AuthorizationChangeStatus.Unchanged);
+        // Even a no-op update reports the carried-forward authority so a consumer can bind to it.
+        updateResult.EffectiveUpdateKeys.Should().BeEquivalentTo([signerA.MultibasePublicKey]);
+    }
+
+    [Fact]
+    public async Task Issue91_Update_SameUpdateKeysSupplied_ReportsUpdateKeyUnchanged()
+    {
+        var (method, _) = CreateMethod();
+        var (didA, logA, signerA) = await CreateWebVhDidAsync(method, "alice");
+
+        var updateResult = await method.UpdateAsync(didA, new DidWebVhUpdateOptions
+        {
+            CurrentLogContent = Encoding.UTF8.GetBytes(logA),
+            SigningKey = signerA,
+            ParameterUpdates = new DidWebVhParameterUpdates
+            {
+                UpdateKeys = [signerA.MultibasePublicKey]
+            }
+        });
+
+        updateResult.UpdateKeyChange.Should().Be(AuthorizationChangeStatus.Unchanged);
+        updateResult.EffectiveUpdateKeys.Should().BeEquivalentTo([signerA.MultibasePublicKey]);
+    }
+
+    [Fact]
+    public async Task Issue91_Update_ReorderedAndDuplicatedKeys_ReportsUpdateKeyUnchanged()
+    {
+        // Set comparison must be order- and duplicate-insensitive.
+        var (method, _) = CreateMethod();
+        var (didA, logA, signerA) = await CreateWebVhDidAsync(method, "alice");
+        var keyB = CreateEd25519Signer();
+
+        var first = await method.UpdateAsync(didA, new DidWebVhUpdateOptions
+        {
+            CurrentLogContent = Encoding.UTF8.GetBytes(logA),
+            SigningKey = signerA,
+            ParameterUpdates = new DidWebVhParameterUpdates
+            {
+                UpdateKeys = [signerA.MultibasePublicKey, keyB.MultibasePublicKey]
+            }
+        });
+        first.UpdateKeyChange.Should().Be(AuthorizationChangeStatus.Changed);
+
+        var firstLog = (string)first.Artifacts![DidWebVhArtifacts.DidJsonl];
+        var second = await method.UpdateAsync(didA, new DidWebVhUpdateOptions
+        {
+            CurrentLogContent = Encoding.UTF8.GetBytes(firstLog),
+            SigningKey = signerA,
+            ParameterUpdates = new DidWebVhParameterUpdates
+            {
+                UpdateKeys = [keyB.MultibasePublicKey, signerA.MultibasePublicKey, signerA.MultibasePublicKey]
+            }
+        });
+
+        second.UpdateKeyChange.Should().Be(AuthorizationChangeStatus.Unchanged);
+        second.AuthorizationChange.Should().Be(AuthorizationChangeStatus.Unchanged);
+    }
+
+    [Fact]
+    public async Task Issue91_Update_PreRotationActive_ReportsRevealedCurrentEntryKeys()
+    {
+        // Fresh nextKeyHashes still hide who may sign the next entry, but this entry's own
+        // updateKeys were individually commitment-validated and are concrete evidence.
+        var (method, _) = CreateMethod();
+        var key1 = CreateEd25519Signer();
+        var key2 = CreateEd25519Signer();
+        var key3 = CreateEd25519Signer();
+
+        var createResult = await method.CreateAsync(new DidWebVhCreateOptions
+        {
+            Domain = "example.com",
+            UpdateKey = key1,
+            PreRotationCommitments = [PreRotationManager.ComputeKeyCommitment(key2.MultibasePublicKey)]
+        });
+        var logContent = (string)createResult.Artifacts![DidWebVhArtifacts.DidJsonl];
+
+        var updateResult = await method.UpdateAsync(createResult.Did.Value, new DidWebVhUpdateOptions
+        {
+            CurrentLogContent = Encoding.UTF8.GetBytes(logContent),
+            SigningKey = key2,
+            ParameterUpdates = new DidWebVhParameterUpdates
+            {
+                UpdateKeys = [key2.MultibasePublicKey],
+                NextKeyHashes = [PreRotationManager.ComputeKeyCommitment(key3.MultibasePublicKey)]
+            }
+        });
+
+        updateResult.UpdateKeyChange.Should().Be(AuthorizationChangeStatus.Changed);
+        updateResult.EffectiveUpdateKeys.Should().BeNull();
+        updateResult.RevealedUpdateKeys.Should().BeEquivalentTo([key2.MultibasePublicKey]);
+    }
+
+    [Fact]
+    public async Task Issue91_Update_PreRotationRecommitSameKey_ReportsUnchanged()
+    {
+        // A pre-rotation "rotation" that re-commits to the CURRENT key passes
+        // PreRotationManager.ValidateKeyRotation (hash-membership only) without rotating
+        // authority. The evidence must not lend that phantom rotation any credibility.
+        var (method, _) = CreateMethod();
+        var key1 = CreateEd25519Signer();
+        var commitment1 = PreRotationManager.ComputeKeyCommitment(key1.MultibasePublicKey);
+
+        var createResult = await method.CreateAsync(new DidWebVhCreateOptions
+        {
+            Domain = "example.com",
+            UpdateKey = key1,
+            PreRotationCommitments = [commitment1]
+        });
+        var logContent = (string)createResult.Artifacts![DidWebVhArtifacts.DidJsonl];
+
+        var updateResult = await method.UpdateAsync(createResult.Did.Value, new DidWebVhUpdateOptions
+        {
+            CurrentLogContent = Encoding.UTF8.GetBytes(logContent),
+            SigningKey = key1,
+            ParameterUpdates = new DidWebVhParameterUpdates
+            {
+                UpdateKeys = [key1.MultibasePublicKey],
+                NextKeyHashes = [commitment1]
+            }
+        });
+
+        updateResult.UpdateKeyChange.Should().Be(AuthorizationChangeStatus.Unchanged);
+        updateResult.EffectiveUpdateKeys.Should().BeNull();
+        updateResult.RevealedUpdateKeys.Should().BeEquivalentTo([key1.MultibasePublicKey]);
+    }
+
+    [Fact]
+    public async Task Issue91_Update_EmptyUpdateKeys_ReportsChangedWithEmptySet()
+    {
+        // Supplying an empty set freezes the DID (no key may sign the next entry). The evidence
+        // must distinguish this (empty, non-null) from "not reported" (null).
+        var (method, _) = CreateMethod();
+        var (didA, logA, signerA) = await CreateWebVhDidAsync(method, "alice");
+
+        var updateResult = await method.UpdateAsync(didA, new DidWebVhUpdateOptions
+        {
+            CurrentLogContent = Encoding.UTF8.GetBytes(logA),
+            SigningKey = signerA,
+            ParameterUpdates = new DidWebVhParameterUpdates
+            {
+                UpdateKeys = []
+            }
+        });
+
+        updateResult.UpdateKeyChange.Should().Be(AuthorizationChangeStatus.Changed);
+        updateResult.AuthorizationChange.Should().Be(AuthorizationChangeStatus.Changed);
+        updateResult.EffectiveUpdateKeys.Should().NotBeNull();
+        updateResult.EffectiveUpdateKeys.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task Issue91_Update_EffectiveUpdateKeys_IsDefensiveCopy()
+    {
+        // Mutating the caller-owned list after UpdateAsync returns must not alter the reported
+        // evidence — otherwise result and signed log could silently disagree.
+        var (method, _) = CreateMethod();
+        var (didA, logA, signerA) = await CreateWebVhDidAsync(method, "alice");
+        var newKey = CreateEd25519Signer();
+        var callerList = new List<string> { newKey.MultibasePublicKey };
+
+        var updateResult = await method.UpdateAsync(didA, new DidWebVhUpdateOptions
+        {
+            CurrentLogContent = Encoding.UTF8.GetBytes(logA),
+            SigningKey = signerA,
+            ParameterUpdates = new DidWebVhParameterUpdates
+            {
+                UpdateKeys = callerList
+            }
+        });
+
+        callerList.Clear();
+        callerList.Add("z6MkAttackerControlledValueAfterTheFact");
+
+        updateResult.EffectiveUpdateKeys.Should().BeEquivalentTo([newKey.MultibasePublicKey]);
+    }
+
+    /// <summary>
+    /// An <see cref="IReadOnlyList{T}"/> that yields different contents on successive
+    /// enumerations: the first enumeration returns one list, all later enumerations another.
+    /// Models a caller-controlled dynamic collection attempting to show one value set to
+    /// validation/evidence and a different one to hashing/signing/serialization
+    /// (PR #92 review, finding 2).
+    /// </summary>
+    private sealed class FlippingList<T>(
+        IReadOnlyList<T> firstEnumeration, IReadOnlyList<T> laterEnumerations)
+        : IReadOnlyList<T>
+    {
+        private int _enumerations;
+
+        public int Count => firstEnumeration.Count;
+        public T this[int index] => firstEnumeration[index];
+
+        public IEnumerator<T> GetEnumerator()
+            => (++_enumerations == 1 ? firstEnumeration : laterEnumerations).GetEnumerator();
+
+        System.Collections.IEnumerator System.Collections.IEnumerable.GetEnumerator()
+            => GetEnumerator();
+    }
+
+    [Fact]
+    public async Task Issue91_Update_DynamicKeyList_CannotDesyncEvidenceFromArtifact()
+    {
+        // A dynamic IReadOnlyList must not be able to present one key set to the change
+        // comparison / reported evidence and a different set to hashing, signing, and the
+        // serialized artifact. The driver snapshots the caller's collections exactly once, so
+        // the artifact, the validated chain, and the evidence all reflect the same (first)
+        // read — never a mix.
+        var (method, _) = CreateMethod();
+        var (didA, logA, signerA) = await CreateWebVhDidAsync(method, "alice");
+        var newKey = CreateEd25519Signer();
+
+        var flippingList = new FlippingList<string>(
+            firstEnumeration: [newKey.MultibasePublicKey],
+            laterEnumerations: [signerA.MultibasePublicKey]);
+
+        var updateResult = await method.UpdateAsync(didA, new DidWebVhUpdateOptions
+        {
+            CurrentLogContent = Encoding.UTF8.GetBytes(logA),
+            SigningKey = signerA,
+            ParameterUpdates = new DidWebVhParameterUpdates
+            {
+                UpdateKeys = flippingList
+            }
+        });
+
+        // Everything is consistent with the single snapshot: the appended entry, the chain
+        // validator's view of it, and the reported evidence all carry the new key only.
+        var updatedLog = (string)updateResult.Artifacts![DidWebVhArtifacts.DidJsonl];
+        var entries = LogEntrySerializer.ParseJsonLines(Encoding.UTF8.GetBytes(updatedLog));
+        entries[^1].Parameters.UpdateKeys.Should().BeEquivalentTo([newKey.MultibasePublicKey]);
+
+        var effective = await new LogChainValidator().ValidateChainAsync(entries);
+        effective.UpdateKeys.Should().BeEquivalentTo([newKey.MultibasePublicKey]);
+
+        updateResult.UpdateKeyChange.Should().Be(AuthorizationChangeStatus.Changed);
+        updateResult.EffectiveUpdateKeys.Should().BeEquivalentTo([newKey.MultibasePublicKey]);
+    }
+
+    [Fact]
+    public async Task Issue101_Update_DynamicNewDocumentCollection_PublishedLogMatchesSignedSnapshot()
+    {
+        // A NewDocument whose collections yield different contents per enumeration must not be
+        // able to desynchronize the entry hash, the signed bytes, and the published log —
+        // hashing, signing, publication, and the reported document must all reflect a single
+        // snapshot taken at the trust boundary.
+        var (method, httpClient) = CreateMethod();
+        var (did, log, signer) = await CreateWebVhDidAsync(method);
+
+        var firstService = new Service
+        {
+            Id = "#service-first",
+            Type = "ExampleService",
+            ServiceEndpoint = ServiceEndpointValue.FromUri("https://example.com/first")
+        };
+        var laterService = new Service
+        {
+            Id = "#service-later",
+            Type = "ExampleService",
+            ServiceEndpoint = ServiceEndpointValue.FromUri("https://example.com/later")
+        };
+        var newDocument = new DidDocument
+        {
+            Id = new Did(did),
+            Service = new FlippingList<Service>([firstService], [laterService])
+        };
+
+        var updateResult = await method.UpdateAsync(did, new DidWebVhUpdateOptions
+        {
+            CurrentLogContent = Encoding.UTF8.GetBytes(log),
+            SigningKey = signer,
+            NewDocument = newDocument
+        });
+
+        // The published log verifies end-to-end and carries the first (snapshot) read.
+        var updatedLog = (string)updateResult.Artifacts![DidWebVhArtifacts.DidJsonl];
+        httpClient.SetLogResponse(
+            DidUrlMapper.MapToLogUrl(did), Encoding.UTF8.GetBytes(updatedLog));
+        var resolved = await method.ResolveAsync(did);
+
+        resolved.ResolutionMetadata.Error.Should().BeNull(
+            "the published bytes must be the same single snapshot that was hashed and signed");
+        resolved.DidDocument!.Service.Should().ContainSingle()
+            .Which.Id.Should().Be("#service-first");
+
+        // The reported document is the private snapshot, not the caller's live instance.
+        updateResult.DidDocument.Should().NotBeSameAs(newDocument);
+        updateResult.DidDocument!.Service.Should().ContainSingle()
+            .Which.Id.Should().Be("#service-first");
+    }
+
+    [Fact]
+    public async Task Issue91_Update_EffectiveUpdateKeys_MatchesValidatedChain()
+    {
+        // Writer/reader parity: the reported set must equal what the chain validator derives as
+        // the effective updateKeys of the appended log.
+        var (method, _) = CreateMethod();
+        var (didA, logA, signerA) = await CreateWebVhDidAsync(method, "alice");
+        var newKey = CreateEd25519Signer();
+
+        var updateResult = await method.UpdateAsync(didA, new DidWebVhUpdateOptions
+        {
+            CurrentLogContent = Encoding.UTF8.GetBytes(logA),
+            SigningKey = signerA,
+            ParameterUpdates = new DidWebVhParameterUpdates
+            {
+                UpdateKeys = [newKey.MultibasePublicKey]
+            }
+        });
+
+        var updatedLog = (string)updateResult.Artifacts![DidWebVhArtifacts.DidJsonl];
+        var entries = LogEntrySerializer.ParseJsonLines(Encoding.UTF8.GetBytes(updatedLog));
+        var effective = await new LogChainValidator().ValidateChainAsync(entries);
+
+        updateResult.EffectiveUpdateKeys.Should().BeEquivalentTo(effective.UpdateKeys);
+    }
+
+    [Fact]
+    public async Task Issue91_Update_PreRotationExit_ReportsNextAuthorizedKeys()
+    {
+        // Turning pre-rotation OFF is still governed by the pre-rotation rules, but the
+        // resulting state is ordinary mode. Its effective updateKeys therefore authorize the
+        // next entry and can be reported.
+        var (method, _) = CreateMethod();
+        var key1 = CreateEd25519Signer();
+        var key2 = CreateEd25519Signer();
+
+        var createResult = await method.CreateAsync(new DidWebVhCreateOptions
+        {
+            Domain = "example.com",
+            UpdateKey = key1,
+            PreRotationCommitments = [PreRotationManager.ComputeKeyCommitment(key2.MultibasePublicKey)]
+        });
+        var logContent = (string)createResult.Artifacts![DidWebVhArtifacts.DidJsonl];
+
+        var updateResult = await method.UpdateAsync(createResult.Did.Value, new DidWebVhUpdateOptions
+        {
+            CurrentLogContent = Encoding.UTF8.GetBytes(logContent),
+            SigningKey = key2,
+            ParameterUpdates = new DidWebVhParameterUpdates
+            {
+                UpdateKeys = [key2.MultibasePublicKey],
+                NextKeyHashes = []
+            }
+        });
+
+        updateResult.UpdateKeyChange.Should().Be(AuthorizationChangeStatus.Changed);
+        updateResult.EffectiveUpdateKeys.Should().BeEquivalentTo([key2.MultibasePublicKey]);
+        updateResult.RevealedUpdateKeys.Should().BeEquivalentTo([key2.MultibasePublicKey]);
+        updateResult.AuthorizationChange.Should().Be(AuthorizationChangeStatus.Changed);
+    }
+
+    [Fact]
+    public async Task Issue91_Update_DynamicNextKeyHashes_CannotDesyncArtifact()
+    {
+        // The snapshot must cover NextKeyHashes too: a dynamic list may not present one
+        // commitment set to the merge/serialization and another to any later stage.
+        var (method, _) = CreateMethod();
+        var (didA, logA, signerA) = await CreateWebVhDidAsync(method, "alice");
+        var honestKey = CreateEd25519Signer();
+        var otherKey = CreateEd25519Signer();
+        var honestCommitment = PreRotationManager.ComputeKeyCommitment(honestKey.MultibasePublicKey);
+        var otherCommitment = PreRotationManager.ComputeKeyCommitment(otherKey.MultibasePublicKey);
+
+        var updateResult = await method.UpdateAsync(didA, new DidWebVhUpdateOptions
+        {
+            CurrentLogContent = Encoding.UTF8.GetBytes(logA),
+            SigningKey = signerA,
+            ParameterUpdates = new DidWebVhParameterUpdates
+            {
+                NextKeyHashes = new FlippingList<string>(
+                    firstEnumeration: [honestCommitment],
+                    laterEnumerations: [otherCommitment])
+            }
+        });
+
+        // Artifact and validated chain both carry the first (snapshotted) read.
+        var updatedLog = (string)updateResult.Artifacts![DidWebVhArtifacts.DidJsonl];
+        var entries = LogEntrySerializer.ParseJsonLines(Encoding.UTF8.GetBytes(updatedLog));
+        entries[^1].Parameters.NextKeyHashes.Should().BeEquivalentTo([honestCommitment]);
+
+        var effective = await new LogChainValidator().ValidateChainAsync(entries);
+        effective.NextKeyHashes.Should().BeEquivalentTo([honestCommitment]);
+
+        // Pre-rotation hides only the following entry's keys. This activation entry was still
+        // authorized by the prior ordinary-mode set.
+        updateResult.UpdateKeyChange.Should().Be(AuthorizationChangeStatus.Unchanged);
+        updateResult.EffectiveUpdateKeys.Should().BeNull();
+        updateResult.RevealedUpdateKeys.Should().BeEquivalentTo([signerA.MultibasePublicKey]);
+    }
+
+    [Fact]
+    public async Task Issue91_Update_DynamicWitnessList_CannotDesyncArtifact()
+    {
+        // The snapshot must cover the witness list too: the policy that was validated must be
+        // the policy that is serialized.
+        var (method, _) = CreateMethod();
+        var (didA, logA, signerA) = await CreateWebVhDidAsync(method, "alice");
+        var honestWitness = CreateEd25519Signer();
+        var otherWitness = CreateEd25519Signer();
+        var honestEntry = new WitnessEntry { Id = $"did:key:{honestWitness.MultibasePublicKey}", Weight = 1 };
+        var otherEntry = new WitnessEntry { Id = $"did:key:{otherWitness.MultibasePublicKey}", Weight = 1 };
+
+        var updateResult = await method.UpdateAsync(didA, new DidWebVhUpdateOptions
+        {
+            CurrentLogContent = Encoding.UTF8.GetBytes(logA),
+            SigningKey = signerA,
+            ParameterUpdates = new DidWebVhParameterUpdates
+            {
+                Witness = new WitnessConfig
+                {
+                    Threshold = 1,
+                    Witnesses = new FlippingList<WitnessEntry>(
+                        firstEnumeration: [honestEntry],
+                        laterEnumerations: [otherEntry])
+                }
+            }
+        });
+
+        var updatedLog = (string)updateResult.Artifacts![DidWebVhArtifacts.DidJsonl];
+        var entries = LogEntrySerializer.ParseJsonLines(Encoding.UTF8.GetBytes(updatedLog));
+        var serializedWitnesses = entries[^1].Parameters.Witness!.Witnesses!;
+        serializedWitnesses.Should().ContainSingle().Which.Id.Should().Be(honestEntry.Id);
+
+        updateResult.AuthorizationChange.Should().Be(AuthorizationChangeStatus.Changed);
+        updateResult.UpdateKeyChange.Should().Be(AuthorizationChangeStatus.Unchanged);
+    }
+
+    // ================================================================
+    // ISSUE #98: CONTINUOUS PRE-ROTATION EVIDENCE
+    // The current entry's authorizing set is concrete even when fresh
+    // commitments intentionally hide the keys eligible for the next entry.
+    // ================================================================
+
+    [Fact]
+    public async Task Issue98_Update_ContinuousPreRotation_ReportsKnownKeyChange()
+    {
+        var (method, _) = CreateMethod();
+        var key1 = CreateEd25519Signer();
+        var key2 = CreateEd25519Signer();
+        var key3 = CreateEd25519Signer();
+
+        var createResult = await method.CreateAsync(new DidWebVhCreateOptions
+        {
+            Domain = "example.com",
+            UpdateKey = key1,
+            PreRotationCommitments = [PreRotationManager.ComputeKeyCommitment(key2.MultibasePublicKey)]
+        });
+
+        var updateResult = await method.UpdateAsync(createResult.Did.Value, new DidWebVhUpdateOptions
+        {
+            CurrentLogContent = Encoding.UTF8.GetBytes(
+                (string)createResult.Artifacts![DidWebVhArtifacts.DidJsonl]),
+            SigningKey = key2,
+            ParameterUpdates = new DidWebVhParameterUpdates
+            {
+                UpdateKeys = [key2.MultibasePublicKey],
+                NextKeyHashes = [PreRotationManager.ComputeKeyCommitment(key3.MultibasePublicKey)]
+            }
+        });
+
+        updateResult.UpdateKeyChange.Should().Be(AuthorizationChangeStatus.Changed);
+        updateResult.EffectiveUpdateKeys.Should().BeNull();
+        updateResult.RevealedUpdateKeys.Should().BeEquivalentTo([key2.MultibasePublicKey]);
+    }
+
+    [Fact]
+    public async Task Issue98_Update_PreRotationActivation_ReportsUnchangedKeySet()
+    {
+        var (method, _) = CreateMethod();
+        var (did, log, signer) = await CreateWebVhDidAsync(method, "alice");
+        var nextKey = CreateEd25519Signer();
+
+        var updateResult = await method.UpdateAsync(did, new DidWebVhUpdateOptions
+        {
+            CurrentLogContent = Encoding.UTF8.GetBytes(log),
+            SigningKey = signer,
+            ParameterUpdates = new DidWebVhParameterUpdates
+            {
+                NextKeyHashes = [PreRotationManager.ComputeKeyCommitment(nextKey.MultibasePublicKey)]
+            }
+        });
+
+        updateResult.UpdateKeyChange.Should().Be(AuthorizationChangeStatus.Unchanged);
+        updateResult.EffectiveUpdateKeys.Should().BeNull();
+        updateResult.RevealedUpdateKeys.Should().BeEquivalentTo([signer.MultibasePublicKey]);
+    }
+
+    [Fact]
+    public async Task Issue98_Update_ActivationWithKeyChange_DoesNotMislabelPriorAuthorizingSet()
+    {
+        // This entry is still ordinary-mode because there were no prior commitments. It is
+        // authorized by key1 even though it installs key2 and activates pre-rotation for a
+        // successor that must reveal key3. The two nullable evidence properties cannot be
+        // coalesced into a generic post-change key set.
+        var (method, _) = CreateMethod();
+        var (did, log, key1) = await CreateWebVhDidAsync(method, "alice");
+        var key2 = CreateEd25519Signer();
+        var key3 = CreateEd25519Signer();
+
+        var updateResult = await method.UpdateAsync(did, new DidWebVhUpdateOptions
+        {
+            CurrentLogContent = Encoding.UTF8.GetBytes(log),
+            SigningKey = key1,
+            ParameterUpdates = new DidWebVhParameterUpdates
+            {
+                UpdateKeys = [key2.MultibasePublicKey],
+                NextKeyHashes = [PreRotationManager.ComputeKeyCommitment(key3.MultibasePublicKey)]
+            }
+        });
+
+        updateResult.UpdateKeyChange.Should().Be(AuthorizationChangeStatus.Changed);
+        updateResult.EffectiveUpdateKeys.Should().BeNull();
+        updateResult.RevealedUpdateKeys.Should().BeEquivalentTo([key1.MultibasePublicKey]);
+        updateResult.RevealedUpdateKeys.Should().NotContain(key2.MultibasePublicKey);
+    }
+
+    [Fact]
+    public async Task Issue98_Update_RevealedUpdateKeys_IsDefensiveReadOnlyCopy()
+    {
+        var (method, _) = CreateMethod();
+        var key1 = CreateEd25519Signer();
+        var key2 = CreateEd25519Signer();
+        var key3 = CreateEd25519Signer();
+        var callerList = new List<string> { key2.MultibasePublicKey };
+
+        var createResult = await method.CreateAsync(new DidWebVhCreateOptions
+        {
+            Domain = "example.com",
+            UpdateKey = key1,
+            PreRotationCommitments =
+                [PreRotationManager.ComputeKeyCommitment(key2.MultibasePublicKey)]
+        });
+
+        var updateResult = await method.UpdateAsync(createResult.Did.Value, new DidWebVhUpdateOptions
+        {
+            CurrentLogContent = Encoding.UTF8.GetBytes(
+                (string)createResult.Artifacts![DidWebVhArtifacts.DidJsonl]),
+            SigningKey = key2,
+            ParameterUpdates = new DidWebVhParameterUpdates
+            {
+                UpdateKeys = callerList,
+                NextKeyHashes = [PreRotationManager.ComputeKeyCommitment(key3.MultibasePublicKey)]
+            }
+        });
+
+        callerList.Clear();
+        callerList.Add("z6MkAttackerControlledValueAfterTheFact");
+
+        updateResult.RevealedUpdateKeys.Should().BeEquivalentTo([key2.MultibasePublicKey]);
+        var mutableView = updateResult.RevealedUpdateKeys as IList<string>;
+        mutableView.Should().NotBeNull();
+        mutableView!.IsReadOnly.Should().BeTrue();
+        ((Action)(() => mutableView[0] = "z6MkAttackerControlledDowncast"))
+            .Should().Throw<NotSupportedException>();
+    }
+
+    [Fact]
+    public async Task Issue98_Update_DynamicRevealedKeySet_CannotDesyncFullEvidenceFromArtifact()
+    {
+        // The report must contain every commitment-validated current update key, not only the
+        // signer, and a dynamic caller collection must not be able to change that set between
+        // validation, signing/serialization, and evidence construction.
+        var (method, _) = CreateMethod();
+        var key1 = CreateEd25519Signer();
+        var key2 = CreateEd25519Signer();
+        var key2B = CreateEd25519Signer();
+        var key3 = CreateEd25519Signer();
+        var revealedKeys = new FlippingList<string>(
+            firstEnumeration: [key2.MultibasePublicKey, key2B.MultibasePublicKey],
+            laterEnumerations: [key2.MultibasePublicKey]);
+
+        var createResult = await method.CreateAsync(new DidWebVhCreateOptions
+        {
+            Domain = "example.com",
+            UpdateKey = key1,
+            PreRotationCommitments =
+            [
+                PreRotationManager.ComputeKeyCommitment(key2.MultibasePublicKey),
+                PreRotationManager.ComputeKeyCommitment(key2B.MultibasePublicKey)
+            ]
+        });
+
+        var updateResult = await method.UpdateAsync(createResult.Did.Value, new DidWebVhUpdateOptions
+        {
+            CurrentLogContent = Encoding.UTF8.GetBytes(
+                (string)createResult.Artifacts![DidWebVhArtifacts.DidJsonl]),
+            SigningKey = key2,
+            ParameterUpdates = new DidWebVhParameterUpdates
+            {
+                UpdateKeys = revealedKeys,
+                NextKeyHashes = [PreRotationManager.ComputeKeyCommitment(key3.MultibasePublicKey)]
+            }
+        });
+
+        var updatedLog = (string)updateResult.Artifacts![DidWebVhArtifacts.DidJsonl];
+        var entries = LogEntrySerializer.ParseJsonLines(Encoding.UTF8.GetBytes(updatedLog));
+        entries[^1].Parameters.UpdateKeys.Should().BeEquivalentTo(
+            [key2.MultibasePublicKey, key2B.MultibasePublicKey]);
+        (await new LogChainValidator().ValidateChainAsync(entries))
+            .UpdateKeys.Should().BeEquivalentTo(
+                [key2.MultibasePublicKey, key2B.MultibasePublicKey]);
+
+        updateResult.UpdateKeyChange.Should().Be(AuthorizationChangeStatus.Changed);
+        updateResult.EffectiveUpdateKeys.Should().BeNull();
+        updateResult.RevealedUpdateKeys.Should().BeEquivalentTo(
+            [key2.MultibasePublicKey, key2B.MultibasePublicKey]);
+    }
+
+    [Fact]
+    public async Task Update_DuplicateWitnessIds_AreRejected()
+    {
+        var (method, _) = CreateMethod();
+        var (didA, logA, signerA) = await CreateWebVhDidAsync(method, "alice");
+        var wid = $"did:key:{CreateEd25519Signer().MultibasePublicKey}";
+
+        Func<Task> act = () => method.UpdateAsync(didA, new DidWebVhUpdateOptions
+        {
+            CurrentLogContent = Encoding.UTF8.GetBytes(logA),
+            SigningKey = signerA,
+            ParameterUpdates = new DidWebVhParameterUpdates
+            {
+                Witness = new WitnessConfig
+                {
+                    Threshold = 1,
+                    Witnesses =
+                    [
+                        new WitnessEntry { Id = wid, Weight = 1 },
+                        new WitnessEntry { Id = wid, Weight = 100 }
+                    ]
+                }
+            }
+        });
+
+        await act.Should().ThrowAsync<ArgumentException>()
+            .WithMessage("*duplicated*");
+    }
+
+    // ----------------------------------------------------------------
+    // Issue #82 (adversarial audit follow-up): the DID's self-certifying
+    // SCID must be bound to the genesis on BOTH the read and write paths.
+    // A domain/host-controlling attacker can serve a self-consistent
+    // genesis whose latest state.id claims the victim DID (passing the
+    // State.Id check) but whose genesis SCID is the attacker's — this is
+    // caught only by binding ExtractScid(did) == genesis SCID.
+    // ----------------------------------------------------------------
+
+    /// <summary>
+    /// Signs a log entry exactly as the driver does (eddsa-jcs-2022 over the entry without its
+    /// proof, verificationMethod = signer's own did:key), so tests can forge a validly-signed log.
+    /// </summary>
+    private static async Task<DataIntegrityProofValue> SignEntryAsync(LogEntry entry, ISigner signer)
+    {
+        var suite = new EddsaJcs2022Cryptosuite();
+        var proofOptions = new DataIntegrityProof
+        {
+            Cryptosuite = EddsaJcs2022Cryptosuite.CryptosuiteName,
+            VerificationMethod = $"did:key:{signer.MultibasePublicKey}#{signer.MultibasePublicKey}",
+            Created = entry.VersionTime.ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ"),
+            ProofPurpose = "assertionMethod",
+        };
+        using var document = JsonDocument.Parse(LogEntrySerializer.SerializeWithoutProof(entry));
+        var proof = await suite.CreateProofAsync(document.RootElement, proofOptions, signer, default);
+        return new DataIntegrityProofValue
+        {
+            Type = proof.Type,
+            Cryptosuite = proof.Cryptosuite!,
+            VerificationMethod = proof.VerificationMethod!,
+            Created = proof.Created!,
+            ProofPurpose = proof.ProofPurpose!,
+            ProofValue = proof.ProofValue!,
+        };
+    }
+
+    /// <summary>
+    /// Builds a self-consistent, validly-signed single-entry log whose document <c>id</c> is the
+    /// literal <paramref name="claimedDid"/> but whose genesis SCID is freshly computed from the
+    /// attacker's own content (so it does NOT equal <paramref name="claimedDid"/>'s SCID). This is
+    /// what an attacker serves at the victim's URL; it passes chain validation and the State.Id
+    /// check, and is only rejected by the genesis-SCID binding.
+    /// </summary>
+    private static async Task<byte[]> ForgeGenesisClaimingDidAsync(string claimedDid, ISigner attackerKey)
+    {
+        var attackerMb = attackerKey.MultibasePublicKey;
+        var doc = new DidDocument
+        {
+            Id = new Did(claimedDid),
+            VerificationMethod =
+            [
+                new VerificationMethod
+                {
+                    Id = $"{claimedDid}#{attackerMb}",
+                    Type = "Multikey",
+                    Controller = new Did(claimedDid),
+                    PublicKeyMultibase = attackerMb
+                }
+            ]
+        };
+        var parameters = new LogEntryParameters
+        {
+            Method = DidWebVhMethod.MethodVersion,
+            Scid = ScidGenerator.SafePlaceholder,
+            UpdateKeys = [attackerMb],
+            Deactivated = false
+        };
+        var entry = new LogEntry
+        {
+            VersionId = ScidGenerator.SafePlaceholder,
+            VersionTime = DateTimeOffset.UtcNow,
+            Parameters = parameters,
+            State = doc
+        };
+
+        // Compute a self-consistent SCID over this forged genesis (state.id kept literal).
+        var jsonWithPlaceholder = LogEntrySerializer.SerializeWithoutProof(entry)
+            .Replace(ScidGenerator.SafePlaceholder, ScidGenerator.Placeholder);
+        var scid = ScidGenerator.ComputeScid(jsonWithPlaceholder);
+        var jsonWithScid = ScidGenerator.ReplacePlaceholders(jsonWithPlaceholder, scid);
+        var entryHash = ScidGenerator.ComputeEntryHash(jsonWithScid);
+        var finalEntry = LogEntrySerializer.DeserializeEntry(jsonWithScid) with
+        {
+            VersionId = $"1-{entryHash}"
+        };
+
+        finalEntry = finalEntry with { Proof = [await SignEntryAsync(finalEntry, attackerKey)] };
+        return LogEntrySerializer.ToJsonLines([finalEntry]);
+    }
+
+    [Fact]
+    public async Task Issue82_Resolve_ForgedGenesisClaimingDid_ReturnsInvalidDidLog()
+    {
+        var (method, httpClient) = CreateMethod();
+
+        // Victim publishes a real DID.
+        var victimSigner = CreateEd25519Signer();
+        var victim = await method.CreateAsync(new DidWebVhCreateOptions
+        {
+            Domain = "example.com",
+            Path = "alice",
+            UpdateKey = victimSigner
+        });
+        var victimDid = victim.Did.Value;
+
+        // Attacker who controls example.com serves a forged genesis: its document claims the
+        // victim's DID, but it is self-signed by the attacker's key with the attacker's own SCID.
+        var attackerKey = CreateEd25519Signer();
+        var forgedLog = await ForgeGenesisClaimingDidAsync(victimDid, attackerKey);
+
+        // Sanity: the forged log's latest entry really does claim the victim DID (so the older
+        // State.Id check alone would NOT catch it) — the SCID binding is what rejects it.
+        var forgedEntries = LogEntrySerializer.ParseJsonLines(forgedLog);
+        forgedEntries[^1].State.Id.Value.Should().Be(victimDid);
+        forgedEntries[0].Parameters.Scid.Should().NotBe(DidUrlMapper.ExtractScid(victimDid));
+
+        var logUrl = DidUrlMapper.MapToLogUrl(victimDid);
+        httpClient.SetLogResponse(logUrl, forgedLog);
+
+        var resolveResult = await method.ResolveAsync(victimDid);
+
+        resolveResult.DidDocument.Should().BeNull("the genesis SCID does not match the DID's SCID");
+        resolveResult.ResolutionMetadata.Error.Should().Be("invalidDidLog");
+    }
+
+    [Fact]
+    public async Task Issue82_Update_ForgedLogClaimingDid_Throws()
+    {
+        var (method, _) = CreateMethod();
+
+        var victimSigner = CreateEd25519Signer();
+        var victim = await method.CreateAsync(new DidWebVhCreateOptions
+        {
+            Domain = "example.com",
+            Path = "alice",
+            UpdateKey = victimSigner
+        });
+        var victimDid = victim.Did.Value;
+
+        // Attacker crafts a validly-signed log whose latest entry claims the victim DID and whose
+        // authority is the attacker's own key. Such a log is internally SCID-inconsistent
+        // (state.id carries the victim's SCID, parameters.scid the forge's own hash), so the
+        // per-entry identity rule (#101) rejects it during chain validation — before the
+        // genesis-SCID binding that used to catch it (issue #82) is even reached.
+        var attackerKey = CreateEd25519Signer();
+        var forgedLog = await ForgeGenesisClaimingDidAsync(victimDid, attackerKey);
+
+        var act = () => method.UpdateAsync(victimDid, new DidWebVhUpdateOptions
+        {
+            CurrentLogContent = forgedLog,
+            SigningKey = attackerKey,
+            NewDocument = new DidDocument { Id = new Did(victimDid) }
+        });
+
+        await act.Should().ThrowAsync<LogChainValidationException>().WithMessage("*SCID*");
+    }
+
+    [Fact]
+    public async Task Issue82_Deactivate_ForgedLogClaimingDid_Throws()
+    {
+        var (method, _) = CreateMethod();
+
+        var victimSigner = CreateEd25519Signer();
+        var victim = await method.CreateAsync(new DidWebVhCreateOptions
+        {
+            Domain = "example.com",
+            Path = "alice",
+            UpdateKey = victimSigner
+        });
+        var victimDid = victim.Did.Value;
+
+        var attackerKey = CreateEd25519Signer();
+        var forgedLog = await ForgeGenesisClaimingDidAsync(victimDid, attackerKey);
+
+        var act = () => method.DeactivateAsync(victimDid, new DidWebVhDeactivateOptions
+        {
+            CurrentLogContent = forgedLog,
+            SigningKey = attackerKey
+        });
+
+        // The forged log is internally SCID-inconsistent, so the per-entry identity rule
+        // (#101) rejects it during chain validation (see the Update variant above).
+        await act.Should().ThrowAsync<LogChainValidationException>().WithMessage("*SCID*");
     }
 }
