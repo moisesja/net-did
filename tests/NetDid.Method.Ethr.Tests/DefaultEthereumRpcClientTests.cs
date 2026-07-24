@@ -121,7 +121,7 @@ public class DefaultEthereumRpcClientTests
             => Task.FromResult(responder(request));
     }
 
-    /// <summary>Streams <paramref name="length"/> bytes with no Content-Length header.</summary>
+    /// <summary>Streams a fixed number of bytes with no Content-Length header.</summary>
     private sealed class OversizeStreamedContent : HttpContent
     {
         private readonly long _length;

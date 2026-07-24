@@ -267,7 +267,7 @@ Short-form-only resolution returns `notFound` (requires prior long-form exchange
 ### Create a did:ethr
 
 ```csharp
-using NetDid.Core.Crypto;
+using NetCrypto;
 using NetDid.Method.Ethr;
 using NetDid.Method.Ethr.Rpc;
 
