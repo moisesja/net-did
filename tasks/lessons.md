@@ -169,3 +169,22 @@
   trust property (a single untrusted RPC endpoint can forge a self-consistent history — integrity, not
   availability), not to "no more findings". Preserve the original author's commits (merge, don't squash)
   so credit survives when the superseding PR lands. (PR #104 adopting #70 by @mirceanis.)
+- A Core serializer change ripples through EVERY method's round-trip and any fingerprint
+  built on modeled serialization — run the FULL suite, not just the method you're targeting.
+  Fixing VerificationMethodJsonConverter.Read to capture AdditionalProperties (so did:ethr's
+  publicKeyHex round-trips) changed did:webvh's #101 state-provenance fingerprint (which hashes
+  the modeled serialization), breaking one LogEntryWireProvenanceTests assertion. When a
+  security-property test breaks after an unrelated-looking change, DON'T just make it pass:
+  determine whether the property was WEAKENED or the test's proxy became OUTDATED. Here the
+  fingerprint became strictly more faithful (models more members → detects more changes → drops
+  fewer signed members), which strengthened #101; the test's "modeled fallback drops VM members"
+  proxy was the outdated part. Verify the fingerprint is computed consistently at parse- and
+  serialize-time before concluding "safe", and record the cross-cutting effect in the commit +
+  PR reply so the reviewer sees why their #101 test changed. (PR #104 review round.)
+- "Avoid whack-a-mole" means closing residuals the reviewer's own comment already hinted at,
+  even when they sanctioned a simpler option. The #1 fix could use stable-sort-by-block OR
+  (block, logIndex); the reviewer listed logIndex first. I shipped stable-sort, then the
+  adversarial re-review flagged that it trusts intra-block response order — exactly the gap
+  logIndex closes. Doing the logIndex sort proactively (before re-review) would have saved a
+  round. When a reviewer lists two options and one is strictly more robust, prefer the robust
+  one unless it is materially more work. (PR #104 review round.)
