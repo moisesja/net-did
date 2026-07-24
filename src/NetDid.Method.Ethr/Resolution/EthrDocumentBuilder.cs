@@ -150,6 +150,13 @@ public static class EthrDocumentBuilder
         // Delegate-based VMs (#delegate-N)
         foreach (var (counter, d) in validDelegates)
         {
+            // did:ethr publishes only two delegate types: veriKey (→ assertionMethod) and
+            // sigAuth (→ authentication + assertionMethod). Application-specific delegate
+            // types must NOT be promoted to signing authority. The counter was already
+            // consumed during replay, so skipping here keeps #delegate-N numbering aligned.
+            if (d.DelegateType is not ("veriKey" or "sigAuth"))
+                continue;
+
             var vmId = $"{did}#delegate-{counter}";
             vms.Add(new VerificationMethod
             {

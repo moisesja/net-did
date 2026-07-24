@@ -113,6 +113,27 @@ public class EthrDocumentBuilderTests
         doc.AssertionMethod.Should().Contain(e => e.Reference != null && e.Reference.Contains("#delegate-1"));
     }
 
+    // ── Unknown delegate type is NOT promoted to signing authority ─────────────
+
+    [Fact]
+    public void Build_UnknownDelegateType_NotEmittedAsVmOrAssertion()
+    {
+        var delegate20 = "0x5aaeb6053f3e94c9b9a09f33669435e7ef1beaed";
+        var future = (ulong)(Now.ToUnixTimeSeconds() + 3600);
+        var events = new List<Erc1056Event>
+        {
+            new DelegateChangedEvent(Address, "did/foo", delegate20, future, 0, 10)
+        };
+
+        var doc = EthrDocumentBuilder.Build(Did, MakeIdentifier(), ChainId, events, Now, false);
+
+        // Only veriKey/sigAuth are published — an application-specific delegate type must
+        // not become a verification method, an assertion signer, or an authentication key.
+        doc.VerificationMethod.Should().ContainSingle().Which.Id.Should().EndWith("#controller");
+        doc.AssertionMethod.Should().NotContain(e => e.Reference != null && e.Reference.Contains("#delegate"));
+        (doc.Authentication ?? []).Should().NotContain(e => e.Reference != null && e.Reference.Contains("#delegate"));
+    }
+
     // ── Expired delegate excluded ─────────────────────────────────────────────
 
     [Fact]
