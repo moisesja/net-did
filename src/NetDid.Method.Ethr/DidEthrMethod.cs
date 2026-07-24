@@ -164,19 +164,21 @@ public sealed class DidEthrMethod : DidMethodBase
         var changedResult = await rpc.CallAsync(network.RegistryAddress, changedHex, ct);
         var latestChange  = ParseHexUlong(changedResult);
 
-        // Collect events walking backwards from min(latestChange, versionBlock)
-        var ceiling = versionBlockNumber.HasValue
-            ? Math.Min(latestChange, versionBlockNumber.Value)
-            : latestChange;
-
+        // Collect the FULL event history (walk from the latest change to genesis).
+        // Historical resolution partitions this list by block number below — we must NOT
+        // start the walk at a requested version, or a version between two changes would
+        // miss the earlier change and collapse to a genesis document.
         var collectedEvents = new List<Erc1056Event>();
-        if (ceiling > 0)
+        if (latestChange > 0)
             await WalkEventChainAsync(
                 rpc, network.RegistryAddress, identifier.IdentityAddress,
-                ceiling, collectedEvents, ct);
+                latestChange, collectedEvents, ct);
 
-        // Oldest-first
-        collectedEvents.Reverse();
+        // Order oldest-first BY BLOCK. OrderBy is stable and each block's events were
+        // appended in ascending log order during the walk, so this reorders blocks
+        // oldest-first WITHOUT reversing events within a block — a flat List.Reverse()
+        // would invert a same-block add→revoke into revoke→add and leave a revoked key live.
+        collectedEvents = collectedEvents.OrderBy(e => e.BlockNumber).ToList();
 
         // Reference time & optional block-timestamp fetching for VersionTime
         DateTimeOffset referenceTime;
@@ -184,12 +186,18 @@ public sealed class DidEthrMethod : DidMethodBase
 
         if (versionBlockNumber.HasValue)
         {
-            var ts = await rpc.GetBlockTimestampAsync(versionBlockNumber.Value, ct);
-            referenceTime = DateTimeOffset.FromUnixTimeSeconds((long)ts);
+            // Resolve as of a specific block: the adjacent next change is the first event
+            // STRICTLY after the requested block (collectedEvents is ascending); then keep
+            // only changes at or before the requested block.
+            var version = versionBlockNumber.Value;
+            nextVersionId = collectedEvents
+                .FirstOrDefault(e => e.BlockNumber > version)?.BlockNumber;
+            collectedEvents = collectedEvents
+                .Where(e => e.BlockNumber <= version).ToList();
 
-            // Peek at the next change block after versionBlockNumber for metadata
-            if (latestChange > versionBlockNumber.Value)
-                nextVersionId = latestChange; // simplified — Phase 2 can refine
+            // Expire delegates/attributes/services against the requested block's timestamp.
+            var ts = await rpc.GetBlockTimestampAsync(version, ct);
+            referenceTime = DateTimeOffset.FromUnixTimeSeconds((long)ts);
         }
         else if (options?.VersionTime is string vtStr
             && DateTimeOffset.TryParse(vtStr, out var vt))
@@ -231,7 +239,9 @@ public sealed class DidEthrMethod : DidMethodBase
 
         var meta = new DidDocumentMetadata
         {
-            VersionId   = versionBlockNumber?.ToString() ?? (lastChangeBlock > 0 ? lastChangeBlock.ToString() : null),
+            // The version is the block of the last APPLIED change (post-partition), not the
+            // requested block — metadata must report the state actually returned.
+            VersionId   = lastChangeBlock > 0 ? lastChangeBlock.ToString() : null,
             Deactivated = isDeactivated ? true : null,
             NextVersionId = nextVersionId?.ToString(),
         };
@@ -295,6 +305,7 @@ public sealed class DidEthrMethod : DidMethodBase
             // revisit the same block and loop forever.  Only values < currentBlock
             // represent a genuinely earlier block in the chain.
             ulong nextBlock = 0;
+            var validEventsThisBlock = 0;
 
             foreach (var log in logs)
             {
@@ -305,6 +316,7 @@ public sealed class DidEthrMethod : DidMethodBase
                             StringComparison.OrdinalIgnoreCase))
                         continue;
                     accumulator.Add(ev);
+                    validEventsThisBlock++;
                     // Bound total events: a hostile node can pack a single block with
                     // unbounded matching logs (memory DoS) even within the hop cap.
                     if (accumulator.Count > MaxCollectedEvents)
@@ -328,6 +340,17 @@ public sealed class DidEthrMethod : DidMethodBase
                     _logger.LogWarning(ex, "Skipping unparseable ERC-1056 log at block {Block}", currentBlock);
                 }
             }
+
+            // changed()/previousChange asserts a real event exists at this block. If the
+            // node returned no valid matching event (empty logs, all for other identities,
+            // or all unparseable), the authorization history is incomplete or corrupt —
+            // fail CLOSED to a resolution error rather than silently returning a partial
+            // document that could re-authorize a revoked key or hide a deactivation.
+            if (validEventsThisBlock == 0)
+                throw new EthereumInteractionException(
+                    $"did:ethr history for identity {identityAddress} is incomplete: block " +
+                    $"{currentBlock} has no valid matching ERC-1056 event (pruned/non-archive " +
+                    "or hostile RPC node).");
 
             currentBlock = nextBlock;
         }
