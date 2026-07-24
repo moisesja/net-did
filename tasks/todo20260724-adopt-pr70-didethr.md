@@ -30,6 +30,28 @@ User decisions: (1) adopt via merge (preserve @mirceanis credit); (2) crypto exc
 4. `adversarial-review` (untrusted RPC decoding; worktree isolation)
 5. Open PR crediting @mirceanis / linking #70 — stop; Moises merges
 
-## Review
+## Review (pause point — 2026-07-24)
 
-_(to be filled at pause point)_
+**State: PARKED GREEN on `feat/did-ethr-resolver` (pushed to origin, commit 8e9a26c). No PR opened.**
+
+What was done:
+- Upstream request filed: [crypto-dotnet#19](https://github.com/moisesja/crypto-dotnet/issues/19)
+  (public secp256k1 compressed→uncompressed decompression API).
+- Merged `main` (v2.3.0, 74 commits ahead) into PR #70's head; all 29 @mirceanis commits
+  preserved in history. Resolved all 7 conflicts per plan.
+- Adapted to the v2.0 NetCrypto extraction: `NetDid.Core.Crypto`/`.Jwk`/`ISigner` →
+  `NetCrypto` across 9 files.
+- Crypto policy enforced: all 4 Keccak-256 sites now use `NetCrypto.Keccak256.Hash`;
+  `acryptohashnet` removed entirely (zero hits; never pinned on this branch).
+- Verified: Release build 0 warnings / 0 errors; **1202 tests, 0 failures**
+  (Core 375, Key 52, Peer 48, WebVh 411, Ethr 65, W3C 233, DI 18);
+  conformance report regenerated — did:ethr 66/66, four-method total 255 PASS.
+- README counts + W3C section updated to actuals.
+
+Remaining non-NetCrypto crypto: exactly one TODO-annotated call —
+`src/NetDid.Method.Ethr/Crypto/EthereumAddress.cs` (`ECPubKey.TryCreate` decompression),
+blocked on crypto-dotnet#19.
+
+**Resume when NetCrypto ships the API** (see "Paused" checklist above): bump pin, swap the
+call, drop `using NBitcoin.Secp256k1;`, run `net-did-verify` + `adversarial-review`,
+open PR crediting @mirceanis / linking #70, stop before merge.
