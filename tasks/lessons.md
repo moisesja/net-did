@@ -188,3 +188,11 @@
   logIndex closes. Doing the logIndex sort proactively (before re-review) would have saved a
   round. When a reviewer lists two options and one is strictly more robust, prefer the robust
   one unless it is materially more work. (PR #104 review round.)
+- A security fix is complete only when it closes the invalid-state CLASS, not the one fixture
+  named in a review. For untrusted ordered inputs, test mixed valid+invalid batches as well as
+  all-invalid batches; require presence, syntax, and uniqueness of ordering metadata; validate
+  source/identity/block invariants at the same choke point; and reject invalid selector syntax
+  before external I/O. In PR #104, accepting one good event beside a malformed revoke, defaulting
+  a missing `logIndex` to zero, and treating malformed historical options as "latest" were all the
+  same fail-open pattern. Build the negative-state matrix before implementation, then re-attack
+  the whole matrix after the fix to avoid reviewer/fixer whack-a-mole.

@@ -33,7 +33,13 @@ public sealed class DefaultEthereumRpcClient : IEthereumRpcClient
     {
         var result = await SendAsync("eth_call",
             [new { to, data }, "latest"], ct);
-        return result.GetValue<string>();
+        var value = GetRpcString(result, "eth_call result");
+        if (!value.StartsWith("0x", StringComparison.Ordinal)
+            || (value.Length - 2) % 2 != 0
+            || !IsLowerHex(value.AsSpan(2)))
+            throw new EthereumInteractionException(
+                "Malformed eth_call result: expected canonical lowercase 0x-prefixed hex data.");
+        return value;
     }
 
     public async Task<IReadOnlyList<EthereumLogEntry>> GetLogsAsync(
@@ -49,25 +55,67 @@ public sealed class DefaultEthereumRpcClient : IEthereumRpcClient
 
         var result = await SendAsync("eth_getLogs", [filterParam], ct);
         var logs = new List<EthereumLogEntry>();
-
-        foreach (var node in result.AsArray())
+        JsonArray resultArray;
+        try
         {
-            if (node is null) continue;
-            var obj = node.AsObject();
-            var topicArray = obj["topics"]!.AsArray()
-                .Select(t => t!.GetValue<string>())
-                .ToList();
+            resultArray = result.AsArray();
+        }
+        catch (InvalidOperationException ex)
+        {
+            throw new EthereumInteractionException(
+                "Malformed eth_getLogs result: expected an array.", ex);
+        }
 
-            logs.Add(new EthereumLogEntry
+        for (var index = 0; index < resultArray.Count; index++)
+        {
+            var node = resultArray[index];
+            if (node is null)
+                throw new EthereumInteractionException(
+                    $"Malformed eth_getLogs result: log entry {index} is null.");
+
+            try
             {
-                Address         = obj["address"]!.GetValue<string>(),
-                Topics          = topicArray,
-                Data            = obj["data"]!.GetValue<string>(),
-                BlockNumber     = obj["blockNumber"]!.GetValue<string>(),
-                // logIndex may be absent on some responses; default to 0 (stable within a block).
-                LogIndex        = obj["logIndex"] is JsonNode li ? ParseHexUlong(li.GetValue<string>()) : 0,
-                TransactionHash = obj["transactionHash"]?.GetValue<string>(),
-            });
+                var obj = node.AsObject();
+                var topicsNode = obj["topics"]
+                    ?? throw new EthereumInteractionException(
+                        $"Malformed eth_getLogs result: log entry {index} is missing 'topics'.");
+                var topicArray = topicsNode.AsArray()
+                    .Select((topic, topicIndex) => topic is null
+                        ? throw new EthereumInteractionException(
+                            $"Malformed eth_getLogs result: log entry {index} topic {topicIndex} is null.")
+                        : GetString(topic, $"log entry {index} topic {topicIndex}"))
+                    .ToList();
+                var blockNumber = GetRequiredString(obj, "blockNumber", index);
+                _ = ParseCanonicalHexQuantity(
+                    blockNumber, $"eth_getLogs log entry {index} 'blockNumber'");
+                var removed = GetRequiredBoolean(obj, "removed", index);
+                if (removed)
+                    throw new EthereumInteractionException(
+                        $"Malformed eth_getLogs result: log entry {index} is marked 'removed' " +
+                        "and cannot be replayed as canonical authorization state.");
+
+                logs.Add(new EthereumLogEntry
+                {
+                    Address         = GetRequiredString(obj, "address", index),
+                    Topics          = topicArray,
+                    Data            = GetRequiredString(obj, "data", index),
+                    BlockNumber     = blockNumber,
+                    LogIndex        = GetRequiredHexUlong(obj, "logIndex", index),
+                    TransactionHash = obj["transactionHash"] is { } transactionHash
+                        ? GetString(transactionHash, $"log entry {index} 'transactionHash'")
+                        : null,
+                });
+            }
+            catch (EthereumInteractionException)
+            {
+                throw;
+            }
+            catch (Exception ex) when (ex is InvalidOperationException
+                or FormatException or OverflowException or ArgumentException)
+            {
+                throw new EthereumInteractionException(
+                    $"Malformed eth_getLogs result at log entry {index}.", ex);
+            }
         }
 
         return logs;
@@ -76,21 +124,30 @@ public sealed class DefaultEthereumRpcClient : IEthereumRpcClient
     public async Task<ulong> GetBlockNumberAsync(CancellationToken ct = default)
     {
         var result = await SendAsync("eth_blockNumber", [], ct);
-        return ParseHexUlong(result.GetValue<string>());
+        return ParseCanonicalHexQuantity(
+            GetRpcString(result, "eth_blockNumber result"),
+            "eth_blockNumber result");
     }
 
     public async Task<ulong> GetChainIdAsync(CancellationToken ct = default)
     {
         var result = await SendAsync("eth_chainId", [], ct);
-        return ParseHexUlong(result.GetValue<string>());
+        return ParseCanonicalHexQuantity(
+            GetRpcString(result, "eth_chainId result"),
+            "eth_chainId result");
     }
 
     public async Task<ulong> GetBlockTimestampAsync(ulong blockNumber, CancellationToken ct = default)
     {
         var result = await SendAsync("eth_getBlockByNumber",
             ["0x" + blockNumber.ToString("x"), false], ct);
-        var ts = result["timestamp"]!.GetValue<string>();
-        return ParseHexUlong(ts);
+        var block = GetRpcObject(result, "eth_getBlockByNumber result");
+        var timestampNode = block["timestamp"]
+            ?? throw new EthereumInteractionException(
+                "Malformed eth_getBlockByNumber result: missing or null 'timestamp'.");
+        return ParseCanonicalHexQuantity(
+            GetRpcString(timestampNode, "eth_getBlockByNumber timestamp"),
+            "eth_getBlockByNumber timestamp");
     }
 
     // ── Phase 2 stubs ─────────────────────────────────────────────────────────
@@ -154,11 +211,23 @@ public sealed class DefaultEthereumRpcClient : IEthereumRpcClient
         if (body is null)
             throw new EthereumInteractionException($"Empty RPC response for method '{method}'.");
 
-        if (body["error"] is JsonNode error)
+        JsonObject responseObject;
+        try
+        {
+            responseObject = body.AsObject();
+        }
+        catch (InvalidOperationException ex)
+        {
+            throw new EthereumInteractionException(
+                $"Malformed RPC response for '{method}': the JSON envelope must be an object.",
+                ex);
+        }
+
+        if (responseObject["error"] is JsonNode error)
             throw new EthereumInteractionException(
                 $"RPC error for '{method}': {error}");
 
-        return body["result"]
+        return responseObject["result"]
             ?? throw new EthereumInteractionException($"No 'result' field in RPC response for '{method}'.");
     }
 
@@ -189,9 +258,89 @@ public sealed class DefaultEthereumRpcClient : IEthereumRpcClient
         return ms.ToArray();
     }
 
-    private static ulong ParseHexUlong(string hex)
+    private static string GetRequiredString(JsonObject obj, string propertyName, int logIndex)
     {
-        var clean = hex.StartsWith("0x", StringComparison.OrdinalIgnoreCase) ? hex[2..] : hex;
-        return Convert.ToUInt64(clean, 16);
+        var node = obj[propertyName]
+            ?? throw new EthereumInteractionException(
+                $"Malformed eth_getLogs result: log entry {logIndex} is missing or has null '{propertyName}'.");
+        return GetString(node, $"log entry {logIndex} '{propertyName}'");
+    }
+
+    private static string GetString(JsonNode node, string context)
+    {
+        if (node is JsonValue value && value.TryGetValue<string>(out var text) && text is not null)
+            return text;
+
+        throw new EthereumInteractionException(
+            $"Malformed eth_getLogs result: {context} must be a string.");
+    }
+
+    private static ulong GetRequiredHexUlong(JsonObject obj, string propertyName, int logIndex)
+    {
+        var raw = GetRequiredString(obj, propertyName, logIndex);
+        return ParseCanonicalHexQuantity(
+            raw, $"eth_getLogs log entry {logIndex} '{propertyName}'");
+    }
+
+    private static ulong ParseCanonicalHexQuantity(string raw, string context)
+    {
+        try
+        {
+            if (!raw.StartsWith("0x", StringComparison.Ordinal)
+                || raw.Length == 2
+                || (raw.Length > 3 && raw[2] == '0')
+                || !IsLowerHex(raw.AsSpan(2)))
+                throw new FormatException("Ethereum quantities must use canonical 0x-prefixed form.");
+
+            return Convert.ToUInt64(raw[2..], 16);
+        }
+        catch (Exception ex) when (ex is FormatException or OverflowException or ArgumentException)
+        {
+            throw new EthereumInteractionException(
+                $"Malformed {context}: expected a canonical lowercase Ethereum hex quantity.",
+                ex);
+        }
+    }
+
+    private static bool GetRequiredBoolean(JsonObject obj, string propertyName, int logIndex)
+    {
+        var node = obj[propertyName]
+            ?? throw new EthereumInteractionException(
+                $"Malformed eth_getLogs result: log entry {logIndex} is missing or has null '{propertyName}'.");
+        if (node is JsonValue value && value.TryGetValue<bool>(out var result))
+            return result;
+
+        throw new EthereumInteractionException(
+            $"Malformed eth_getLogs result: log entry {logIndex} '{propertyName}' must be a boolean.");
+    }
+
+    private static string GetRpcString(JsonNode node, string context)
+    {
+        if (node is JsonValue value
+            && value.TryGetValue<string>(out var result)
+            && result is not null)
+            return result;
+
+        throw new EthereumInteractionException(
+            $"Malformed {context}: expected a JSON string.");
+    }
+
+    private static JsonObject GetRpcObject(JsonNode node, string context)
+    {
+        if (node is JsonObject result)
+            return result;
+
+        throw new EthereumInteractionException(
+            $"Malformed {context}: expected a JSON object.");
+    }
+
+    private static bool IsLowerHex(ReadOnlySpan<char> value)
+    {
+        foreach (var c in value)
+        {
+            if (!char.IsAsciiDigit(c) && c is not (>= 'a' and <= 'f'))
+                return false;
+        }
+        return true;
     }
 }

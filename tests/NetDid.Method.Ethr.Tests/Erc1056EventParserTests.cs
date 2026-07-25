@@ -30,7 +30,8 @@ public class Erc1056EventParserTests
             Address = "0xdCa7EF03e98e0DC2B855bE647C39ABe984fcF21B",
             Topics = [Erc1056Topics.DIDOwnerChanged, IdentityTopic],
             Data = data,
-            BlockNumber = "0x0a",  // block 10
+            BlockNumber = "0xa",  // block 10
+            LogIndex = 0,
         };
 
         var ev = Erc1056EventParser.Parse(log);
@@ -63,6 +64,7 @@ public class Erc1056EventParserTests
             Topics = [Erc1056Topics.DIDDelegateChanged, IdentityTopic],
             Data = data,
             BlockNumber = "0x14",  // block 20
+            LogIndex = 0,
         };
 
         var ev = Erc1056EventParser.Parse(log);
@@ -103,6 +105,7 @@ public class Erc1056EventParserTests
             Topics = [Erc1056Topics.DIDAttributeChanged, IdentityTopic],
             Data = "0x" + Convert.ToHexString(dataBytes).ToLowerInvariant(),
             BlockNumber = "0x1e",  // block 30
+            LogIndex = 0,
         };
 
         var ev = Erc1056EventParser.Parse(log);
@@ -128,9 +131,66 @@ public class Erc1056EventParserTests
             Topics = ["0xdeadbeef", IdentityTopic],
             Data = "0x",
             BlockNumber = "0x1",
+            LogIndex = 0,
         };
 
         var act = () => Erc1056EventParser.Parse(log);
+        act.Should().Throw<ArgumentException>();
+    }
+
+    [Fact]
+    public void Pr104Round2_Parse_ExtraTopic_ThrowsArgumentException()
+    {
+        var log = ValidOwnerChangedLog() with
+        {
+            Topics = [Erc1056Topics.DIDOwnerChanged, IdentityTopic, "0x" + new string('0', 64)],
+        };
+
+        var act = () => Erc1056EventParser.Parse(log);
+
+        act.Should().Throw<ArgumentException>();
+    }
+
+    [Fact]
+    public void Pr104Round2_Parse_IdentityTopicWithNonZeroUpperPadding_ThrowsArgumentException()
+    {
+        var log = ValidOwnerChangedLog() with
+        {
+            Topics =
+            [
+                Erc1056Topics.DIDOwnerChanged,
+                "0x01" + IdentityTopic[4..],
+            ],
+        };
+
+        var act = () => Erc1056EventParser.Parse(log);
+
+        act.Should().Throw<ArgumentException>();
+    }
+
+    [Theory]
+    [InlineData("1")]
+    [InlineData("0x01")]
+    [InlineData("0x")]
+    [InlineData("0X1")]
+    [InlineData("0xA")]
+    public void Pr104Round2_Parse_NonCanonicalBlockNumber_ThrowsArgumentException(
+        string blockNumber)
+    {
+        var log = ValidOwnerChangedLog() with { BlockNumber = blockNumber };
+
+        var act = () => Erc1056EventParser.Parse(log);
+
+        act.Should().Throw<ArgumentException>();
+    }
+
+    [Fact]
+    public void Pr104Round2_Parse_UnprefixedData_ThrowsArgumentException()
+    {
+        var log = ValidOwnerChangedLog() with { Data = new string('0', 128) };
+
+        var act = () => Erc1056EventParser.Parse(log);
+
         act.Should().Throw<ArgumentException>();
     }
 
@@ -142,4 +202,15 @@ public class Erc1056EventParserTests
         System.Text.Encoding.ASCII.GetBytes(ascii).CopyTo(bytes, 0);
         return Convert.ToHexString(bytes).ToLowerInvariant();
     }
+
+    private static EthereumLogEntry ValidOwnerChangedLog() => new()
+    {
+        Address = "0xdCa7EF03e98e0DC2B855bE647C39ABe984fcF21B",
+        Topics = [Erc1056Topics.DIDOwnerChanged, IdentityTopic],
+        Data = "0x"
+            + "000000000000000000000000dbf03b407c01e7cd3cbea99509d93f8dddc8c6fb"
+            + new string('0', 64),
+        BlockNumber = "0x1",
+        LogIndex = 0,
+    };
 }

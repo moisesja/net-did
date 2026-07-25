@@ -1346,7 +1346,9 @@ All mutations emit events. Resolution replays these events.
 did:ethr creation is implicit — any Ethereum key pair is already a valid DID. "Creating" a did:ethr means:
 
 1. If `ExistingKey` is provided, validate that `ExistingKey.KeyType == Secp256k1` and use
-   `ExistingKey.PublicKey`. Otherwise, generate a new secp256k1 key pair.
+   `ExistingKey.PublicKey`. Otherwise, generate a new secp256k1 key pair, copy its public key,
+   and deterministically dispose the generated pair before continuing so private material is
+   zeroized as soon as it is no longer needed.
 2. Derive the Ethereum address from the public key (keccak256 hash, take last 20 bytes, checksum-encode).
 3. The DID is `did:ethr:<network>:<address>`.
 4. The default DID Document has a single secp256k1 verification method for the controller address.
@@ -1368,18 +1370,43 @@ public sealed record DidEthrCreateOptions : DidCreateOptions
 
 ### 8.5 Resolve
 
-1. Parse the DID, extract network identifier and address.
-2. Select the appropriate RPC endpoint for the network.
-3. Call `identityOwner(address)` to determine the current controller.
-4. Query `eth_getLogs` for all `DIDOwnerChanged`, `DIDDelegateChanged`, and `DIDAttributeChanged` events for the address, from the contract deployment block.
-5. Replay events chronologically to build the DID Document:
+1. Parse the DID, extract the network identifier and address, and validate historical options
+   before selecting or calling an RPC client. `versionId` MUST be a canonical unsigned decimal
+   block number. `versionTime` MUST use normalized UTC `yyyy-MM-dd'T'HH:mm:ss'Z'` form.
+   `versionId` and `versionTime` are mutually exclusive. Any violation returns
+   `resolutionMetadata.error = "invalidOptions"` without an RPC request.
+2. Select the appropriate RPC endpoint and call `changed(address)` to find the latest asserted
+   history block. The return value MUST be canonical lowercase `0x` hex containing exactly one
+   32-byte ABI word and MUST decode without uint256 narrowing; malformed or oversized values fail
+   closed.
+3. Walk the ERC-1056 `previousChange` chain. For each asserted block, query `eth_getLogs` with
+   the registry address, the three supported event signatures, and the indexed identity topic.
+4. Treat every fetched block as one atomic, untrusted input set:
+   - reject an empty block or any null/unparseable log;
+   - require every log to come from the configured registry and every parsed event to match the
+     requested identity and asserted block;
+   - reject a `previousChange` that points forward;
+   - require canonical lowercase JSON-RPC quantities, `removed: false`, and a present
+     `logIndex`; reject duplicate indices and replay unique indices in ascending order (indices
+     need not be contiguous);
+   - after ordering, require the first event's `previousChange` to point strictly earlier than
+     the current block and every subsequent same-block event to point exactly to the current
+     block;
+   - validate full 256-bit ABI words before narrowing dynamic byte offsets or lengths.
+   Any violation fails closed as `notFound`; a valid authorization event MUST NOT survive beside
+   a malformed revocation or deactivation event.
+5. For historical resolution, select events at or before the canonical `versionId`, or compare
+   event-block timestamps against the canonical `versionTime`. Timestamps for ascending event
+   blocks MUST be canonical quantities and strictly increase; resolution returns only a valid
+   chronological prefix. Report adjacent version metadata from the selected history.
+6. Replay selected events chronologically to build the DID Document:
    - Each `DIDOwnerChanged` updates the controller.
    - Each `DIDDelegateChanged` adds/removes delegate verification methods (checking `validity` expiration against current block).
    - Each `DIDAttributeChanged` adds/removes attributes:
      - `did/pub/<keyType>/<purpose>/<encoding>` → verification method (with `publicKeyJwk`
        or `publicKeyMultibase` when the encoding provides full key material)
      - `did/svc/<serviceType>` → service endpoint
-6. Return the assembled DID Document.
+7. Return the assembled DID Document.
 
 **Note on key material representations**: The default (implicit) VM for a did:ethr uses
 `EcdsaSecp256k1RecoveryMethod2020` with only a `blockchainAccountId` — the Ethereum address,

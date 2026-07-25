@@ -26,6 +26,13 @@ public static class AbiDecoder
     public static byte[] DecodeAddress(ReadOnlySpan<byte> word32)
     {
         EnsureLength(word32, 32, nameof(word32));
+        for (var i = 0; i < 12; i++)
+        {
+            if (word32[i] != 0)
+                throw new ArgumentException(
+                    $"ABI address word has non-zero padding at byte {i}.",
+                    nameof(word32));
+        }
         return word32[12..].ToArray();
     }
 
@@ -79,8 +86,9 @@ public static class AbiDecoder
                 $"but data is only {data.Length} bytes.",
                 nameof(offsetInData));
 
-        // 2. Read the pointer as ulong; reject values that overflow int or exceed the buffer.
-        var pointerRaw = BinaryPrimitives.ReadUInt64BigEndian(data[(offsetInData + 24)..][..8]);
+        // 2. Decode the FULL uint256 pointer before narrowing it. Reading only the low
+        // 8 bytes would silently accept malformed words with non-zero high bytes.
+        var pointerRaw = DecodeUint256(data.Slice(offsetInData, 32));
         if (pointerRaw > (ulong)int.MaxValue)
             throw new ArgumentException(
                 $"ABI pointer value {pointerRaw} overflows int.MaxValue. Payload is malformed.",
@@ -88,14 +96,14 @@ public static class AbiDecoder
         var pointer = (int)pointerRaw;
 
         // 3. Validate pointer: need pointer + 32 bytes for the length word.
-        if (pointer + 32 > data.Length)
+        if (pointer > data.Length - 32)
             throw new ArgumentException(
                 $"ABI pointer {pointer} is out of range: need pointer+32={pointer + 32} bytes " +
                 $"but data is only {data.Length} bytes.",
                 nameof(data));
 
-        // 4. Read the length as ulong; reject values that overflow int.
-        var lengthRaw = BinaryPrimitives.ReadUInt64BigEndian(data[(pointer + 24)..][..8]);
+        // 4. Decode the FULL uint256 length before narrowing it.
+        var lengthRaw = DecodeUint256(data.Slice(pointer, 32));
         if (lengthRaw > (ulong)int.MaxValue)
             throw new ArgumentException(
                 $"ABI length value {lengthRaw} overflows int.MaxValue. Payload is malformed.",
@@ -103,13 +111,14 @@ public static class AbiDecoder
         var length = (int)lengthRaw;
 
         // 5. Validate the payload slice fits within the buffer.
-        if (pointer + 32 + length > data.Length)
+        var payloadStart = pointer + 32;
+        if (length > data.Length - payloadStart)
             throw new ArgumentException(
                 $"ABI length {length} at pointer {pointer} exceeds data bounds: " +
-                $"need {pointer + 32 + length} bytes but data is only {data.Length} bytes.",
+                $"need {(long)payloadStart + length} bytes but data is only {data.Length} bytes.",
                 nameof(data));
 
-        return data[(pointer + 32)..(pointer + 32 + length)].ToArray();
+        return data[payloadStart..(payloadStart + length)].ToArray();
     }
 
     // ── Event data decoders ──────────────────────────────────────────────────
@@ -120,7 +129,7 @@ public static class AbiDecoder
     /// </summary>
     public static (byte[] Owner, ulong PreviousChange) DecodeOwnerChangedData(ReadOnlySpan<byte> data)
     {
-        EnsureMinLength(data, 64, "DIDOwnerChanged data");
+        EnsureExactLength(data, 64, "DIDOwnerChanged data");
         return (DecodeAddress(data[..32]), DecodeUint256(data[32..64]));
     }
 
@@ -131,7 +140,7 @@ public static class AbiDecoder
     public static (string DelegateType, byte[] Delegate, ulong ValidTo, ulong PreviousChange)
         DecodeDelegateChangedData(ReadOnlySpan<byte> data)
     {
-        EnsureMinLength(data, 128, "DIDDelegateChanged data");
+        EnsureExactLength(data, 128, "DIDDelegateChanged data");
         return (
             DecodeBytes32AsString(data[..32]),
             DecodeAddress(data[32..64]),
@@ -149,7 +158,38 @@ public static class AbiDecoder
     {
         EnsureMinLength(data, 128, "DIDAttributeChanged data");
         var name     = DecodeBytes32AsString(data[..32]);
-        // word at offset 32 is the ABI offset pointer for the dynamic `bytes value`
+        // This event has a four-word static head, so the one dynamic value must begin
+        // canonically at byte 128. A pointer into the head can reinterpret authority
+        // metadata as a payload length and must not be accepted.
+        var pointer = DecodeUint256(data[32..64]);
+        if (pointer != 128)
+            throw new ArgumentException(
+                $"DIDAttributeChanged value offset must be 128, got {pointer}.",
+                nameof(data));
+
+        EnsureMinLength(data, 160, "DIDAttributeChanged data");
+        var length = DecodeUint256(data[128..160]);
+        if (length > int.MaxValue)
+            throw new ArgumentException(
+                $"DIDAttributeChanged value length {length} exceeds int.MaxValue.",
+                nameof(data));
+        var paddedLength = ((length + 31UL) / 32UL) * 32UL;
+        var expectedLength = 160UL + paddedLength;
+        if ((ulong)data.Length != expectedLength)
+            throw new ArgumentException(
+                $"DIDAttributeChanged data must be exactly {expectedLength} bytes for a " +
+                $"{length}-byte value, got {data.Length}.",
+                nameof(data));
+
+        var paddingStart = 160 + (int)length;
+        for (var i = paddingStart; i < data.Length; i++)
+        {
+            if (data[i] != 0)
+                throw new ArgumentException(
+                    $"DIDAttributeChanged value has non-zero ABI padding at byte {i}.",
+                    nameof(data));
+        }
+
         var value    = DecodeDynamicBytes(data, 32);
         var validTo  = DecodeUint256(data[64..96]);
         var prev     = DecodeUint256(data[96..128]);
@@ -160,13 +200,20 @@ public static class AbiDecoder
 
     private static void EnsureLength(ReadOnlySpan<byte> span, int expected, string name)
     {
-        if (span.Length < expected)
-            throw new ArgumentException($"{name} must be at least {expected} bytes, got {span.Length}.");
+        if (span.Length != expected)
+            throw new ArgumentException($"{name} must be exactly {expected} bytes, got {span.Length}.");
     }
 
     private static void EnsureMinLength(ReadOnlySpan<byte> span, int min, string context)
     {
         if (span.Length < min)
             throw new ArgumentException($"{context} must be at least {min} bytes, got {span.Length}.");
+    }
+
+    private static void EnsureExactLength(ReadOnlySpan<byte> span, int expected, string context)
+    {
+        if (span.Length != expected)
+            throw new ArgumentException(
+                $"{context} must be exactly {expected} bytes, got {span.Length}.");
     }
 }

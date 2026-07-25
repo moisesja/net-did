@@ -273,6 +273,7 @@ public sealed class TestDidFactory
             Topics      = [Erc1056Topics.DIDAttributeChanged, "0x" + addrHex.PadLeft(64, '0')],
             Data        = "0x" + Convert.ToHexString(data).ToLowerInvariant(),
             BlockNumber = "0x64", // block 100
+            LogIndex    = 0,
         };
     }
 

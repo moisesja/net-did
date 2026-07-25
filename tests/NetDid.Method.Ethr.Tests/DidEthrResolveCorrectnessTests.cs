@@ -59,7 +59,7 @@ public class DidEthrResolveCorrectnessTests
             ? new[]
               {
                   DelegateLog(Identity, DelegateAddr, "veriKey", validTo: future, prev: 0,     block),  // add
-                  DelegateLog(Identity, DelegateAddr, "veriKey", validTo: 1,      prev: block, block),  // revoke
+                  DelegateLog(Identity, DelegateAddr, "veriKey", validTo: 1,      prev: block, block, logIndex: 1),  // revoke
               }
             : []);
 
@@ -83,7 +83,7 @@ public class DidEthrResolveCorrectnessTests
             ? new[]
               {
                   DelegateLog(Identity, DelegateAddr, "veriKey", validTo: 1,      prev: 0,     block),  // revoke (no-op)
-                  DelegateLog(Identity, DelegateAddr, "veriKey", validTo: future, prev: block, block),  // add
+                  DelegateLog(Identity, DelegateAddr, "veriKey", validTo: future, prev: block, block, logIndex: 1),  // add
               }
             : []);
 
@@ -143,6 +143,189 @@ public class DidEthrResolveCorrectnessTests
         var result = await MakeMethod(rpc).ResolveAsync($"did:ethr:sepolia:{Identity}");
 
         result.ResolutionMetadata.Error.Should().Be("notFound");
+    }
+
+    [Fact]
+    public async Task Pr104Round2_MixedValidAndMalformedLogs_ReturnsNotFound()
+    {
+        const ulong block = 89;
+        var future = (ulong)(DateTimeOffset.UtcNow.ToUnixTimeSeconds() + 3600);
+        var rpc = RpcWith(block, b => b == block
+            ?
+            [
+                DelegateLog(Identity, DelegateAddr, "veriKey", future, 0, block, logIndex: 0),
+                GarbageTopicLog(Identity, block) with { LogIndex = 1 },
+            ]
+            : []);
+
+        var result = await MakeMethod(rpc).ResolveAsync($"did:ethr:sepolia:{Identity}");
+
+        result.ResolutionMetadata.Error.Should().Be("notFound",
+            "one malformed authorization log must invalidate the entire asserted history block");
+    }
+
+    [Fact]
+    public async Task Pr104Round2_DuplicateSameBlockLogIndices_ReturnsNotFound()
+    {
+        const ulong block = 90;
+        var future = (ulong)(DateTimeOffset.UtcNow.ToUnixTimeSeconds() + 3600);
+        var rpc = RpcWith(block, b => b == block
+            ?
+            [
+                // Returned in authorization-sensitive reverse order with an ambiguous index.
+                DelegateLog(Identity, DelegateAddr, "veriKey", 1, block, block, logIndex: 0),
+                DelegateLog(Identity, DelegateAddr, "veriKey", future, 0, block, logIndex: 0),
+            ]
+            : []);
+
+        var result = await MakeMethod(rpc).ResolveAsync($"did:ethr:sepolia:{Identity}");
+
+        result.ResolutionMetadata.Error.Should().Be("notFound");
+    }
+
+    [Fact]
+    public async Task Pr104Round2_NonContiguousSameBlockLogIndices_AreAccepted()
+    {
+        const ulong block = 91;
+        var future = (ulong)(DateTimeOffset.UtcNow.ToUnixTimeSeconds() + 3600);
+        var rpc = RpcWith(block, b => b == block
+            ?
+            [
+                DelegateLog(Identity, DelegateAddr, "veriKey", future, 0, block, logIndex: 3),
+                DelegateLog(Identity, OwnerA, "veriKey", future, block, block, logIndex: 9),
+            ]
+            : []);
+
+        var result = await MakeMethod(rpc).ResolveAsync($"did:ethr:sepolia:{Identity}");
+
+        result.ResolutionMetadata.Error.Should().BeNull();
+        result.DidDocument!.VerificationMethod.Should().HaveCount(3);
+    }
+
+    [Fact]
+    public async Task Pr104Round2_ForeignRegistryAddress_ReturnsNotFound()
+    {
+        const ulong block = 92;
+        var rpc = RpcWith(block, b => b == block
+            ? [OwnerChangedLog(Identity, OwnerA, block, 0) with { Address = OwnerB }]
+            : []);
+
+        var result = await MakeMethod(rpc).ResolveAsync($"did:ethr:sepolia:{Identity}");
+
+        result.ResolutionMetadata.Error.Should().Be("notFound");
+    }
+
+    [Fact]
+    public async Task Pr104Round2_ForeignIdentityMixedWithValidLog_ReturnsNotFound()
+    {
+        const ulong block = 93;
+        var rpc = RpcWith(block, b => b == block
+            ?
+            [
+                OwnerChangedLog(Identity, OwnerA, block, 0) with { LogIndex = 0 },
+                OwnerChangedLog(OwnerB, OwnerC, block, block) with { LogIndex = 1 },
+            ]
+            : []);
+
+        var result = await MakeMethod(rpc).ResolveAsync($"did:ethr:sepolia:{Identity}");
+
+        result.ResolutionMetadata.Error.Should().Be("notFound");
+    }
+
+    [Fact]
+    public async Task Pr104Round2_MismatchedBlockNumber_ReturnsNotFound()
+    {
+        const ulong block = 94;
+        var rpc = RpcWith(block, b => b == block
+            ? [OwnerChangedLog(Identity, OwnerA, block + 1, 0)]
+            : []);
+
+        var result = await MakeMethod(rpc).ResolveAsync($"did:ethr:sepolia:{Identity}");
+
+        result.ResolutionMetadata.Error.Should().Be("notFound");
+    }
+
+    [Fact]
+    public async Task Pr104Round2_ForwardPointingPreviousChange_ReturnsNotFound()
+    {
+        const ulong block = 95;
+        var rpc = RpcWith(block, b => b == block
+            ? [OwnerChangedLog(Identity, OwnerA, block, block + 1)]
+            : []);
+
+        var result = await MakeMethod(rpc).ResolveAsync($"did:ethr:sepolia:{Identity}");
+
+        result.ResolutionMetadata.Error.Should().Be("notFound");
+    }
+
+    [Fact]
+    public async Task Pr104Round2_SoleSameBlockPreviousChange_ReturnsNotFound()
+    {
+        const ulong block = 96;
+        var rpc = RpcWith(block, b => b == block
+            ? [OwnerChangedLog(Identity, OwnerA, block, block)]
+            : []);
+
+        var result = await MakeMethod(rpc).ResolveAsync($"did:ethr:sepolia:{Identity}");
+
+        result.ResolutionMetadata.Error.Should().Be("notFound",
+            "a first event pointing to its own block proves an earlier same-block event was omitted");
+    }
+
+    [Fact]
+    public async Task Pr104Round2_LaterEventWithConflictingBackwardPointer_ReturnsNotFound()
+    {
+        const ulong block = 97;
+        var future = (ulong)(DateTimeOffset.UtcNow.ToUnixTimeSeconds() + 3600);
+        var rpc = RpcWith(block, b =>
+        {
+            if (b == block)
+                return
+                [
+                    DelegateLog(Identity, DelegateAddr, "veriKey", future, 12, block, logIndex: 3),
+                    DelegateLog(Identity, OwnerA, "veriKey", future, 11, block, logIndex: 9),
+                ];
+            return b == 12 ? [OwnerChangedLog(Identity, OwnerB, 12, 0)] : [];
+        });
+
+        var result = await MakeMethod(rpc).ResolveAsync($"did:ethr:sepolia:{Identity}");
+
+        result.ResolutionMetadata.Error.Should().Be("notFound",
+            "after the first event, every same-identity event must point to the current block");
+    }
+
+    [Theory]
+    [InlineData(200UL, 100UL)]
+    [InlineData(100UL, 100UL)]
+    public async Task Pr104Round2_NonIncreasingBlockTimestamps_ReturnsNotFound(
+        ulong firstTimestamp, ulong secondTimestamp)
+    {
+        var rpc = OwnerHistory((10, OwnerA, 0), (20, OwnerB, 10));
+        rpc.GetBlockTimestampAsync(10, Arg.Any<CancellationToken>()).Returns(firstTimestamp);
+        rpc.GetBlockTimestampAsync(20, Arg.Any<CancellationToken>()).Returns(secondTimestamp);
+
+        var result = await MakeMethod(rpc).ResolveAsync(
+            $"did:ethr:sepolia:{Identity}",
+            new DidEthrResolveOptions { VersionTime = "1970-01-01T00:02:30Z" });
+
+        result.ResolutionMetadata.Error.Should().Be("notFound");
+    }
+
+    [Fact]
+    public async Task Pr104Round2_IncreasingBlockTimestamps_SelectsHistoryPrefix()
+    {
+        var rpc = OwnerHistory((10, OwnerA, 0), (20, OwnerB, 10));
+        rpc.GetBlockTimestampAsync(10, Arg.Any<CancellationToken>()).Returns(100UL);
+        rpc.GetBlockTimestampAsync(20, Arg.Any<CancellationToken>()).Returns(200UL);
+
+        var result = await MakeMethod(rpc).ResolveAsync(
+            $"did:ethr:sepolia:{Identity}",
+            new DidEthrResolveOptions { VersionTime = "1970-01-01T00:02:30Z" });
+
+        result.ResolutionMetadata.Error.Should().BeNull();
+        Controller(result).Should().Contain(OwnerA[2..]);
+        result.DocumentMetadata!.VersionId.Should().Be("10");
+        result.DocumentMetadata.NextVersionId.Should().Be("20");
     }
 
     // ── #3 Historical resolution: partition at the requested block ───────────────
@@ -238,6 +421,7 @@ public class DidEthrResolveCorrectnessTests
             Topics = [Erc1056Topics.DIDOwnerChanged, PadAddress(identity)],
             Data = data,
             BlockNumber = "0x" + block.ToString("x"),
+            LogIndex = 0,
         };
     }
 
@@ -270,6 +454,7 @@ public class DidEthrResolveCorrectnessTests
         Topics = ["0x" + new string('e', 64), PadAddress(identity)],
         Data = "0x" + new string('0', 128),
         BlockNumber = "0x" + block.ToString("x"),
+        LogIndex = 0,
     };
 
     private static string PadAddress(string addr)

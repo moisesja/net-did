@@ -54,6 +54,23 @@ public class DidEthrMethodTests
     }
 
     [Fact]
+    public async Task Pr104Round2_CreateAsync_DisposesGeneratedKeyPair()
+    {
+        var generatedKey = new DefaultKeyGenerator().Generate(KeyType.Secp256k1);
+        var keyGenerator = Substitute.For<IKeyGenerator>();
+        keyGenerator.Generate(KeyType.Secp256k1).Returns(generatedKey);
+        var rpc = Substitute.For<IEthereumRpcClient>();
+        var factory = Substitute.For<IEthereumRpcClientFactory>();
+        factory.GetOrCreate(Arg.Any<EthereumNetworkConfig>()).Returns(rpc);
+        var method = new DidEthrMethod(factory, [SepoliaConfig], keyGenerator);
+
+        await method.CreateAsync(new DidEthrCreateOptions { Network = "sepolia" });
+
+        var accessDisposedKey = () => generatedKey.PublicKey;
+        accessDisposedKey.Should().Throw<ObjectDisposedException>();
+    }
+
+    [Fact]
     public async Task CreateAsync_ExistingSecp256k1Key_UsesThatAddress()
     {
         var rpc = Substitute.For<IEthereumRpcClient>();
@@ -216,6 +233,101 @@ public class DidEthrMethodTests
         result.DidDocument!.VerificationMethod.Should().HaveCount(2); // #controller + #delegate-1
     }
 
+    [Theory]
+    [InlineData("")]
+    [InlineData(" ")]
+    [InlineData("+1")]
+    [InlineData("-1")]
+    [InlineData("0x10")]
+    [InlineData("01")]
+    [InlineData("18446744073709551616")]
+    public async Task Pr104Round2_InvalidVersionId_ReturnsInvalidOptionsWithoutRpc(string versionId)
+    {
+        var rpc = Substitute.For<IEthereumRpcClient>();
+        var factory = Substitute.For<IEthereumRpcClientFactory>();
+        factory.GetOrCreate(Arg.Any<EthereumNetworkConfig>()).Returns(rpc);
+        var method = new DidEthrMethod(factory, [SepoliaConfig], new DefaultKeyGenerator());
+
+        var result = await method.ResolveAsync(
+            "did:ethr:sepolia:0x001d3f1ef827552ae1114027bd3ecf1f086ba0f9",
+            new DidEthrResolveOptions { VersionId = versionId });
+
+        result.ResolutionMetadata.Error.Should().Be("invalidOptions");
+        factory.DidNotReceive().GetOrCreate(Arg.Any<EthereumNetworkConfig>());
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData("not-a-timestamp")]
+    [InlineData("2026-07-24T12:34:56.123Z")]
+    [InlineData("2026-07-24T12:34:56+00:00")]
+    [InlineData("2026-07-24T08:34:56-04:00")]
+    public async Task Pr104Round2_InvalidVersionTime_ReturnsInvalidOptionsWithoutRpc(string versionTime)
+    {
+        var rpc = Substitute.For<IEthereumRpcClient>();
+        var factory = Substitute.For<IEthereumRpcClientFactory>();
+        factory.GetOrCreate(Arg.Any<EthereumNetworkConfig>()).Returns(rpc);
+        var method = new DidEthrMethod(factory, [SepoliaConfig], new DefaultKeyGenerator());
+
+        var result = await method.ResolveAsync(
+            "did:ethr:sepolia:0x001d3f1ef827552ae1114027bd3ecf1f086ba0f9",
+            new DidEthrResolveOptions { VersionTime = versionTime });
+
+        result.ResolutionMetadata.Error.Should().Be("invalidOptions");
+        factory.DidNotReceive().GetOrCreate(Arg.Any<EthereumNetworkConfig>());
+    }
+
+    [Fact]
+    public async Task Pr104Round2_VersionIdAndVersionTime_ReturnsInvalidOptionsWithoutRpc()
+    {
+        var rpc = Substitute.For<IEthereumRpcClient>();
+        var factory = Substitute.For<IEthereumRpcClientFactory>();
+        factory.GetOrCreate(Arg.Any<EthereumNetworkConfig>()).Returns(rpc);
+        var method = new DidEthrMethod(factory, [SepoliaConfig], new DefaultKeyGenerator());
+
+        var result = await method.ResolveAsync(
+            "did:ethr:sepolia:0x001d3f1ef827552ae1114027bd3ecf1f086ba0f9",
+            new DidEthrResolveOptions
+            {
+                VersionId = "12",
+                VersionTime = "2026-07-24T12:34:56Z",
+            });
+
+        result.ResolutionMetadata.Error.Should().Be("invalidOptions");
+        factory.DidNotReceive().GetOrCreate(Arg.Any<EthereumNetworkConfig>());
+    }
+
+    [Theory]
+    [InlineData("0")]
+    [InlineData("18446744073709551615")]
+    public async Task Pr104Round2_CanonicalVersionId_IsAccepted(string versionId)
+    {
+        var rpc = Substitute.For<IEthereumRpcClient>();
+        rpc.CallAsync(default!, default!, default)
+            .ReturnsForAnyArgs("0x" + new string('0', 64));
+        rpc.GetBlockTimestampAsync(default, default).ReturnsForAnyArgs(1_700_000_000UL);
+
+        var result = await MakeMethod(rpc).ResolveAsync(
+            "did:ethr:sepolia:0x001d3f1ef827552ae1114027bd3ecf1f086ba0f9",
+            new DidEthrResolveOptions { VersionId = versionId });
+
+        result.ResolutionMetadata.Error.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task Pr104Round2_NormalizedUtcVersionTime_IsAccepted()
+    {
+        var rpc = Substitute.For<IEthereumRpcClient>();
+        rpc.CallAsync(default!, default!, default)
+            .ReturnsForAnyArgs("0x" + new string('0', 64));
+
+        var result = await MakeMethod(rpc).ResolveAsync(
+            "did:ethr:sepolia:0x001d3f1ef827552ae1114027bd3ecf1f086ba0f9",
+            new DidEthrResolveOptions { VersionTime = "2026-07-24T12:34:56Z" });
+
+        result.ResolutionMetadata.Error.Should().BeNull();
+    }
+
     // ── Unsupported operations ────────────────────────────────────────────────
 
     [Fact]
@@ -370,12 +482,13 @@ public class DidEthrMethodTests
             Topics      = [Erc1056Topics.DIDOwnerChanged, PadAddress(identity)],
             Data        = data,
             BlockNumber = "0x" + block.ToString("x"),
+            LogIndex    = 0,
         }];
     }
 
     private static IReadOnlyList<EthereumLogEntry> BuildDelegateLog(
         string identity, string delegate20, string delegateType,
-        ulong validTo, ulong prev, ulong block)
+        ulong validTo, ulong prev, ulong block, ulong logIndex = 0)
     {
         var delHex  = delegate20.StartsWith("0x") ? delegate20[2..] : delegate20;
         var typeWord = new byte[32];
@@ -392,6 +505,7 @@ public class DidEthrMethodTests
             Topics      = [Erc1056Topics.DIDDelegateChanged, PadAddress(identity)],
             Data        = data,
             BlockNumber = "0x" + block.ToString("x"),
+            LogIndex    = logIndex,
         }];
     }
 
@@ -491,7 +605,7 @@ public class DidEthrMethodTests
                return Task.FromResult<IReadOnlyList<EthereumLogEntry>>(
                [
                    SingleDelegateLog(identity, keyA, "veriKey", future, 0UL,         eventBlock),
-                   SingleDelegateLog(identity, keyB, "veriKey", future, eventBlock,  eventBlock),
+                   BuildDelegateLog(identity, keyB, "veriKey", future, eventBlock, eventBlock, logIndex: 1)[0],
                ]);
            });
 

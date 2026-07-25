@@ -224,4 +224,101 @@ public class AbiDecoderTests
         act.Should().Throw<ArgumentException>()
            .WithMessage("*length*");
     }
+
+    [Fact]
+    public void Pr104Round2_DecodeDynamicBytes_PointerWithNonZeroHighBytes_ThrowsArgumentException()
+    {
+        var data = new byte[64];
+        data[0] = 0x01;
+        data[31] = 32;
+
+        var act = () => AbiDecoder.DecodeDynamicBytes(data, offsetInData: 0);
+
+        act.Should().Throw<ArgumentException>();
+    }
+
+    [Fact]
+    public void Pr104Round2_DecodeDynamicBytes_LengthWithNonZeroHighBytes_ThrowsArgumentException()
+    {
+        var data = new byte[64];
+        data[31] = 32;
+        data[32] = 0x01;
+
+        var act = () => AbiDecoder.DecodeDynamicBytes(data, offsetInData: 0);
+
+        act.Should().Throw<ArgumentException>();
+    }
+
+    [Fact]
+    public void Pr104Round2_DecodeAddress_NonZeroUpperPadding_ThrowsArgumentException()
+    {
+        var word = new byte[32];
+        word[0] = 1;
+
+        var act = () => AbiDecoder.DecodeAddress(word);
+
+        act.Should().Throw<ArgumentException>();
+    }
+
+    [Fact]
+    public void Pr104Round2_DecodeAttributeChangedData_PointerInsideStaticHead_ThrowsArgumentException()
+    {
+        var data = new byte[160];
+        data[63] = 96;
+
+        var act = () => AbiDecoder.DecodeAttributeChangedData(data);
+
+        act.Should().Throw<ArgumentException>();
+    }
+
+    [Fact]
+    public void Pr104Round2_DecodeAttributeChangedData_MissingRightPadding_ThrowsArgumentException()
+    {
+        var data = new byte[161];
+        data[63] = 128;
+        data[159] = 1;
+        data[160] = 0x41;
+
+        var act = () => AbiDecoder.DecodeAttributeChangedData(data);
+
+        act.Should().Throw<ArgumentException>();
+    }
+
+    [Fact]
+    public void Pr104Round2_DecodeAttributeChangedData_NonZeroRightPadding_ThrowsArgumentException()
+    {
+        var data = new byte[192];
+        data[63] = 128;
+        data[159] = 1;
+        data[160] = 0x41;
+        data[191] = 0x01;
+
+        var act = () => AbiDecoder.DecodeAttributeChangedData(data);
+
+        act.Should().Throw<ArgumentException>();
+    }
+
+    [Fact]
+    public void Pr104Round2_DecodeAddress_OversizedWord_ThrowsArgumentException()
+    {
+        var act = () => AbiDecoder.DecodeAddress(new byte[33]);
+
+        act.Should().Throw<ArgumentException>();
+    }
+
+    [Fact]
+    public void Pr104Round2_DecodeUint256_OversizedWord_ThrowsArgumentException()
+    {
+        var act = () => AbiDecoder.DecodeUint256(new byte[33]);
+
+        act.Should().Throw<ArgumentException>();
+    }
+
+    [Fact]
+    public void Pr104Round2_DecodeBytes32AsString_OversizedWord_ThrowsArgumentException()
+    {
+        var act = () => AbiDecoder.DecodeBytes32AsString(new byte[33]);
+
+        act.Should().Throw<ArgumentException>();
+    }
 }

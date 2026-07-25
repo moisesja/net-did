@@ -1,9 +1,11 @@
+using System.Globalization;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using NetDid.Core;
 using NetCrypto;
 using NetDid.Core.Exceptions;
 using NetDid.Core.Model;
+using NetDid.Method.Ethr.Abi;
 using NetDid.Method.Ethr.Crypto;
 using NetDid.Method.Ethr.Erc1056;
 using NetDid.Method.Ethr.Resolution;
@@ -79,7 +81,7 @@ public sealed class DidEthrMethod : DidMethodBase
         }
         else
         {
-            var keyPair = _keyGenerator.Generate(KeyType.Secp256k1);
+            using var keyPair = _keyGenerator.Generate(KeyType.Secp256k1);
             publicKey = keyPair.PublicKey;
         }
 
@@ -112,6 +114,10 @@ public sealed class DidEthrMethod : DidMethodBase
             return DidResolutionResult.InvalidDid(did);
         }
 
+        if (!TryParseResolutionOptions(
+                options, out var versionBlockNumber, out var versionTime))
+            return DidResolutionResult.InvalidOptions(did);
+
         EthereumNetworkConfig network;
         try { network = FindNetwork(identifier.Network); }
         catch (InvalidOperationException ex)
@@ -135,7 +141,9 @@ public sealed class DidEthrMethod : DidMethodBase
         deadlineCts.CancelAfter(ResolutionDeadline);
         try
         {
-            return await ResolveFromChainAsync(did, identifier, network, rpc, options, deadlineCts.Token);
+            return await ResolveFromChainAsync(
+                did, identifier, network, rpc, versionBlockNumber, versionTime,
+                deadlineCts.Token);
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
@@ -150,19 +158,15 @@ public sealed class DidEthrMethod : DidMethodBase
 
     private async Task<DidResolutionResult> ResolveFromChainAsync(
         string did, EthrIdentifier identifier, EthereumNetworkConfig network,
-        IEthereumRpcClient rpc, DidResolutionOptions? options, CancellationToken ct)
+        IEthereumRpcClient rpc, ulong? versionBlockNumber,
+        DateTimeOffset? versionTime, CancellationToken ct)
     {
         var chainId = await ResolveChainId(network, rpc, ct);
-
-        // Determine version / block ceiling
-        ulong? versionBlockNumber = null;
-        if (options?.VersionId is string vid && ulong.TryParse(vid, out var vb))
-            versionBlockNumber = vb;
 
         // changed(identity) → first block that has a relevant event
         var changedHex    = Erc1056Calls.Changed(identifier.IdentityAddress);
         var changedResult = await rpc.CallAsync(network.RegistryAddress, changedHex, ct);
-        var latestChange  = ParseHexUlong(changedResult);
+        var latestChange  = ParseChangedResult(changedResult);
 
         // Collect the FULL event history (walk from the latest change to genesis).
         // Historical resolution partitions this list by block number below — we must NOT
@@ -203,24 +207,26 @@ public sealed class DidEthrMethod : DidMethodBase
             var ts = await rpc.GetBlockTimestampAsync(version, ct);
             referenceTime = DateTimeOffset.FromUnixTimeSeconds((long)ts);
         }
-        else if (options?.VersionTime is string vtStr
-            && DateTimeOffset.TryParse(vtStr, out var vt))
+        else if (versionTime is { } vt)
         {
             referenceTime = vt;
-            // Fetch block timestamps and trim events
-            var blockTsCache = new Dictionary<ulong, ulong>();
+            // Validate timestamps as a strictly increasing chain, then retain only
+            // the valid chronological prefix at or before the requested time.
             var trimmed = new List<Erc1056Event>();
-            foreach (var ev in collectedEvents)
+            ulong? previousTimestamp = null;
+            foreach (var blockEvents in collectedEvents.GroupBy(ev => ev.BlockNumber))
             {
-                if (!blockTsCache.TryGetValue(ev.BlockNumber, out var bts))
-                {
-                    bts = await rpc.GetBlockTimestampAsync(ev.BlockNumber, ct);
-                    blockTsCache[ev.BlockNumber] = bts;
-                }
+                var bts = await rpc.GetBlockTimestampAsync(blockEvents.Key, ct);
+                if (previousTimestamp is { } prior && bts <= prior)
+                    throw new EthereumInteractionException(
+                        $"did:ethr block timestamps are not strictly increasing: block " +
+                        $"{blockEvents.Key} has {bts} after {prior}.");
+                previousTimestamp = bts;
+
                 if (DateTimeOffset.FromUnixTimeSeconds((long)bts) <= referenceTime)
-                    trimmed.Add(ev);
+                    trimmed.AddRange(blockEvents);
                 else if (nextVersionId is null)
-                    nextVersionId = ev.BlockNumber;
+                    nextVersionId = blockEvents.Key;
             }
             collectedEvents = trimmed;
         }
@@ -300,7 +306,9 @@ public sealed class DidEthrMethod : DidMethodBase
                 ],
             };
 
-            var logs = await rpc.GetLogsAsync(filter, ct);
+            var logs = (await rpc.GetLogsAsync(filter, ct))?.ToList()
+                ?? throw new EthereumInteractionException(
+                    $"did:ethr history for identity {identityAddress} returned a null log collection.");
 
             // nextBlock = the highest previousChange value that is STRICTLY less than
             // currentBlock.  Later transactions in the same block emit
@@ -309,7 +317,8 @@ public sealed class DidEthrMethod : DidMethodBase
             // revisit the same block and loop forever.  Only values < currentBlock
             // represent a genuinely earlier block in the chain.
             ulong nextBlock = 0;
-            var validEventsThisBlock = 0;
+            var blockEvents = new List<Erc1056Event>(logs.Count);
+            var seenLogIndices = new HashSet<ulong>();
 
             // Canonical intra-block order: sort by logIndex rather than trusting the node's
             // response array order, so a same-block add→revoke of one key always applies in
@@ -317,49 +326,85 @@ public sealed class DidEthrMethod : DidMethodBase
             // preserves this).
             foreach (var log in logs.OrderBy(l => l.LogIndex))
             {
-                try
-                {
-                    var ev = Erc1056EventParser.Parse(log);
-                    if (!string.Equals(ev.Identity, identityAddress,
-                            StringComparison.OrdinalIgnoreCase))
-                        continue;
-                    accumulator.Add(ev);
-                    validEventsThisBlock++;
-                    // Bound total events: a hostile node can pack a single block with
-                    // unbounded matching logs (memory DoS) even within the hop cap.
-                    if (accumulator.Count > MaxCollectedEvents)
-                        throw new EthereumInteractionException(
-                            $"did:ethr event chain for identity {identityAddress} exceeded " +
-                            $"{MaxCollectedEvents} events; aborting to bound memory use.");
-                    // Bound total RETAINED bytes: the event count cap is byte-blind, so
-                    // a few large-value attribute events per hop could still exhaust the
-                    // heap. Attribute values are the only wire-sized retained field.
-                    collectedBytes += (ev as AttributeChangedEvent)?.Value.Length ?? 0;
-                    if (collectedBytes > MaxCollectedBytes)
-                        throw new EthereumInteractionException(
-                            $"did:ethr event chain for identity {identityAddress} exceeded " +
-                            $"{MaxCollectedBytes} retained bytes; aborting to bound memory use.");
-                    // Advance only when previousChange points to a strictly earlier block.
-                    if (ev.PreviousChange < currentBlock && ev.PreviousChange > nextBlock)
-                        nextBlock = ev.PreviousChange;
-                }
-                catch (ArgumentException ex)
-                {
-                    _logger.LogWarning(ex, "Skipping unparseable ERC-1056 log at block {Block}", currentBlock);
-                }
+                if (log is null)
+                    throw new EthereumInteractionException(
+                        $"did:ethr history for identity {identityAddress} contains a null log " +
+                        $"at block {currentBlock}.");
+                if (!string.Equals(log.Address, registryAddress,
+                        StringComparison.OrdinalIgnoreCase))
+                    throw new EthereumInteractionException(
+                        $"did:ethr history for identity {identityAddress} contains a log from " +
+                        $"registry '{log.Address}' instead of '{registryAddress}'.");
+                if (!seenLogIndices.Add(log.LogIndex))
+                    throw new EthereumInteractionException(
+                        $"did:ethr history for identity {identityAddress} contains duplicate " +
+                        $"logIndex {log.LogIndex} at block {currentBlock}.");
+
+                var ev = Erc1056EventParser.Parse(log);
+                if (!string.Equals(ev.Identity, identityAddress,
+                        StringComparison.OrdinalIgnoreCase))
+                    throw new EthereumInteractionException(
+                        $"did:ethr history block {currentBlock} contains an event for foreign " +
+                        $"identity {ev.Identity}; expected {identityAddress}.");
+                if (ev.BlockNumber != currentBlock)
+                    throw new EthereumInteractionException(
+                        $"did:ethr history event reports block {ev.BlockNumber}; expected " +
+                        $"{currentBlock}.");
+                if (ev.PreviousChange > currentBlock)
+                    throw new EthereumInteractionException(
+                        $"did:ethr history event at block {currentBlock} points forward to " +
+                        $"previousChange {ev.PreviousChange}.");
+
+                blockEvents.Add(ev);
             }
 
             // changed()/previousChange asserts a real event exists at this block. If the
-            // node returned no valid matching event (empty logs, all for other identities,
-            // or all unparseable), the authorization history is incomplete or corrupt —
+            // node returned no matching event, the authorization history is incomplete or corrupt —
             // fail CLOSED to a resolution error rather than silently returning a partial
             // document that could re-authorize a revoked key or hide a deactivation.
-            if (validEventsThisBlock == 0)
+            if (blockEvents.Count == 0)
                 throw new EthereumInteractionException(
                     $"did:ethr history for identity {identityAddress} is incomplete: block " +
                     $"{currentBlock} has no valid matching ERC-1056 event (pruned/non-archive " +
                     "or hostile RPC node).");
 
+            // ERC-1056 updates changed[identity] to block.number after every mutation.
+            // Therefore the earliest event for this identity in a block must point to
+            // a genuinely earlier block (or zero), and every later same-block event
+            // must point back to this block. Any other sequence proves the filtered
+            // history is truncated or internally inconsistent.
+            if (blockEvents[0].PreviousChange >= currentBlock)
+                throw new EthereumInteractionException(
+                    $"did:ethr history block {currentBlock} starts with previousChange " +
+                    $"{blockEvents[0].PreviousChange}; the first event must point to an earlier block.");
+            for (var eventIndex = 1; eventIndex < blockEvents.Count; eventIndex++)
+            {
+                if (blockEvents[eventIndex].PreviousChange != currentBlock)
+                    throw new EthereumInteractionException(
+                        $"did:ethr history block {currentBlock} event {eventIndex} has " +
+                        $"previousChange {blockEvents[eventIndex].PreviousChange}; every event " +
+                        "after the first must point to the current block.");
+            }
+
+            nextBlock = blockEvents[0].PreviousChange;
+
+            // Commit a block only after every log in it has passed validation. This avoids
+            // retaining a valid authorization while silently dropping a malformed revoke.
+            if (accumulator.Count + blockEvents.Count > MaxCollectedEvents)
+                throw new EthereumInteractionException(
+                    $"did:ethr event chain for identity {identityAddress} exceeded " +
+                    $"{MaxCollectedEvents} events; aborting to bound memory use.");
+
+            foreach (var ev in blockEvents)
+            {
+                collectedBytes += (ev as AttributeChangedEvent)?.Value.Length ?? 0;
+                if (collectedBytes > MaxCollectedBytes)
+                    throw new EthereumInteractionException(
+                        $"did:ethr event chain for identity {identityAddress} exceeded " +
+                        $"{MaxCollectedBytes} retained bytes; aborting to bound memory use.");
+            }
+
+            accumulator.AddRange(blockEvents);
             currentBlock = nextBlock;
         }
     }
@@ -391,10 +436,76 @@ public sealed class DidEthrMethod : DidMethodBase
         return chainId.ToString();
     }
 
-    private static ulong ParseHexUlong(string hex)
+    private static bool TryParseResolutionOptions(
+        DidResolutionOptions? options,
+        out ulong? versionBlockNumber,
+        out DateTimeOffset? versionTime)
     {
-        var clean = hex.StartsWith("0x", StringComparison.OrdinalIgnoreCase) ? hex[2..] : hex;
-        if (clean.Length == 0) return 0;
-        return Convert.ToUInt64(clean.TrimStart('0').Length == 0 ? "0" : clean.TrimStart('0'), 16);
+        versionBlockNumber = null;
+        versionTime = null;
+
+        if (options is null)
+            return true;
+
+        if (options.VersionId is not null && options.VersionTime is not null)
+            return false;
+
+        if (options.VersionId is { } versionId)
+        {
+            if (!ulong.TryParse(
+                    versionId, NumberStyles.None, CultureInfo.InvariantCulture,
+                    out var parsedBlock)
+                || !string.Equals(
+                    versionId, parsedBlock.ToString(CultureInfo.InvariantCulture),
+                    StringComparison.Ordinal))
+                return false;
+
+            versionBlockNumber = parsedBlock;
+        }
+
+        if (options.VersionTime is { } versionTimeText)
+        {
+            if (!DateTimeOffset.TryParseExact(
+                    versionTimeText,
+                    "yyyy-MM-dd'T'HH:mm:ss'Z'",
+                    CultureInfo.InvariantCulture,
+                    DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal,
+                    out var parsedTime))
+                return false;
+
+            versionTime = parsedTime;
+        }
+
+        return true;
+    }
+
+    private static ulong ParseChangedResult(string result)
+    {
+        if (!result.StartsWith("0x", StringComparison.Ordinal)
+            || result.Length != 66)
+            throw new ArgumentException(
+                "ERC-1056 changed(identity) must return exactly one 0x-prefixed ABI word.",
+                nameof(result));
+        foreach (var c in result.AsSpan(2))
+        {
+            if (!char.IsAsciiDigit(c) && c is not (>= 'a' and <= 'f'))
+                throw new ArgumentException(
+                    "ERC-1056 changed(identity) must return canonical lowercase hex data.",
+                    nameof(result));
+        }
+
+        byte[] word;
+        try
+        {
+            word = Convert.FromHexString(result[2..]);
+        }
+        catch (FormatException ex)
+        {
+            throw new ArgumentException(
+                "ERC-1056 changed(identity) returned malformed hex data.",
+                nameof(result), ex);
+        }
+
+        return AbiDecoder.DecodeUint256(word);
     }
 }

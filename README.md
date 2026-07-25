@@ -314,7 +314,20 @@ Console.WriteLine(doc.VerificationMethod!.Count); // 1 — only #controller
 Console.WriteLine(genesis.ContentMetadata!["nextVersionId"]); // first event block
 ```
 
-`versionTime` (ISO-8601 wall-clock) is also supported.
+`versionTime` is also supported in normalized UTC form, for example
+`2026-07-24T12:34:56Z`. Subsecond values and numeric UTC offsets are rejected. `versionId`
+must be a canonical unsigned decimal block number (`0`, `12`, and so on); leading zeroes,
+signs, whitespace, hexadecimal notation, and overflow are rejected. Supplying both selectors
+is invalid. Invalid historical options return `resolutionMetadata.error = "invalidOptions"`
+before any RPC request instead of silently resolving the latest state.
+
+Historical replay is fail-closed. Every registry log returned for an asserted history block
+must parse and match the requested registry, identity, and block; each must carry a unique,
+canonical `logIndex` and `removed: false`. The `changed(identity)` call must return one exact
+ABI word; within each sorted block, the first event must point to an earlier block and every
+later event must point to the current block. `versionTime` replay also requires event-block
+timestamps to increase strictly. Missing, malformed, removed, duplicated, or inconsistent
+history metadata returns `notFound` rather than a partial DID Document.
 
 ### Use an existing key
 

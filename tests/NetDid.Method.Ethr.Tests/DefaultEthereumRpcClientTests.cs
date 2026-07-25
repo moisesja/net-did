@@ -111,6 +111,163 @@ public class DefaultEthereumRpcClientTests
         chainId.Should().Be(0xaa36a7UL);
     }
 
+    [Theory]
+    [InlineData("[]")]
+    [InlineData("42")]
+    [InlineData("\"not-an-object\"")]
+    public async Task Pr104Round2_NonObjectRpcEnvelope_ThrowsEthereumInteractionException(
+        string json)
+    {
+        var client = ClientReturning(HttpStatusCode.OK, new StringContent(json));
+
+        await client.Invoking(c => c.GetChainIdAsync())
+            .Should().ThrowAsync<EthereumInteractionException>()
+            .WithMessage("*object*");
+    }
+
+    [Theory]
+    [InlineData("42")]
+    [InlineData("{}")]
+    [InlineData("[]")]
+    public async Task Pr104Round2_GetChainId_InvalidResultShape_ThrowsEthereumInteractionException(
+        string resultJson)
+    {
+        var client = ClientReturning(HttpStatusCode.OK, new StringContent(
+            $"{{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{resultJson}}}"));
+
+        await client.Invoking(c => c.GetChainIdAsync())
+            .Should().ThrowAsync<EthereumInteractionException>()
+            .WithMessage("*eth_chainId*");
+    }
+
+    [Fact]
+    public async Task Pr104Round2_Call_InvalidResultShape_ThrowsEthereumInteractionException()
+    {
+        var client = ClientReturning(HttpStatusCode.OK, new StringContent(
+            "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":42}"));
+
+        await client.Invoking(c => c.CallAsync("0x0000000000000000000000000000000000000000", "0x"))
+            .Should().ThrowAsync<EthereumInteractionException>()
+            .WithMessage("*eth_call*");
+    }
+
+    [Theory]
+    [InlineData("[]")]
+    [InlineData("{}")]
+    [InlineData("{\"timestamp\":42}")]
+    public async Task Pr104Round2_GetBlockTimestamp_InvalidResultShape_ThrowsEthereumInteractionException(
+        string resultJson)
+    {
+        var client = ClientReturning(HttpStatusCode.OK, new StringContent(
+            $"{{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{resultJson}}}"));
+
+        await client.Invoking(c => c.GetBlockTimestampAsync(1))
+            .Should().ThrowAsync<EthereumInteractionException>()
+            .WithMessage("*eth_getBlockByNumber*");
+    }
+
+    [Theory]
+    [InlineData("0X1")]
+    [InlineData("0xA")]
+    [InlineData("0x01")]
+    [InlineData("0x")]
+    public async Task Pr104Round2_GetChainId_NonCanonicalQuantity_ThrowsEthereumInteractionException(
+        string quantity)
+    {
+        var client = ClientReturning(HttpStatusCode.OK, new StringContent(
+            $"{{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":\"{quantity}\"}}"));
+
+        await client.Invoking(c => c.GetChainIdAsync())
+            .Should().ThrowAsync<EthereumInteractionException>()
+            .WithMessage("*eth_chainId*");
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData(",\"logIndex\":null")]
+    [InlineData(",\"logIndex\":\"not-hex\"")]
+    [InlineData(",\"logIndex\":\"0x\"")]
+    [InlineData(",\"logIndex\":\"1\"")]
+    [InlineData(",\"logIndex\":\"0x00\"")]
+    [InlineData(",\"logIndex\":\"0X1\"")]
+    [InlineData(",\"logIndex\":\"0xA\"")]
+    public async Task Pr104Round2_GetLogs_InvalidLogIndex_ThrowsEthereumInteractionException(
+        string logIndexProperty)
+    {
+        var json = "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":[{"
+            + "\"address\":\"0xdCa7EF03e98e0DC2B855bE647C39ABe984fcF21B\","
+            + "\"topics\":[\"0x01\",\"0x02\"],\"data\":\"0x\","
+            + "\"blockNumber\":\"0x1\""
+            + logIndexProperty
+            + ",\"removed\":false"
+            + "}]}";
+        var client = ClientReturning(HttpStatusCode.OK, new StringContent(json));
+
+        await client.Invoking(c => c.GetLogsAsync(LogFilter()))
+            .Should().ThrowAsync<EthereumInteractionException>()
+            .WithMessage("*logIndex*");
+    }
+
+    [Fact]
+    public async Task Pr104Round2_GetLogs_NullArrayEntry_ThrowsEthereumInteractionException()
+    {
+        var client = ClientReturning(HttpStatusCode.OK, new StringContent(
+            "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":[null]}"));
+
+        await client.Invoking(c => c.GetLogsAsync(LogFilter()))
+            .Should().ThrowAsync<EthereumInteractionException>()
+            .WithMessage("*null*");
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData(",\"removed\":null")]
+    [InlineData(",\"removed\":\"false\"")]
+    [InlineData(",\"removed\":true")]
+    public async Task Pr104Round2_GetLogs_InvalidOrRemovedFlag_ThrowsEthereumInteractionException(
+        string removedProperty)
+    {
+        var json = LogResponse(
+            blockNumber: "0x1",
+            logIndex: "0x0",
+            extraProperty: removedProperty);
+        var client = ClientReturning(HttpStatusCode.OK, new StringContent(json));
+
+        await client.Invoking(c => c.GetLogsAsync(LogFilter()))
+            .Should().ThrowAsync<EthereumInteractionException>()
+            .WithMessage("*removed*");
+    }
+
+    [Theory]
+    [InlineData("1")]
+    [InlineData("0x01")]
+    [InlineData("0x")]
+    [InlineData("0X1")]
+    [InlineData("0xA")]
+    public async Task Pr104Round2_GetLogs_NonCanonicalBlockNumber_ThrowsEthereumInteractionException(
+        string blockNumber)
+    {
+        var client = ClientReturning(HttpStatusCode.OK, new StringContent(
+            LogResponse(blockNumber, "0x0", ",\"removed\":false")));
+
+        await client.Invoking(c => c.GetLogsAsync(LogFilter()))
+            .Should().ThrowAsync<EthereumInteractionException>()
+            .WithMessage("*blockNumber*");
+    }
+
+    [Fact]
+    public async Task Pr104Round2_GetLogs_CanonicalMetadata_ReturnsLog()
+    {
+        var client = ClientReturning(HttpStatusCode.OK, new StringContent(
+            LogResponse("0x1", "0x0", ",\"removed\":false")));
+
+        var logs = await client.GetLogsAsync(LogFilter());
+
+        logs.Should().ContainSingle();
+        logs[0].BlockNumber.Should().Be("0x1");
+        logs[0].LogIndex.Should().Be(0);
+    }
+
     // ── Stubs ─────────────────────────────────────────────────────────────────────
 
     private sealed class StubHandler(Func<HttpRequestMessage, HttpResponseMessage> responder)
@@ -120,6 +277,23 @@ public class DefaultEthereumRpcClientTests
             HttpRequestMessage request, CancellationToken cancellationToken)
             => Task.FromResult(responder(request));
     }
+
+    private static EthereumLogFilter LogFilter() => new()
+    {
+        Address = "0xdCa7EF03e98e0DC2B855bE647C39ABe984fcF21B",
+        FromBlock = 1,
+        ToBlock = 1,
+        Topics = [],
+    };
+
+    private static string LogResponse(
+        string blockNumber, string logIndex, string extraProperty)
+        => "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":[{"
+            + "\"address\":\"0xdCa7EF03e98e0DC2B855bE647C39ABe984fcF21B\","
+            + "\"topics\":[\"0x01\",\"0x02\"],\"data\":\"0x\","
+            + $"\"blockNumber\":\"{blockNumber}\",\"logIndex\":\"{logIndex}\""
+            + extraProperty
+            + "}]}";
 
     /// <summary>Streams a fixed number of bytes with no Content-Length header.</summary>
     private sealed class OversizeStreamedContent : HttpContent

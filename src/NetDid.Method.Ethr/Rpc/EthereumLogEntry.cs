@@ -15,6 +15,6 @@ public sealed record EthereumLogEntry
     /// replay outcome depends on event order (a same-block add→revoke must apply in that
     /// order), so we sort by this rather than trusting the node's response array order.
     /// </summary>
-    public ulong LogIndex { get; init; }
+    public required ulong LogIndex { get; init; }
     public string? TransactionHash { get; init; }
 }

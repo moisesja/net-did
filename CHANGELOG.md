@@ -48,6 +48,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - **RPC client resource limits**: `DefaultEthereumRpcClient` enforces a 16 MiB response cap
     (by declared and actual streamed bytes) and an independent per-request timeout, and surfaces
     malformed/oversize responses as `EthereumInteractionException` at the trust boundary.
+  - **Atomic, canonically ordered history blocks**: every log in an asserted `previousChange`
+    block must parse and match the configured registry, requested identity, and requested block.
+    Missing or malformed `logIndex`, duplicate indices, forward history links, malformed ABI
+    offset/length words, and mixed valid/malformed blocks now fail closed instead of returning a
+    partial authorization state. Removed/reorged logs are rejected; the first event in each
+    ordered block must point backward and every later event must point to that block.
+  - **Canonical RPC and ABI boundaries**: public RPC methods normalize malformed result shapes to
+    `EthereumInteractionException`; quantities, topics, data, the `changed(identity)` return word,
+    address padding, fixed ABI words, and dynamic tails are validated without permissive
+    truncation. Historical event-block timestamps must increase strictly, preventing
+    `versionTime` from constructing an impossible non-prefix state.
+  - **Historical selectors fail closed**: `versionId` accepts only canonical unsigned decimal
+    block numbers, `versionTime` accepts only normalized whole-second UTC values, and the selectors
+    are mutually exclusive. Invalid options return `invalidOptions` before any RPC access rather
+    than silently resolving latest state.
+  - **Generated did:ethr keys are deterministically disposed** after the public key is copied,
+    minimizing the lifetime of generated private-key material.
   - A single untrusted RPC endpoint remains the trust anchor for resolution (it can still return
     a self-consistent but fabricated event history); these bounds constrain availability/DoS, not
     that inherent integrity property. Use a trusted endpoint.

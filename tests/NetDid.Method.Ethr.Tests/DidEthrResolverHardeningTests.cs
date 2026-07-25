@@ -72,7 +72,10 @@ public class DidEthrResolverHardeningTests
         const ulong block = 1;
         var flood = new List<EthereumLogEntry>(6_000);
         for (var i = 0; i < 6_000; i++)   // > MaxCollectedEvents (5_000)
-            flood.Add(OwnerChangedLog(Identity, Identity, block, prev: 0)[0]);
+            flood.Add(OwnerChangedLog(
+                Identity, Identity, block,
+                prev: i == 0 ? 0UL : block,
+                logIndex: (ulong)i)[0]);
 
         var rpc = Substitute.For<IEthereumRpcClient>();
         rpc.CallAsync(default!, default!, default)
@@ -131,7 +134,9 @@ public class DidEthrResolverHardeningTests
     [InlineData("0xZZZZ")]                                   // FormatException
     [InlineData("0xfffffffffffffffffff")]                    // 19 f's → OverflowException (> ulong)
     [InlineData("not-even-hex")]
-    [InlineData("")]                                          // ParseHexUlong tolerates "", but exercise it
+    [InlineData("")]
+    [InlineData("0x")]
+    [InlineData("0x0")]
     public async Task ResolveAsync_MalformedChangedResult_ReturnsNotFound(string changedResult)
     {
         var rpc = Substitute.For<IEthereumRpcClient>();
@@ -139,9 +144,22 @@ public class DidEthrResolverHardeningTests
 
         var result = await MakeMethod(rpc).ResolveAsync($"did:ethr:sepolia:{Identity}");
 
-        // Either notFound (threw and was mapped) or a clean empty resolution ("" → 0
-        // blocks). Never an escaped exception, and never a null-error-with-throw.
-        result.ResolutionMetadata.Error.Should().BeOneOf("notFound", null);
+        result.ResolutionMetadata.Error.Should().Be("notFound");
+    }
+
+    [Theory]
+    [InlineData('A')]
+    [InlineData('f')]
+    public async Task Pr104Round2_ChangedResult_NonCanonicalOrOverflowingWord_ReturnsNotFound(
+        char fill)
+    {
+        var rpc = Substitute.For<IEthereumRpcClient>();
+        rpc.CallAsync(default!, default!, default)
+            .ReturnsForAnyArgs("0x" + new string(fill, 64));
+
+        var result = await MakeMethod(rpc).ResolveAsync($"did:ethr:sepolia:{Identity}");
+
+        result.ResolutionMetadata.Error.Should().Be("notFound");
     }
 
     // ── Finding 2 (identifier): non-hex 66-char id must map to invalidDid ────────
@@ -232,7 +250,7 @@ public class DidEthrResolverHardeningTests
     // ── Fixtures ─────────────────────────────────────────────────────────────────
 
     private static IReadOnlyList<EthereumLogEntry> OwnerChangedLog(
-        string identity, string newOwner, ulong block, ulong prev)
+        string identity, string newOwner, ulong block, ulong prev, ulong logIndex = 0)
     {
         var ownerHex = newOwner.StartsWith("0x") ? newOwner[2..] : newOwner;
         var data = "0x"
@@ -244,6 +262,7 @@ public class DidEthrResolverHardeningTests
             Topics      = [Erc1056Topics.DIDOwnerChanged, PadAddress(identity)],
             Data        = data,
             BlockNumber = "0x" + block.ToString("x"),
+            LogIndex    = logIndex,
         }];
     }
 
@@ -275,6 +294,7 @@ public class DidEthrResolverHardeningTests
             Topics      = [Erc1056Topics.DIDAttributeChanged, PadAddress(identity)],
             Data        = data,
             BlockNumber = "0x" + block.ToString("x"),
+            LogIndex    = 0,
         };
     }
 

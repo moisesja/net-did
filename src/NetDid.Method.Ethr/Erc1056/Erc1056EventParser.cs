@@ -13,9 +13,14 @@ public static class Erc1056EventParser
     {
         ArgumentNullException.ThrowIfNull(log);
 
-        var topic0 = log.Topics[0].ToLowerInvariant();
+        if (log.Topics.Count != 2)
+            throw new ArgumentException(
+                $"ERC-1056 logs must contain exactly two topics, got {log.Topics.Count}.",
+                nameof(log));
+
+        var topic0 = NormalizeTopic(log.Topics[0], "event signature");
         var identity = NormalizeAddress(log.Topics[1]);
-        var blockNumber = ParseHexUlong(log.BlockNumber);
+        var blockNumber = ParseCanonicalHexQuantity(log.BlockNumber, "blockNumber");
         var data = DecodeHex(log.Data);
 
         if (topic0 == Erc1056Topics.DIDOwnerChanged)
@@ -63,21 +68,79 @@ public static class Erc1056EventParser
     /// </summary>
     private static string NormalizeAddress(string paddedHex)
     {
-        var hex = paddedHex.StartsWith("0x", StringComparison.OrdinalIgnoreCase)
-            ? paddedHex[2..] : paddedHex;
-        // ABI pads addresses to 32 bytes (64 hex chars); last 40 hex chars = 20 bytes
-        return "0x" + hex[^40..].ToLowerInvariant();
+        var hex = NormalizeTopic(paddedHex, "identity")[2..];
+        if (!hex[..24].All(c => c == '0'))
+            throw new ArgumentException(
+                "ERC-1056 identity topic has non-zero address padding.",
+                nameof(paddedHex));
+        return "0x" + hex[24..].ToLowerInvariant();
     }
 
-    private static ulong ParseHexUlong(string hex)
+    private static string NormalizeTopic(string topic, string context)
     {
-        var clean = hex.StartsWith("0x", StringComparison.OrdinalIgnoreCase) ? hex[2..] : hex;
-        return Convert.ToUInt64(clean, 16);
+        if (!topic.StartsWith("0x", StringComparison.Ordinal)
+            || topic.Length != 66
+            || !IsLowerHex(topic.AsSpan(2)))
+            throw new ArgumentException(
+                $"ERC-1056 {context} topic must be a canonical lowercase 0x-prefixed 32-byte hex value.",
+                nameof(topic));
+        try
+        {
+            _ = Convert.FromHexString(topic[2..]);
+        }
+        catch (FormatException ex)
+        {
+            throw new ArgumentException(
+                $"ERC-1056 {context} topic contains invalid hex.", nameof(topic), ex);
+        }
+        return topic;
+    }
+
+    private static ulong ParseCanonicalHexQuantity(string value, string context)
+    {
+        if (!value.StartsWith("0x", StringComparison.Ordinal)
+            || value.Length == 2
+            || (value.Length > 3 && value[2] == '0')
+            || !IsLowerHex(value.AsSpan(2)))
+            throw new ArgumentException(
+                $"{context} must be a canonical 0x-prefixed Ethereum quantity.",
+                nameof(value));
+        try
+        {
+            return Convert.ToUInt64(value[2..], 16);
+        }
+        catch (Exception ex) when (ex is FormatException or OverflowException)
+        {
+            throw new ArgumentException(
+                $"{context} is not a valid Ethereum quantity.", nameof(value), ex);
+        }
     }
 
     private static byte[] DecodeHex(string hex)
     {
-        var clean = hex.StartsWith("0x", StringComparison.OrdinalIgnoreCase) ? hex[2..] : hex;
-        return clean.Length == 0 ? [] : Convert.FromHexString(clean);
+        if (!hex.StartsWith("0x", StringComparison.Ordinal)
+            || (hex.Length - 2) % 2 != 0
+            || !IsLowerHex(hex.AsSpan(2)))
+            throw new ArgumentException(
+                "ERC-1056 data must be a 0x-prefixed, whole-byte hex value.",
+                nameof(hex));
+        try
+        {
+            return hex.Length == 2 ? [] : Convert.FromHexString(hex[2..]);
+        }
+        catch (FormatException ex)
+        {
+            throw new ArgumentException("ERC-1056 data contains invalid hex.", nameof(hex), ex);
+        }
+    }
+
+    private static bool IsLowerHex(ReadOnlySpan<char> value)
+    {
+        foreach (var c in value)
+        {
+            if (!char.IsAsciiDigit(c) && c is not (>= 'a' and <= 'f'))
+                return false;
+        }
+        return true;
     }
 }
