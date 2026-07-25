@@ -9,7 +9,7 @@ public class ServiceTests
 {
     private readonly TestDidFactory _factory = new();
 
-    public static TheoryData<string> MethodsWithServices => new() { "did:peer", "did:webvh" };
+    public static TheoryData<string> MethodsWithServices => new() { "did:peer", "did:webvh", "did:ethr" };
 
     [Theory, MemberData(nameof(MethodsWithServices))]
     [Trait("W3CCategory", "did-core-properties")]

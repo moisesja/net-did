@@ -9,7 +9,7 @@ public class DidUrlSyntaxTests
 {
     private readonly TestDidFactory _factory = new();
 
-    public static TheoryData<string> AllMethods => new() { "did:key", "did:peer", "did:webvh" };
+    public static TheoryData<string> AllMethods => new() { "did:key", "did:peer", "did:webvh", "did:ethr" };
 
     [Theory, MemberData(nameof(AllMethods))]
     [Trait("W3CCategory", "did-identifier")]
@@ -84,6 +84,10 @@ public class DidUrlSyntaxTests
         ConformanceReportSink.Record("did:key", "did-identifier", "3.1", "3.1-9",
             "Invalid DID URL is rejected", allRejected);
         ConformanceReportSink.Record("did:peer", "did-identifier", "3.1", "3.1-9",
+            "Invalid DID URL is rejected", allRejected);
+        ConformanceReportSink.Record("did:ethr", "did-identifier", "3.1", "3.1-9",
+            "Invalid DID URL is rejected", allRejected);
+        ConformanceReportSink.Record("did:webvh", "did-identifier", "3.1", "3.1-9",
             "Invalid DID URL is rejected", allRejected);
         allRejected.Should().BeTrue();
     }

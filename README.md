@@ -7,7 +7,7 @@ A specification-compliant .NET library for Decentralized Identifiers (DIDs). Net
 
 ## Features
 
-- **DID methods**: `did:key`, `did:peer`, and `did:webvh` (implemented), `did:ethr` (planned)
+- **DID methods**: `did:key`, `did:peer`, `did:webvh` (implemented), and `did:ethr` (Create+Resolve)
 - **Eight key types**: Ed25519, X25519, P-256, P-384, P-521, secp256k1, BLS12-381 G1/G2
 - **BBS+ signatures**: Multi-message signing with selective disclosure proofs (IETF draft-10)
 - **W3C DID Core 1.0** compliant DID Document model and serialization
@@ -33,6 +33,7 @@ dotnet add package NetDid.Core
 dotnet add package NetDid.Method.Key    # did:key method
 dotnet add package NetDid.Method.Peer   # did:peer method
 dotnet add package NetDid.Method.WebVh  # did:webvh method
+dotnet add package NetDid.Method.Ethr   # did:ethr method
 dotnet add package NetDid.Extensions.DependencyInjection  # Microsoft DI integration
 dotnet add package NetCrypto            # key generation, signing, JWK (NetCrypto namespace)
 ```
@@ -259,6 +260,118 @@ var resolved = await didPeer.ResolveAsync(result.Did.Value);
 
 Short-form-only resolution returns `notFound` (requires prior long-form exchange).
 
+## did:ethr
+
+`did:ethr` resolves DIDs anchored to any EVM-compatible blockchain via the [ERC-1056 registry contract](https://github.com/decentralized-identity/ethr-did-resolver). Create derives an Ethereum address from a secp256k1 key pair; resolve walks the on-chain event log to reconstruct the DID Document at any point in history.
+
+### Create a did:ethr
+
+```csharp
+using NetCrypto;
+using NetDid.Method.Ethr;
+using NetDid.Method.Ethr.Rpc;
+
+var config  = KnownNetworks.Sepolia with { RpcUrl = "https://sepolia.drpc.org" };
+var factory = DefaultEthereumRpcClientFactory.CreateDirect([config]);
+var method  = new DidEthrMethod(factory, [config], new DefaultKeyGenerator());
+
+var result = await method.CreateAsync(new DidEthrCreateOptions { Network = "sepolia" });
+
+Console.WriteLine(result.Did);
+// Output: did:ethr:sepolia:0x4b0d...
+```
+
+No on-chain transaction is required to create a `did:ethr`. The DID is derived deterministically from the secp256k1 key pair. On-chain registration (Update/Deactivate) is planned for Phase 2.
+
+### Resolve a did:ethr
+
+```csharp
+var resolved = await method.ResolveAsync(
+    "did:ethr:sepolia:0xf61c81096c96f97e95ac52a570966195ad6c90dd");
+
+var doc = resolved.DidDocument!;
+Console.WriteLine(doc.VerificationMethod![0].BlockchainAccountId);
+// eip155:11155111:0xF36cAD0fb057f01F852557317bB8aa05F8c2dF4D
+```
+
+Resolve walks the on-chain ERC-1056 event chain (owner changes, delegate keys, attribute keys, services) and builds a W3C DID Document. Key types supported: `EcdsaSecp256k1RecoveryMethod2020` (delegates), `EcdsaSecp256k1VerificationKey2019`, `Ed25519VerificationKey2020`, `X25519KeyAgreementKey2020`, `Multikey`, and unknown types via `publicKeyHex`.
+
+### Historical resolution via `?versionId`
+
+`DefaultDidUrlDereferencer` passes `?versionId` directly through to the resolver — no extra wiring needed:
+
+```csharp
+using NetDid.Core.Resolution;
+
+var dereferencer = new DefaultDidUrlDereferencer(new CompositeDidResolver([method]));
+
+// Genesis document — state before any on-chain events
+var genesis = await dereferencer.DereferenceAsync(
+    "did:ethr:sepolia:0xf61c81096c96f97e95ac52a570966195ad6c90dd?versionId=0");
+
+var doc = (DidDocument)genesis.ContentStream!;
+Console.WriteLine(doc.VerificationMethod!.Count); // 1 — only #controller
+Console.WriteLine(genesis.ContentMetadata!["nextVersionId"]); // first event block
+```
+
+`versionTime` is also supported in normalized UTC form, for example
+`2026-07-24T12:34:56Z`. Subsecond values and numeric UTC offsets are rejected. `versionId`
+must be a canonical unsigned decimal block number (`0`, `12`, and so on); leading zeroes,
+signs, whitespace, hexadecimal notation, and overflow are rejected. Supplying both selectors
+is invalid. Invalid historical options return `resolutionMetadata.error = "invalidOptions"`
+before any RPC request instead of silently resolving the latest state. `invalidOptions` is
+defined by the [DID Resolution specification](https://www.w3.org/TR/did-resolution/#errors);
+it is not a DID Core 1.0 error code.
+
+Historical replay is fail-closed. Every registry log returned for an asserted history block
+must parse and match the requested registry, identity, and block; each must carry a unique,
+canonical `logIndex`. Logs explicitly marked `removed: true` are rejected; the optional
+`removed` member may be absent and, when present, must be Boolean. The `changed(identity)` call
+must return one exact ABI word; within each sorted block, the first event must point to an earlier
+block and every later event must point to the current block. `versionTime` replay also requires
+event-block timestamps to be non-decreasing. Equal whole-second timestamps are valid for distinct
+ordered blocks; a decrease is rejected. Missing, malformed, removed, duplicated, or inconsistent
+history metadata returns `notFound` rather than a partial DID Document.
+
+### Use an existing key
+
+```csharp
+var existingKey = keyGen.Generate(KeyType.Secp256k1);
+var signer = new KeyPairSigner(existingKey, new DefaultCryptoProvider());
+
+var result = await method.CreateAsync(new DidEthrCreateOptions
+{
+    Network     = "sepolia",
+    ExistingKey = signer   // Must be Secp256k1; works with any ISigner
+});
+```
+
+### Known networks
+
+`KnownNetworks` mirrors the [`deployments.ts`](https://github.com/decentralized-identity/ethr-did-resolver/blob/master/src/config/deployments.ts) catalogue from the JS reference resolver — correct registry addresses and `legacyNonce` flags pre-populated:
+
+| Property | Network | Chain ID | Registry |
+|---|---|---|---|
+| `KnownNetworks.Mainnet` | mainnet | 1 | `0xdCa7EF03…` |
+| `KnownNetworks.Sepolia` | sepolia | 11155111 | `0x03d5003b…` |
+| `KnownNetworks.Holesky` | holesky | 17000 | `0x03d5003b…` |
+| `KnownNetworks.Gnosis` | gno | 100 | `0x03d5003b…` |
+| `KnownNetworks.Polygon` | polygon | 137 | `0xdCa7EF03…` |
+| `KnownNetworks.Aurora` | aurora | 1313161554 | `0x63eD58B6…` |
+| + 6 more | … | … | … |
+
+All entries have `RpcUrl = ""`. Supply the endpoint with a `with` expression:
+
+```csharp
+var cfg = KnownNetworks.Mainnet with { RpcUrl = "https://mainnet.gateway.tenderly.co" };
+```
+
+`EthrIdentifier.ChainId` resolves named built-ins through this same catalogue, so network
+metadata has one source of truth. The deprecated `goerli` identifier alias still resolves to
+chain ID 5 without being advertised in `KnownNetworks.All`. Consumers can supply arbitrary
+networks with `EthereumNetworkConfig`; the library does not attempt to enumerate every
+EVM-compatible chain.
+
 ## did:webvh
 
 `did:webvh` (DID Web with Verifiable History) combines web-based hosting with a cryptographically verifiable log of all changes. Full CRUD with hash chain integrity, pre-rotation, and witness validation.
@@ -462,6 +575,11 @@ services.AddNetDid(builder =>
     builder.AddDidKey();
     builder.AddDidPeer();
     builder.AddDidWebVh();
+    builder.AddDidEthr(new Dictionary<string, string>
+    {
+        ["mainnet"] = "https://mainnet.gateway.tenderly.co",
+        ["sepolia"] = "https://sepolia.drpc.org",
+    });
     builder.AddCaching(TimeSpan.FromMinutes(15));
 });
 ```
@@ -527,18 +645,21 @@ netdid/
 │   ├── NetDid.Method.Key/                   # did:key method
 │   ├── NetDid.Method.Peer/                  # did:peer method (numalgo 0, 2, 4)
 │   ├── NetDid.Method.WebVh/                 # did:webvh method (full CRUD)
+│   ├── NetDid.Method.Ethr/                  # did:ethr method (Create + Resolve)
 │   └── NetDid.Extensions.DependencyInjection/  # Microsoft DI integration
 ├── tests/
-│   ├── NetDid.Core.Tests/                   # 370 unit tests
-│   ├── NetDid.Method.Key.Tests/             # 44 tests
-│   ├── NetDid.Method.Peer.Tests/            # 40 tests
-│   ├── NetDid.Method.WebVh.Tests/           # 130 tests
-│   ├── NetDid.Tests.W3CConformance/         # 175 W3C conformance tests
-│   └── NetDid.Extensions.DependencyInjection.Tests/  # 11 tests
+│   ├── NetDid.Core.Tests/                   # 375 unit tests
+│   ├── NetDid.Method.Key.Tests/             # 52 tests
+│   ├── NetDid.Method.Peer.Tests/            # 48 tests
+│   ├── NetDid.Method.WebVh.Tests/           # 411 tests
+│   ├── NetDid.Method.Ethr.Tests/            # 65 tests
+│   ├── NetDid.Tests.W3CConformance/         # 233 W3C conformance tests
+│   └── NetDid.Extensions.DependencyInjection.Tests/  # 18 tests
 ├── samples/
 │   ├── NetDid.Samples.DidKey/               # did:key usage examples
 │   ├── NetDid.Samples.DidPeer/              # did:peer usage examples
 │   ├── NetDid.Samples.DidWebVh/             # did:webvh CRUD examples
+│   ├── NetDid.Samples.DidEthr/              # did:ethr resolve + historical resolution
 │   └── NetDid.Samples.DependencyInjection/  # DI registration pattern
 └── netdid.sln
 ```
@@ -561,6 +682,7 @@ dotnet test
 dotnet run --project samples/NetDid.Samples.DidKey
 dotnet run --project samples/NetDid.Samples.DidPeer
 dotnet run --project samples/NetDid.Samples.DidWebVh
+dotnet run --project samples/NetDid.Samples.DidEthr
 dotnet run --project samples/NetDid.Samples.DependencyInjection
 ```
 
@@ -573,31 +695,33 @@ NetDid is developed in four phases (see [NetDidPRD.md](NetDidPRD.md) for full de
 | **I** | Core Foundation — DID Document model, crypto primitives, encoding, serialization, resolver infrastructure | Complete |
 | **II** | `did:key` and `did:peer` method implementations | Complete |
 | **III** | `did:webvh` method implementation | Complete |
-| **IV** | `did:ethr` method implementation | Planned |
+| **IV** | `did:ethr` method implementation | Create + Resolve |
 
 ## Specifications
 
 NetDid targets the following specifications:
 
-| Specification | Version | Status | Reference |
-|---|---|---|---|
-| **W3C Decentralized Identifiers (DIDs)** | v1.0 | W3C Recommendation (2022-07-19) | [w3.org/TR/did-core](https://www.w3.org/TR/did-core/) |
-| **did:key** | Latest | W3C CCG Final | [w3c-ccg.github.io/did-method-key](https://w3c-ccg.github.io/did-method-key/) |
-| **did:peer** | 2.0 | DIF Spec | [identity.foundation/peer-did-method-spec](https://identity.foundation/peer-did-method-spec/) |
-| **did:webvh** | 1.0 | DIF Recommended | [identity.foundation/didwebvh](https://identity.foundation/didwebvh/) |
-| **Data Integrity (eddsa-jcs-2022)** | — | W3C Candidate Recommendation | [w3.org/TR/vc-di-eddsa](https://www.w3.org/TR/vc-di-eddsa/) |
+| Specification | Version  | Status | Reference |
+|---|----------|---|---|
+| **W3C Decentralized Identifiers (DIDs)** | v1.0     | W3C Recommendation (2022-07-19) | [w3.org/TR/did-core](https://www.w3.org/TR/did-core/) |
+| **did:key** | Latest   | W3C CCG Final | [w3c-ccg.github.io/did-method-key](https://w3c-ccg.github.io/did-method-key/) |
+| **did:peer** | 2.0      | DIF Spec | [identity.foundation/peer-did-method-spec](https://identity.foundation/peer-did-method-spec/) |
+| **did:webvh** | 1.0      | DIF Recommended | [identity.foundation/didwebvh](https://identity.foundation/didwebvh/) |
+| **did:ethr** | 13.0.0   | DIF Spec | [github.com/decentralized-identity/ethr-did-resolver](https://github.com/decentralized-identity/ethr-did-resolver/blob/master/doc/did-method-spec.md) |
+| **Data Integrity (eddsa-jcs-2022)** | —        | W3C Candidate Recommendation | [w3.org/TR/vc-di-eddsa](https://www.w3.org/TR/vc-di-eddsa/) |
 | **BBS Signatures** | draft-10 | IETF CFRG Draft | [draft-irtf-cfrg-bbs-signatures](https://datatracker.ietf.org/doc/draft-irtf-cfrg-bbs-signatures/) |
 | **JSON Canonicalization (JCS)** | RFC 8785 | IETF Proposed Standard | [rfc-editor.org/rfc/rfc8785](https://www.rfc-editor.org/rfc/rfc8785) |
 
 ## W3C Conformance
 
-NetDid is fully conformant with [W3C Decentralized Identifiers (DIDs) v1.0](https://www.w3.org/TR/did-core/) (W3C Recommendation, 2022-07-19). All 182 conformance tests pass across the three implemented methods:
+NetDid is fully conformant with [W3C Decentralized Identifiers (DIDs) v1.0](https://www.w3.org/TR/did-core/) (W3C Recommendation, 2022-07-19). All 255 conformance statements pass across the four implemented methods:
 
 | Method | Tests |
 |---|---|
+| did:ethr | 66/66 |
 | did:key | 57/57 |
 | did:peer | 67/67 |
-| did:webvh | 58/58 |
+| did:webvh | 65/65 |
 
 See [w3c-conformance-report.md](w3c-conformance-report.md) for the full report.
 

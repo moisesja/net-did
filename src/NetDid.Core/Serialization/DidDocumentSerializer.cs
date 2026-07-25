@@ -11,6 +11,11 @@ namespace NetDid.Core.Serialization;
 public static class DidDocumentSerializer
 {
     private static readonly JsonSerializerOptions DefaultOptions = CreateOptions();
+    private static readonly (string Type, string Context)[] ExactVerificationMethodContexts =
+    [
+        ("Multikey", "https://w3id.org/security/multikey/v1"),
+        ("JsonWebKey2020", "https://w3id.org/security/suites/jws-2020/v1"),
+    ];
 
     private static JsonSerializerOptions CreateOptions()
     {
@@ -108,11 +113,15 @@ public static class DidDocumentSerializer
         AddEmbeddedVmTypes(doc.CapabilityInvocation, vmTypes);
         AddEmbeddedVmTypes(doc.CapabilityDelegation, vmTypes);
 
-        if (vmTypes.Contains("Multikey"))
-            contexts.Add("https://w3id.org/security/multikey/v1");
-        if (vmTypes.Contains("JsonWebKey2020"))
-            contexts.Add("https://w3id.org/security/suites/jws-2020/v1");
-        if (vmTypes.Any(t => t.StartsWith("EcdsaSecp256k1")))
+        foreach (var (type, context) in ExactVerificationMethodContexts)
+        {
+            if (vmTypes.Contains(type))
+                contexts.Add(context);
+        }
+        // Add secp256k1-2019/v1 only when security/v2 is not already provided by the document
+        // (did:ethr uses security/v2 per the reference JS resolver; did:key/did:peer use secp256k1-2019/v1)
+        var docHasSecurityV2 = doc.Context?.Any(c => c is string s && s == "https://w3id.org/security/v2") == true;
+        if (!docHasSecurityV2 && vmTypes.Any(t => t.StartsWith("EcdsaSecp256k1")))
             contexts.Add("https://w3id.org/security/suites/secp256k1-2019/v1");
 
         // Append any additional context entries (strings or JSON objects) from the document
@@ -296,6 +305,18 @@ public static class DidDocumentSerializer
             if (root.TryGetProperty("controller", out var ctrlElement) && ctrlElement.ValueKind == JsonValueKind.String)
                 controller = new Did(ctrlElement.GetString()!);
 
+            // Preserve unknown members (e.g. did:ethr's publicKeyHex, the ONLY key material
+            // on those VMs) so a round-trip does not silently drop them. Mirrors ServiceJsonConverter.
+            Dictionary<string, JsonElement>? additional = null;
+            foreach (var prop in root.EnumerateObject())
+            {
+                if (prop.Name is "id" or "type" or "controller"
+                    or "publicKeyMultibase" or "publicKeyJwk" or "blockchainAccountId")
+                    continue;
+                additional ??= new Dictionary<string, JsonElement>();
+                additional[prop.Name] = prop.Value.Clone();
+            }
+
             return new VerificationMethod
             {
                 Id = root.GetProperty("id").GetString()!,
@@ -303,7 +324,8 @@ public static class DidDocumentSerializer
                 Controller = controller,
                 PublicKeyMultibase = publicKeyMultibase,
                 PublicKeyJwk = publicKeyJwk,
-                BlockchainAccountId = blockchainAccountId
+                BlockchainAccountId = blockchainAccountId,
+                AdditionalProperties = additional
             };
         }
 
@@ -326,6 +348,19 @@ public static class DidDocumentSerializer
 
             if (value.BlockchainAccountId is not null)
                 writer.WriteString("blockchainAccountId", value.BlockchainAccountId);
+
+            if (value.AdditionalProperties is not null)
+                foreach (var (key, val) in value.AdditionalProperties)
+                {
+                    // Never let an additional member shadow a reserved one already written
+                    // above — a colliding "publicKeyJwk" would duplicate the member and
+                    // bypass the private-key sanitizer in WriteJwk.
+                    if (key is "id" or "type" or "controller"
+                        or "publicKeyMultibase" or "publicKeyJwk" or "blockchainAccountId")
+                        continue;
+                    writer.WritePropertyName(key);
+                    val.WriteTo(writer);
+                }
 
             writer.WriteEndObject();
         }

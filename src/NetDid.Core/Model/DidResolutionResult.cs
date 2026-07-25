@@ -19,6 +19,12 @@ public sealed record DidResolutionResult
         ResolutionMetadata = new DidResolutionMetadata { Error = "invalidDid" }
     };
 
+    public static DidResolutionResult InvalidOptions(string did) => new()
+    {
+        DidDocument = null,
+        ResolutionMetadata = new DidResolutionMetadata { Error = "invalidOptions" }
+    };
+
     public static DidResolutionResult MethodNotSupported(string did) => new()
     {
         DidDocument = null,

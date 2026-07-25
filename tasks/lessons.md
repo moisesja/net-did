@@ -149,3 +149,62 @@
   doubt, present the plan and wait. Corollary (same thread): the gate is a BEFORE-work gate —
   once the work is done and corrected, do not stage a retroactive approval pause on simple
   remaining steps; acknowledge, capture the lesson, and finish.
+- A DoS bound on untrusted-remote traversal must cover COUNT *and* aggregate BYTES *and*
+  aggregate WALL-CLOCK — a count-only cap is byte- and time-blind. did:ethr resolution added
+  a hop cap + event-count cap, but an adversarial re-attack showed: (a) one large-value
+  attribute event per hop stays under the count cap yet retains ~response-cap bytes/hop →
+  multi-GB heap OOM; (b) the VersionTime path fanned out one `eth_getBlockByNumber` per event
+  with no overall deadline (and `versionTime` is attacker-supplyable via the DID-URL query);
+  (c) hops × per-request timeout = hours. Fix all three with ONE coherent pass: an aggregate
+  retained-byte budget (32 MiB), an overall resolution deadline via a linked CTS spanning the
+  whole walk + post-walk fan-out (when the DEADLINE token fires, `ct.IsCancellationRequested`
+  is false so it maps to notFound instead of propagating), and realistic count caps. A
+  per-request cap does NOT imply an aggregate cap. (PR #104, did:ethr adoption of #70.)
+- Adopting a fork PR of a whole new subsystem is NOT just conflict resolution — the adopted code
+  becomes ours and needs the full gate. Here the crypto swap reviewed clean but the trust-boundary
+  lens found 5 pre-existing CONFIRMED issues (1 CRITICAL) in the contributor's resolver, and a
+  re-attack found 3 more residuals in our own fixes. Run `adversarial-review` on the ENTIRE adopted
+  diff (worktree-isolated agents), and re-attack the fixes — the first fix pass often has a deeper
+  residual (count caps → aggregate caps). Converge when residuals collapse to one inherent, DOCUMENTED
+  trust property (a single untrusted RPC endpoint can forge a self-consistent history — integrity, not
+  availability), not to "no more findings". Preserve the original author's commits (merge, don't squash)
+  so credit survives when the superseding PR lands. (PR #104 adopting #70 by @mirceanis.)
+- A Core serializer change ripples through EVERY method's round-trip and any fingerprint
+  built on modeled serialization — run the FULL suite, not just the method you're targeting.
+  Fixing VerificationMethodJsonConverter.Read to capture AdditionalProperties (so did:ethr's
+  publicKeyHex round-trips) changed did:webvh's #101 state-provenance fingerprint (which hashes
+  the modeled serialization), breaking one LogEntryWireProvenanceTests assertion. When a
+  security-property test breaks after an unrelated-looking change, DON'T just make it pass:
+  determine whether the property was WEAKENED or the test's proxy became OUTDATED. Here the
+  fingerprint became strictly more faithful (models more members → detects more changes → drops
+  fewer signed members), which strengthened #101; the test's "modeled fallback drops VM members"
+  proxy was the outdated part. Verify the fingerprint is computed consistently at parse- and
+  serialize-time before concluding "safe", and record the cross-cutting effect in the commit +
+  PR reply so the reviewer sees why their #101 test changed. (PR #104 review round.)
+- "Avoid whack-a-mole" means closing residuals the reviewer's own comment already hinted at,
+  even when they sanctioned a simpler option. The #1 fix could use stable-sort-by-block OR
+  (block, logIndex); the reviewer listed logIndex first. I shipped stable-sort, then the
+  adversarial re-review flagged that it trusts intra-block response order — exactly the gap
+  logIndex closes. Doing the logIndex sort proactively (before re-review) would have saved a
+  round. When a reviewer lists two options and one is strictly more robust, prefer the robust
+  one unless it is materially more work. (PR #104 review round.)
+- A security fix is complete only when it closes the invalid-state CLASS, not the one fixture
+  named in a review. For untrusted ordered inputs, test mixed valid+invalid batches as well as
+  all-invalid batches; require presence, syntax, and uniqueness of ordering metadata; validate
+  source/identity/block invariants at the same choke point; and reject invalid selector syntax
+  before external I/O. In PR #104, accepting one good event beside a malformed revoke, defaulting
+  a missing `logIndex` to zero, and treating malformed historical options as "latest" were all the
+  same fail-open pattern. Build the negative-state matrix before implementation, then re-attack
+  the whole matrix after the fix to avoid reviewer/fixer whack-a-mole.
+- Do not impose strict monotonicity on a lower-resolution projection of an ordered clock without
+  proving the projection preserves strictness for every supported backend. Aurora feeds a
+  nanosecond NEAR timestamp to the EVM but exposes `TIMESTAMP` in whole seconds, so distinct ordered
+  blocks can legitimately compare equal. For historical prefix selection, block number supplies
+  order: require timestamps to be non-decreasing and reject only a decrease. Pair the negative
+  regression with an equal-value positive case so "hardening" cannot become honest-input denial.
+- At an untrusted wire boundary, distinguish a schema-optional member from a malformed present
+  member. Ethereum's canonical Log schema makes `removed` optional: absence is compatible with a
+  canonical log, while explicit `true` must be rejected and explicit `null`/non-Boolean values are
+  malformed. Do not turn an optional advisory flag into a required compatibility gate unless the
+  protocol defines omission as unsafe; a hostile provider that omits it could already lie with
+  `false`.

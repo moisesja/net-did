@@ -7,6 +7,79 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`NetDid.Method.Ethr`** — Phase 1 implementation of the `did:ethr` DID method (adopted from
+  PR #70 by @mirceanis; all cryptography consumed exclusively from `NetCrypto`).
+  - **`DidEthrMethod`**: Implements `Create` and `Resolve` capabilities (advertises `Create | Resolve | ServiceEndpoints`). `Update` and `Deactivate` stubs throw `OperationNotSupportedException` (Phase 2).
+  - **`EthereumAddress`**: Derives EIP-55 checksummed Ethereum addresses from compressed secp256k1 public keys using Keccak-256 (`NetCrypto.Keccak256`).
+  - **`EthrIdentifier`**: Parses method-specific identifiers supporting named networks (`mainnet`, `sepolia`, `goerli`, `polygon`), hex chain IDs (`0x…`), plain 20-byte addresses, and full 33-byte compressed public keys.
+  - **`AbiEncoder` / `AbiDecoder`**: Minimal Ethereum ABI codec for the two read-only ERC-1056 call signatures (`changed`, `identityOwner`) and all three event data layouts (`DIDOwnerChanged`, `DIDDelegateChanged`, `DIDAttributeChanged`).
+  - **`Erc1056EventParser`**: Parses raw `eth_getLogs` entries into typed events by dispatching on Keccak-256 topic hashes.
+  - **`EthrDocumentBuilder`**: Replays ERC-1056 event history (oldest-first) to construct a W3C DID Document including `#controller` + optional `#controllerKey` verification methods, delegate and attribute VMs (Secp256k1, Ed25519, X25519, Multikey), service entries, and dynamic `@context` assembly.
+  - **`DefaultEthereumRpcClient`**: JSON-RPC 2.0 HTTP client over `HttpClient`. Phase 2 write methods declared but throw `NotImplementedException`.
+  - Supports `VersionId` (resolve at a specific block number) and `VersionTime` (resolve at an ISO-8601 wall-clock time) resolution options.
+  - Detects deactivation when the last `DIDOwnerChanged` event transfers ownership to `0x000…000`.
+- **`NetDidBuilder.AddDidEthr(networks)`** — DI extension method in `NetDid.Extensions.DependencyInjection`.
+- **`VerificationMethod.AdditionalProperties`** — Added `IReadOnlyDictionary<string, JsonElement>?` to `VerificationMethod` (in `NetDid.Core`) to support `publicKeyHex` for unknown key types per the did:ethr spec.
+- New sample: `NetDid.Samples.DidEthr`.
+
+### Changed
+
+- **`NetCrypto` 1.2.0 → 1.3.0** — consumes the new public `KeyTypeExtensions.ToUncompressed`
+  (crypto-dotnet#19, requested for this work) for secp256k1 point decompression in Ethereum
+  address derivation, eliminating did:ethr's last direct third-party crypto call
+  (`NBitcoin.Secp256k1.ECPubKey`). All did:ethr cryptography now flows through `NetCrypto`.
+- **`EthereumLogEntry.LogIndex` is now a required member** of the unreleased did:ethr API.
+  Resolver replay requires the block-global index to establish deterministic authorization-event
+  order within a block.
+- **`EthrIdentifier.ChainId` now uses `KnownNetworks` as its named-chain source of truth** rather
+  than a second four-network map, so all twelve built-in deployments resolve to their configured
+  decimal chain IDs. The deprecated `goerli` alias retains its historical chain-ID conversion
+  without being advertised as an active configuration.
+
+### Security
+
+- **did:ethr resolution hardened against a hostile RPC node** (adversarial review of the
+  adopted PR #70). The RPC endpoint is untrusted; every response byte is attacker-controlled.
+  - **Bounded event-chain walk on every axis a node controls**: `DidEthrMethod` caps the
+    `previousChange` traversal by block hops, total collected events, **aggregate retained
+    bytes** (the count cap alone is byte-blind — a large-value attribute per hop could still
+    exhaust the heap), and an **overall resolution deadline** spanning the walk and the
+    post-walk per-block timestamp fan-out. A node fabricating an unbounded chain can no longer
+    drive resolution into excessive `eth_getLogs` calls, unbounded memory, or multi-hour hangs.
+  - **Resolver never throws**: the RPC → decode → build path is wrapped so malformed wire data
+    (non-hex/overflowing fields, bad JSON shape, hostile-but-decodable events) maps to a
+    `notFound` resolution error instead of escaping `ResolveAsync`; a non-hex identifier maps to
+    `invalidDid`; caller cancellation still propagates.
+  - **RPC client resource limits**: `DefaultEthereumRpcClient` enforces a 16 MiB response cap
+    (by declared and actual streamed bytes) and an independent per-request timeout, and surfaces
+    malformed/oversize responses as `EthereumInteractionException` at the trust boundary.
+  - **Atomic, canonically ordered history blocks**: every log in an asserted `previousChange`
+    block must parse and match the configured registry, requested identity, and requested block.
+    Missing or malformed `logIndex`, duplicate indices, forward history links, malformed ABI
+    offset/length words, and mixed valid/malformed blocks now fail closed instead of returning a
+    partial authorization state. Logs explicitly marked removed/reorged are rejected; the
+    execution API's optional `removed` member may be omitted but must be Boolean when present.
+    The first event in each ordered block must point backward and every later event must point to
+    that block.
+  - **Canonical RPC and ABI boundaries**: public RPC methods normalize malformed result shapes to
+    `EthereumInteractionException`; quantities, topics, data, the `changed(identity)` return word,
+    address padding, fixed ABI words, and dynamic tails are validated without permissive
+    truncation. Historical event-block timestamps must be non-decreasing: equal whole-second
+    timestamps on ordered blocks are valid, while a decrease is rejected to prevent
+    `versionTime` from constructing an impossible non-prefix state.
+  - **Historical selectors fail closed**: `versionId` accepts only canonical unsigned decimal
+    block numbers, `versionTime` accepts only normalized whole-second UTC values, and the selectors
+    are mutually exclusive. Invalid options return `invalidOptions`—the DID Resolution
+    specification's error code, not a DID Core 1.0 code—before any RPC access rather than silently
+    resolving latest state.
+  - **Generated did:ethr keys are deterministically disposed** after the public key is copied,
+    minimizing the lifetime of generated private-key material.
+  - A single untrusted RPC endpoint remains the trust anchor for resolution (it can still return
+    a self-consistent but fabricated event history); these bounds constrain availability/DoS, not
+    that inherent integrity property. Use a trusted endpoint.
+
 ## [2.3.0] - 2026-07-13
 
 ### Fixed
