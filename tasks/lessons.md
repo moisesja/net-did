@@ -196,3 +196,15 @@
   a missing `logIndex` to zero, and treating malformed historical options as "latest" were all the
   same fail-open pattern. Build the negative-state matrix before implementation, then re-attack
   the whole matrix after the fix to avoid reviewer/fixer whack-a-mole.
+- Do not impose strict monotonicity on a lower-resolution projection of an ordered clock without
+  proving the projection preserves strictness for every supported backend. Aurora feeds a
+  nanosecond NEAR timestamp to the EVM but exposes `TIMESTAMP` in whole seconds, so distinct ordered
+  blocks can legitimately compare equal. For historical prefix selection, block number supplies
+  order: require timestamps to be non-decreasing and reject only a decrease. Pair the negative
+  regression with an equal-value positive case so "hardening" cannot become honest-input denial.
+- At an untrusted wire boundary, distinguish a schema-optional member from a malformed present
+  member. Ethereum's canonical Log schema makes `removed` optional: absence is compatible with a
+  canonical log, while explicit `true` must be rejected and explicit `null`/non-Boolean values are
+  malformed. Do not turn an optional advisory flag into a required compatibility gate unless the
+  protocol defines omission as unsafe; a hostile provider that omits it could already lie with
+  `false`.

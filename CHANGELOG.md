@@ -30,6 +30,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (crypto-dotnet#19, requested for this work) for secp256k1 point decompression in Ethereum
   address derivation, eliminating did:ethr's last direct third-party crypto call
   (`NBitcoin.Secp256k1.ECPubKey`). All did:ethr cryptography now flows through `NetCrypto`.
+- **`EthereumLogEntry.LogIndex` is now a required member** of the unreleased did:ethr API.
+  Resolver replay requires the block-global index to establish deterministic authorization-event
+  order within a block.
+- **`EthrIdentifier.ChainId` now uses `KnownNetworks` as its named-chain source of truth** rather
+  than a second four-network map, so all twelve built-in deployments resolve to their configured
+  decimal chain IDs. The deprecated `goerli` alias retains its historical chain-ID conversion
+  without being advertised as an active configuration.
 
 ### Security
 
@@ -52,17 +59,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     block must parse and match the configured registry, requested identity, and requested block.
     Missing or malformed `logIndex`, duplicate indices, forward history links, malformed ABI
     offset/length words, and mixed valid/malformed blocks now fail closed instead of returning a
-    partial authorization state. Removed/reorged logs are rejected; the first event in each
-    ordered block must point backward and every later event must point to that block.
+    partial authorization state. Logs explicitly marked removed/reorged are rejected; the
+    execution API's optional `removed` member may be omitted but must be Boolean when present.
+    The first event in each ordered block must point backward and every later event must point to
+    that block.
   - **Canonical RPC and ABI boundaries**: public RPC methods normalize malformed result shapes to
     `EthereumInteractionException`; quantities, topics, data, the `changed(identity)` return word,
     address padding, fixed ABI words, and dynamic tails are validated without permissive
-    truncation. Historical event-block timestamps must increase strictly, preventing
+    truncation. Historical event-block timestamps must be non-decreasing: equal whole-second
+    timestamps on ordered blocks are valid, while a decrease is rejected to prevent
     `versionTime` from constructing an impossible non-prefix state.
   - **Historical selectors fail closed**: `versionId` accepts only canonical unsigned decimal
     block numbers, `versionTime` accepts only normalized whole-second UTC values, and the selectors
-    are mutually exclusive. Invalid options return `invalidOptions` before any RPC access rather
-    than silently resolving latest state.
+    are mutually exclusive. Invalid options return `invalidOptions`—the DID Resolution
+    specification's error code, not a DID Core 1.0 code—before any RPC access rather than silently
+    resolving latest state.
   - **Generated did:ethr keys are deterministically disposed** after the public key is copied,
     minimizing the lifetime of generated private-key material.
   - A single untrusted RPC endpoint remains the trust anchor for resolution (it can still return

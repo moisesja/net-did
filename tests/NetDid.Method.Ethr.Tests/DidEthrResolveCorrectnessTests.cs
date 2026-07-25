@@ -294,21 +294,35 @@ public class DidEthrResolveCorrectnessTests
             "after the first event, every same-identity event must point to the current block");
     }
 
-    [Theory]
-    [InlineData(200UL, 100UL)]
-    [InlineData(100UL, 100UL)]
-    public async Task Pr104Round2_NonIncreasingBlockTimestamps_ReturnsNotFound(
-        ulong firstTimestamp, ulong secondTimestamp)
+    [Fact]
+    public async Task Pr104Review_DecreasingBlockTimestamps_ReturnsNotFound()
     {
         var rpc = OwnerHistory((10, OwnerA, 0), (20, OwnerB, 10));
-        rpc.GetBlockTimestampAsync(10, Arg.Any<CancellationToken>()).Returns(firstTimestamp);
-        rpc.GetBlockTimestampAsync(20, Arg.Any<CancellationToken>()).Returns(secondTimestamp);
+        rpc.GetBlockTimestampAsync(10, Arg.Any<CancellationToken>()).Returns(200UL);
+        rpc.GetBlockTimestampAsync(20, Arg.Any<CancellationToken>()).Returns(100UL);
 
         var result = await MakeMethod(rpc).ResolveAsync(
             $"did:ethr:sepolia:{Identity}",
             new DidEthrResolveOptions { VersionTime = "1970-01-01T00:02:30Z" });
 
         result.ResolutionMetadata.Error.Should().Be("notFound");
+    }
+
+    [Fact]
+    public async Task Pr104Review_EqualBlockTimestamps_SelectsCompleteHistoryPrefix()
+    {
+        var rpc = OwnerHistory((10, OwnerA, 0), (20, OwnerB, 10));
+        rpc.GetBlockTimestampAsync(10, Arg.Any<CancellationToken>()).Returns(100UL);
+        rpc.GetBlockTimestampAsync(20, Arg.Any<CancellationToken>()).Returns(100UL);
+
+        var result = await MakeMethod(rpc).ResolveAsync(
+            $"did:ethr:sepolia:{Identity}",
+            new DidEthrResolveOptions { VersionTime = "1970-01-01T00:01:40Z" });
+
+        result.ResolutionMetadata.Error.Should().BeNull();
+        Controller(result).Should().Contain(OwnerB[2..]);
+        result.DocumentMetadata!.VersionId.Should().Be("20");
+        result.DocumentMetadata.NextVersionId.Should().BeNull();
     }
 
     [Fact]

@@ -9,6 +9,8 @@ namespace NetDid.Method.Ethr.Erc1056;
 /// </summary>
 public static class Erc1056EventParser
 {
+    private const string HexPrefix = "0x";
+
     public static Erc1056Event Parse(EthereumLogEntry log)
     {
         ArgumentNullException.ThrowIfNull(log);
@@ -28,7 +30,7 @@ public static class Erc1056EventParser
             var (owner, prev) = AbiDecoder.DecodeOwnerChangedData(data);
             return new OwnerChangedEvent(
                 Identity: identity,
-                NewOwner: "0x" + Convert.ToHexString(owner).ToLowerInvariant(),
+                NewOwner: HexPrefix + Convert.ToHexString(owner).ToLowerInvariant(),
                 PreviousChange: prev,
                 BlockNumber: blockNumber);
         }
@@ -39,7 +41,7 @@ public static class Erc1056EventParser
             return new DelegateChangedEvent(
                 Identity: identity,
                 DelegateType: delegateType,
-                Delegate: "0x" + Convert.ToHexString(del).ToLowerInvariant(),
+                Delegate: HexPrefix + Convert.ToHexString(del).ToLowerInvariant(),
                 ValidTo: validTo,
                 PreviousChange: prev,
                 BlockNumber: blockNumber);
@@ -73,12 +75,12 @@ public static class Erc1056EventParser
             throw new ArgumentException(
                 "ERC-1056 identity topic has non-zero address padding.",
                 nameof(paddedHex));
-        return "0x" + hex[24..].ToLowerInvariant();
+        return HexPrefix + hex[24..].ToLowerInvariant();
     }
 
     private static string NormalizeTopic(string topic, string context)
     {
-        if (!topic.StartsWith("0x", StringComparison.Ordinal)
+        if (!topic.StartsWith(HexPrefix, StringComparison.Ordinal)
             || topic.Length != 66
             || !IsLowerHex(topic.AsSpan(2)))
             throw new ArgumentException(
@@ -98,7 +100,7 @@ public static class Erc1056EventParser
 
     private static ulong ParseCanonicalHexQuantity(string value, string context)
     {
-        if (!value.StartsWith("0x", StringComparison.Ordinal)
+        if (!value.StartsWith(HexPrefix, StringComparison.Ordinal)
             || value.Length == 2
             || (value.Length > 3 && value[2] == '0')
             || !IsLowerHex(value.AsSpan(2)))
@@ -118,7 +120,7 @@ public static class Erc1056EventParser
 
     private static byte[] DecodeHex(string hex)
     {
-        if (!hex.StartsWith("0x", StringComparison.Ordinal)
+        if (!hex.StartsWith(HexPrefix, StringComparison.Ordinal)
             || (hex.Length - 2) % 2 != 0
             || !IsLowerHex(hex.AsSpan(2)))
             throw new ArgumentException(

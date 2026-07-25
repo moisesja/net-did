@@ -220,7 +220,6 @@ public class DefaultEthereumRpcClientTests
     }
 
     [Theory]
-    [InlineData("")]
     [InlineData(",\"removed\":null")]
     [InlineData(",\"removed\":\"false\"")]
     [InlineData(",\"removed\":true")]
@@ -236,6 +235,19 @@ public class DefaultEthereumRpcClientTests
         await client.Invoking(c => c.GetLogsAsync(LogFilter()))
             .Should().ThrowAsync<EthereumInteractionException>()
             .WithMessage("*removed*");
+    }
+
+    [Fact]
+    public async Task Pr104Review_GetLogs_OmittedRemovedFlag_ReturnsCanonicalLog()
+    {
+        var client = ClientReturning(HttpStatusCode.OK, new StringContent(
+            LogResponse("0x1", "0x0", "")));
+
+        var logs = await client.GetLogsAsync(LogFilter());
+
+        logs.Should().ContainSingle();
+        logs[0].BlockNumber.Should().Be("0x1");
+        logs[0].LogIndex.Should().Be(0);
     }
 
     [Theory]

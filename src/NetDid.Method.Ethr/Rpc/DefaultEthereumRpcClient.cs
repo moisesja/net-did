@@ -88,7 +88,7 @@ public sealed class DefaultEthereumRpcClient : IEthereumRpcClient
                 var blockNumber = GetRequiredString(obj, "blockNumber", index);
                 _ = ParseCanonicalHexQuantity(
                     blockNumber, $"eth_getLogs log entry {index} 'blockNumber'");
-                var removed = GetRequiredBoolean(obj, "removed", index);
+                var removed = GetOptionalBoolean(obj, "removed", index, defaultValue: false);
                 if (removed)
                     throw new EthereumInteractionException(
                         $"Malformed eth_getLogs result: log entry {index} is marked 'removed' " +
@@ -302,11 +302,12 @@ public sealed class DefaultEthereumRpcClient : IEthereumRpcClient
         }
     }
 
-    private static bool GetRequiredBoolean(JsonObject obj, string propertyName, int logIndex)
+    private static bool GetOptionalBoolean(
+        JsonObject obj, string propertyName, int logIndex, bool defaultValue)
     {
-        var node = obj[propertyName]
-            ?? throw new EthereumInteractionException(
-                $"Malformed eth_getLogs result: log entry {logIndex} is missing or has null '{propertyName}'.");
+        if (!obj.TryGetPropertyValue(propertyName, out var node))
+            return defaultValue;
+
         if (node is JsonValue value && value.TryGetValue<bool>(out var result))
             return result;
 

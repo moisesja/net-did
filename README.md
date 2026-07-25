@@ -319,14 +319,18 @@ Console.WriteLine(genesis.ContentMetadata!["nextVersionId"]); // first event blo
 must be a canonical unsigned decimal block number (`0`, `12`, and so on); leading zeroes,
 signs, whitespace, hexadecimal notation, and overflow are rejected. Supplying both selectors
 is invalid. Invalid historical options return `resolutionMetadata.error = "invalidOptions"`
-before any RPC request instead of silently resolving the latest state.
+before any RPC request instead of silently resolving the latest state. `invalidOptions` is
+defined by the [DID Resolution specification](https://www.w3.org/TR/did-resolution/#errors);
+it is not a DID Core 1.0 error code.
 
 Historical replay is fail-closed. Every registry log returned for an asserted history block
 must parse and match the requested registry, identity, and block; each must carry a unique,
-canonical `logIndex` and `removed: false`. The `changed(identity)` call must return one exact
-ABI word; within each sorted block, the first event must point to an earlier block and every
-later event must point to the current block. `versionTime` replay also requires event-block
-timestamps to increase strictly. Missing, malformed, removed, duplicated, or inconsistent
+canonical `logIndex`. Logs explicitly marked `removed: true` are rejected; the optional
+`removed` member may be absent and, when present, must be Boolean. The `changed(identity)` call
+must return one exact ABI word; within each sorted block, the first event must point to an earlier
+block and every later event must point to the current block. `versionTime` replay also requires
+event-block timestamps to be non-decreasing. Equal whole-second timestamps are valid for distinct
+ordered blocks; a decrease is rejected. Missing, malformed, removed, duplicated, or inconsistent
 history metadata returns `notFound` rather than a partial DID Document.
 
 ### Use an existing key
@@ -361,6 +365,12 @@ All entries have `RpcUrl = ""`. Supply the endpoint with a `with` expression:
 ```csharp
 var cfg = KnownNetworks.Mainnet with { RpcUrl = "https://mainnet.gateway.tenderly.co" };
 ```
+
+`EthrIdentifier.ChainId` resolves named built-ins through this same catalogue, so network
+metadata has one source of truth. The deprecated `goerli` identifier alias still resolves to
+chain ID 5 without being advertised in `KnownNetworks.All`. Consumers can supply arbitrary
+networks with `EthereumNetworkConfig`; the library does not attempt to enumerate every
+EVM-compatible chain.
 
 ## did:webvh
 

@@ -18,6 +18,15 @@ namespace NetDid.Method.Ethr.Rpc;
 /// </summary>
 public static class KnownNetworks
 {
+    // Deprecated deployments are not offered as ready-to-use configurations in All,
+    // but their historical names still need numeric chain-ID resolution for parsing
+    // existing DIDs.
+    private static readonly IReadOnlyDictionary<string, string> DeprecatedChainIds =
+        new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["goerli"] = "0x5",
+        };
+
     // ── Registry addresses ────────────────────────────────────────────────────
     // Two distinct contract deployments exist in the wild:
     //   Legacy  — 0xdCa7EF03... (ethr-did-registry ≤ 0.0.2, legacyNonce = true)
@@ -159,4 +168,19 @@ public static class KnownNetworks
         => All.FirstOrDefault(n =>
             string.Equals(n.Name, nameOrChainId, StringComparison.OrdinalIgnoreCase) ||
             string.Equals(n.ChainId, nameOrChainId, StringComparison.OrdinalIgnoreCase));
+
+    /// <summary>
+    /// Resolves an active network name, deprecated historical alias, or hex chain ID
+    /// to its configured chain-ID representation.
+    /// </summary>
+    internal static string? FindChainId(string nameOrChainId)
+    {
+        var active = Find(nameOrChainId);
+        if (active?.ChainId is { } activeChainId)
+            return activeChainId;
+
+        return DeprecatedChainIds.TryGetValue(nameOrChainId, out var deprecatedChainId)
+            ? deprecatedChainId
+            : null;
+    }
 }

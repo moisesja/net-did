@@ -1374,7 +1374,8 @@ public sealed record DidEthrCreateOptions : DidCreateOptions
    before selecting or calling an RPC client. `versionId` MUST be a canonical unsigned decimal
    block number. `versionTime` MUST use normalized UTC `yyyy-MM-dd'T'HH:mm:ss'Z'` form.
    `versionId` and `versionTime` are mutually exclusive. Any violation returns
-   `resolutionMetadata.error = "invalidOptions"` without an RPC request.
+   `resolutionMetadata.error = "invalidOptions"` without an RPC request. `invalidOptions`
+   is defined by the DID Resolution specification rather than DID Core 1.0.
 2. Select the appropriate RPC endpoint and call `changed(address)` to find the latest asserted
    history block. The return value MUST be canonical lowercase `0x` hex containing exactly one
    32-byte ABI word and MUST decode without uint256 narrowing; malformed or oversized values fail
@@ -1386,9 +1387,10 @@ public sealed record DidEthrCreateOptions : DidCreateOptions
    - require every log to come from the configured registry and every parsed event to match the
      requested identity and asserted block;
    - reject a `previousChange` that points forward;
-   - require canonical lowercase JSON-RPC quantities, `removed: false`, and a present
-     `logIndex`; reject duplicate indices and replay unique indices in ascending order (indices
-     need not be contiguous);
+   - require canonical lowercase JSON-RPC quantities and a present `logIndex`; reject duplicate
+     indices and replay unique indices in ascending order (indices need not be contiguous);
+     reject logs explicitly marked `removed: true`, treat an omitted optional `removed` member as
+     not explicitly removed, and reject a present `removed` member unless it is Boolean;
    - after ordering, require the first event's `previousChange` to point strictly earlier than
      the current block and every subsequent same-block event to point exactly to the current
      block;
@@ -1397,8 +1399,10 @@ public sealed record DidEthrCreateOptions : DidCreateOptions
    a malformed revocation or deactivation event.
 5. For historical resolution, select events at or before the canonical `versionId`, or compare
    event-block timestamps against the canonical `versionTime`. Timestamps for ascending event
-   blocks MUST be canonical quantities and strictly increase; resolution returns only a valid
-   chronological prefix. Report adjacent version metadata from the selected history.
+   blocks MUST be canonical quantities and MUST NOT decrease. Equal whole-second timestamps are
+   valid for distinct block numbers, including on EVM-compatible chains that truncate a
+   higher-resolution host timestamp; resolution returns only a valid chronological prefix. Report
+   adjacent version metadata from the selected history.
 6. Replay selected events chronologically to build the DID Document:
    - Each `DIDOwnerChanged` updates the controller.
    - Each `DIDDelegateChanged` adds/removes delegate verification methods (checking `validity` expiration against current block).

@@ -1,4 +1,5 @@
 using FluentAssertions;
+using NetDid.Method.Ethr.Crypto;
 using NetDid.Method.Ethr.Rpc;
 using Xunit;
 
@@ -60,5 +61,35 @@ public class KnownNetworksTests
     {
         var ids = KnownNetworks.All.Select(n => n.ChainId!.ToLowerInvariant()).ToList();
         ids.Should().OnlyHaveUniqueItems("no two built-in networks may share a chain ID");
+    }
+
+    [Fact]
+    public void Pr104Review_EthrIdentifierUsesKnownNetworkCatalogueForEveryNamedChain()
+    {
+        const string address = "0x001d3f1ef827552ae1114027bd3ecf1f086ba0f9";
+
+        foreach (var network in KnownNetworks.All)
+        {
+            var identifier = EthrIdentifier.ParseMethodSpecificId($"{network.Name}:{address}");
+            var chainIdHex = network.ChainId!.StartsWith("0x", StringComparison.OrdinalIgnoreCase)
+                ? network.ChainId[2..]
+                : network.ChainId;
+            var expectedDecimal = Convert.ToUInt64(chainIdHex, 16).ToString();
+
+            identifier.ChainId.Should().Be(expectedDecimal,
+                $"the {network.Name} identifier must use the central KnownNetworks catalogue");
+        }
+    }
+
+    [Fact]
+    public void Pr104Review_DeprecatedGoerliIdentifierRetainsNumericChainId()
+    {
+        const string address = "0x001d3f1ef827552ae1114027bd3ecf1f086ba0f9";
+
+        var identifier = EthrIdentifier.ParseMethodSpecificId($"goerli:{address}");
+
+        identifier.ChainId.Should().Be("5");
+        KnownNetworks.All.Should().NotContain(network => network.Name == "goerli",
+            "deprecated deployments must not be advertised as active configurations");
     }
 }

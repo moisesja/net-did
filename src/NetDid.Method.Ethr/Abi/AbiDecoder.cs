@@ -190,7 +190,7 @@ public static class AbiDecoder
                     nameof(data));
         }
 
-        var value    = DecodeDynamicBytes(data, 32);
+        var value    = data.Slice(160, (int)length).ToArray();
         var validTo  = DecodeUint256(data[64..96]);
         var prev     = DecodeUint256(data[96..128]);
         return (name, value, validTo, prev);

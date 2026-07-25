@@ -210,16 +210,16 @@ public sealed class DidEthrMethod : DidMethodBase
         else if (versionTime is { } vt)
         {
             referenceTime = vt;
-            // Validate timestamps as a strictly increasing chain, then retain only
+            // Validate timestamps as a non-decreasing chain, then retain only
             // the valid chronological prefix at or before the requested time.
             var trimmed = new List<Erc1056Event>();
             ulong? previousTimestamp = null;
             foreach (var blockEvents in collectedEvents.GroupBy(ev => ev.BlockNumber))
             {
                 var bts = await rpc.GetBlockTimestampAsync(blockEvents.Key, ct);
-                if (previousTimestamp is { } prior && bts <= prior)
+                if (previousTimestamp is { } prior && bts < prior)
                     throw new EthereumInteractionException(
-                        $"did:ethr block timestamps are not strictly increasing: block " +
+                        $"did:ethr block timestamps decrease: block " +
                         $"{blockEvents.Key} has {bts} after {prior}.");
                 previousTimestamp = bts;
 

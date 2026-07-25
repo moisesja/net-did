@@ -1,3 +1,5 @@
+using NetDid.Method.Ethr.Rpc;
+
 namespace NetDid.Method.Ethr.Crypto;
 
 /// <summary>
@@ -16,24 +18,21 @@ public sealed record EthrIdentifier(
     bool IsPublicKey,
     byte[]? PublicKeyBytes)
 {
-    private static readonly Dictionary<string, string> NamedNetworkChainIds = new(StringComparer.OrdinalIgnoreCase)
-    {
-        ["mainnet"]  = "1",
-        ["goerli"]   = "5",
-        ["sepolia"]  = "11155111",
-        ["polygon"]  = "137",
-    };
-
     /// <summary>
-    /// Returns the numeric chain-ID string (e.g. "1", "11155111") for use in CAIP-10 blockchainAccountId.
-    /// Hex chain IDs (0x…) are converted to decimal.
+    /// Returns the numeric chain-ID string (e.g. "1", "11155111") for use in
+    /// CAIP-10 blockchainAccountId. Known names are resolved through
+    /// <see cref="KnownNetworks"/>; hex chain IDs (0x…) are converted to decimal.
     /// </summary>
-    public string ChainId =>
-        NamedNetworkChainIds.TryGetValue(Network, out var id)
-            ? id
-            : Network.StartsWith("0x", StringComparison.OrdinalIgnoreCase)
-                ? Convert.ToUInt64(Network[2..], 16).ToString()
-                : Network;
+    public string ChainId
+    {
+        get
+        {
+            var configuredChainId = KnownNetworks.FindChainId(Network) ?? Network;
+            return configuredChainId.StartsWith("0x", StringComparison.OrdinalIgnoreCase)
+                ? Convert.ToUInt64(configuredChainId[2..], 16).ToString()
+                : configuredChainId;
+        }
+    }
 
     /// <summary>
     /// Parses the method-specific identifier from a full did:ethr DID string.

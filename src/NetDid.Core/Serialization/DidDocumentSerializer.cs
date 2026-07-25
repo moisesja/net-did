@@ -11,6 +11,11 @@ namespace NetDid.Core.Serialization;
 public static class DidDocumentSerializer
 {
     private static readonly JsonSerializerOptions DefaultOptions = CreateOptions();
+    private static readonly (string Type, string Context)[] ExactVerificationMethodContexts =
+    [
+        ("Multikey", "https://w3id.org/security/multikey/v1"),
+        ("JsonWebKey2020", "https://w3id.org/security/suites/jws-2020/v1"),
+    ];
 
     private static JsonSerializerOptions CreateOptions()
     {
@@ -108,10 +113,11 @@ public static class DidDocumentSerializer
         AddEmbeddedVmTypes(doc.CapabilityInvocation, vmTypes);
         AddEmbeddedVmTypes(doc.CapabilityDelegation, vmTypes);
 
-        if (vmTypes.Contains("Multikey"))
-            contexts.Add("https://w3id.org/security/multikey/v1");
-        if (vmTypes.Contains("JsonWebKey2020"))
-            contexts.Add("https://w3id.org/security/suites/jws-2020/v1");
+        foreach (var (type, context) in ExactVerificationMethodContexts)
+        {
+            if (vmTypes.Contains(type))
+                contexts.Add(context);
+        }
         // Add secp256k1-2019/v1 only when security/v2 is not already provided by the document
         // (did:ethr uses security/v2 per the reference JS resolver; did:key/did:peer use secp256k1-2019/v1)
         var docHasSecurityV2 = doc.Context?.Any(c => c is string s && s == "https://w3id.org/security/v2") == true;
