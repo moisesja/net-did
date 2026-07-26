@@ -8,6 +8,7 @@
 
   <ItemGroup>
     <InternalsVisibleTo Include="NetDid.Method.Ethr.Tests" />
+    <InternalsVisibleTo Include="NetDid.Method.Ethr.IntegrationTests" />
   </ItemGroup>
 
   <ItemGroup>

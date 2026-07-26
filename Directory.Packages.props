@@ -11,6 +11,7 @@
     <PackageVersion Include="DataProofsDotnet.Core" Version="0.1.0-preview.1" />
     <!-- Encoding -->
     <PackageVersion Include="NetCid" Version="1.6.0" />
+    <PackageVersion Include="Testcontainers" Version="4.13.0" />
     <!-- Caching -->
     <PackageVersion Include="Microsoft.Extensions.Caching.Memory" Version="10.0.8" />
     <!-- Logging -->
