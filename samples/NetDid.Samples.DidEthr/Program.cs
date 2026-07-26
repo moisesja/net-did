@@ -11,6 +11,7 @@ using NetDid.Method.Ethr;
 using NetDid.Method.Ethr.Crypto;
 using NetDid.Method.Ethr.Deployment;
 using NetDid.Method.Ethr.Emulator;
+using NetDid.Method.Ethr.Erc1056;
 using NetDid.Method.Ethr.Rpc;
 
 // ============================================================
@@ -313,7 +314,7 @@ chain.AssertedChangedBlockOverride = null;
 Console.WriteLine();
 
 // ---------------------------------------------------------------
-// 12. Deactivate — permanent, on purpose
+// 12. Deactivate — and what it does NOT guarantee
 // ---------------------------------------------------------------
 Console.WriteLine("=== did:ethr — Deactivate ===");
 
@@ -331,6 +332,15 @@ var beforeDeactivation = await ethr.ResolveAsync(aliceDid, new DidEthrResolveOpt
 });
 Console.WriteLine($"  History survives: ?versionId={beforeDeactivation.DocumentMetadata!.VersionId} " +
                   $"still shows {beforeDeactivation.DidDocument!.VerificationMethod!.Count} VMs");
+
+// The spec calls this irreversible; the deployed contract does not enforce that.
+// identityOwner() is `owner != 0 ? owner : identity`, so zeroing the owner hands control
+// back to the identity address — an EOA identity whose key survives can write again.
+var ownerAfterDeactivation = await chain.CallAsync(
+    sepolia.RegistryAddress, Erc1056Calls.IdentityOwner(alice.Address));
+Console.WriteLine($"  identityOwner() afterwards: 0x{ownerAfterDeactivation[^40..]}");
+Console.WriteLine("  ^ the identity itself, NOT 0x0 — deactivation is a resolution state, not a");
+Console.WriteLine("    lock. It is terminal only when nobody can act as the identity address.");
 Console.WriteLine();
 
 // ---------------------------------------------------------------

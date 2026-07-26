@@ -267,7 +267,7 @@ public class DidEthrWriteTests
         var method = MethodFor(chain, legacyNonce: true);
         var did = $"did:ethr:sepolia:{identity.Address}";
 
-        // Meta owner change: nonce[identity] 0 → 1 on the legacy generation.
+        // Meta owner change while owner == identity: nonce[identity] 0 → 1 on this generation.
         await method.UpdateAsync(did, new DidEthrUpdateOptions
         {
             ControllerKey      = identity.Signer,
@@ -276,10 +276,11 @@ public class DidEthrWriteTests
             NewOwnerAddress    = newOwner.Address,
         });
 
-        // Meta attribute op signed by the NEW owner. On the legacy generation the
-        // preimage must be built over nonce[identity] (= 1), not nonce[signer] (= 0) —
-        // the emulator's transcribed contract enforces exactly that, so success here
-        // proves the method chose the right nonce key.
+        // Meta ATTRIBUTE op signed by the NEW owner. On the legacy generation the preimage
+        // must be built over nonce[identity] (= 1), not nonce[signer] (= 0); the emulator's
+        // transcribed contract enforces exactly that, so success proves the right nonce key.
+        // Attribute ops stay single-use here because the slot they read is the slot
+        // checkSignature increments.
         var result = await method.UpdateAsync(did, new DidEthrUpdateOptions
         {
             ControllerKey      = newOwner.Signer,
@@ -295,6 +296,62 @@ public class DidEthrWriteTests
         });
 
         result.DidDocument.Service.Should().ContainSingle();
+    }
+
+    [Fact]
+    public async Task Update_MetaTransaction_OnLegacyChain_RefusesOwnerAndDelegateOpsAfterATransfer()
+    {
+        // The legacy registry increments nonce[identity] but its changeOwner/addDelegate/
+        // revokeDelegate preimages READ nonce[identityOwner]. Once those diverge the preimage
+        // nonce never moves, so the signed calldata replays FOREVER — demonstrated against
+        // real v0.0.3 bytecode. Refuse to mint such a signature.
+        var chain = new EmulatedEthereumChain(Registry, legacyNonce: true);
+        var identity = NewActor();
+        var newOwner = NewActor();
+        var relayer = NewActor();
+        var delegateActor = NewActor();
+        var method = MethodFor(chain, legacyNonce: true);
+        var did = $"did:ethr:sepolia:{identity.Address}";
+
+        await method.UpdateAsync(did, new DidEthrUpdateOptions
+        {
+            ControllerKey      = identity.Signer,
+            UseMetaTransaction = true,
+            Relayer            = relayer.Signer,
+            NewOwnerAddress    = newOwner.Address,
+        });
+
+        await method.Invoking(m => m.UpdateAsync(did, new DidEthrUpdateOptions
+            {
+                ControllerKey      = newOwner.Signer,
+                UseMetaTransaction = true,
+                Relayer            = relayer.Signer,
+                AddDelegates       =
+                [
+                    new DidEthrDelegate
+                    {
+                        DelegateType = "sigAuth", DelegateAddress = delegateActor.Address,
+                        Validity = TimeSpan.FromMinutes(1),
+                    },
+                ],
+            }))
+            .Should().ThrowAsync<EthereumInteractionException>()
+            .WithMessage("*replayable indefinitely*");
+
+        // The same operation submitted DIRECTLY is unaffected — no signature to replay.
+        var direct = await method.UpdateAsync(did, new DidEthrUpdateOptions
+        {
+            ControllerKey = newOwner.Signer,
+            AddDelegates  =
+            [
+                new DidEthrDelegate
+                {
+                    DelegateType = "sigAuth", DelegateAddress = delegateActor.Address,
+                    Validity = TimeSpan.FromDays(1),
+                },
+            ],
+        });
+        direct.DidDocument.VerificationMethod!.Should().HaveCount(2);
     }
 
     // ── Deactivate ───────────────────────────────────────────────────────────

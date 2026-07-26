@@ -461,27 +461,29 @@ public sealed class DidEthrMethod : DidMethodBase
         var operations = new List<Erc1056Operation>();
         foreach (var service in removeServices)
             operations.Add(Erc1056TransactionBuilder.RevokeAttribute(
-                identity, "did/svc/" + service.ServiceType,
+                identity, "did/svc/" + Required(service, nameof(DidEthrUpdateOptions.RemoveServices)).ServiceType,
                 Encoding.UTF8.GetBytes(service.ServiceEndpoint)));
         foreach (var del in revokeDelegates)
             operations.Add(Erc1056TransactionBuilder.RevokeDelegate(
-                identity, del.DelegateType, del.DelegateAddress));
+                identity, Required(del, nameof(DidEthrUpdateOptions.RevokeDelegates)).DelegateType,
+                del.DelegateAddress));
         foreach (var attribute in removeAttributes)
             operations.Add(Erc1056TransactionBuilder.RevokeAttribute(
-                identity, attribute.Name, attribute.Value));
+                identity, Required(attribute, nameof(DidEthrUpdateOptions.RemoveAttributes)).Name,
+                attribute.Value));
         foreach (var service in addServices)
             operations.Add(Erc1056TransactionBuilder.SetAttribute(
-                identity, "did/svc/" + service.ServiceType,
+                identity, "did/svc/" + Required(service, nameof(DidEthrUpdateOptions.AddServices)).ServiceType,
                 Encoding.UTF8.GetBytes(service.ServiceEndpoint),
                 ValiditySeconds(service.Validity)));
         foreach (var del in addDelegates)
             operations.Add(Erc1056TransactionBuilder.AddDelegate(
-                identity, del.DelegateType, del.DelegateAddress,
-                ValiditySeconds(del.Validity)));
+                identity, Required(del, nameof(DidEthrUpdateOptions.AddDelegates)).DelegateType,
+                del.DelegateAddress, ValiditySeconds(del.Validity)));
         foreach (var attribute in addAttributes)
             operations.Add(Erc1056TransactionBuilder.SetAttribute(
-                identity, attribute.Name, attribute.Value,
-                ValiditySeconds(attribute.Validity)));
+                identity, Required(attribute, nameof(DidEthrUpdateOptions.AddAttributes)).Name,
+                attribute.Value, ValiditySeconds(attribute.Validity)));
         if (newOwner is not null)
             operations.Add(Erc1056TransactionBuilder.ChangeOwner(identity, newOwner));
 
@@ -592,6 +594,19 @@ public sealed class DidEthrMethod : DidMethodBase
         var registry = network.RegistryAddress;
         var identity = identifier.IdentityAddress;
         var rpc = _rpcFactory.GetOrCreate(network);
+
+        // For WRITES the chain id is a security parameter: it is the EIP-155 replay binding
+        // baked into the signature. Letting an unconfigured network fall back to the node's
+        // eth_chainId lets the endpoint choose what chain the caller's key authorizes — it
+        // can answer "1" for a devnet and forward the resulting valid mainnet transaction.
+        // Resolution may auto-detect (it only reads); writing must be told explicitly.
+        if (network.ChainId is null)
+            throw new ArgumentException(
+                $"Network '{network.Name}' has no configured ChainId. did:ethr writes require " +
+                "an explicit chain id: it is the EIP-155 replay binding in the signature, and " +
+                "auto-detecting it would let the RPC endpoint decide which chain your key " +
+                "signs for. Set EthereumNetworkConfig.ChainId (KnownNetworks entries already " +
+                "carry it).", "options");
         var chainId = await ResolveChainIdNumericAsync(network, rpc, callerCt);
 
         // Pre-flight (advisory; the contract's onlyOwner/checkSignature is the
@@ -603,6 +618,28 @@ public sealed class DidEthrMethod : DidMethodBase
             throw new EthereumInteractionException(
                 $"ControllerKey address {controllerAddress} is not the current owner " +
                 $"({currentOwner}) of identity {identity}; the registry would reject every operation.");
+
+        // ERC-1056 v0.0.3 (the LegacyNonce generation — mainnet 0xdCa7EF03… and friends)
+        // increments nonce[identity] in checkSignature, but the changeOwner / addDelegate /
+        // revokeDelegate preimages READ nonce[identityOwner(identity)]. While owner ==
+        // identity those are the same slot and replay protection works. Once ownership has
+        // been transferred they diverge and the preimage nonce is a counter nothing ever
+        // increments — the same signed calldata replays forever, letting anyone who observed
+        // it resurrect a revoked delegate at will. Demonstrated against real v0.0.3 bytecode.
+        //
+        // Attribute operations are NOT affected: their preimages read nonce[identity], which
+        // is the slot checkSignature increments, so they stay single-use. Refuse precisely the
+        // vulnerable operations rather than all meta-transactions on these networks.
+        if (useMetaTransaction && network.LegacyNonce
+            && !string.Equals(currentOwner, identity, StringComparison.OrdinalIgnoreCase)
+            && operations.FirstOrDefault(op => !op.UsesIdentityNonceOnLegacy) is { } vulnerable)
+            throw new EthereumInteractionException(
+                $"Refusing to sign a '{vulnerable.MethodName}' meta-transaction for identity " +
+                $"{identity} on '{network.Name}': this network runs the legacy ERC-1056 " +
+                "registry, whose owner/delegate meta-transaction nonce is never incremented " +
+                $"once ownership has been transferred (current owner {currentOwner}). Any " +
+                "signature produced here would be replayable indefinitely by anyone who " +
+                "observes it. Submit this operation directly (UseMetaTransaction = false).");
 
         using var deadlineCts = CancellationTokenSource.CreateLinkedTokenSource(callerCt);
         deadlineCts.CancelAfter(WriteDeadline);
@@ -690,6 +727,14 @@ public sealed class DidEthrMethod : DidMethodBase
     /// hashes that were already confirmed on-chain (<see cref="Exception.Data"/>).
     /// </summary>
     public const string LandedTransactionsKey = "netdid.ethr.landedTransactions";
+
+    /// <summary>
+    /// A null ELEMENT inside an option collection is caller error, not a crash: without this
+    /// it surfaced as a bare NullReferenceException (NFR-3 violation).
+    /// </summary>
+    private static T Required<T>(T? element, string collectionName) where T : class
+        => element ?? throw new ArgumentException(
+            $"{collectionName} contains a null entry.", "options");
 
     private static ulong ValiditySeconds(TimeSpan validity)
     {

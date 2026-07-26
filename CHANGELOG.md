@@ -35,7 +35,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     construction (`v = 35 + 2·chainId + recid`), pinned byte-for-byte to published external
     vectors (the EIP-155 canonical example, Yellow Paper RLP vectors) — never to this repo's own
     decoder. ERC-1056 write calldata for all five mutations and their `…Signed` variants, with
-    every selector pinned to the public 4byte.directory signature database.
+    twelve of the thirteen selectors pinned to the public 4byte.directory signature database (`nonce(address)` is not catalogued there).
   - **`Erc1056Registry`** (public): creation bytecode of both registry generations vendored
     verbatim from the official MIT-licensed npm artifacts (`ethr-did-registry@1.3.0` and
     `@0.0.3`), keccak256-pinned by tests against digests from an independent implementation;

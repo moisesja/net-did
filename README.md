@@ -384,7 +384,9 @@ var updated = await method.UpdateAsync(result.Did.Value, new DidEthrUpdateOption
         Name  = "did/pub/Ed25519/veriKey/base64",
         Value = ed25519PublicKey,
     }],
-    // NewOwnerAddress = "0x…",  // rotates the update authority; always submitted last
+    // NewOwnerAddress = "0x…",  // transfers the update authority; always submitted last.
+    //                            // Passing 0x000…000 here performs a DEACTIVATION —
+    //                            // prefer DeactivateAsync, which says so explicitly.
 });
 
 var txHashes = (IReadOnlyList<string>)updated.Artifacts!["transactions"];
@@ -421,6 +423,24 @@ that nonce differently; `EthereumNetworkConfig.LegacyNonce` — pre-set in `Know
 selects the correct scheme, including the legacy quirk where attribute operations read
 `nonce[identity]` rather than the owner's nonce.
 
+> **Two meta-transaction hazards inherent to ERC-1056**, both verified against real registry
+> bytecode:
+>
+> 1. **Legacy registries lose replay protection after an ownership transfer.** The v0.0.3
+>    contract increments `nonce[identity]` but its `changeOwner` / `addDelegate` /
+>    `revokeDelegate` preimages read `nonce[identityOwner]`. Once those diverge, the preimage
+>    nonce never moves and the signed calldata replays *forever* — anyone who observed it can
+>    resurrect a revoked delegate. NetDid **refuses** to sign those operations in that state
+>    (submit them directly instead); attribute operations are unaffected, since they read the
+>    slot that does get incremented.
+> 2. **Signatures replay across chains.** The ERC-1056 preimage binds the registry address
+>    but **not** a chain id, and `KnownNetworks` maps one registry address to several chains
+>    (`0xdCa7EF03…` → mainnet/polygon/…, `0x03d5003b…` → sepolia/gnosis/…). A meta-transaction
+>    authorized on one of them is valid on the others whenever that identity's nonce there
+>    matches. NetDid cannot fix this — the contract has no chain binding. If the same key
+>    controls the same identity on more than one chain sharing a registry, prefer direct
+>    submission.
+
 ### Deactivate a did:ethr
 
 ```csharp
@@ -431,8 +451,19 @@ var deactivated = await method.DeactivateAsync(did, new DidEthrDeactivateOptions
 // deactivated.Success == true; the DID now resolves with deactivated: true
 ```
 
-Deactivation is `changeOwner` to `0x000…000` — **permanent and irreversible**. Historical
-resolution (`?versionId`) still reaches pre-deactivation states.
+Deactivation is `changeOwner` to `0x000…000`; resolution then returns a stripped document
+with `deactivated: true`, and historical resolution (`?versionId`) still reaches
+pre-deactivation states.
+
+> **Deactivation is not a lock.** The `did:ethr` spec calls this "irreversible", but the
+> deployed registry does not enforce that: `identityOwner()` is
+> `owner != 0 ? owner : identity`, so zeroing the owner slot returns control **to the
+> identity address itself**. If the identity is an EOA whose key you still hold, that key can
+> write again — and a later non-zero `DIDOwnerChanged` clears the `deactivated` flag.
+> Verified against the real registry bytecode (`DeactivationRealityTests`). Deactivation is
+> permanent only when nobody can act as the identity address (e.g. a contract identity, or a
+> discarded key). To make it stick, transfer ownership to an address that provably cannot
+> sign before zeroing it, or treat key destruction as part of the procedure.
 
 ### Deploy the registry on a private chain
 
@@ -776,7 +807,7 @@ netdid/
 │   ├── NetDid.Method.Key.Tests/             # 52 tests
 │   ├── NetDid.Method.Peer.Tests/            # 48 tests
 │   ├── NetDid.Method.WebVh.Tests/           # 411 tests
-│   ├── NetDid.Method.Ethr.Tests/            # 195 tests
+│   ├── NetDid.Method.Ethr.Tests/            # 316 tests
 │   ├── NetDid.Tests.W3CConformance/         # 233 W3C conformance tests
 │   └── NetDid.Extensions.DependencyInjection.Tests/  # 18 tests
 ├── samples/

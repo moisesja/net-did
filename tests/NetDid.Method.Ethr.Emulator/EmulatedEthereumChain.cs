@@ -43,12 +43,25 @@ public sealed class EmulatedEthereumChain : IEthereumRpcClient
     private sealed class RegistryInstance
     {
         public required bool LegacyNonce { get; init; }
+
+        /// <summary>Solidity ≥0.8 reverts on overflow; the legacy 0.4.x contract wraps mod 2^256.</summary>
+        public bool ChecksArithmetic => !LegacyNonce;
         public Dictionary<string, string> Owners { get; } = new(StringComparer.Ordinal);
         public Dictionary<string, BigInteger> MetaNonces { get; } = new(StringComparer.Ordinal);
         public Dictionary<string, ulong> Changed { get; } = new(StringComparer.Ordinal);
 
+        /// <summary>
+        /// Verbatim from the contract (both generations):
+        /// <c>owner != address(0) ? owner : identity</c>. A ZERO owner slot means "self", not
+        /// "no owner" — so <c>changeOwner(identity, 0x0)</c> hands control back to the identity
+        /// address. Modelling this as "the owner is 0x0" made deactivation look permanently
+        /// sealed here while the real registry lets an EOA identity write again.
+        /// </summary>
         public string IdentityOwner(string identity)
-            => Owners.TryGetValue(identity, out var owner) ? owner : identity;
+            => Owners.TryGetValue(identity, out var owner)
+               && !string.Equals(owner, ZeroAddress, StringComparison.Ordinal)
+                ? owner
+                : identity;
 
         public BigInteger MetaNonce(string account)
             => MetaNonces.TryGetValue(account, out var nonce) ? nonce : BigInteger.Zero;
@@ -488,7 +501,9 @@ public sealed class EmulatedEthereumChain : IEthereumRpcClient
         ulong blockNumber, ulong timestamp, List<EthereumLogEntry> logs)
     {
         RequireOwner(registry, identity, actor);
-        var validTo = timestamp + (ulong)validity;
+        // uint256 arithmetic, like the contract. Narrowing to ulong here silently wrapped a
+        // large-but-legal validity into an ALREADY-EXPIRED validTo — a semantic inversion.
+        var validTo = AddUint256(timestamp, validity, registry.ChecksArithmetic);
         logs.Add(Log(registryAddress, Erc1056.Erc1056Topics.DIDDelegateChanged, identity, blockNumber,
             Concat(delegateType, AddressWord(delegateAddress), U256Word(validTo),
                    U256Word(registry.Changed.GetValueOrDefault(identity)))));
@@ -514,7 +529,7 @@ public sealed class EmulatedEthereumChain : IEthereumRpcClient
     {
         RequireOwner(registry, identity, actor);
         logs.Add(Log(registryAddress, Erc1056.Erc1056Topics.DIDAttributeChanged, identity, blockNumber,
-            AttributeEventData(name, value, timestamp + (ulong)validity,
+            AttributeEventData(name, value, AddUint256(timestamp, validity, registry.ChecksArithmetic),
                 registry.Changed.GetValueOrDefault(identity))));
         registry.Changed[identity] = blockNumber;
     }
@@ -547,7 +562,7 @@ public sealed class EmulatedEthereumChain : IEthereumRpcClient
     }
 
     /// <summary>DIDAttributeChanged data: name(32) ‖ offset(0x80) ‖ validTo(32) ‖ previousChange(32) ‖ length ‖ padded value.</summary>
-    private static byte[] AttributeEventData(byte[] name, byte[] value, ulong validTo, ulong previousChange)
+    private static byte[] AttributeEventData(byte[] name, byte[] value, BigInteger validTo, ulong previousChange)
     {
         var paddedLength = (value.Length + 31) / 32 * 32;
         var tail = new byte[32 + paddedLength];
@@ -747,6 +762,21 @@ public sealed class EmulatedEthereumChain : IEthereumRpcClient
         var minimal = scalar.ToByteArray(isUnsigned: true, isBigEndian: true);
         minimal.CopyTo(word, 32 - minimal.Length);
         return word;
+    }
+
+    /// <summary>
+    /// uint256 addition with the generation's overflow behavior: checked (revert) for the
+    /// modern solc ≥0.8 contract, wrapping mod 2^256 for the legacy 0.4.x one.
+    /// </summary>
+    private static BigInteger AddUint256(BigInteger a, BigInteger b, bool checkedArithmetic)
+    {
+        var sum = a + b;
+        var modulus = BigInteger.One << 256;
+        if (sum < modulus)
+            return sum;
+        if (checkedArithmetic)
+            throw new RegistryRevertException("arithmetic overflow");
+        return sum % modulus;
     }
 
     private static byte[] Concat(params byte[][] parts)

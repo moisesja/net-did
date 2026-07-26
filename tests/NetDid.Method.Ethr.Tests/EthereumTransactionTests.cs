@@ -102,7 +102,9 @@ public class EthereumTransactionTests
         // integration suite proves creation transactions against a real node.
         var payload = creation.SigningPayload();
         payload.Should().NotBeEmpty();
-        var act = () => creation.EncodeSigned(new byte[64], 0);
+        var (signature, recoveryId) = Secp256k1Recoverable.Sign(
+            Eip155PrivateKey, creation.SigningDigest());
+        var act = () => creation.EncodeSigned(signature, recoveryId);
         act.Should().NotThrow();
     }
 
@@ -111,6 +113,41 @@ public class EthereumTransactionTests
     {
         var act = () => Eip155Example.EncodeSigned(new byte[63], 0);
         act.Should().Throw<ArgumentException>().WithParameterName("signature64");
+    }
+
+    [Fact]
+    public void EncodeSigned_NonCanonicalScalars_Throw()
+    {
+        // The signature arrives through the caller-supplied signer seam, so validate it here
+        // rather than discovering it from a node rejection.
+        ((Action)(() => Eip155Example.EncodeSigned(new byte[64], 0)))
+            .Should().Throw<ArgumentException>().WithMessage("*canonical values*");
+
+        var order = Convert.FromHexString(
+            "FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEBAAEDCE6AF48A03BBFD25E8CD0364141");
+        var atOrder = new byte[64];
+        order.CopyTo(atOrder, 0);
+        order.CopyTo(atOrder, 32);
+        ((Action)(() => Eip155Example.EncodeSigned(atOrder, 0)))
+            .Should().Throw<ArgumentException>().WithMessage("*canonical values*");
+    }
+
+    [Fact]
+    public void EncodeSigned_HighS_IsRejected()
+    {
+        var (signature, recoveryId) = Secp256k1Recoverable.Sign(
+            Eip155PrivateKey, Eip155Example.SigningDigest());
+        var order = new BigInteger(
+            Convert.FromHexString("00FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEBAAEDCE6AF48A03BBFD25E8CD0364141"),
+            isUnsigned: true, isBigEndian: true);
+        var s = new BigInteger(signature[32..], isUnsigned: true, isBigEndian: true);
+        var malleated = new byte[64];
+        signature[..32].CopyTo(malleated, 0);
+        var highS = (order - s).ToByteArray(isUnsigned: true, isBigEndian: true);
+        highS.CopyTo(malleated, 64 - highS.Length);
+
+        ((Action)(() => Eip155Example.EncodeSigned(malleated, recoveryId ^ 1)))
+            .Should().Throw<ArgumentException>().WithMessage("*low-S*");
     }
 
     [Theory]

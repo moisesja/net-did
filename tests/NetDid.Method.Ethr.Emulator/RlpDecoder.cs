@@ -26,18 +26,28 @@ public sealed record RlpItem
 /// </summary>
 public static class RlpDecoder
 {
+    /// <summary>
+    /// Maximum list nesting. Real nodes cap RLP depth; without a cap a ~60 KB well-formed
+    /// deeply-nested list recurses into an UNCATCHABLE StackOverflowException that kills the
+    /// whole process (it aborted a test host during review). A legacy transaction is one
+    /// list of byte strings, so depth 2 suffices — 32 is generous.
+    /// </summary>
+    private const int MaxDepth = 32;
+
     /// <summary>Decodes exactly one RLP item, rejecting trailing bytes.</summary>
     public static RlpItem Decode(ReadOnlySpan<byte> input)
     {
-        var (item, consumed) = DecodeItem(input);
+        var (item, consumed) = DecodeItem(input, depth: 0);
         if (consumed != input.Length)
             throw new FormatException(
                 $"RLP input has {input.Length - consumed} trailing byte(s) after the first item.");
         return item;
     }
 
-    private static (RlpItem Item, int Consumed) DecodeItem(ReadOnlySpan<byte> input)
+    private static (RlpItem Item, int Consumed) DecodeItem(ReadOnlySpan<byte> input, int depth)
     {
+        if (depth > MaxDepth)
+            throw new FormatException($"RLP nesting exceeds the maximum depth of {MaxDepth}.");
         if (input.Length == 0)
             throw new FormatException("RLP input is empty.");
 
@@ -51,7 +61,7 @@ public static class RlpDecoder
         if (prefix <= 0xb7)
         {
             var length = prefix - 0x80;
-            RequireAvailable(input, 1 + length);
+            RequireAvailable(input, 1L + length);
             var payload = input.Slice(1, length).ToArray();
             if (length == 1 && payload[0] < 0x80)
                 throw new FormatException(
@@ -63,7 +73,7 @@ public static class RlpDecoder
         if (prefix <= 0xbf)
         {
             var (length, headerSize) = ReadLongLength(input, prefix, baseOffset: 0xb7);
-            RequireAvailable(input, headerSize + length);
+            RequireAvailable(input, (long)headerSize + length);
             return (new RlpItem { Bytes = input.Slice(headerSize, length).ToArray() },
                     headerSize + length);
         }
@@ -72,26 +82,26 @@ public static class RlpDecoder
         if (prefix <= 0xf7)
         {
             var payloadLength = prefix - 0xc0;
-            RequireAvailable(input, 1 + payloadLength);
-            return (DecodeListPayload(input.Slice(1, payloadLength)), 1 + payloadLength);
+            RequireAvailable(input, 1L + payloadLength);
+            return (DecodeListPayload(input.Slice(1, payloadLength), depth), 1 + payloadLength);
         }
 
         // Long list: 0xf7 + lengthOfLength.
         {
             var (payloadLength, headerSize) = ReadLongLength(input, prefix, baseOffset: 0xf7);
-            RequireAvailable(input, headerSize + payloadLength);
-            return (DecodeListPayload(input.Slice(headerSize, payloadLength)),
+            RequireAvailable(input, (long)headerSize + payloadLength);
+            return (DecodeListPayload(input.Slice(headerSize, payloadLength), depth),
                     headerSize + payloadLength);
         }
     }
 
-    private static RlpItem DecodeListPayload(ReadOnlySpan<byte> payload)
+    private static RlpItem DecodeListPayload(ReadOnlySpan<byte> payload, int depth)
     {
         var items = new List<RlpItem>();
         var offset = 0;
         while (offset < payload.Length)
         {
-            var (item, consumed) = DecodeItem(payload[offset..]);
+            var (item, consumed) = DecodeItem(payload[offset..], depth + 1);
             items.Add(item);
             offset += consumed;
         }
@@ -121,7 +131,12 @@ public static class RlpDecoder
         return (length, 1 + lengthOfLength);
     }
 
-    private static void RequireAvailable(ReadOnlySpan<byte> input, int needed)
+    /// <summary>
+    /// Overflow-safe length check. Comparing <c>input.Length &lt; header + length</c> in int
+    /// arithmetic wrapped negative for lengths near int.MaxValue, so the guard passed and the
+    /// subsequent Slice threw ArgumentOutOfRangeException instead of a FormatException.
+    /// </summary>
+    private static void RequireAvailable(ReadOnlySpan<byte> input, long needed)
     {
         if (input.Length < needed)
             throw new FormatException(

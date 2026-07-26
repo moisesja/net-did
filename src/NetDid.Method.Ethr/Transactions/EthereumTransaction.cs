@@ -18,6 +18,11 @@ namespace NetDid.Method.Ethr.Transactions;
 /// </summary>
 internal sealed record EthereumTransaction
 {
+    private static readonly BigInteger Secp256k1Order = BigInteger.Parse(
+        "0FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEBAAEDCE6AF48A03BBFD25E8CD0364141",
+        System.Globalization.NumberStyles.HexNumber);
+    private static readonly BigInteger Secp256k1HalfOrder = Secp256k1Order / 2;
+
     public required ulong Nonce { get; init; }
 
     /// <summary>Gas price in wei. BigInteger because wei quantities overflow ulong.</summary>
@@ -79,6 +84,17 @@ internal sealed record EthereumTransaction
 
         var r = new BigInteger(signature64[..32], isUnsigned: true, isBigEndian: true);
         var s = new BigInteger(signature64[32..], isUnsigned: true, isBigEndian: true);
+
+        // Validate the scalars here rather than discovering it from a node rejection: the
+        // signature arrives through the caller-supplied IRecoverableDigestSigner seam, and
+        // every EVM node enforces canonical scalars plus EIP-2 low-S anyway.
+        if (r.IsZero || s.IsZero || r >= Secp256k1Order || s >= Secp256k1Order)
+            throw new ArgumentException(
+                "Signature scalars must be canonical values in [1, n-1].", nameof(signature64));
+        if (s > Secp256k1HalfOrder)
+            throw new ArgumentException(
+                "Signature must be low-S (EIP-2); every EVM node rejects the malleable twin.",
+                nameof(signature64));
         var v = 35 + 2 * (BigInteger)ChainId + recoveryId;
 
         return RlpEncoder.EncodeList(

@@ -95,9 +95,11 @@ public class RedTeamWritePathTests
     }
 
     [Fact]
-    public async Task A1b_HostileGasEstimate_IsSilentlyClampedToThreeMillion()
+    public async Task A1b_GasEstimateAboveTheCeiling_FailsClosedInsteadOfUnderProvisioning()
     {
-        // Symmetric check: the LIMIT is bounded (so this is defence, recorded for contrast).
+        // Clamping an over-ceiling estimate DOWN signs a transaction guaranteed to run out
+        // of gas — burning the whole limit and surfacing as "the registry rejected the
+        // operation", which is false. Fail closed instead.
         var chain = new EmulatedEthereumChain(Registry);
         var owner = NewActor();
         byte[]? broadcast = null;
@@ -107,13 +109,13 @@ public class RedTeamWritePathTests
             OnSendRawCaptured   = raw => broadcast = raw,
         };
 
-        await MethodFor(hostile).UpdateAsync(
+        var act = () => MethodFor(hostile).UpdateAsync(
             $"did:ethr:sepolia:{owner.Address}",
             new DidEthrUpdateOptions { ControllerKey = owner.Signer, AddServices = [Svc()] });
 
-        var fields = RlpDecoder.Decode(broadcast!).AsList();
-        new BigInteger(fields[2].AsBytes(), isUnsigned: true, isBigEndian: true)
-            .Should().Be(3_000_000);
+        (await act.Should().ThrowAsync<EthereumInteractionException>())
+            .WithMessage("*above this library's*ceiling*");
+        broadcast.Should().BeNull();
     }
 
     // ══ A2: mid-batch evidence loss — the wrapper only catches ONE type ══════
@@ -264,7 +266,7 @@ public class RedTeamWritePathTests
     }
 
     [Fact]
-    public async Task A4_UpdateToTheZeroOwner_ReportsNoRemainingUpdateAuthority()
+    public async Task A4_UpdateToTheZeroOwner_ReportsTheIdentityAsTheRemainingAuthority()
     {
         var chain = new EmulatedEthereumChain(Registry);
         var owner = NewActor();
@@ -276,15 +278,18 @@ public class RedTeamWritePathTests
             NewOwnerAddress = "0x0000000000000000000000000000000000000000",
         });
 
-        // An owner change to the null address IS an (irreversible) deactivation…
+        // The resolver reports the DID as deactivated — that flag is EVENT-based (the last
+        // DIDOwnerChanged went to 0x0)…
         (await MethodFor(chain).ResolveAsync(did)).DocumentMetadata!.Deactivated.Should().BeTrue();
 
-        // …so the complete set of keys authorised to perform the next update is EMPTY —
-        // DidUpdateResult's documented "no keys are authorized" signal. Reporting
-        // 0x000…000 would claim a key nobody holds retains authority.
-        result.EffectiveUpdateKeys.Should().BeEmpty();
-        result.AuthorizationChange.Should().Be(AuthorizationChangeStatus.Changed);
-        result.UpdateKeyChange.Should().Be(AuthorizationChangeStatus.Changed);
+        // …but the registry's identityOwner() is `owner != 0 ? owner : identity`, so a zero
+        // owner slot returns control to the IDENTITY. The authority evidence must say so:
+        // claiming an empty set here would tell a caller nobody can write, while the
+        // identity's own key still can (verified against real bytecode in
+        // DeactivationRealityTests). Deactivation is a resolution property, not a lock.
+        result.EffectiveUpdateKeys.Should().Equal(owner.Address);
+        result.AuthorizationChange.Should().Be(AuthorizationChangeStatus.Unchanged,
+            "the identity key retains write authority");
     }
 
     // ══ A5: DeployAsync trusts the node for the registry address ═════════════

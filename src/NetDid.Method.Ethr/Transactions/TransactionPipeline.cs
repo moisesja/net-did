@@ -1,4 +1,5 @@
 using System.Numerics;
+using System.Security.Cryptography;
 using NetCrypto;
 using NetDid.Core.Exceptions;
 using NetDid.Method.Ethr.Crypto;
@@ -37,12 +38,25 @@ internal static class TransactionPipeline
         if (signer.KeyType != KeyType.Secp256k1)
             throw new ArgumentException(
                 $"did:ethr transactions require a Secp256k1 signer; got {signer.KeyType}.", paramName);
-        var publicKey = signer.PublicKey.ToArray();
-        if (publicKey.Length != 33)
+
+        // Normalize, don't demand: uncompressed SEC1 (65-byte 0x04‖X‖Y) is the common
+        // HSM/KMS representation, and Create already accepts it. Requiring the compressed
+        // form here would have made "any signer implementing the interface works" false for
+        // exactly the HSM-backed keys the seam exists to support. NormalizeToCompressed also
+        // validates the point is on the curve.
+        byte[] compressed;
+        try
+        {
+            compressed = KeyTypeExtensions.NormalizeToCompressed(
+                KeyType.Secp256k1, signer.PublicKey.ToArray());
+        }
+        catch (ArgumentException ex)
+        {
             throw new ArgumentException(
-                $"Expected a 33-byte compressed secp256k1 public key; got {publicKey.Length} bytes.",
-                paramName);
-        return EthereumAddress.FromCompressedPublicKey(publicKey).ToLowerInvariant();
+                $"The signer's public key is not a valid secp256k1 point: {ex.Message}",
+                paramName, ex);
+        }
+        return EthereumAddress.FromCompressedPublicKey(compressed).ToLowerInvariant();
     }
 
     /// <summary>
@@ -94,7 +108,16 @@ internal static class TransactionPipeline
             throw new EthereumInteractionException(
                 $"did:ethr transaction from {sender} would fail (gas estimation rejected): {ex.Message}", ex);
         }
-        var gasLimit = Math.Min(gasEstimate + gasEstimate * GasHeadroomPercent / 100, MaxGasLimit);
+        // Fail closed rather than under-provision. Silently clamping a larger estimate down to
+        // the cap signs a transaction that is GUARANTEED to run out of gas — burning the whole
+        // limit and surfacing as "the registry rejected the operation", which is simply false.
+        var gasLimit = gasEstimate + gasEstimate * GasHeadroomPercent / 100;
+        if (gasEstimate > MaxGasLimit || gasLimit > MaxGasLimit)
+            throw new EthereumInteractionException(
+                $"The transaction needs an estimated {gasEstimate} gas ({gasLimit} with headroom), " +
+                $"above this library's {MaxGasLimit} ceiling for a single did:ethr transaction. " +
+                "Nothing was signed or broadcast. Split the update into smaller operations, or " +
+                "reduce the size of the attribute/service values being written.");
 
         var transaction = new EthereumTransaction
         {
@@ -107,9 +130,49 @@ internal static class TransactionPipeline
             ChainId  = chainId,
         };
 
-        var signature = await signer.SignDigestAsync(transaction.SigningDigest(), ct);
+        // Freeze ONE digest and derive everything from it: re-deriving the payload after the
+        // await would let a caller-supplied signer mutate Data between signing and encoding.
+        var signingDigest = transaction.SigningDigest();
+        var signature = await signer.SignDigestAsync(signingDigest, ct);
+
+        // The IRecoverableDigestSigner seam is caller-supplied (HSM, KMS, remote service).
+        // Verify what came back actually authorizes THIS transaction as THIS sender before
+        // broadcasting: a malformed or foreign signature otherwise burns a reverting
+        // transaction, and an advertised-but-unused public key would pass the owner
+        // pre-flight while signing with something else.
+        string recovered;
+        try
+        {
+            recovered = EthereumAddress.FromCompressedPublicKey(
+                Secp256k1Recoverable.RecoverPublicKey(
+                    signingDigest, signature.Signature64, signature.RecoveryId, compressed: true))
+                .ToLowerInvariant();
+        }
+        catch (Exception ex) when (ex is ArgumentException or ArgumentOutOfRangeException
+                                   or CryptographicException)
+        {
+            throw new EthereumInteractionException(
+                "The signer returned a signature that does not recover a public key " +
+                $"({ex.Message}). Nothing was broadcast.", ex);
+        }
+        if (!string.Equals(recovered, sender, StringComparison.Ordinal))
+            throw new EthereumInteractionException(
+                $"The signer's signature recovers to {recovered}, not to the address its " +
+                $"public key advertises ({sender}). Nothing was broadcast.");
+
         var raw = transaction.EncodeSigned(signature.Signature64, signature.RecoveryId);
-        var transactionHash = await rpc.SendRawTransactionAsync(raw, ct);
+
+        // The transaction hash is keccak256(raw) — we can and must compute it ourselves.
+        // Accepting the node's echo verbatim let a hostile endpoint write an arbitrary value
+        // into the caller's audit record (DidUpdateResult.Artifacts["transactions"]).
+        var expectedHash = EthereumTransaction.HashOf(raw);
+        var reportedHash = await rpc.SendRawTransactionAsync(raw, ct);
+        if (!string.Equals(reportedHash, expectedHash, StringComparison.OrdinalIgnoreCase))
+            throw new EthereumInteractionException(
+                $"The RPC endpoint reported transaction hash {reportedHash}, but the broadcast " +
+                $"bytes hash to {expectedHash}. Refusing to report an unverifiable hash; the " +
+                "transaction may still have been accepted under its true hash.");
+        var transactionHash = expectedHash;
 
         while (true)
         {

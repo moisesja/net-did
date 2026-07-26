@@ -237,14 +237,34 @@ internal static class Erc1056TransactionBuilder
         return word;
     }
 
-    /// <summary>UTF-8 label right-padded into a bytes32 word (delegate types, attribute names).</summary>
+    /// <summary>
+    /// ASCII label right-padded into a bytes32 word (delegate types, attribute names).
+    ///
+    /// <para>Deliberately ASCII, not UTF-8: the resolver decodes these words with
+    /// <c>AbiDecoder.DecodeBytes32AsString</c>, which is ASCII — so writing UTF-8 would let
+    /// this library publish a name it cannot itself resolve (<c>did/svc/Café</c> read back as
+    /// <c>did/svc/Caf??</c>). Reject at the write boundary instead of round-tripping garbage.</para>
+    ///
+    /// <para>A trailing NUL is likewise rejected: bytes32 labels are NUL-padded and the
+    /// decoder trims trailing NULs, so <c>"x"</c> and <c>"x\0"</c> would be indistinguishable
+    /// on-chain — two different inputs with one meaning.</para>
+    /// </summary>
     private static byte[] Bytes32Label(string label, string paramName)
     {
         ArgumentNullException.ThrowIfNull(label, paramName);
-        var bytes = Encoding.UTF8.GetBytes(label);
+        foreach (var c in label)
+        {
+            if (c is '\0' or > (char)127)
+                throw new ArgumentException(
+                    $"'{label}' must contain only non-NUL ASCII: ERC-1056 bytes32 labels are " +
+                    "NUL-padded and are decoded as ASCII on resolution, so any other character " +
+                    "would publish a name that cannot be read back.",
+                    paramName);
+        }
+        var bytes = Encoding.ASCII.GetBytes(label);
         if (bytes.Length is 0 or > 32)
             throw new ArgumentException(
-                $"'{label}' must encode to 1–32 UTF-8 bytes for a bytes32 field; got {bytes.Length}.",
+                $"'{label}' must encode to 1–32 ASCII bytes for a bytes32 field; got {bytes.Length}.",
                 paramName);
         var word = new byte[32];
         bytes.CopyTo(word, 0);

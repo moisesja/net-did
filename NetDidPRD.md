@@ -1443,7 +1443,8 @@ public sealed record DidEthrUpdateOptions : DidUpdateOptions
     public IReadOnlyList<DidEthrAttribute>? AddAttributes { get; init; }
     public IReadOnlyList<DidEthrAttribute>? RemoveAttributes { get; init; }
 
-    // Change owner — rotates the update authority; always submitted last
+    // Change owner — transfers the update authority; always submitted last.
+    // 0x000…000 performs a DEACTIVATION (see §8.7); prefer DeactivateAsync for that.
     public string? NewOwnerAddress { get; init; }
 
     // Signs the transactions (direct path) or the ERC-1056 0x19 0x00 operation
@@ -1495,7 +1496,17 @@ Write-path contract (each property pinned by a test):
 4. Meta-transactions fetch the contract nonce per operation with the generation-correct
    key: the modern registry reads `nonce[identityOwner(identity)]` for every method; the
    legacy (`LegacyNonce = true`) registry reads `nonce[identity]` for attribute methods.
-   The contract nonce makes every signed payload single-use (replays revert).
+   The contract nonce makes every signed payload single-use (replays revert) — with two
+   inherent ERC-1056 caveats, both verified against real bytecode:
+   - On a **legacy** registry, `checkSignature` increments `nonce[identity]` while the
+     owner/delegate preimages read `nonce[identityOwner]`. After an ownership transfer those
+     slots diverge and the preimage nonce is never incremented, so the calldata replays
+     indefinitely. NetDid **refuses** to sign owner/delegate meta-transactions in that state;
+     attribute operations are unaffected because they read the incremented slot.
+   - The preimage binds the registry **address** but no chain id, and one registry address
+     serves several chains in `KnownNetworks`. A meta-transaction is therefore replayable on
+     a sibling chain where the identity's nonce matches. This is not client-fixable and is
+     documented as an inherent trust property of the method.
 5. `DidUpdateResult` reports transaction hashes in `Artifacts["transactions"]` and
    update-authority evidence: `AuthorizationChange`/`UpdateKeyChange` flip only on an owner
    change; `RevealedUpdateKeys`/`EffectiveUpdateKeys` carry lowercase account addresses —
@@ -1504,10 +1515,22 @@ Write-path contract (each property pinned by a test):
 ### 8.7 Deactivate
 
 Set the owner to `0x0000000000000000000000000000000000000000` (null address) via the same
-write pipeline (direct or meta-transaction). This makes the identity permanently
-uncontrollable; the DID resolves to a stripped document with `deactivated: true`, and
-`DidDeactivateResult.Success` reports what the chain says post-transaction, not what was
-submitted. Historical resolution still reaches pre-deactivation states.
+write pipeline (direct or meta-transaction). The DID then resolves to a stripped document
+with `deactivated: true`, and `DidDeactivateResult.Success` reports what the chain says
+post-transaction, not what was submitted. Historical resolution still reaches
+pre-deactivation states.
+
+> **Deactivation is not enforced as a lock, contrary to the method spec.** The did:ethr
+> specification states that zeroing the owner "is irreversible" and that "no further changes
+> to the DID document are possible". The deployed registry does not implement that:
+> `identityOwner()` is `owner != address(0) ? owner : identity`, so a zero owner slot resolves
+> back to the **identity address**. An EOA identity whose key still exists can therefore write
+> again, and a later non-zero `DIDOwnerChanged` clears the `deactivated` flag entirely.
+> Verified against real 1.3.0 bytecode (`DeactivationRealityTests`); NetDid documents the
+> observed contract behavior rather than repeating the spec's stronger claim. Deactivation is
+> terminal only when no party can act as the identity address. Callers needing a hard
+> guarantee must transfer ownership to a provably unusable address, or destroy the identity
+> key as part of the procedure.
 
 ```csharp
 public sealed record DidEthrDeactivateOptions : DidDeactivateOptions
@@ -3270,7 +3293,7 @@ Rust (zkryptium crate, Apache 2.0)
 | 4.2  | Keccak-256 hash implementation                                                   | ✅ (`NetCrypto.Keccak256`) |
 | 4.3  | Ethereum address derivation from secp256k1 public key                            | ✅ |
 | 4.4  | RLP encoding for transaction construction                                        | ✅ (EIP-155 legacy type-0, external-vector pinned) |
-| 4.5  | ERC-1056 ABI encoding: function selectors, parameter encoding                    | ✅ (all read + write + …Signed calldata, selectors pinned to 4byte.directory) |
+| 4.5  | ERC-1056 ABI encoding: function selectors, parameter encoding                    | ✅ (all read + write + …Signed calldata; 12 of 13 selectors pinned to 4byte.directory) |
 | 4.6  | `IEthereumRpcClient` interface and default HTTP JSON-RPC implementation          | ✅ (read + write incl. receipts and gas estimation) |
 | 4.7  | Event log parser: `DIDOwnerChanged`, `DIDDelegateChanged`, `DIDAttributeChanged` | ✅ |
 | 4.8  | Create: key generation + address derivation (no on-chain tx needed)              | ✅ |

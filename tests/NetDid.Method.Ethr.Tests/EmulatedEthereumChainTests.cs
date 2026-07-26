@@ -371,9 +371,12 @@ public class EmulatedEthereumChainTests
         var highSBytes = highS.ToByteArray(isUnsigned: true, isBigEndian: true);
         highSBytes.CopyTo(malleated, 64 - highSBytes.Length);
 
-        await chain.Invoking(c => c.SendRawTransactionAsync(
-                tx.EncodeSigned(malleated, recoveryId ^ 1)))
-            .Should().ThrowAsync<EthereumInteractionException>().WithMessage("*low-S*");
+        // EncodeSigned now refuses to build the transaction at all — the malleable twin
+        // never reaches the wire. (The emulator's own consensus check still backstops it;
+        // see EncodeSigned_HighS_IsRejected for the library-level pin.)
+        ((Action)(() => tx.EncodeSigned(malleated, recoveryId ^ 1)))
+            .Should().Throw<ArgumentException>().WithMessage("*low-S*");
+        await Task.CompletedTask;
     }
 
     [Fact]

@@ -13,8 +13,16 @@ namespace NetDid.Method.Ethr;
 /// <see cref="ControllerKey"/> is an <see cref="IRecoverableDigestSigner"/> (NetCrypto):
 /// Ethereum signatures are recoverable ECDSA over a caller-computed Keccak-256 digest, which
 /// the general-purpose <see cref="ISigner"/> cannot produce (it hashes internally and returns
-/// no recovery id). Any HSM/key-store signer implementing the interface works — the private
-/// key never needs to be extractable.
+/// no recovery id). Any secp256k1 signer implementing the interface works — including
+/// HSM/key-store-backed ones whose private key is never extractable, and whose public key may
+/// be in either compressed or uncompressed SEC1 form.
+///
+/// <para><b>Meta-transaction hazards</b> (inherent to ERC-1056, verified against real registry
+/// bytecode): on a <c>LegacyNonce</c> registry the owner/delegate preimage nonce stops
+/// incrementing once ownership has been transferred, making such signatures replayable
+/// forever — NetDid refuses to sign them in that state. And because the preimage carries no
+/// chain id while one registry address serves several chains, a meta-transaction may be
+/// replayable on a sibling chain. Prefer direct submission when either applies.</para>
 /// </remarks>
 public sealed record DidEthrUpdateOptions : DidUpdateOptions
 {
@@ -34,6 +42,13 @@ public sealed record DidEthrUpdateOptions : DidUpdateOptions
     /// <summary>Raw attribute revocations (<c>revokeAttribute</c>); Name and Value must match the original.</summary>
     public IReadOnlyList<DidEthrAttribute>? RemoveAttributes { get; init; }
 
+    /// <summary>
+    /// Transfers the identity's update authority. Always submitted last.
+    /// <para><b>Passing the null address (<c>0x000…000</c>) performs a deactivation</b> — the
+    /// DID then resolves with <c>deactivated: true</c>. Prefer
+    /// <c>DidEthrMethod.DeactivateAsync</c>, which names that intent. See
+    /// <see cref="DidEthrDeactivateOptions"/> for why this is not an irreversible lock.</para>
+    /// </summary>
     public string? NewOwnerAddress { get; init; }
 
     /// <summary>
