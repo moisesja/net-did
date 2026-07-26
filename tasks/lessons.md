@@ -208,3 +208,38 @@
   malformed. Do not turn an optional advisory flag into a required compatibility gate unless the
   protocol defines omission as unsafe; a hostile provider that omits it could already lie with
   `false`.
+- When a dependency's public API is the thing blocking a feature, ask whether the fix belongs
+  UPSTREAM before designing a local workaround. did:ethr needed recoverable secp256k1 signing
+  over a caller-computed digest; `ISigner` cannot express it (it SHA-256-hashes internally and
+  returns no recovery id). My plan defined a net-did-local `IEthereumDigestSigner` — the user
+  asked "Can the ISigner issue be fixed upstream? Should it?" and the answer was yes on both:
+  NetCrypto already owned the primitive (`Secp256k1Recoverable`), so the abstraction belonged
+  next to it, and a local interface would have forked the signer ecosystem (an HSM/key-store
+  key would work for did:webvh but not did:ethr). The test for "upstream vs local": does the
+  dependency already own the primitive, and would a local interface force other consumers to
+  reimplement it? If yes to either, file it upstream. Keep the boundary the upstream library
+  documented — NetCrypto's FR-12 ruling puts keccak and EVM v-encoding in the wallet layer, so
+  those stayed in net-did.
+- "Filing an issue" and "implementing the fix" are separate asks across repo boundaries. When
+  a cross-repo dependency appears mid-task, propose the split and let the user choose who
+  implements — here the user said "I will fix the crypto-dotnet library separately. Just file
+  the issue with as much detail as possible along with justification." A cross-repo issue is a
+  SPEC handoff, not a bug report: include the exact proposed API, the implementations and their
+  input contracts, the boundary it must not cross, the test matrix, the chores (PublicAPI.txt,
+  CHANGELOG, version), and — most importantly — the JUSTIFICATION for why it belongs there
+  rather than downstream. Then keep building everything that doesn't depend on it and mark the
+  blocked phases explicitly.
+- A dev node is NOT a conformance oracle for consensus rules. Anvil accepts high-S signatures
+  and wrong-chain-id transactions that mainnet consensus rejects, so negative tests for EIP-2
+  low-S and EIP-155 replay protection FAIL against Anvil while passing against a stricter
+  in-memory emulator. Split the oracles deliberately: the real node proves contract semantics
+  and calldata/bytecode correctness; the emulator proves consensus-grade validation. Say which
+  oracle covers which class in the test file, or a later reader will "fix" the strict one to
+  match the permissive one.
+- Wall-clock-boundary assertions need slack on a real chain. ERC-1056 revocation sets
+  `validTo = block.timestamp`, and the JS-compatible resolver keeps an entry while
+  `validTo >= now`, so a revocation only takes effect the NEXT whole second. Against an
+  emulator with a controllable clock this is invisible; against a live node the assertion is
+  flaky until you step the clock past the boundary. When a spec's validity comparison is
+  inclusive, either advance the clock explicitly or assert after the boundary — never assume
+  "the write landed" means "the effect is visible".
