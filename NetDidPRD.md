@@ -39,7 +39,7 @@
 
 ### 1.1 Purpose
 
-NetDid is an open-source .NET 10 library that provides a unified, specification-compliant interface for creating, resolving, updating, and deactivating Decentralized Identifiers. Currently implemented: `did:key`, `did:peer`, `did:webvh` (full CRUD), and `did:ethr` (Create + Resolve). Planned: on-chain `did:ethr` Update and Deactivate.
+NetDid is an open-source .NET 10 library that provides a unified, specification-compliant interface for creating, resolving, updating, and deactivating Decentralized Identifiers. Currently implemented: `did:key`, `did:peer`, `did:webvh`, and `did:ethr` — all with their full specified CRUD surface (did:ethr includes on-chain Update/Deactivate and relayed meta-transactions).
 
 The library generates cryptographic keys using well-tested elliptic curve algorithms but delegates key storage and lifecycle management to the consuming application through a pluggable `IKeyStore` interface. This separation ensures that NetDid remains focused on DID operations while allowing developers to integrate their own HSM, vault, or file-based key management solution.
 
@@ -75,7 +75,7 @@ The library generates cryptographic keys using well-tested elliptic curve algori
 | **did:key**   | ✅ Implemented  | W3C CCG Final          | ✅     | ✅      | ❌ (immutable) | ❌ (immutable) | ❌                | Ed25519, P-256, P-384, P-521, secp256k1, X25519, BLS12-381 G2 |
 | **did:peer**  | ✅ Implemented  | DIF v2 (numalgo 0,2,4) | ✅     | ✅      | ❌ (static)    | ❌             | ✅ (numalgo 2,4)  | Ed25519, X25519                                        |
 | **did:webvh** | ✅ Implemented | DIF v1.0               | ✅     | ✅      | ✅             | ✅             | ✅                | Ed25519 (required), P-256 (optional)                   |
-| **did:ethr**  | ✅ Implemented | ERC-1056 / DIF         | ✅     | ✅      | 🔲 Planned     | 🔲 Planned     | ✅ (read)         | secp256k1 (primary), Ed25519 (delegate)                |
+| **did:ethr**  | ✅ Implemented | ERC-1056 / DIF         | ✅     | ✅      | ✅             | ✅             | ✅                | secp256k1 (primary), Ed25519 (delegate)                |
 
 ### 2.2 CRUD Operations Per Method
 
@@ -87,7 +87,7 @@ Each method implements the standard DID CRUD lifecycle, but the mechanics differ
 
 **did:webvh** — Full CRUD. "did:web + Verifiable History." Each update appends to a JSON Lines log file (`did.jsonl`) hosted at a web URL. The log is a cryptographically chained sequence of DID Document versions, anchored by a Self-Certifying Identifier (SCID) derived from the initial state. Resolution fetches the log and validates the entire chain. The DID can also be consumed as a plain `did:web` by legacy resolvers (backwards compatible). Supports pre-rotation keys, witnesses (did:key DIDs that co-sign updates), and watchers. Every version links back to its predecessor via a hash chain. While pre-rotation is active, every entry MUST explicitly reveal update keys committed by the previous entry; reusing a revealed key is valid but strongly discouraged by v1.0.
 
-**did:ethr** — Create and Resolve implemented; Update and Deactivate planned. Based on the ERC-1056 `EthereumDIDRegistry` smart contract deployed at a well-known address. Any Ethereum address is automatically a valid DID with no registration needed (identity creation is free, and requires no on-chain transaction). Mutations are recorded as on-chain events: `changeOwner` for ownership transfer, `setAttribute` for adding service endpoints and additional keys, `addDelegate`/`revokeDelegate` for time-limited delegate keys. Resolution replays those contract events (via `eth_getLogs`) to reconstruct the DID Document, at head or at any historical `versionId` / `versionTime`. Writing those events — and the meta-transaction variants signed by the identity key and submitted by a third-party relayer — is the remaining work: `DidEthrMethod` advertises `Create | Resolve | ServiceEndpoints`, so `UpdateAsync` and `DeactivateAsync` throw `OperationNotSupportedException` today. The network identifier is part of the DID: `did:ethr:0x1:0xabc...` for mainnet, `did:ethr:sepolia:0xabc...` for testnet. Pluggable RPC endpoint means any EVM chain that an ERC-1056 registry deployed will work.
+**did:ethr** — Full CRUD. Based on the ERC-1056 `EthereumDIDRegistry` smart contract deployed at a well-known address. Any Ethereum address is automatically a valid DID with no registration needed (identity creation is free, and requires no on-chain transaction). Mutations are on-chain transactions: `changeOwner` for ownership transfer (deactivation = transfer to `0x0`), `setAttribute`/`revokeAttribute` for service endpoints and additional keys, `addDelegate`/`revokeDelegate` for time-limited delegate keys — each also available as an ERC-1056 meta-transaction where the identity key signs the operation payload and a funded relayer submits it (the identity owner never needs ETH; both contract generations' nonce schemes are supported via `EthereumNetworkConfig.LegacyNonce`). Transactions are EIP-155-signed through NetCrypto's `IRecoverableDigestSigner` seam, so HSM/key-store-held keys work. Resolution replays contract events (via `eth_getLogs`) to reconstruct the DID Document, at head or at any historical `versionId` / `versionTime`. The network identifier is part of the DID: `did:ethr:0x1:0xabc...` for mainnet, `did:ethr:sepolia:0xabc...` for testnet. Pluggable RPC endpoint means any EVM chain with an ERC-1056 registry works — and `Erc1056Registry.DeployAsync` (vendored official bytecode) deploys one to private chains.
 
 ---
 
@@ -1422,39 +1422,47 @@ cases, ensure the signing key has been registered on-chain with full public key 
 
 ### 8.6 Update
 
-> **Status: not yet implemented.** `DidEthrMethod.Capabilities` omits `Update`, so
-> `UpdateAsync` throws `OperationNotSupportedException`. The option types below ship today
-> so the public API is stable for the on-chain work.
-
-Updates require on-chain transactions:
+Updates are on-chain transactions, submitted sequentially in a fixed order — revocations,
+then additions, then (always last) the owner change, because `changeOwner` strips the
+current key's authority over any subsequent operation:
 
 ```csharp
 public sealed record DidEthrUpdateOptions : DidUpdateOptions
 {
-    // Add a service endpoint
+    // Add/remove service endpoints (did/svc/<type> attributes)
     public IReadOnlyList<DidEthrServiceAttribute>? AddServices { get; init; }
     public IReadOnlyList<DidEthrServiceAttribute>? RemoveServices { get; init; }
 
-    // Add/revoke delegate keys
+    // Add/revoke time-limited delegate keys ("veriKey", "sigAuth")
     public IReadOnlyList<DidEthrDelegate>? AddDelegates { get; init; }
     public IReadOnlyList<DidEthrDelegate>? RevokeDelegates { get; init; }
 
-    // Change owner
+    // Raw ERC-1056 attributes — most importantly did/pub/<alg>/<purpose>/<encoding>
+    // entries that publish FULL key material (see the §8.5 note): the implicit
+    // blockchainAccountId controller VM cannot serve extractable key bytes.
+    public IReadOnlyList<DidEthrAttribute>? AddAttributes { get; init; }
+    public IReadOnlyList<DidEthrAttribute>? RemoveAttributes { get; init; }
+
+    // Change owner — rotates the update authority; always submitted last
     public string? NewOwnerAddress { get; init; }
 
-    // Signs transactions. ISigner provides the public key (for address derivation)
-    // and signing without exposing private key material (HSM-safe).
-    public required ISigner ControllerKey { get; init; }
+    // Signs the transactions (direct path) or the ERC-1056 0x19 0x00 operation
+    // payloads (meta path). IRecoverableDigestSigner (NetCrypto ≥ 1.4.0) because
+    // Ethereum needs recoverable ECDSA over a caller-computed keccak digest — the
+    // general-purpose ISigner hashes internally and returns no recovery id. The seam
+    // keeps HSM/key-store-held keys usable without extractable private material.
+    public required IRecoverableDigestSigner ControllerKey { get; init; }
 
-    // Use meta-transaction (signed by controller, submitted by relayer)?
+    // Meta-transaction mode: ControllerKey signs payloads, Relayer pays the gas.
     public bool UseMetaTransaction { get; init; } = false;
+    public IRecoverableDigestSigner? Relayer { get; init; }   // required when UseMetaTransaction
 }
 
 public sealed record DidEthrDelegate
 {
     public required string DelegateType { get; init; }  // e.g., "veriKey", "sigAuth"
     public required string DelegateAddress { get; init; }
-    public required TimeSpan Validity { get; init; }
+    public TimeSpan Validity { get; init; } = TimeSpan.FromDays(365);  // ignored for revocations
 }
 
 public sealed record DidEthrServiceAttribute
@@ -1463,27 +1471,64 @@ public sealed record DidEthrServiceAttribute
     public required string ServiceEndpoint { get; init; }
     public TimeSpan Validity { get; init; } = TimeSpan.FromDays(365 * 10);
 }
+
+public sealed record DidEthrAttribute
+{
+    public required string Name { get; init; }   // bytes32 label, ≤ 32 UTF-8 bytes
+    public required byte[] Value { get; init; }
+    public TimeSpan Validity { get; init; } = TimeSpan.FromDays(365 * 10);
+}
 ```
+
+Write-path contract (each property pinned by a test):
+
+1. Every operation is validated and its calldata built **before** any RPC traffic; a
+   pre-flight `identityOwner(identity)` call fails closed before anything is broadcast when
+   `ControllerKey` is not the current owner (the contract's `onlyOwner`/`checkSignature`
+   remains the enforcement point).
+2. Per transaction: nonce → `eth_estimateGas` (+25 % headroom, hard cap; an estimate
+   rejection surfaces as the pre-flight failure it is) → EIP-155 sign → broadcast →
+   receipt polling. Strictly sequential, no fire-and-forget.
+3. One overall write deadline bounds the whole batch; on deadline or a mid-batch revert the
+   failure reports exactly which transactions landed (hashes) — no silent partial success.
+   Caller cancellation propagates as cancellation.
+4. Meta-transactions fetch the contract nonce per operation with the generation-correct
+   key: the modern registry reads `nonce[identityOwner(identity)]` for every method; the
+   legacy (`LegacyNonce = true`) registry reads `nonce[identity]` for attribute methods.
+   The contract nonce makes every signed payload single-use (replays revert).
+5. `DidUpdateResult` reports transaction hashes in `Artifacts["transactions"]` and
+   update-authority evidence: `AuthorizationChange`/`UpdateKeyChange` flip only on an owner
+   change; `RevealedUpdateKeys`/`EffectiveUpdateKeys` carry lowercase account addresses —
+   did:ethr's canonical authority form.
 
 ### 8.7 Deactivate
 
-> **Status: not yet implemented.** `DidEthrMethod.Capabilities` omits `Deactivate`, so
-> `DeactivateAsync` throws `OperationNotSupportedException`. Resolution already *recognises*
-> a deactivated identity: a `DIDOwnerChanged` to the null address resolves to a stripped
-> document with `deactivated: true` in the document metadata.
-
-Set the owner to `0x0000000000000000000000000000000000000000` (null address). This makes the identity uncontrollable and the DID Document resolves with `deactivated: true`.
+Set the owner to `0x0000000000000000000000000000000000000000` (null address) via the same
+write pipeline (direct or meta-transaction). This makes the identity permanently
+uncontrollable; the DID resolves to a stripped document with `deactivated: true`, and
+`DidDeactivateResult.Success` reports what the chain says post-transaction, not what was
+submitted. Historical resolution still reaches pre-deactivation states.
 
 ```csharp
 public sealed record DidEthrDeactivateOptions : DidDeactivateOptions
 {
     /// Signs the changeOwner transaction that transfers ownership to the null address.
-    public required ISigner ControllerKey { get; init; }
+    public required IRecoverableDigestSigner ControllerKey { get; init; }
 
-    /// Use meta-transaction (signed by controller, submitted by relayer)?
+    /// Meta-transaction mode: ControllerKey signs the payload, Relayer pays the gas.
     public bool UseMetaTransaction { get; init; } = false;
+    public IRecoverableDigestSigner? Relayer { get; init; }
 }
 ```
+
+### 8.7a Registry deployment (private chains)
+
+Public networks use the existing well-known deployments (`KnownNetworks`). For private or
+consortium EVM chains, `Erc1056Registry.DeployAsync(rpc, deployerKey, legacy = false)`
+deploys the registry through the same transaction pipeline, using creation bytecode
+vendored verbatim from the official MIT-licensed npm artifacts (`ethr-did-registry@1.3.0`
+modern; `@0.0.3` legacy — the mainnet `0xdCa7EF03…` generation) with the keccak256 of each
+embedded artifact pinned by a unit test.
 
 ### 8.8 Ethereum RPC Abstraction
 
@@ -1498,11 +1543,16 @@ public interface IEthereumRpcClient
     /// eth_getBlockByNumber — required for VersionId / VersionTime resolution.
     Task<ulong> GetBlockTimestampAsync(ulong blockNumber, CancellationToken ct = default);
 
-    // ── Declared for Update / Deactivate; DefaultEthereumRpcClient throws
-    //    NotImplementedException until those operations ship ─────────────────
+    // ── Used by Update / Deactivate ──────────────────────────────────────────
     Task<string> SendRawTransactionAsync(byte[] signedTransaction, CancellationToken ct = default);
+    /// eth_getTransactionCount with the "pending" block tag.
     Task<ulong> GetTransactionCountAsync(string address, CancellationToken ct = default);
     Task<ulong> GetGasPriceAsync(CancellationToken ct = default);
+    /// null while the transaction is pending/unknown; receipts must echo the
+    /// requested hash and carry a Byzantium status (0x0/0x1).
+    Task<EthereumTransactionReceipt?> GetTransactionReceiptAsync(string transactionHash, CancellationToken ct = default);
+    /// to == null estimates a contract-creation transaction.
+    Task<ulong> EstimateGasAsync(string from, string? to, string data, CancellationToken ct = default);
 }
 
 /// Creates (and caches) one IEthereumRpcClient per network, so a multi-network
@@ -2905,10 +2955,12 @@ netdid/
 │   │   ├── DidEthrDeactivateOptions.cs
 │   │   ├── Abi/                      # AbiEncoder, AbiDecoder
 │   │   ├── Crypto/                   # EthereumAddress, EthrIdentifier
-│   │   ├── Erc1056/                  # Erc1056Calls/Events/Topics, Erc1056EventParser
+│   │   ├── Deployment/               # Erc1056Registry (vendored bytecode + DeployAsync)
+│   │   ├── Erc1056/                  # Erc1056Calls/Events/Topics, EventParser, TransactionBuilder
 │   │   ├── Resolution/               # EthrDocumentBuilder
-│   │   └── Rpc/                      # IEthereumRpcClient(+Factory), Default*, KnownNetworks,
-│   │                                 #   EthereumNetworkConfig, EthereumLogEntry/Filter
+│   │   ├── Rpc/                      # IEthereumRpcClient(+Factory), Default*, KnownNetworks,
+│   │   │                             #   EthereumNetworkConfig, LogEntry/Filter, TransactionReceipt
+│   │   └── Transactions/             # RlpEncoder, EthereumTransaction, TransactionPipeline
 │   │
 │   ├── NetDid.Extensions.DependencyInjection/  # Optional Microsoft.Extensions.DI integration
 │   │   ├── NetDid.Extensions.DependencyInjection.csproj
@@ -3106,8 +3158,9 @@ netdid/
 - Multi-network: same address on mainnet vs. sepolia produces distinct DIDs
 - Historical resolution: `versionId` (block number) and `versionTime` select the correct event prefix; non-canonical selectors return `invalidOptions` before any RPC call
 - Hostile-RPC hardening: incomplete, foreign-registry, foreign-identity, duplicate-`logIndex`, `removed: true`, forward-pointing, and decreasing-timestamp histories all fail closed to `notFound`
-- RLP encoding for transaction construction *(pending the write path)*
-- Meta-transaction signature generation *(pending the write path)*
+- RLP + EIP-155 transaction construction pinned to published external vectors (the EIP-155 canonical example, Yellow Paper RLP vectors)
+- Write path: operation ordering (owner change last), pre-flight owner check broadcasts nothing, mid-batch revert reports landed transactions, write deadline vs caller cancellation
+- Meta-transaction generation for BOTH contract generations, including the legacy nonce[identity] quirk for attribute operations — proven against the emulator and against real registry bytecode on Anvil (env-gated Testcontainers suite)
 
 **Cross-Method Tests:**
 
@@ -3216,21 +3269,20 @@ Rust (zkryptium crate, Apache 2.0)
 | 4.1  | secp256k1 key support (generate, sign, recover)                                  | ✅ (NetCrypto) |
 | 4.2  | Keccak-256 hash implementation                                                   | ✅ (`NetCrypto.Keccak256`) |
 | 4.3  | Ethereum address derivation from secp256k1 public key                            | ✅ |
-| 4.4  | RLP encoding for transaction construction                                        | 🔲 (write path) |
-| 4.5  | ERC-1056 ABI encoding: function selectors, parameter encoding                    | ✅ read-only calls + all three event layouts; 🔲 write calldata |
-| 4.6  | `IEthereumRpcClient` interface and default HTTP JSON-RPC implementation          | ✅ read methods; write methods declared, throw |
+| 4.4  | RLP encoding for transaction construction                                        | ✅ (EIP-155 legacy type-0, external-vector pinned) |
+| 4.5  | ERC-1056 ABI encoding: function selectors, parameter encoding                    | ✅ (all read + write + …Signed calldata, selectors pinned to 4byte.directory) |
+| 4.6  | `IEthereumRpcClient` interface and default HTTP JSON-RPC implementation          | ✅ (read + write incl. receipts and gas estimation) |
 | 4.7  | Event log parser: `DIDOwnerChanged`, `DIDDelegateChanged`, `DIDAttributeChanged` | ✅ |
 | 4.8  | Create: key generation + address derivation (no on-chain tx needed)              | ✅ |
 | 4.9  | Resolve: query events, replay to build DID Document (+ `versionId`/`versionTime`) | ✅ |
-| 4.10 | Update: `setAttribute` for services, `addDelegate` for keys, `changeOwner`       | 🔲 |
-| 4.11 | Meta-transaction support (EIP-712 style signed messages)                         | 🔲 |
-| 4.12 | Deactivation: change owner to null address                                       | 🔲 write; ✅ detected on resolve |
+| 4.10 | Update: `setAttribute` for services, `addDelegate` for keys, `changeOwner`       | ✅ (incl. raw did/pub attributes; owner change ordered last) |
+| 4.11 | Meta-transaction support (ERC-1056 `0x19 0x00` signed payloads)                  | ✅ (both contract generations' nonce schemes) |
+| 4.12 | Deactivation: change owner to null address                                       | ✅ |
 | 4.13 | Multi-network configuration and routing                                          | ✅ (`KnownNetworks`, per-network RPC clients) |
-| 4.14 | Integration tests against Sepolia testnet (or Hardhat in Docker)                 | 🔲 (offline registry simulation in `NetDid.Samples.DidEthr` + unit tests instead) |
+| 4.14 | Integration tests against a real EVM                                             | ✅ (Anvil via Testcontainers, env-gated; both vendored registry generations) |
 | 4.15 | W3C conformance tests                                                            | ✅ 66/66 |
 
-**Deliverable**: did:ethr Create + Resolve on any EVM network — **delivered**. Remaining for full
-CRUD: the on-chain write path (4.4, 4.10–4.12) and live-network integration tests (4.14).
+**Deliverable**: did:ethr full CRUD on any EVM network — **delivered** (issue #107). Real-EVM integration tests run against Anvil with the vendored registry bytecode of both deployed generations.
 
 ### Phase 5: W3C Test Suite & Polish (Week 12-14)
 

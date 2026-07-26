@@ -9,15 +9,67 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`did:ethr` on-chain write path — full CRUD** (issue #107). `DidEthrMethod` now advertises
+  `Create | Resolve | Update | Deactivate | ServiceEndpoints`; the `OperationNotSupportedException`
+  stubs are gone.
+  - **`UpdateAsync`**: services (`AddServices`/`RemoveServices`), delegates
+    (`AddDelegates`/`RevokeDelegates`), raw ERC-1056 attributes (**new**
+    `AddAttributes`/`RemoveAttributes` with `DidEthrAttribute`) — including
+    `did/pub/<alg>/<purpose>/<encoding>` entries that publish full key material — and
+    `NewOwnerAddress`. Operations submit sequentially: revocations, additions, then the owner
+    change **always last** (`changeOwner` strips the current key's authority over later
+    operations). A pre-flight `identityOwner` check fails closed before anything is broadcast;
+    a mid-batch revert or the overall write deadline reports exactly which transactions landed;
+    `DidUpdateResult` carries tx hashes in `Artifacts["transactions"]` and update-authority
+    evidence (`AuthorizationChange`/`UpdateKeyChange` flip only on owner change,
+    `Revealed`/`EffectiveUpdateKeys` are lowercase account addresses).
+  - **`DeactivateAsync`**: `changeOwner(0x0)` through the same pipeline; `Success` reports the
+    post-transaction chain state, not the submission.
+  - **Meta-transactions**: `UseMetaTransaction` + new `Relayer` option — the controller key signs
+    the ERC-1056 `0x19 0x00` operation payloads and a funded relayer pays gas, so the identity
+    owner never needs ETH. Both deployed contract generations are supported:
+    `EthereumNetworkConfig.LegacyNonce` now drives the nonce scheme, including the legacy
+    (mainnet `0xdCa7EF03…`) quirk where attribute operations read `nonce[identity]` — verified
+    against both verified contract sources and empirically against both real bytecodes.
+  - **Transaction primitives**: internal RLP encoder and EIP-155 legacy (type-0) transaction
+    construction (`v = 35 + 2·chainId + recid`), pinned byte-for-byte to published external
+    vectors (the EIP-155 canonical example, Yellow Paper RLP vectors) — never to this repo's own
+    decoder. ERC-1056 write calldata for all five mutations and their `…Signed` variants, with
+    every selector pinned to the public 4byte.directory signature database.
+  - **`Erc1056Registry`** (public): creation bytecode of both registry generations vendored
+    verbatim from the official MIT-licensed npm artifacts (`ethr-did-registry@1.3.0` and
+    `@0.0.3`), keccak256-pinned by tests against digests from an independent implementation;
+    `DeployAsync(rpc, deployerKey, legacy)` deploys to private/consortium chains through the
+    same transaction pipeline. Public networks keep using the `KnownNetworks` addresses.
+  - **`IEthereumRpcClient`**: implemented `SendRawTransactionAsync`, `GetTransactionCountAsync`
+    (pending tag), `GetGasPriceAsync`; added `GetTransactionReceiptAsync` (null while pending;
+    receipts must echo the requested hash and a Byzantium `0x0`/`0x1` status) and
+    `EstimateGasAsync` (null `to` = contract creation), with the same canonical-hex validation
+    and response caps as the read surface. New `EthereumTransactionReceipt` record.
+  - **Test infrastructure answering "how do we mock a blockchain":**
+    `tests/NetDid.Method.Ethr.Emulator` (not shipped) — an in-memory ERC-1056 chain that
+    strictly RLP-decodes raw transactions, recovers senders with real ecrecover, enforces
+    chain id / account nonces / EIP-2 low-S, and executes the transcribed semantics of both
+    contract generations (reverts mine a block and consume the nonce, like the EVM); and
+    `tests/NetDid.Method.Ethr.IntegrationTests` — an env-gated (`NETDID_ETHR_INTEGRATION=1`,
+    Docker) Testcontainers suite running Anvil (Foundry v1.7.1, pinned) that deploys the real
+    vendored bytecode and proves deployment, direct writes, meta-transactions (incl. replay
+    rejection and the legacy-nonce divergence), and the full public-API lifecycle against real
+    EVM execution. The default `dotnet test` run stays offline.
+  - Sample rewritten around the emulator: every section now drives the public API — full CRUD,
+    meta-transactions, registry deployment, historical replay, expiry vs revocation, owner
+    rotation, fail-closed error handling — offline and deterministically.
+
+
 - **`NetDid.Method.Ethr`** — Phase 1 implementation of the `did:ethr` DID method (adopted from
   PR #70 by @mirceanis; all cryptography consumed exclusively from `NetCrypto`).
-  - **`DidEthrMethod`**: Implements `Create` and `Resolve` capabilities (advertises `Create | Resolve | ServiceEndpoints`). `Update` and `Deactivate` stubs throw `OperationNotSupportedException` (Phase 2).
+  - **`DidEthrMethod`**: `Create` and `Resolve` (the write path landed later in this cycle — see the full-CRUD entry above).
   - **`EthereumAddress`**: Derives EIP-55 checksummed Ethereum addresses from compressed secp256k1 public keys using Keccak-256 (`NetCrypto.Keccak256`).
   - **`EthrIdentifier`**: Parses method-specific identifiers supporting named networks (`mainnet`, `sepolia`, `goerli`, `polygon`), hex chain IDs (`0x…`), plain 20-byte addresses, and full 33-byte compressed public keys.
   - **`AbiEncoder` / `AbiDecoder`**: Minimal Ethereum ABI codec for the two read-only ERC-1056 call signatures (`changed`, `identityOwner`) and all three event data layouts (`DIDOwnerChanged`, `DIDDelegateChanged`, `DIDAttributeChanged`).
   - **`Erc1056EventParser`**: Parses raw `eth_getLogs` entries into typed events by dispatching on Keccak-256 topic hashes.
   - **`EthrDocumentBuilder`**: Replays ERC-1056 event history (oldest-first) to construct a W3C DID Document including `#controller` + optional `#controllerKey` verification methods, delegate and attribute VMs (Secp256k1, Ed25519, X25519, Multikey), service entries, and dynamic `@context` assembly.
-  - **`DefaultEthereumRpcClient`**: JSON-RPC 2.0 HTTP client over `HttpClient`. Phase 2 write methods declared but throw `NotImplementedException`.
+  - **`DefaultEthereumRpcClient`**: JSON-RPC 2.0 HTTP client over `HttpClient` (write methods implemented later in this cycle — see above).
   - Supports `VersionId` (resolve at a specific block number) and `VersionTime` (resolve at an ISO-8601 wall-clock time) resolution options.
   - Detects deactivation when the last `DIDOwnerChanged` event transfers ownership to `0x000…000`.
 - **`NetDidBuilder.AddDidEthr(networks)`** — DI extension method in `NetDid.Extensions.DependencyInjection`.
@@ -34,6 +86,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `dotnet run -- --live [rpcUrl]` (or `NETDID_ETHR_RPC_URL`) keeps the real-network path.
 
 ### Changed
+
+- **`NetCrypto` 1.3.0 → 1.4.0** — did:ethr transactions and meta-transaction payloads are signed
+  through the new `IRecoverableDigestSigner` seam (crypto-dotnet#21, requested for this work):
+  recoverable secp256k1 ECDSA over a caller-computed keccak digest, which the general-purpose
+  `ISigner` cannot produce (it SHA-256-hashes internally and returns no recovery id). Keccak and
+  EIP-155 `v`-encoding remain in net-did per NetCrypto's FR-12 boundary; any HSM/key-store signer
+  implementing the interface works.
+- **Breaking (unreleased did:ethr API)**: `DidEthrUpdateOptions.ControllerKey` and
+  `DidEthrDeactivateOptions.ControllerKey` change type from `ISigner` to
+  `IRecoverableDigestSigner` (`KeyPairSigner` implements both); both records gain `Relayer`;
+  `DidEthrDelegate.Validity` is no longer `required` (defaults to 365 days; ignored for
+  revocations). `DidEthrCreateOptions.ExistingKey` stays `ISigner` — Create only reads the
+  public key.
+
 
 - **`NetCrypto` 1.2.0 → 1.3.0** — consumes the new public `KeyTypeExtensions.ToUncompressed`
   (crypto-dotnet#19, requested for this work) for secp256k1 point decompression in Ethereum
