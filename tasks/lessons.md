@@ -243,3 +243,35 @@
   flaky until you step the clock past the boundary. When a spec's validity comparison is
   inclusive, either advance the clock explicitly or assert after the boundary — never assume
   "the write landed" means "the effect is visible".
+- A NORMATIVE SPEC CAN BE WRONG ABOUT ITS OWN DEPLOYED CONTRACT — verify security claims
+  against the artifact that enforces them, not only the prose. The did:ethr spec states that
+  deactivation via `changeOwner(0x0)` "is irreversible" and that "no further changes to the DID
+  document are possible". The deployed ERC-1056 registry does not enforce that: `identityOwner()`
+  is `owner != address(0) ? owner : identity`, so zeroing the owner slot returns control TO THE
+  IDENTITY ADDRESS. An EOA identity whose key survives can write again, and a later non-zero
+  `DIDOwnerChanged` clears the `deactivated` flag entirely. I had copied the spec's claim into
+  README, the PRD, XML docs, and a sample comment. The earlier lesson said "verify the claim
+  against the NORMATIVE spec text"; this extends it: when the spec describes what a piece of
+  code does, the code is the higher authority. Read the contract/reference implementation, and
+  when they disagree, document the OBSERVED behavior and name the divergence.
+- A mock that is wrong in a security-relevant direction does not just miss bugs, it MANUFACTURES
+  false conclusions. The chain emulator transcribed `identityOwner` as a plain dictionary lookup
+  instead of the contract's zero-means-self rule. Offline, deactivation therefore looked like a
+  permanent lock — and a second red-team agent, reasoning against that emulator, reported
+  "post-deactivation write REJECTED", the exact opposite of what real bytecode does. Two
+  defences: (1) transcribe contract logic line-by-line from the source and cite it in a comment,
+  never paraphrase from memory; (2) run at least one DIFFERENTIAL test per security-relevant
+  behavior — same scenario against the mock and against the real thing — because a mock's errors
+  are invisible to every test that uses only the mock.
+- Fixing a finding can encode the same misconception in a new place. Round 1 "fixed" the
+  zero-owner case by reporting an EMPTY set of effective update keys ("nobody can update"),
+  which was just the permanence myth in another form; the correct answer is the identity address.
+  When a fix asserts something about the world rather than about the code, re-derive it from the
+  authority (here: read the owner back from the chain) instead of hard-coding the conclusion.
+- Scope a security refusal to the vulnerable operations, not the vulnerable-looking situation.
+  The legacy ERC-1056 nonce divergence only breaks owner/delegate meta-transactions (their
+  preimage reads a slot nothing increments); attribute meta-transactions read the slot that IS
+  incremented and stay single-use. My first guard refused all meta-transactions once ownership
+  had moved, which broke a legitimate, demonstrably-safe path — caught by an existing test
+  failing. A guard that denies honest input is a defect too; derive the predicate from the
+  mechanism, not from the scenario in the exploit report.
