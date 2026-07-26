@@ -23,6 +23,13 @@ internal static class TransactionPipeline
     private const ulong GasHeadroomPercent = 25;
     private const ulong MaxGasLimit = 3_000_000;
 
+    /// <summary>
+    /// Ceiling applied when the caller has no <see cref="EthereumNetworkConfig"/> to consult
+    /// (currently <see cref="Deployment.Erc1056Registry.DeployAsync"/>, which takes a bare
+    /// client). Same rationale as <see cref="EthereumNetworkConfig.MaxGasPriceWei"/>.
+    /// </summary>
+    public const ulong DefaultMaxGasPriceWei = 5_000UL * 1_000_000_000UL;
+
     /// <summary>Derives the signer's Ethereum address, validating the key type up front (NFR-3 style).</summary>
     public static string AddressOf(IRecoverableDigestSigner signer, string paramName)
     {
@@ -53,6 +60,7 @@ internal static class TransactionPipeline
         byte[] data,
         ulong chainId,
         BigInteger? value = null,
+        ulong maxGasPriceWei = DefaultMaxGasPriceWei,
         CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(rpc);
@@ -62,7 +70,17 @@ internal static class TransactionPipeline
         var dataHex = "0x" + Convert.ToHexString(data).ToLowerInvariant();
 
         var nonce = await rpc.GetTransactionCountAsync(sender, ct);
+
+        // The node is untrusted and its gas price becomes a fee THIS key authorizes. Without a
+        // ceiling a hostile endpoint can report a price that drains the signer to the block
+        // producer while every operation still reports success. Reject before signing.
         var gasPrice = await rpc.GetGasPriceAsync(ct);
+        if (gasPrice > maxGasPriceWei)
+            throw new EthereumInteractionException(
+                $"The RPC endpoint reported a gas price of {gasPrice} wei, above the configured " +
+                $"ceiling of {maxGasPriceWei} wei. Nothing was signed or broadcast. Raise " +
+                $"{nameof(EthereumNetworkConfig)}.{nameof(EthereumNetworkConfig.MaxGasPriceWei)} " +
+                "only if this chain's fees are legitimately this high.");
 
         ulong gasEstimate;
         try
@@ -101,10 +119,41 @@ internal static class TransactionPipeline
                     throw new EthereumInteractionException(
                         $"did:ethr transaction {transactionHash} reverted on-chain " +
                         "(the registry rejected the operation).");
+
+                // For a contract creation the deployed address is DETERMINISTIC —
+                // keccak256(rlp([sender, nonce]))[12..]. Never take the node's word for it:
+                // a forged contractAddress would become the caller's registry trust anchor.
+                if (to is null)
+                {
+                    var expected = ContractCreationAddress(sender, nonce);
+                    if (!string.Equals(receipt.ContractAddress, expected, StringComparison.OrdinalIgnoreCase))
+                        throw new EthereumInteractionException(
+                            $"The RPC endpoint reported contract address " +
+                            $"'{receipt.ContractAddress ?? "(none)"}' for transaction {transactionHash}, " +
+                            $"but CREATE from {sender} at nonce {nonce} deterministically yields " +
+                            $"{expected}. Refusing to trust the reported address.");
+                }
+
                 return receipt;
             }
 
             await Task.Delay(ReceiptPollInterval, ct);
         }
+    }
+
+    /// <summary>
+    /// The deterministic CREATE address for a contract deployed by <paramref name="sender"/>
+    /// at <paramref name="nonce"/>: <c>keccak256(rlp([sender, nonce]))[12..]</c>.
+    /// </summary>
+    public static string ContractCreationAddress(string sender, ulong nonce)
+    {
+        var senderHex = sender.StartsWith("0x", StringComparison.OrdinalIgnoreCase)
+            ? sender[2..] : sender;
+        var encoded = RlpEncoder.EncodeList(
+        [
+            RlpEncoder.EncodeBytes(Convert.FromHexString(senderHex)),
+            RlpEncoder.EncodeUnsigned(nonce),
+        ]);
+        return "0x" + Convert.ToHexString(Keccak256.Hash(encoded)[12..]).ToLowerInvariant();
     }
 }

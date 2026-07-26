@@ -69,6 +69,9 @@ public static class Erc1056Registry
         var chainId = await rpc.GetChainIdAsync(ct);
         var bytecode = legacy ? LegacyCreationBytecode : ModernCreationBytecode;
 
+        // The pipeline verifies the reported contract address against the deterministic
+        // CREATE address before returning, so a node cannot nominate an attacker-controlled
+        // contract as the caller's registry trust anchor.
         var receipt = await TransactionPipeline.SubmitAndConfirmAsync(
             rpc, deployerKey, to: null, bytecode.ToArray(), chainId, ct: ct);
 

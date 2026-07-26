@@ -495,24 +495,37 @@ public sealed class DidEthrMethod : DidMethodBase
                 $"did:ethr update transactions landed [{string.Join(", ", transactionHashes)}] " +
                 $"but post-update resolution failed: {resolved.ResolutionMetadata.Error}.");
 
-        // did:ethr's update authority is exactly the identity owner; delegates and
-        // attributes never gain update rights. Keys are reported in the method's
-        // canonical authority form: lowercase Ethereum account addresses.
-        var ownerChanged = newOwner is not null;
+        // did:ethr's update authority is exactly the identity owner; delegates and attributes
+        // never gain update rights. Read that authority back FROM THE CHAIN rather than
+        // inferring it from what we submitted: a racing third party (or the very owner change
+        // we just made) decides who can sign the next update, and evidence derived from intent
+        // would report a key that no longer holds authority. Reading also normalizes the
+        // address to the method's canonical form (lowercase, 0x-prefixed).
+        var network = FindNetwork(identifier.Network);
+        var effectiveOwner = ParseAddressWordResult(
+            await _rpcFactory.GetOrCreate(network).CallAsync(
+                network.RegistryAddress, Erc1056Calls.IdentityOwner(identity), ct));
+
+        // The null address is unownable: nobody can authorize a further update. The empty list
+        // is DidUpdateResult's documented "no keys are authorized" signal — reporting
+        // 0x000…000 as an effective key would claim a key nobody holds retains authority.
+        var deactivated = string.Equals(effectiveOwner, ZeroAddress, StringComparison.OrdinalIgnoreCase);
+        var authorityChanged = !string.Equals(effectiveOwner, controllerAddress, StringComparison.OrdinalIgnoreCase);
+
         return new DidUpdateResult
         {
             DidDocument = resolved.DidDocument,
             Artifacts = new Dictionary<string, object>
             {
                 ["transactions"] = (IReadOnlyList<string>)transactionHashes,
-                ["registry"] = FindNetwork(identifier.Network).RegistryAddress,
+                ["registry"] = network.RegistryAddress,
             },
-            AuthorizationChange = ownerChanged
+            AuthorizationChange = authorityChanged
                 ? AuthorizationChangeStatus.Changed : AuthorizationChangeStatus.Unchanged,
-            UpdateKeyChange = ownerChanged
+            UpdateKeyChange = authorityChanged
                 ? AuthorizationChangeStatus.Changed : AuthorizationChangeStatus.Unchanged,
             RevealedUpdateKeys  = [controllerAddress],
-            EffectiveUpdateKeys = [ownerChanged ? newOwner!.ToLowerInvariant() : controllerAddress],
+            EffectiveUpdateKeys = deactivated ? [] : [effectiveOwner],
         };
     }
 
@@ -629,31 +642,54 @@ public sealed class DidEthrMethod : DidMethodBase
 
                 var receipt = await TransactionPipeline.SubmitAndConfirmAsync(
                     rpc, submitter, registry, Convert.FromHexString(calldata[2..]),
-                    chainId, ct: token);
+                    chainId, maxGasPriceWei: network.MaxGasPriceWei, ct: token);
                 hashes.Add(receipt.TransactionHash);
             }
         }
-        catch (OperationCanceledException) when (callerCt.IsCancellationRequested)
+        catch (OperationCanceledException ex) when (callerCt.IsCancellationRequested)
         {
-            throw;
+            // Caller cancellation keeps its type, but must still carry what landed:
+            // silently discarding that evidence invites a double-applying retry.
+            throw AttachLandedTransactions(ex, hashes);
         }
         catch (OperationCanceledException ex)
         {
-            throw new EthereumInteractionException(
+            throw AttachLandedTransactions(new EthereumInteractionException(
                 $"did:ethr write deadline ({WriteDeadline}) exceeded after landing " +
                 $"{hashes.Count} of {operations.Count} operations " +
                 $"[{string.Join(", ", hashes)}]; a broadcast transaction may still confirm later.",
-                ex);
+                ex), hashes);
         }
-        catch (EthereumInteractionException ex) when (hashes.Count > 0)
+        catch (Exception ex) when (hashes.Count > 0)
         {
-            throw new EthereumInteractionException(
+            // ANY mid-batch failure — a malformed RPC word (ArgumentException), a dropped
+            // connection (HttpRequestException), anything — must report what already landed.
+            // Catching only EthereumInteractionException here let those paths tell the caller
+            // "nothing happened" while operations sat on-chain.
+            throw AttachLandedTransactions(new EthereumInteractionException(
                 $"did:ethr update failed after landing {hashes.Count} of {operations.Count} " +
-                $"operations [{string.Join(", ", hashes)}]: {ex.Message}", ex);
+                $"operations [{string.Join(", ", hashes)}]: {ex.Message}", ex), hashes);
         }
 
         return (hashes, controllerAddress);
     }
+
+    /// <summary>
+    /// Records the transactions that already landed on the exception, so a caller can read
+    /// them structurally instead of parsing the message.
+    /// </summary>
+    private static T AttachLandedTransactions<T>(T exception, IReadOnlyList<string> hashes)
+        where T : Exception
+    {
+        exception.Data[LandedTransactionsKey] = hashes.ToArray();
+        return exception;
+    }
+
+    /// <summary>
+    /// Key under which a failed Update/Deactivate records the <c>string[]</c> of transaction
+    /// hashes that were already confirmed on-chain (<see cref="Exception.Data"/>).
+    /// </summary>
+    public const string LandedTransactionsKey = "netdid.ethr.landedTransactions";
 
     private static ulong ValiditySeconds(TimeSpan validity)
     {
