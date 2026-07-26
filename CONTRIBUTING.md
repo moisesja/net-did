@@ -43,18 +43,26 @@ netdid/
 │   ├── NetDid.Method.Key/                   # did:key method
 │   ├── NetDid.Method.Peer/                  # did:peer method (numalgo 0, 2, 4)
 │   ├── NetDid.Method.WebVh/                 # did:webvh method (full CRUD)
+│   ├── NetDid.Method.Ethr/                  # did:ethr method (Create + Resolve)
+│   │   ├── Abi/                             # Minimal Ethereum ABI encoder/decoder
+│   │   ├── Crypto/                          # Address derivation, identifier parsing
+│   │   ├── Erc1056/                         # Registry calls, topics, event parser
+│   │   ├── Resolution/                      # Event replay → DID Document
+│   │   └── Rpc/                             # JSON-RPC client, network catalogue
 │   └── NetDid.Extensions.DependencyInjection/  # Microsoft DI integration
 ├── tests/
 │   ├── NetDid.Core.Tests/                   # Core unit tests (mirrors src/ structure)
 │   ├── NetDid.Method.Key.Tests/
 │   ├── NetDid.Method.Peer.Tests/
 │   ├── NetDid.Method.WebVh.Tests/
+│   ├── NetDid.Method.Ethr.Tests/
 │   ├── NetDid.Tests.W3CConformance/         # W3C DID Core conformance tests
 │   └── NetDid.Extensions.DependencyInjection.Tests/
 ├── samples/
 │   ├── NetDid.Samples.DidKey/               # did:key usage examples
 │   ├── NetDid.Samples.DidPeer/              # did:peer usage examples
 │   ├── NetDid.Samples.DidWebVh/             # did:webvh CRUD examples
+│   ├── NetDid.Samples.DidEthr/              # did:ethr examples (offline ERC-1056 registry)
 │   └── NetDid.Samples.DependencyInjection/  # DI registration pattern
 ├── Directory.Build.props                    # Shared build properties
 ├── Directory.Packages.props                 # Central NuGet version management

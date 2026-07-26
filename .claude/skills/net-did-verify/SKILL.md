@@ -23,6 +23,7 @@ Record the count **per project** as a regression ledger (it only ever goes up):
 - `NetDid.Method.Key.Tests`
 - `NetDid.Method.Peer.Tests`
 - `NetDid.Method.WebVh.Tests`
+- `NetDid.Method.Ethr.Tests`
 - `NetDid.Extensions.DependencyInjection.Tests`
 - `NetDid.Tests.W3CConformance`
 
@@ -33,13 +34,16 @@ For a focused loop: `dotnet test tests/<Project>/<Project>.csproj --filter "Full
 - Running it regenerates `w3c-conformance-report.md`. Only the `Generated:` timestamp / trailing-newline churn should change. **Restore that churn** (`git checkout w3c-conformance-report.md`) unless the report content genuinely changed — otherwise you commit noise.
 
 ## 4. Samples run end-to-end
-Run each affected method sample and confirm exit 0 (they double as smoke tests):
+Run each affected method sample and confirm exit 0 (they double as smoke tests). **Every
+sample runs offline** — a sample that needs network access is a broken smoke test:
 ```
 dotnet run --project samples/NetDid.Samples.DidKey
 dotnet run --project samples/NetDid.Samples.DidPeer
 dotnet run --project samples/NetDid.Samples.DidWebVh
+dotnet run --project samples/NetDid.Samples.DidEthr
 dotnet run --project samples/NetDid.Samples.DependencyInjection
 ```
+(`NetDid.Samples.DidEthr -- --live` is the opt-in real-RPC path; never part of the gate.)
 
 ## 5. Diff hygiene
 - `git diff --check` — no whitespace errors / conflict markers.

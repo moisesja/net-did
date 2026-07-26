@@ -39,7 +39,7 @@
 
 ### 1.1 Purpose
 
-NetDid is an open-source .NET 10 library that provides a unified, specification-compliant interface for creating, resolving, updating, and deactivating Decentralized Identifiers. Currently implemented: `did:key` and `did:peer`. Planned: `did:webvh` and `did:ethr`.
+NetDid is an open-source .NET 10 library that provides a unified, specification-compliant interface for creating, resolving, updating, and deactivating Decentralized Identifiers. Currently implemented: `did:key`, `did:peer`, `did:webvh` (full CRUD), and `did:ethr` (Create + Resolve). Planned: on-chain `did:ethr` Update and Deactivate.
 
 The library generates cryptographic keys using well-tested elliptic curve algorithms but delegates key storage and lifecycle management to the consuming application through a pluggable `IKeyStore` interface. This separation ensures that NetDid remains focused on DID operations while allowing developers to integrate their own HSM, vault, or file-based key management solution.
 
@@ -75,7 +75,7 @@ The library generates cryptographic keys using well-tested elliptic curve algori
 | **did:key**   | ✅ Implemented  | W3C CCG Final          | ✅     | ✅      | ❌ (immutable) | ❌ (immutable) | ❌                | Ed25519, P-256, P-384, P-521, secp256k1, X25519, BLS12-381 G2 |
 | **did:peer**  | ✅ Implemented  | DIF v2 (numalgo 0,2,4) | ✅     | ✅      | ❌ (static)    | ❌             | ✅ (numalgo 2,4)  | Ed25519, X25519                                        |
 | **did:webvh** | ✅ Implemented | DIF v1.0               | ✅     | ✅      | ✅             | ✅             | ✅                | Ed25519 (required), P-256 (optional)                   |
-| **did:ethr**  | 🔲 Planned     | ERC-1056 / DIF         | ✅     | ✅      | ✅             | ✅             | ✅                | secp256k1 (primary), Ed25519 (delegate)                |
+| **did:ethr**  | ✅ Implemented | ERC-1056 / DIF         | ✅     | ✅      | 🔲 Planned     | 🔲 Planned     | ✅ (read)         | secp256k1 (primary), Ed25519 (delegate)                |
 
 ### 2.2 CRUD Operations Per Method
 
@@ -87,7 +87,7 @@ Each method implements the standard DID CRUD lifecycle, but the mechanics differ
 
 **did:webvh** — Full CRUD. "did:web + Verifiable History." Each update appends to a JSON Lines log file (`did.jsonl`) hosted at a web URL. The log is a cryptographically chained sequence of DID Document versions, anchored by a Self-Certifying Identifier (SCID) derived from the initial state. Resolution fetches the log and validates the entire chain. The DID can also be consumed as a plain `did:web` by legacy resolvers (backwards compatible). Supports pre-rotation keys, witnesses (did:key DIDs that co-sign updates), and watchers. Every version links back to its predecessor via a hash chain. While pre-rotation is active, every entry MUST explicitly reveal update keys committed by the previous entry; reusing a revealed key is valid but strongly discouraged by v1.0.
 
-**did:ethr** — Full CRUD. Based on the ERC-1056 `EthereumDIDRegistry` smart contract deployed at a well-known address. Any Ethereum address is automatically a valid DID with no registration needed (identity creation is free). Updates are recorded as on-chain events: `changeOwner` for ownership transfer, `setAttribute` for adding service endpoints and additional keys, `addDelegate`/`revokeDelegate` for time-limited delegate keys. Resolution replays contract events (via `eth_getLogs`) to reconstruct the DID Document. Supports meta-transactions (signed by the identity key, submitted by a third-party relayer). The network identifier is part of the DID: `did:ethr:0x1:0xabc...` for mainnet, `did:ethr:sepolia:0xabc...` for testnet. Pluggable RPC endpoint means any EVM chain that an ERC-1056 registry deployed will work.
+**did:ethr** — Create and Resolve implemented; Update and Deactivate planned. Based on the ERC-1056 `EthereumDIDRegistry` smart contract deployed at a well-known address. Any Ethereum address is automatically a valid DID with no registration needed (identity creation is free, and requires no on-chain transaction). Mutations are recorded as on-chain events: `changeOwner` for ownership transfer, `setAttribute` for adding service endpoints and additional keys, `addDelegate`/`revokeDelegate` for time-limited delegate keys. Resolution replays those contract events (via `eth_getLogs`) to reconstruct the DID Document, at head or at any historical `versionId` / `versionTime`. Writing those events — and the meta-transaction variants signed by the identity key and submitted by a third-party relayer — is the remaining work: `DidEthrMethod` advertises `Create | Resolve | ServiceEndpoints`, so `UpdateAsync` and `DeactivateAsync` throw `OperationNotSupportedException` today. The network identifier is part of the DID: `did:ethr:0x1:0xabc...` for mainnet, `did:ethr:sepolia:0xabc...` for testnet. Pluggable RPC endpoint means any EVM chain that an ERC-1056 registry deployed will work.
 
 ---
 
@@ -1422,6 +1422,10 @@ cases, ensure the signing key has been registered on-chain with full public key 
 
 ### 8.6 Update
 
+> **Status: not yet implemented.** `DidEthrMethod.Capabilities` omits `Update`, so
+> `UpdateAsync` throws `OperationNotSupportedException`. The option types below ship today
+> so the public API is stable for the on-chain work.
+
 Updates require on-chain transactions:
 
 ```csharp
@@ -1463,6 +1467,11 @@ public sealed record DidEthrServiceAttribute
 
 ### 8.7 Deactivate
 
+> **Status: not yet implemented.** `DidEthrMethod.Capabilities` omits `Deactivate`, so
+> `DeactivateAsync` throws `OperationNotSupportedException`. Resolution already *recognises*
+> a deactivated identity: a `DIDOwnerChanged` to the null address resolves to a stripped
+> document with `deactivated: true` in the document metadata.
+
 Set the owner to `0x0000000000000000000000000000000000000000` (null address). This makes the identity uncontrollable and the DID Document resolves with `deactivated: true`.
 
 ```csharp
@@ -1481,25 +1490,52 @@ public sealed record DidEthrDeactivateOptions : DidDeactivateOptions
 ```csharp
 public interface IEthereumRpcClient
 {
-    Task<string> CallAsync(string to, string data, CancellationToken ct);
-    Task<IReadOnlyList<EthereumLogEntry>> GetLogsAsync(EthereumLogFilter filter, CancellationToken ct);
-    Task<string> SendRawTransactionAsync(byte[] signedTransaction, CancellationToken ct);
-    Task<ulong> GetBlockNumberAsync(CancellationToken ct);
-    Task<ulong> GetTransactionCountAsync(string address, CancellationToken ct);
-    Task<ulong> GetGasPriceAsync(CancellationToken ct);
-    Task<ulong> GetChainIdAsync(CancellationToken ct);
+    // ── Used by Create + Resolve ─────────────────────────────────────────────
+    Task<string> CallAsync(string to, string data, CancellationToken ct = default);
+    Task<IReadOnlyList<EthereumLogEntry>> GetLogsAsync(EthereumLogFilter filter, CancellationToken ct = default);
+    Task<ulong> GetBlockNumberAsync(CancellationToken ct = default);
+    Task<ulong> GetChainIdAsync(CancellationToken ct = default);
+    /// eth_getBlockByNumber — required for VersionId / VersionTime resolution.
+    Task<ulong> GetBlockTimestampAsync(ulong blockNumber, CancellationToken ct = default);
+
+    // ── Declared for Update / Deactivate; DefaultEthereumRpcClient throws
+    //    NotImplementedException until those operations ship ─────────────────
+    Task<string> SendRawTransactionAsync(byte[] signedTransaction, CancellationToken ct = default);
+    Task<ulong> GetTransactionCountAsync(string address, CancellationToken ct = default);
+    Task<ulong> GetGasPriceAsync(CancellationToken ct = default);
+}
+
+/// Creates (and caches) one IEthereumRpcClient per network, so a multi-network
+/// configuration can never query the wrong chain.
+public interface IEthereumRpcClientFactory
+{
+    IEthereumRpcClient GetOrCreate(EthereumNetworkConfig network);
 }
 
 public sealed record EthereumNetworkConfig
 {
-    public required string Name { get; init; }        // "mainnet", "sepolia", "polygon", etc.
+    public required string Name { get; init; }             // "mainnet", "sepolia", "polygon", etc.
     public required string RpcUrl { get; init; }
-    public string? ChainId { get; init; }             // auto-detected if not provided
-    public string RegistryAddress { get; init; } = "0xdCa7EF03e98e0DC2B855bE647C39ABe984fcF21B";
+    public string? ChainId { get; init; }                  // hex; auto-detected via eth_chainId if null
+    public required string RegistryAddress { get; init; }  // ERC-1056 registry — no default
+    /// Contracts predating ethr-did-registry 0.0.3 track meta-transaction nonces
+    /// differently. Mirrors the JS resolver's `legacyNonce` field.
+    public bool LegacyNonce { get; init; } = false;
 }
 ```
 
 The consumer provides one or more `EthereumNetworkConfig` entries. The library selects the config based on the network segment of the DID being resolved or updated.
+
+`KnownNetworks` ships the twelve deployments from the JS reference resolver's `deployments.ts`
+with registry address, chain ID, and `legacyNonce` pre-populated; only `RpcUrl` is left empty, so
+a caller starts from `KnownNetworks.Sepolia with { RpcUrl = "…" }` rather than transcribing
+registry addresses. `KnownNetworks.Find(nameOrChainId)` backs both that lookup and
+`EthrIdentifier.ChainId`, giving network metadata one source of truth. Networks outside the
+catalogue are supplied directly as `EthereumNetworkConfig`.
+
+Client construction has two paths: `DefaultEthereumRpcClientFactory` (DI — resolves the named
+`HttpClient` `"ethr-{network}"` registered by `AddDidEthr`) and
+`DefaultEthereumRpcClientFactory.CreateDirect(networks)` for samples, CLI tools, and tests.
 
 ---
 
@@ -2864,15 +2900,15 @@ netdid/
 │   │   ├── NetDid.Method.Ethr.csproj
 │   │   ├── DidEthrMethod.cs
 │   │   ├── DidEthrCreateOptions.cs
+│   │   ├── DidEthrResolveOptions.cs
 │   │   ├── DidEthrUpdateOptions.cs
-│   │   ├── EthereumNetworkConfig.cs
-│   │   ├── IEthereumRpcClient.cs
-│   │   ├── DefaultEthereumRpcClient.cs
-│   │   ├── Erc1056EventParser.cs
-│   │   ├── Erc1056Abi.cs
-│   │   ├── EthereumTransaction.cs
-│   │   ├── Keccak256.cs
-│   │   └── RlpEncoder.cs
+│   │   ├── DidEthrDeactivateOptions.cs
+│   │   ├── Abi/                      # AbiEncoder, AbiDecoder
+│   │   ├── Crypto/                   # EthereumAddress, EthrIdentifier
+│   │   ├── Erc1056/                  # Erc1056Calls/Events/Topics, Erc1056EventParser
+│   │   ├── Resolution/               # EthrDocumentBuilder
+│   │   └── Rpc/                      # IEthereumRpcClient(+Factory), Default*, KnownNetworks,
+│   │                                 #   EthereumNetworkConfig, EthereumLogEntry/Filter
 │   │
 │   ├── NetDid.Extensions.DependencyInjection/  # Optional Microsoft.Extensions.DI integration
 │   │   ├── NetDid.Extensions.DependencyInjection.csproj
@@ -2938,11 +2974,15 @@ netdid/
 │   │
 │   ├── NetDid.Method.Ethr.Tests/
 │   │   ├── DidEthrMethodTests.cs
+│   │   ├── DidEthrResolveCorrectnessTests.cs
+│   │   ├── DidEthrResolverHardeningTests.cs
+│   │   ├── AbiDecoderTests.cs
 │   │   ├── Erc1056EventParserTests.cs
 │   │   ├── EthereumAddressTests.cs
-│   │   ├── Keccak256Tests.cs
-│   │   ├── RlpEncoderTests.cs
-│   │   └── IntegrationTests/
+│   │   ├── EthereumIdentifierTests.cs
+│   │   ├── EthrDocumentBuilderTests.cs
+│   │   ├── DefaultEthereumRpcClientTests.cs
+│   │   └── KnownNetworksTests.cs
 │   │       └── SepoliaIntegrationTests.cs       # Against Sepolia testnet
 │   │
 │   ├── NetDid.Tests.W3CConformance/             # Internal mirror of W3C test suite
@@ -3064,8 +3104,10 @@ netdid/
 - Delegate expiration: expired delegates excluded from document
 - Deactivation via owner change to null address
 - Multi-network: same address on mainnet vs. sepolia produces distinct DIDs
-- RLP encoding for transaction construction
-- Meta-transaction signature generation
+- Historical resolution: `versionId` (block number) and `versionTime` select the correct event prefix; non-canonical selectors return `invalidOptions` before any RPC call
+- Hostile-RPC hardening: incomplete, foreign-registry, foreign-identity, duplicate-`logIndex`, `removed: true`, forward-pointing, and decreasing-timestamp histories all fail closed to `notFound`
+- RLP encoding for transaction construction *(pending the write path)*
+- Meta-transaction signature generation *(pending the write path)*
 
 **Cross-Method Tests:**
 
@@ -3169,25 +3211,26 @@ Rust (zkryptium crate, Apache 2.0)
 
 ### Phase 4: did:ethr (Week 8-11)
 
-| Item | Description                                                                      |
-| ---- | -------------------------------------------------------------------------------- |
-| 4.1  | secp256k1 key support (generate, sign, recover)                                  |
-| 4.2  | Keccak-256 hash implementation                                                   |
-| 4.3  | Ethereum address derivation from secp256k1 public key                            |
-| 4.4  | RLP encoding for transaction construction                                        |
-| 4.5  | ERC-1056 ABI encoding: function selectors, parameter encoding                    |
-| 4.6  | `IEthereumRpcClient` interface and default HTTP JSON-RPC implementation          |
-| 4.7  | Event log parser: `DIDOwnerChanged`, `DIDDelegateChanged`, `DIDAttributeChanged` |
-| 4.8  | Create: key generation + address derivation (no on-chain tx needed)              |
-| 4.9  | Resolve: query events, replay to build DID Document                              |
-| 4.10 | Update: `setAttribute` for services, `addDelegate` for keys, `changeOwner`       |
-| 4.11 | Meta-transaction support (EIP-712 style signed messages)                         |
-| 4.12 | Deactivation: change owner to null address                                       |
-| 4.13 | Multi-network configuration and routing                                          |
-| 4.14 | Integration tests against Sepolia testnet (or Hardhat in Docker)                 |
-| 4.15 | W3C conformance tests                                                            |
+| Item | Description                                                                      | Status |
+| ---- | -------------------------------------------------------------------------------- | ------ |
+| 4.1  | secp256k1 key support (generate, sign, recover)                                  | ✅ (NetCrypto) |
+| 4.2  | Keccak-256 hash implementation                                                   | ✅ (`NetCrypto.Keccak256`) |
+| 4.3  | Ethereum address derivation from secp256k1 public key                            | ✅ |
+| 4.4  | RLP encoding for transaction construction                                        | 🔲 (write path) |
+| 4.5  | ERC-1056 ABI encoding: function selectors, parameter encoding                    | ✅ read-only calls + all three event layouts; 🔲 write calldata |
+| 4.6  | `IEthereumRpcClient` interface and default HTTP JSON-RPC implementation          | ✅ read methods; write methods declared, throw |
+| 4.7  | Event log parser: `DIDOwnerChanged`, `DIDDelegateChanged`, `DIDAttributeChanged` | ✅ |
+| 4.8  | Create: key generation + address derivation (no on-chain tx needed)              | ✅ |
+| 4.9  | Resolve: query events, replay to build DID Document (+ `versionId`/`versionTime`) | ✅ |
+| 4.10 | Update: `setAttribute` for services, `addDelegate` for keys, `changeOwner`       | 🔲 |
+| 4.11 | Meta-transaction support (EIP-712 style signed messages)                         | 🔲 |
+| 4.12 | Deactivation: change owner to null address                                       | 🔲 write; ✅ detected on resolve |
+| 4.13 | Multi-network configuration and routing                                          | ✅ (`KnownNetworks`, per-network RPC clients) |
+| 4.14 | Integration tests against Sepolia testnet (or Hardhat in Docker)                 | 🔲 (offline registry simulation in `NetDid.Samples.DidEthr` + unit tests instead) |
+| 4.15 | W3C conformance tests                                                            | ✅ 66/66 |
 
-**Deliverable**: did:ethr full CRUD on any EVM network. Sepolia integration tests passing.
+**Deliverable**: did:ethr Create + Resolve on any EVM network — **delivered**. Remaining for full
+CRUD: the on-chain write path (4.4, 4.10–4.12) and live-network integration tests (4.14).
 
 ### Phase 5: W3C Test Suite & Polish (Week 12-14)
 
