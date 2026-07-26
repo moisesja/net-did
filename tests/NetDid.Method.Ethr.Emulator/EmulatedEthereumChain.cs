@@ -111,6 +111,12 @@ public sealed class EmulatedEthereumChain : IEthereumRpcClient
         _deployableRegistries[Convert.ToHexString(Keccak256.Hash(creationBytecode))] = legacyNonce;
     }
 
+    /// <summary>
+    /// Hostile-node knob: makes <c>changed(identity)</c> assert a change at a block this
+    /// chain never serves — the incomplete-history case a resolver must fail closed on.
+    /// </summary>
+    public ulong? AssertedChangedBlockOverride { get; set; }
+
     // ── IEthereumRpcClient: reads ────────────────────────────────────────────
 
     public Task<string> CallAsync(string to, string data, CancellationToken ct = default)
@@ -127,7 +133,8 @@ public sealed class EmulatedEthereumChain : IEthereumRpcClient
 
         var word = selector switch
         {
-            "f96d0f9f" => U256Word(registry.Changed.GetValueOrDefault(argAddress)),          // changed(address)
+            "f96d0f9f" => U256Word(AssertedChangedBlockOverride
+                          ?? registry.Changed.GetValueOrDefault(argAddress)),                // changed(address)
             "8733d4e8" => AddressWord(registry.IdentityOwner(argAddress)),                   // identityOwner(address)
             "70ae92d2" => U256Word(registry.MetaNonce(argAddress)),                          // nonce(address)
             _ => throw new EthereumInteractionException($"eth_call selector 0x{selector} is not supported."),

@@ -22,6 +22,18 @@ public sealed record DidEthrUpdateOptions : DidUpdateOptions
     public IReadOnlyList<DidEthrServiceAttribute>? RemoveServices { get; init; }
     public IReadOnlyList<DidEthrDelegate>? AddDelegates { get; init; }
     public IReadOnlyList<DidEthrDelegate>? RevokeDelegates { get; init; }
+
+    /// <summary>
+    /// Raw ERC-1056 attributes (<c>setAttribute</c>), for names outside the service
+    /// convenience shape — most importantly <c>did/pub/&lt;alg&gt;/&lt;purpose&gt;/&lt;encoding&gt;</c>
+    /// entries that publish full key material (e.g. <c>did/pub/Ed25519/veriKey/base64</c>),
+    /// which the implicit blockchainAccountId controller VM cannot provide.
+    /// </summary>
+    public IReadOnlyList<DidEthrAttribute>? AddAttributes { get; init; }
+
+    /// <summary>Raw attribute revocations (<c>revokeAttribute</c>); Name and Value must match the original.</summary>
+    public IReadOnlyList<DidEthrAttribute>? RemoveAttributes { get; init; }
+
     public string? NewOwnerAddress { get; init; }
 
     /// <summary>
@@ -57,5 +69,17 @@ public sealed record DidEthrServiceAttribute
 {
     public required string ServiceType { get; init; }
     public required string ServiceEndpoint { get; init; }
+    public TimeSpan Validity { get; init; } = TimeSpan.FromDays(365 * 10);
+}
+
+/// <summary>A raw ERC-1056 attribute: a bytes32 name (≤ 32 UTF-8 bytes) and an opaque value.</summary>
+public sealed record DidEthrAttribute
+{
+    /// <summary>e.g. <c>did/pub/Ed25519/veriKey/base64</c> or <c>did/svc/MessagingService</c>.</summary>
+    public required string Name { get; init; }
+
+    public required byte[] Value { get; init; }
+
+    /// <summary>Used by additions; ignored for removals.</summary>
     public TimeSpan Validity { get; init; } = TimeSpan.FromDays(365 * 10);
 }

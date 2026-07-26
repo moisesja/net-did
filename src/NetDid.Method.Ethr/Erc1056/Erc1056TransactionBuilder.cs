@@ -118,6 +118,7 @@ internal static class Erc1056TransactionBuilder
         string identity, string name, byte[] value, ulong validitySeconds)
     {
         ArgumentNullException.ThrowIfNull(value);
+        value = (byte[])value.Clone(); // snapshot: the caller's array must not mutate signed bytes
         var identityWord = AddressWord(identity, nameof(identity));
         var nameWord     = Bytes32Label(name, nameof(name));
         return new Erc1056Operation
@@ -143,6 +144,7 @@ internal static class Erc1056TransactionBuilder
     public static Erc1056Operation RevokeAttribute(string identity, string name, byte[] value)
     {
         ArgumentNullException.ThrowIfNull(value);
+        value = (byte[])value.Clone(); // snapshot: the caller's array must not mutate signed bytes
         var identityWord = AddressWord(identity, nameof(identity));
         var nameWord     = Bytes32Label(name, nameof(name));
         return new Erc1056Operation

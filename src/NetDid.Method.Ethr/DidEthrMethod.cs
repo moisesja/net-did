@@ -436,15 +436,19 @@ public sealed class DidEthrMethod : DidMethodBase
                 $"Options must be {nameof(DidEthrUpdateOptions)}.", nameof(options));
 
         // Snapshot caller-supplied interface-typed collections ONCE at the trust
-        // boundary; every later read uses these private copies.
-        var removeServices  = ethrOptions.RemoveServices?.ToList() ?? [];
-        var revokeDelegates = ethrOptions.RevokeDelegates?.ToList() ?? [];
-        var addServices     = ethrOptions.AddServices?.ToList() ?? [];
-        var addDelegates    = ethrOptions.AddDelegates?.ToList() ?? [];
-        var newOwner        = ethrOptions.NewOwnerAddress;
+        // boundary; every later read uses these private copies. (Attribute Value
+        // arrays are snapshotted by the operation builder itself.)
+        var removeServices   = ethrOptions.RemoveServices?.ToList() ?? [];
+        var revokeDelegates  = ethrOptions.RevokeDelegates?.ToList() ?? [];
+        var removeAttributes = ethrOptions.RemoveAttributes?.ToList() ?? [];
+        var addServices      = ethrOptions.AddServices?.ToList() ?? [];
+        var addDelegates     = ethrOptions.AddDelegates?.ToList() ?? [];
+        var addAttributes    = ethrOptions.AddAttributes?.ToList() ?? [];
+        var newOwner         = ethrOptions.NewOwnerAddress;
 
-        if (removeServices.Count + revokeDelegates.Count
-            + addServices.Count + addDelegates.Count == 0 && newOwner is null)
+        if (removeServices.Count + revokeDelegates.Count + removeAttributes.Count
+            + addServices.Count + addDelegates.Count + addAttributes.Count == 0
+            && newOwner is null)
             throw new ArgumentException(
                 "The update must contain at least one operation.", nameof(options));
 
@@ -462,6 +466,9 @@ public sealed class DidEthrMethod : DidMethodBase
         foreach (var del in revokeDelegates)
             operations.Add(Erc1056TransactionBuilder.RevokeDelegate(
                 identity, del.DelegateType, del.DelegateAddress));
+        foreach (var attribute in removeAttributes)
+            operations.Add(Erc1056TransactionBuilder.RevokeAttribute(
+                identity, attribute.Name, attribute.Value));
         foreach (var service in addServices)
             operations.Add(Erc1056TransactionBuilder.SetAttribute(
                 identity, "did/svc/" + service.ServiceType,
@@ -471,6 +478,10 @@ public sealed class DidEthrMethod : DidMethodBase
             operations.Add(Erc1056TransactionBuilder.AddDelegate(
                 identity, del.DelegateType, del.DelegateAddress,
                 ValiditySeconds(del.Validity)));
+        foreach (var attribute in addAttributes)
+            operations.Add(Erc1056TransactionBuilder.SetAttribute(
+                identity, attribute.Name, attribute.Value,
+                ValiditySeconds(attribute.Validity)));
         if (newOwner is not null)
             operations.Add(Erc1056TransactionBuilder.ChangeOwner(identity, newOwner));
 

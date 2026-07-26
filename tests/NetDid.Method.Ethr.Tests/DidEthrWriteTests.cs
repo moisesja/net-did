@@ -186,6 +186,40 @@ public class DidEthrWriteTests
             .WithMessage("*is not the current owner*");
     }
 
+    [Fact]
+    public async Task Update_RawAttribute_PublishesFullKeyMaterial()
+    {
+        // The did/pub/… attribute path (PRD §8.5): unlike the implicit
+        // blockchainAccountId VM, this publishes extractable key bytes.
+        var chain = new EmulatedEthereumChain(Registry);
+        var owner = NewActor();
+        using var edKey = new DefaultKeyGenerator().Generate(KeyType.Ed25519);
+        var method = MethodFor(chain);
+        var did = $"did:ethr:sepolia:{owner.Address}";
+        var attribute = new DidEthrAttribute
+        {
+            Name  = "did/pub/Ed25519/veriKey/base64",
+            Value = edKey.PublicKey,
+        };
+
+        var result = await method.UpdateAsync(did, new DidEthrUpdateOptions
+        {
+            ControllerKey = owner.Signer,
+            AddAttributes = [attribute],
+        });
+
+        var vm = result.DidDocument.VerificationMethod!.Should().HaveCount(2).And.Subject
+            .Single(v => v.Type == "Ed25519VerificationKey2020");
+        vm.PublicKeyMultibase.Should().NotBeNull();
+
+        var removed = await method.UpdateAsync(did, new DidEthrUpdateOptions
+        {
+            ControllerKey    = owner.Signer,
+            RemoveAttributes = [attribute],
+        });
+        removed.DidDocument.VerificationMethod!.Should().HaveCount(1);
+    }
+
     // ── Update: meta-transaction path ────────────────────────────────────────
 
     [Fact]
