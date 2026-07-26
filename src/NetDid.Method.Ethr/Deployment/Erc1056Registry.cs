@@ -1,4 +1,7 @@
-using System.Reflection;
+using NetCrypto;
+using NetDid.Core.Exceptions;
+using NetDid.Method.Ethr.Rpc;
+using NetDid.Method.Ethr.Transactions;
 
 namespace NetDid.Method.Ethr.Deployment;
 
@@ -38,6 +41,41 @@ public static class Erc1056Registry
 
     /// <summary>Creation bytecode of the legacy (0.0.3) registry — <c>LegacyNonce = true</c>.</summary>
     public static ReadOnlyMemory<byte> LegacyCreationBytecode => _legacy.Value;
+
+    /// <summary>
+    /// Deploys the registry to the chain behind <paramref name="rpc"/> and returns the
+    /// deployed contract address. The deployment transaction is built, EIP-155-signed
+    /// (through the NetCrypto <see cref="IRecoverableDigestSigner"/> seam), and confirmed
+    /// by the same pipeline the did:ethr Update path uses; <paramref name="deployerKey"/>
+    /// must hold enough of the chain's native token for gas.
+    /// </summary>
+    /// <param name="rpc">Client for the target chain (e.g. via
+    /// <see cref="DefaultEthereumRpcClientFactory.CreateDirect"/>).</param>
+    /// <param name="deployerKey">A funded secp256k1 signer that pays for the deployment.</param>
+    /// <param name="legacy">Deploy the legacy (0.0.3, <c>LegacyNonce = true</c>) generation
+    /// instead of the modern 1.x contract. Almost always leave <c>false</c>; the legacy
+    /// build exists for compatibility testing.</param>
+    /// <param name="ct">Cancellation token.</param>
+    /// <returns>The 0x-prefixed address for <see cref="EthereumNetworkConfig.RegistryAddress"/>.</returns>
+    public static async Task<string> DeployAsync(
+        IEthereumRpcClient rpc,
+        IRecoverableDigestSigner deployerKey,
+        bool legacy = false,
+        CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(rpc);
+        ArgumentNullException.ThrowIfNull(deployerKey);
+
+        var chainId = await rpc.GetChainIdAsync(ct);
+        var bytecode = legacy ? LegacyCreationBytecode : ModernCreationBytecode;
+
+        var receipt = await TransactionPipeline.SubmitAndConfirmAsync(
+            rpc, deployerKey, to: null, bytecode.ToArray(), chainId, ct: ct);
+
+        return receipt.ContractAddress
+            ?? throw new EthereumInteractionException(
+                "The registry deployment was mined but the receipt reports no contract address.");
+    }
 
     private static byte[] Load(string resourceName)
     {

@@ -335,6 +335,10 @@ public sealed class TestDidFactory
             => throw new NotImplementedException();
         public Task<ulong> GetGasPriceAsync(CancellationToken ct = default)
             => throw new NotImplementedException();
+        public Task<EthereumTransactionReceipt?> GetTransactionReceiptAsync(string transactionHash, CancellationToken ct = default)
+            => throw new NotImplementedException();
+        public Task<ulong> EstimateGasAsync(string from, string? to, string data, CancellationToken ct = default)
+            => throw new NotImplementedException();
     }
 
     /// <summary>Factory wrapper that always returns the same mock client.</summary>

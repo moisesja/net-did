@@ -328,32 +328,18 @@ public class DidEthrMethodTests
         result.ResolutionMetadata.Error.Should().BeNull();
     }
 
-    // ── Unsupported operations ────────────────────────────────────────────────
+    // ── Capabilities ──────────────────────────────────────────────────────────
+    // (Update/Deactivate behavior lives in DidEthrWriteTests against the emulator;
+    //  issue #107 replaced the OperationNotSupportedException stubs.)
 
     [Fact]
-    public async Task UpdateAsync_ThrowsOperationNotSupportedException()
+    public void Capabilities_AdvertiseFullCrud()
     {
-        var rpc    = Substitute.For<IEthereumRpcClient>();
-        var method = MakeMethod(rpc);
-        var keyGen = new DefaultKeyGenerator();
-        var signer = MakeSigner(keyGen.Generate(KeyType.Secp256k1));
-
-        var act = () => method.UpdateAsync("did:ethr:sepolia:0x001d3f1ef827552ae1114027bd3ecf1f086ba0f9",
-            new DidEthrUpdateOptions { ControllerKey = signer });
-        await act.Should().ThrowAsync<Core.Exceptions.OperationNotSupportedException>();
-    }
-
-    [Fact]
-    public async Task DeactivateAsync_ThrowsOperationNotSupportedException()
-    {
-        var rpc    = Substitute.For<IEthereumRpcClient>();
-        var method = MakeMethod(rpc);
-        var keyGen = new DefaultKeyGenerator();
-        var signer = MakeSigner(keyGen.Generate(KeyType.Secp256k1));
-
-        var act = () => method.DeactivateAsync("did:ethr:sepolia:0x001d3f1ef827552ae1114027bd3ecf1f086ba0f9",
-            new DidEthrDeactivateOptions { ControllerKey = signer });
-        await act.Should().ThrowAsync<Core.Exceptions.OperationNotSupportedException>();
+        var method = MakeMethod(Substitute.For<IEthereumRpcClient>());
+        method.Capabilities.Should().Be(
+            DidMethodCapabilities.Create | DidMethodCapabilities.Resolve |
+            DidMethodCapabilities.Update | DidMethodCapabilities.Deactivate |
+            DidMethodCapabilities.ServiceEndpoints);
     }
 
     // ── Multi-network routing ─────────────────────────────────────────────────

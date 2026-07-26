@@ -102,14 +102,13 @@ public class RealRegistryTests(AnvilFixture anvil)
         throw new TimeoutException($"Transaction {hash} was not mined.");
     }
 
-    private async Task<string> DeployRegistryAsync(ReadOnlyMemory<byte> creationBytecode)
-    {
-        var receipt = await SendAndConfirmAsync(
-            Funder, to: null, "0x" + Convert.ToHexString(creationBytecode.Span).ToLowerInvariant());
-        receipt.Succeeded.Should().BeTrue("the vendored registry bytecode must deploy");
-        receipt.ContractAddress.Should().NotBeNull();
-        return receipt.ContractAddress!;
-    }
+    private Task<string> DeployRegistryAsync(bool legacy = false)
+        => Erc1056Registry.DeployAsync(
+            anvil.Client,
+            new KeyPairSigner(
+                new DefaultKeyGenerator().FromPrivateKey(KeyType.Secp256k1, AnvilFixture.FunderKey),
+                new DefaultCryptoProvider()),
+            legacy);
 
     private DidEthrMethod MethodFor(string registryAddress)
     {
@@ -144,7 +143,7 @@ public class RealRegistryTests(AnvilFixture anvil)
     [EthrIntegrationFact]
     public async Task ModernRegistry_Deploys_AndServesImplicitOwnership()
     {
-        var registry = await DeployRegistryAsync(Erc1056Registry.ModernCreationBytecode);
+        var registry = await DeployRegistryAsync();
         var identity = FreshActor();
 
         var owner = await anvil.Client.CallAsync(registry, Erc1056Calls.IdentityOwner(identity.Address));
@@ -162,7 +161,7 @@ public class RealRegistryTests(AnvilFixture anvil)
     [EthrIntegrationFact]
     public async Task DirectWrites_OnRealBytecode_RoundTripThroughTheResolver()
     {
-        var registry = await DeployRegistryAsync(Erc1056Registry.ModernCreationBytecode);
+        var registry = await DeployRegistryAsync();
         var owner = Funder;
         var delegateActor = FreshActor();
         var did = $"did:ethr:anvil:{owner.Address}";
@@ -201,7 +200,7 @@ public class RealRegistryTests(AnvilFixture anvil)
     [EthrIntegrationFact]
     public async Task ValueTransfer_FundsAFreshController_WhoCanThenWrite()
     {
-        var registry = await DeployRegistryAsync(Erc1056Registry.ModernCreationBytecode);
+        var registry = await DeployRegistryAsync();
         var freshOwner = FreshActor();
 
         (await SendAndConfirmAsync(Funder, freshOwner.Address, "0x",
@@ -220,7 +219,7 @@ public class RealRegistryTests(AnvilFixture anvil)
     [EthrIntegrationFact]
     public async Task MetaChangeOwner_OnModernBytecode_Succeeds_AndReplayIsRejected()
     {
-        var registry = await DeployRegistryAsync(Erc1056Registry.ModernCreationBytecode);
+        var registry = await DeployRegistryAsync();
         var identity = FreshActor(); // never funded: the relayer pays
         var newOwner = FreshActor();
 
@@ -251,7 +250,7 @@ public class RealRegistryTests(AnvilFixture anvil)
         // The LegacyNonce divergence proven against the REAL v0.0.3 bytecode:
         // changeOwnerSigned increments nonce[identity]; a later setAttributeSigned
         // preimage must be built over nonce[identity], not nonce[signer].
-        var registry = await DeployRegistryAsync(Erc1056Registry.LegacyCreationBytecode);
+        var registry = await DeployRegistryAsync(legacy: true);
         var identity = FreshActor();
         var newOwner = FreshActor();
         var endpoint = Encoding.UTF8.GetBytes("https://legacy.example.com");
@@ -281,6 +280,89 @@ public class RealRegistryTests(AnvilFixture anvil)
         var resolved = await MethodFor(registry).ResolveAsync($"did:ethr:anvil:{identity.Address}");
         resolved.DidDocument!.Service.Should().ContainSingle()
             .Which.Type.Should().Be("Hub");
+    }
+
+    // ── The public API, end to end on a real chain ───────────────────────────
+
+    [EthrIntegrationFact]
+    public async Task PublicApi_FullLifecycle_OnRealBytecode()
+    {
+        var registry = await DeployRegistryAsync();
+        var method = MethodFor(registry);
+        var crypto = new DefaultCryptoProvider();
+        var keyGen = new DefaultKeyGenerator();
+
+        // Controller = a fresh key funded through our own pipeline; relayer = dev account.
+        using var ownerPair = keyGen.Generate(KeyType.Secp256k1);
+        using var ownerSigner = new KeyPairSigner(ownerPair, crypto, ownsKeyPair: false);
+        var ownerAddress = EthereumAddress.FromCompressedPublicKey(ownerPair.PublicKey).ToLowerInvariant();
+        using var relayerPair = keyGen.FromPrivateKey(KeyType.Secp256k1, AnvilFixture.SecondKey);
+        using var relayerSigner = new KeyPairSigner(relayerPair, crypto, ownsKeyPair: false);
+        (await SendAndConfirmAsync(Funder, ownerAddress, "0x", BigInteger.Pow(10, 18)))
+            .Succeeded.Should().BeTrue();
+
+        var did = $"did:ethr:anvil:{ownerAddress}";
+        var delegateActor = FreshActor();
+
+        // Update 1 (direct): add a service + a sigAuth delegate.
+        var updated = await method.UpdateAsync(did, new DidEthrUpdateOptions
+        {
+            ControllerKey = ownerSigner,
+            AddServices   =
+            [
+                new DidEthrServiceAttribute
+                {
+                    ServiceType = "MessagingService", ServiceEndpoint = "https://hub.example/messages",
+                },
+            ],
+            AddDelegates =
+            [
+                new DidEthrDelegate
+                {
+                    DelegateType = "sigAuth", DelegateAddress = delegateActor.Address,
+                    Validity = TimeSpan.FromDays(30),
+                },
+            ],
+        });
+        updated.DidDocument.VerificationMethod!.Should().HaveCount(2);
+        updated.DidDocument.Service.Should().ContainSingle();
+
+        // Update 2 (meta-tx): the relayer pays; the controller key only signs payloads.
+        var metaUpdated = await method.UpdateAsync(did, new DidEthrUpdateOptions
+        {
+            ControllerKey      = ownerSigner,
+            UseMetaTransaction = true,
+            Relayer            = relayerSigner,
+            RemoveServices     =
+            [
+                new DidEthrServiceAttribute
+                {
+                    ServiceType = "MessagingService", ServiceEndpoint = "https://hub.example/messages",
+                },
+            ],
+        });
+        metaUpdated.DidDocument.Service.Should().BeNull();
+
+        // Deactivate (direct): owner → 0x0, permanently.
+        var deactivated = await method.DeactivateAsync(did, new DidEthrDeactivateOptions
+        {
+            ControllerKey = ownerSigner,
+        });
+        deactivated.Success.Should().BeTrue();
+
+        var resolved = await method.ResolveAsync(did);
+        resolved.DocumentMetadata!.Deactivated.Should().BeTrue();
+        resolved.DidDocument!.VerificationMethod.Should().BeNull();
+
+        // Historical resolution still shows the pre-deactivation state: the version
+        // before the deactivation block (the resolver reports the deactivating block
+        // as the current versionId).
+        var beforeDeactivation = await method.ResolveAsync(did, new DidEthrResolveOptions
+        {
+            VersionId = (ulong.Parse(resolved.DocumentMetadata.VersionId!) - 1)
+                .ToString(System.Globalization.CultureInfo.InvariantCulture),
+        });
+        beforeDeactivation.DidDocument!.VerificationMethod!.Should().HaveCount(2);
     }
 
     // NOTE — no wrong-chain-id / high-S negative tests here, deliberately: Anvil is a

@@ -1,4 +1,6 @@
 using System.Globalization;
+using System.Numerics;
+using System.Text;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using NetDid.Core;
@@ -10,12 +12,16 @@ using NetDid.Method.Ethr.Crypto;
 using NetDid.Method.Ethr.Erc1056;
 using NetDid.Method.Ethr.Resolution;
 using NetDid.Method.Ethr.Rpc;
+using NetDid.Method.Ethr.Transactions;
 
 namespace NetDid.Method.Ethr;
 
 /// <summary>
-/// Implementation of the did:ethr DID method (Phase 1: Create + Resolve).
-/// Update and Deactivate are stubbed and will be filled in Phase 2.
+/// Implementation of the did:ethr DID method — full CRUD against the ERC-1056
+/// EthereumDIDRegistry. Create derives a DID from a secp256k1 key with no transaction;
+/// Resolve replays the on-chain event history; Update and Deactivate submit registry
+/// transactions (directly, or as relayed meta-transactions) signed through NetCrypto's
+/// <see cref="IRecoverableDigestSigner"/> seam.
 /// </summary>
 public sealed class DidEthrMethod : DidMethodBase
 {
@@ -40,6 +46,8 @@ public sealed class DidEthrMethod : DidMethodBase
     public override DidMethodCapabilities Capabilities =>
         DidMethodCapabilities.Create |
         DidMethodCapabilities.Resolve |
+        DidMethodCapabilities.Update |
+        DidMethodCapabilities.Deactivate |
         DidMethodCapabilities.ServiceEndpoints;
 
     /// <summary>did:ethr only accepts secp256k1 keys for DID creation.</summary>
@@ -409,6 +417,255 @@ public sealed class DidEthrMethod : DidMethodBase
         }
     }
 
+    // ── Update / Deactivate ───────────────────────────────────────────────────
+
+    private const string ZeroAddress = "0x0000000000000000000000000000000000000000";
+
+    /// <summary>
+    /// Overall wall-clock bound for one Update/Deactivate call (all of its transactions).
+    /// Internal so tests can shorten it; when it fires, the failure reports which
+    /// operations landed — a broadcast transaction may still confirm afterwards.
+    /// </summary>
+    internal TimeSpan WriteDeadline { get; set; } = TimeSpan.FromMinutes(3);
+
+    protected override async Task<DidUpdateResult> UpdateCoreAsync(
+        string did, DidUpdateOptions options, CancellationToken ct)
+    {
+        if (options is not DidEthrUpdateOptions ethrOptions)
+            throw new ArgumentException(
+                $"Options must be {nameof(DidEthrUpdateOptions)}.", nameof(options));
+
+        // Snapshot caller-supplied interface-typed collections ONCE at the trust
+        // boundary; every later read uses these private copies.
+        var removeServices  = ethrOptions.RemoveServices?.ToList() ?? [];
+        var revokeDelegates = ethrOptions.RevokeDelegates?.ToList() ?? [];
+        var addServices     = ethrOptions.AddServices?.ToList() ?? [];
+        var addDelegates    = ethrOptions.AddDelegates?.ToList() ?? [];
+        var newOwner        = ethrOptions.NewOwnerAddress;
+
+        if (removeServices.Count + revokeDelegates.Count
+            + addServices.Count + addDelegates.Count == 0 && newOwner is null)
+            throw new ArgumentException(
+                "The update must contain at least one operation.", nameof(options));
+
+        var identifier = EthrIdentifier.Parse(did);
+        var identity = identifier.IdentityAddress;
+
+        // Build (and thereby validate) every operation BEFORE any RPC traffic.
+        // Order: revocations, then additions, then — always last — the owner change,
+        // because changeOwner strips the current key's authority over later operations.
+        var operations = new List<Erc1056Operation>();
+        foreach (var service in removeServices)
+            operations.Add(Erc1056TransactionBuilder.RevokeAttribute(
+                identity, "did/svc/" + service.ServiceType,
+                Encoding.UTF8.GetBytes(service.ServiceEndpoint)));
+        foreach (var del in revokeDelegates)
+            operations.Add(Erc1056TransactionBuilder.RevokeDelegate(
+                identity, del.DelegateType, del.DelegateAddress));
+        foreach (var service in addServices)
+            operations.Add(Erc1056TransactionBuilder.SetAttribute(
+                identity, "did/svc/" + service.ServiceType,
+                Encoding.UTF8.GetBytes(service.ServiceEndpoint),
+                ValiditySeconds(service.Validity)));
+        foreach (var del in addDelegates)
+            operations.Add(Erc1056TransactionBuilder.AddDelegate(
+                identity, del.DelegateType, del.DelegateAddress,
+                ValiditySeconds(del.Validity)));
+        if (newOwner is not null)
+            operations.Add(Erc1056TransactionBuilder.ChangeOwner(identity, newOwner));
+
+        var (transactionHashes, controllerAddress) = await ExecuteOperationsAsync(
+            identifier, ethrOptions.ControllerKey, ethrOptions.UseMetaTransaction,
+            ethrOptions.Relayer, operations, ct);
+
+        var resolved = await ResolveAsync(did, null, ct);
+        if (resolved.DidDocument is null)
+            throw new EthereumInteractionException(
+                $"did:ethr update transactions landed [{string.Join(", ", transactionHashes)}] " +
+                $"but post-update resolution failed: {resolved.ResolutionMetadata.Error}.");
+
+        // did:ethr's update authority is exactly the identity owner; delegates and
+        // attributes never gain update rights. Keys are reported in the method's
+        // canonical authority form: lowercase Ethereum account addresses.
+        var ownerChanged = newOwner is not null;
+        return new DidUpdateResult
+        {
+            DidDocument = resolved.DidDocument,
+            Artifacts = new Dictionary<string, object>
+            {
+                ["transactions"] = (IReadOnlyList<string>)transactionHashes,
+                ["registry"] = FindNetwork(identifier.Network).RegistryAddress,
+            },
+            AuthorizationChange = ownerChanged
+                ? AuthorizationChangeStatus.Changed : AuthorizationChangeStatus.Unchanged,
+            UpdateKeyChange = ownerChanged
+                ? AuthorizationChangeStatus.Changed : AuthorizationChangeStatus.Unchanged,
+            RevealedUpdateKeys  = [controllerAddress],
+            EffectiveUpdateKeys = [ownerChanged ? newOwner!.ToLowerInvariant() : controllerAddress],
+        };
+    }
+
+    protected override async Task<DidDeactivateResult> DeactivateCoreAsync(
+        string did, DidDeactivateOptions options, CancellationToken ct)
+    {
+        if (options is not DidEthrDeactivateOptions ethrOptions)
+            throw new ArgumentException(
+                $"Options must be {nameof(DidEthrDeactivateOptions)}.", nameof(options));
+
+        var identifier = EthrIdentifier.Parse(did);
+        var operations = new List<Erc1056Operation>
+        {
+            Erc1056TransactionBuilder.ChangeOwner(identifier.IdentityAddress, ZeroAddress),
+        };
+
+        var (transactionHashes, _) = await ExecuteOperationsAsync(
+            identifier, ethrOptions.ControllerKey, ethrOptions.UseMetaTransaction,
+            ethrOptions.Relayer, operations, ct);
+
+        // Success is what the chain now says, not what we submitted.
+        var resolved = await ResolveAsync(did, null, ct);
+        return new DidDeactivateResult
+        {
+            Success = resolved.DocumentMetadata?.Deactivated == true,
+            Artifacts = new Dictionary<string, object>
+            {
+                ["transactions"] = (IReadOnlyList<string>)transactionHashes,
+                ["registry"] = FindNetwork(identifier.Network).RegistryAddress,
+            },
+        };
+    }
+
+    /// <summary>
+    /// Submits the prepared operations sequentially — directly, or as relayed ERC-1056
+    /// meta-transactions — under one overall write deadline. Returns the landed
+    /// transaction hashes and the controller's address.
+    /// </summary>
+    private async Task<(List<string> Hashes, string ControllerAddress)> ExecuteOperationsAsync(
+        EthrIdentifier identifier,
+        IRecoverableDigestSigner controllerKey,
+        bool useMetaTransaction,
+        IRecoverableDigestSigner? relayer,
+        IReadOnlyList<Erc1056Operation> operations,
+        CancellationToken callerCt)
+    {
+        var controllerAddress = TransactionPipeline.AddressOf(controllerKey, "ControllerKey");
+        IRecoverableDigestSigner submitter;
+        if (useMetaTransaction)
+        {
+            if (relayer is null)
+                throw new ArgumentException(
+                    "UseMetaTransaction requires a Relayer signer to pay for the wrapping transactions.",
+                    "options");
+            _ = TransactionPipeline.AddressOf(relayer, "Relayer");
+            submitter = relayer;
+        }
+        else
+        {
+            submitter = controllerKey;
+        }
+
+        var network = FindNetwork(identifier.Network);
+        var registry = network.RegistryAddress;
+        var identity = identifier.IdentityAddress;
+        var rpc = _rpcFactory.GetOrCreate(network);
+        var chainId = await ResolveChainIdNumericAsync(network, rpc, callerCt);
+
+        // Pre-flight (advisory; the contract's onlyOwner/checkSignature is the
+        // enforcement point): fail before broadcasting anything if the controller key
+        // is not the current identity owner.
+        var currentOwner = ParseAddressWordResult(await rpc.CallAsync(
+            registry, Erc1056Calls.IdentityOwner(identity), callerCt));
+        if (!string.Equals(currentOwner, controllerAddress, StringComparison.OrdinalIgnoreCase))
+            throw new EthereumInteractionException(
+                $"ControllerKey address {controllerAddress} is not the current owner " +
+                $"({currentOwner}) of identity {identity}; the registry would reject every operation.");
+
+        using var deadlineCts = CancellationTokenSource.CreateLinkedTokenSource(callerCt);
+        deadlineCts.CancelAfter(WriteDeadline);
+        var token = deadlineCts.Token;
+
+        var hashes = new List<string>();
+        try
+        {
+            foreach (var operation in operations)
+            {
+                string calldata;
+                if (useMetaTransaction)
+                {
+                    // Nonce key per contract generation: modern reads nonce[identityOwner]
+                    // for every method; legacy reads nonce[identity] for attribute methods.
+                    // The owner is stable throughout the batch (owner change is last).
+                    var nonceKey = network.LegacyNonce && operation.UsesIdentityNonceOnLegacy
+                        ? identity : currentOwner;
+                    var metaNonce = ParseChangedResult(await rpc.CallAsync(
+                        registry, Erc1056TransactionBuilder.NonceCalldata(nonceKey), token));
+
+                    var digest = Erc1056TransactionBuilder.MetaTransactionDigest(
+                        registry, metaNonce, identity, operation);
+                    var signature = await controllerKey.SignDigestAsync(digest, token);
+                    if (signature.RecoveryId is not (0 or 1))
+                        throw new EthereumInteractionException(
+                            "The controller signature's recovery id cannot be encoded as an " +
+                            "ERC-1056 sigV value.");
+                    calldata = operation.SignedCalldata(
+                        (byte)(27 + signature.RecoveryId),
+                        signature.Signature64[..32], signature.Signature64[32..]);
+                }
+                else
+                {
+                    calldata = operation.DirectCalldata;
+                }
+
+                var receipt = await TransactionPipeline.SubmitAndConfirmAsync(
+                    rpc, submitter, registry, Convert.FromHexString(calldata[2..]),
+                    chainId, ct: token);
+                hashes.Add(receipt.TransactionHash);
+            }
+        }
+        catch (OperationCanceledException) when (callerCt.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (OperationCanceledException ex)
+        {
+            throw new EthereumInteractionException(
+                $"did:ethr write deadline ({WriteDeadline}) exceeded after landing " +
+                $"{hashes.Count} of {operations.Count} operations " +
+                $"[{string.Join(", ", hashes)}]; a broadcast transaction may still confirm later.",
+                ex);
+        }
+        catch (EthereumInteractionException ex) when (hashes.Count > 0)
+        {
+            throw new EthereumInteractionException(
+                $"did:ethr update failed after landing {hashes.Count} of {operations.Count} " +
+                $"operations [{string.Join(", ", hashes)}]: {ex.Message}", ex);
+        }
+
+        return (hashes, controllerAddress);
+    }
+
+    private static ulong ValiditySeconds(TimeSpan validity)
+    {
+        if (validity <= TimeSpan.Zero)
+            throw new ArgumentException(
+                "Validity must be positive — the registry would record an already-expired entry.",
+                nameof(validity));
+        return (ulong)validity.TotalSeconds;
+    }
+
+    /// <summary>Parses an eth_call result carrying one ABI address word.</summary>
+    private static string ParseAddressWordResult(string result)
+    {
+        var word = ParseChangedResultBytes(result);
+        for (var i = 0; i < 12; i++)
+        {
+            if (word[i] != 0)
+                throw new EthereumInteractionException(
+                    "eth_call returned a word that is not a zero-padded address.");
+        }
+        return "0x" + Convert.ToHexString(word[12..]).ToLowerInvariant();
+    }
+
     // ── Helpers ───────────────────────────────────────────────────────────────
 
     private EthereumNetworkConfig FindNetwork(string network)
@@ -424,17 +681,22 @@ public sealed class DidEthrMethod : DidMethodBase
         return match;
     }
 
-    private async Task<string> ResolveChainId(EthereumNetworkConfig network, IEthereumRpcClient rpc, CancellationToken ct)
+    private static async Task<ulong> ResolveChainIdNumericAsync(
+        EthereumNetworkConfig network, IEthereumRpcClient rpc, CancellationToken ct)
     {
         if (network.ChainId is not null)
         {
             var hex = network.ChainId.StartsWith("0x", StringComparison.OrdinalIgnoreCase)
                 ? network.ChainId[2..] : network.ChainId;
-            return Convert.ToUInt64(hex, 16).ToString();
+            return Convert.ToUInt64(hex, 16);
         }
-        var chainId = await rpc.GetChainIdAsync(ct);
-        return chainId.ToString();
+        return await rpc.GetChainIdAsync(ct);
     }
+
+    private static async Task<string> ResolveChainId(
+        EthereumNetworkConfig network, IEthereumRpcClient rpc, CancellationToken ct)
+        => (await ResolveChainIdNumericAsync(network, rpc, ct))
+            .ToString(CultureInfo.InvariantCulture);
 
     private static bool TryParseResolutionOptions(
         DidResolutionOptions? options,
@@ -480,32 +742,33 @@ public sealed class DidEthrMethod : DidMethodBase
     }
 
     private static ulong ParseChangedResult(string result)
+        => AbiDecoder.DecodeUint256(ParseChangedResultBytes(result));
+
+    /// <summary>Validates an eth_call result as exactly one canonical ABI word and returns its bytes.</summary>
+    private static byte[] ParseChangedResultBytes(string result)
     {
         if (!result.StartsWith("0x", StringComparison.Ordinal)
             || result.Length != 66)
             throw new ArgumentException(
-                "ERC-1056 changed(identity) must return exactly one 0x-prefixed ABI word.",
+                "ERC-1056 read calls must return exactly one 0x-prefixed ABI word.",
                 nameof(result));
         foreach (var c in result.AsSpan(2))
         {
             if (!char.IsAsciiDigit(c) && c is not (>= 'a' and <= 'f'))
                 throw new ArgumentException(
-                    "ERC-1056 changed(identity) must return canonical lowercase hex data.",
+                    "ERC-1056 read calls must return canonical lowercase hex data.",
                     nameof(result));
         }
 
-        byte[] word;
         try
         {
-            word = Convert.FromHexString(result[2..]);
+            return Convert.FromHexString(result[2..]);
         }
         catch (FormatException ex)
         {
             throw new ArgumentException(
-                "ERC-1056 changed(identity) returned malformed hex data.",
+                "ERC-1056 read call returned malformed hex data.",
                 nameof(result), ex);
         }
-
-        return AbiDecoder.DecodeUint256(word);
     }
 }
