@@ -16,6 +16,7 @@
 
   <ItemGroup>
     <ProjectReference Include="../../src/NetDid.Method.Ethr/NetDid.Method.Ethr.csproj" />
+    <ProjectReference Include="../NetDid.Method.Ethr.Emulator/NetDid.Method.Ethr.Emulator.csproj" />
   </ItemGroup>
 
 </Project>
