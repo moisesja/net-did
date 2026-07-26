@@ -22,7 +22,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Detects deactivation when the last `DIDOwnerChanged` event transfers ownership to `0x000…000`.
 - **`NetDidBuilder.AddDidEthr(networks)`** — DI extension method in `NetDid.Extensions.DependencyInjection`.
 - **`VerificationMethod.AdditionalProperties`** — Added `IReadOnlyDictionary<string, JsonElement>?` to `VerificationMethod` (in `NetDid.Core`) to support `publicKeyHex` for unknown key types per the did:ethr spec.
-- New sample: `NetDid.Samples.DidEthr`.
+- New sample: `NetDid.Samples.DidEthr` — a full walkthrough of the `did:ethr` public API
+  (issue #105). Runs **offline**: an in-memory ERC-1056 registry implementing the public
+  `IEthereumRpcClient` replays a scripted on-chain history through the real resolver, so the
+  sample joins the `net-did-verify` smoke-test gate instead of depending on a public testnet
+  endpoint. Covers create (generated and existing keys), all four identifier forms, the
+  `KnownNetworks` catalogue, full-history resolve, `?versionId` / `?versionTime` replay,
+  delegate expiry and attribute revocation, `changeOwner`, deactivation, every resolution
+  error code (`invalidDid` / `invalidOptions` / `notFound`), DID URL dereferencing
+  (fragment, `serviceType`, `text/uri-list`), capability reporting, and DI registration.
+  `dotnet run -- --live [rpcUrl]` (or `NETDID_ETHR_RPC_URL`) keeps the real-network path.
 
 ### Changed
 
@@ -37,6 +46,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   than a second four-network map, so all twelve built-in deployments resolve to their configured
   decimal chain IDs. The deprecated `goerli` alias retains its historical chain-ID conversion
   without being advertised as an active configuration.
+- **Documentation refreshed for the shipped `did:ethr` scope** (issue #105). `README.md`,
+  `NetDidPRD.md`, `AGENTS.md` / `CLAUDE.md`, and `CONTRIBUTING.md` described did:ethr as
+  planned and/or claimed full CRUD. They now state the delivered scope (Create + Resolve,
+  including historical resolution), record that `UpdateAsync` / `DeactivateAsync` throw
+  `OperationNotSupportedException` while the on-chain write path is pending, and correct
+  the project-structure trees and per-project test counts. `NetDidPRD.md` §8.8 now matches
+  the shipped `IEthereumRpcClient` (`GetBlockTimestampAsync`; Phase-2 methods marked) and
+  `EthereumNetworkConfig` (`LegacyNonce`, required `RegistryAddress`), and documents
+  `IEthereumRpcClientFactory` and `KnownNetworks`.
 
 ### Security
 

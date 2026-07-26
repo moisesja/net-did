@@ -4,7 +4,7 @@ This file provides instructions for AI agents and human contributors working in 
 
 ## Project Overview
 
-NetDid is an open-source .NET 10 library that provides a unified, specification-compliant interface for creating, resolving, updating, and deactivating Decentralized Identifiers. Currently implemented: `did:key` and `did:peer`. Planned: `did:webvh` and `did:ethr`.
+NetDid is an open-source .NET 10 library that provides a unified, specification-compliant interface for creating, resolving, updating, and deactivating Decentralized Identifiers. Currently implemented: `did:key`, `did:peer`, `did:webvh` (full CRUD), and `did:ethr` (Create + Resolve). Planned: on-chain `did:ethr` Update and Deactivate.
 
 ## Requirements and Design
 

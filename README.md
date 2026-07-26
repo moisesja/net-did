@@ -7,7 +7,7 @@ A specification-compliant .NET library for Decentralized Identifiers (DIDs). Net
 
 ## Features
 
-- **DID methods**: `did:key`, `did:peer`, `did:webvh` (implemented), and `did:ethr` (Create+Resolve)
+- **DID methods**: `did:key`, `did:peer`, `did:webvh` (full CRUD), and `did:ethr` (Create + Resolve, including historical resolution)
 - **Eight key types**: Ed25519, X25519, P-256, P-384, P-521, secp256k1, BLS12-381 G1/G2
 - **BBS+ signatures**: Multi-message signing with selective disclosure proofs (IETF draft-10)
 - **W3C DID Core 1.0** compliant DID Document model and serialization
@@ -281,7 +281,14 @@ Console.WriteLine(result.Did);
 // Output: did:ethr:sepolia:0x4b0d...
 ```
 
-No on-chain transaction is required to create a `did:ethr`. The DID is derived deterministically from the secp256k1 key pair. On-chain registration (Update/Deactivate) is planned for Phase 2.
+No on-chain transaction is required to create a `did:ethr`. The DID is derived deterministically from the secp256k1 key pair.
+
+`DidEthrMethod.Capabilities` is `Create | Resolve | ServiceEndpoints`. Writing ERC-1056
+events — `setAttribute`, `addDelegate`/`revokeDelegate`, `changeOwner`, and their
+meta-transaction variants — is not implemented yet, so `UpdateAsync` and `DeactivateAsync`
+throw `OperationNotSupportedException`. `DidEthrUpdateOptions` and
+`DidEthrDeactivateOptions` ship today so the public API is stable for that work.
+Resolution already *recognises* a deactivated identity (see below).
 
 ### Resolve a did:ethr
 
@@ -295,6 +302,13 @@ Console.WriteLine(doc.VerificationMethod![0].BlockchainAccountId);
 ```
 
 Resolve walks the on-chain ERC-1056 event chain (owner changes, delegate keys, attribute keys, services) and builds a W3C DID Document. Key types supported: `EcdsaSecp256k1RecoveryMethod2020` (delegates), `EcdsaSecp256k1VerificationKey2019`, `Ed25519VerificationKey2020`, `X25519KeyAgreementKey2020`, `Multikey`, and unknown types via `publicKeyHex`.
+
+Delegates and attribute keys carry a `validTo` timestamp, and ERC-1056 revocation re-emits
+the same entry with an elapsed `validTo` — so both expiry and revocation drop the entry from
+the resolved document, while a historical resolution before that point still shows it.
+`#delegate-N` numbering follows the on-chain event counter, so removed entries leave gaps.
+An identity whose owner was transferred to `0x000…000` resolves to a stripped document with
+`deactivated: true` in the document metadata.
 
 ### Historical resolution via `?versionId`
 
@@ -371,6 +385,21 @@ metadata has one source of truth. The deprecated `goerli` identifier alias still
 chain ID 5 without being advertised in `KnownNetworks.All`. Consumers can supply arbitrary
 networks with `EthereumNetworkConfig`; the library does not attempt to enumerate every
 EVM-compatible chain.
+
+### Runnable examples
+
+```bash
+dotnet run --project samples/NetDid.Samples.DidEthr              # offline, no network needed
+dotnet run --project samples/NetDid.Samples.DidEthr -- --live    # resolve a real Sepolia DID
+```
+
+The sample runs against an in-memory ERC-1056 registry that implements the public
+`IEthereumRpcClient` interface, so the real resolver replays a scripted on-chain history
+deterministically. It covers create (generated and existing keys), every identifier form,
+the `KnownNetworks` catalogue, full-history resolve, `?versionId` / `?versionTime` replay,
+delegate expiry and revocation, owner change, deactivation, every resolution error code,
+DID URL dereferencing, and DI registration. `--live` resolves a real DID over JSON-RPC
+(endpoint from the argument or `NETDID_ETHR_RPC_URL`).
 
 ## did:webvh
 
@@ -648,18 +677,18 @@ netdid/
 │   ├── NetDid.Method.Ethr/                  # did:ethr method (Create + Resolve)
 │   └── NetDid.Extensions.DependencyInjection/  # Microsoft DI integration
 ├── tests/
-│   ├── NetDid.Core.Tests/                   # 375 unit tests
+│   ├── NetDid.Core.Tests/                   # 377 unit tests
 │   ├── NetDid.Method.Key.Tests/             # 52 tests
 │   ├── NetDid.Method.Peer.Tests/            # 48 tests
 │   ├── NetDid.Method.WebVh.Tests/           # 411 tests
-│   ├── NetDid.Method.Ethr.Tests/            # 65 tests
+│   ├── NetDid.Method.Ethr.Tests/            # 195 tests
 │   ├── NetDid.Tests.W3CConformance/         # 233 W3C conformance tests
 │   └── NetDid.Extensions.DependencyInjection.Tests/  # 18 tests
 ├── samples/
 │   ├── NetDid.Samples.DidKey/               # did:key usage examples
 │   ├── NetDid.Samples.DidPeer/              # did:peer usage examples
 │   ├── NetDid.Samples.DidWebVh/             # did:webvh CRUD examples
-│   ├── NetDid.Samples.DidEthr/              # did:ethr resolve + historical resolution
+│   ├── NetDid.Samples.DidEthr/              # did:ethr create, resolve, history, deactivation
 │   └── NetDid.Samples.DependencyInjection/  # DI registration pattern
 └── netdid.sln
 ```
@@ -686,6 +715,8 @@ dotnet run --project samples/NetDid.Samples.DidEthr
 dotnet run --project samples/NetDid.Samples.DependencyInjection
 ```
 
+All samples run offline — no network access, no external services.
+
 ## Roadmap
 
 NetDid is developed in four phases (see [NetDidPRD.md](NetDidPRD.md) for full details):
@@ -695,7 +726,7 @@ NetDid is developed in four phases (see [NetDidPRD.md](NetDidPRD.md) for full de
 | **I** | Core Foundation — DID Document model, crypto primitives, encoding, serialization, resolver infrastructure | Complete |
 | **II** | `did:key` and `did:peer` method implementations | Complete |
 | **III** | `did:webvh` method implementation | Complete |
-| **IV** | `did:ethr` method implementation | Create + Resolve |
+| **IV** | `did:ethr` method implementation | Create + Resolve complete; on-chain Update/Deactivate planned |
 
 ## Specifications
 
