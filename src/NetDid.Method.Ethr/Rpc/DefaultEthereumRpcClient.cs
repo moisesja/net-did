@@ -150,20 +150,136 @@ public sealed class DefaultEthereumRpcClient : IEthereumRpcClient
             "eth_getBlockByNumber timestamp");
     }
 
-    // ── Phase 2 stubs ─────────────────────────────────────────────────────────
+    // ── Write (Update / Deactivate) ───────────────────────────────────────────
 
-    public Task<string> SendRawTransactionAsync(byte[] signedTransaction, CancellationToken ct = default)
-        => throw new NotImplementedException("Phase 2: SendRawTransaction not yet implemented.");
+    public async Task<string> SendRawTransactionAsync(byte[] signedTransaction, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(signedTransaction);
+        if (signedTransaction.Length == 0)
+            throw new ArgumentException("Signed transaction must not be empty.", nameof(signedTransaction));
 
-    public Task<ulong> GetTransactionCountAsync(string address, CancellationToken ct = default)
-        => throw new NotImplementedException("Phase 2: GetTransactionCount not yet implemented.");
+        var raw = "0x" + Convert.ToHexString(signedTransaction).ToLowerInvariant();
+        var result = await SendAsync("eth_sendRawTransaction", [raw], ct);
+        var hash = GetRpcString(result, "eth_sendRawTransaction result");
 
-    public Task<ulong> GetGasPriceAsync(CancellationToken ct = default)
-        => throw new NotImplementedException("Phase 2: GetGasPrice not yet implemented.");
+        // The node echoes keccak256(raw) — 32 bytes of canonical lowercase hex.
+        if (hash.Length != 66
+            || !hash.StartsWith("0x", StringComparison.Ordinal)
+            || !IsLowerHex(hash.AsSpan(2)))
+            throw new EthereumInteractionException(
+                "Malformed eth_sendRawTransaction result: expected a canonical 32-byte transaction hash.");
+        return hash;
+    }
+
+    public async Task<ulong> GetTransactionCountAsync(string address, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(address);
+        var result = await SendAsync("eth_getTransactionCount", [address, "pending"], ct);
+        return ParseCanonicalHexQuantity(
+            GetRpcString(result, "eth_getTransactionCount result"),
+            "eth_getTransactionCount result");
+    }
+
+    public async Task<ulong> GetGasPriceAsync(CancellationToken ct = default)
+    {
+        var result = await SendAsync("eth_gasPrice", [], ct);
+        return ParseCanonicalHexQuantity(
+            GetRpcString(result, "eth_gasPrice result"),
+            "eth_gasPrice result");
+    }
+
+    public async Task<EthereumTransactionReceipt?> GetTransactionReceiptAsync(
+        string transactionHash, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(transactionHash);
+
+        // A pending/unknown transaction yields result: null — SendAsync treats a JSON null
+        // result as absent, so probe the raw envelope through a dedicated call.
+        var result = await SendAllowingNullResultAsync("eth_getTransactionReceipt", [transactionHash], ct);
+        if (result is null)
+            return null;
+
+        var receipt = GetRpcObject(result, "eth_getTransactionReceipt result");
+
+        var statusNode = receipt["status"]
+            ?? throw new EthereumInteractionException(
+                "Malformed eth_getTransactionReceipt result: missing or null 'status' " +
+                "(pre-Byzantium receipts are not supported).");
+        var status = GetRpcString(statusNode, "eth_getTransactionReceipt status");
+        var succeeded = status switch
+        {
+            "0x1" => true,
+            "0x0" => false,
+            _ => throw new EthereumInteractionException(
+                $"Malformed eth_getTransactionReceipt status '{status}': expected 0x0 or 0x1."),
+        };
+
+        var blockNumberNode = receipt["blockNumber"]
+            ?? throw new EthereumInteractionException(
+                "Malformed eth_getTransactionReceipt result: missing or null 'blockNumber'.");
+        var blockNumber = ParseCanonicalHexQuantity(
+            GetRpcString(blockNumberNode, "eth_getTransactionReceipt blockNumber"),
+            "eth_getTransactionReceipt blockNumber");
+
+        var hashNode = receipt["transactionHash"]
+            ?? throw new EthereumInteractionException(
+                "Malformed eth_getTransactionReceipt result: missing or null 'transactionHash'.");
+        var reportedHash = GetRpcString(hashNode, "eth_getTransactionReceipt transactionHash");
+        if (!string.Equals(reportedHash, transactionHash, StringComparison.OrdinalIgnoreCase))
+            throw new EthereumInteractionException(
+                $"eth_getTransactionReceipt returned a receipt for '{reportedHash}' " +
+                $"instead of the requested '{transactionHash}'.");
+
+        string? contractAddress = null;
+        if (receipt.TryGetPropertyValue("contractAddress", out var contractNode) && contractNode is not null)
+        {
+            contractAddress = GetRpcString(contractNode, "eth_getTransactionReceipt contractAddress");
+            if (contractAddress.Length != 42
+                || !contractAddress.StartsWith("0x", StringComparison.Ordinal)
+                || !IsLowerHex(contractAddress.AsSpan(2)))
+                throw new EthereumInteractionException(
+                    "Malformed eth_getTransactionReceipt contractAddress: expected a canonical " +
+                    "lowercase 20-byte hex address.");
+        }
+
+        return new EthereumTransactionReceipt
+        {
+            TransactionHash = reportedHash,
+            BlockNumber     = blockNumber,
+            Succeeded       = succeeded,
+            ContractAddress = contractAddress,
+        };
+    }
+
+    public async Task<ulong> EstimateGasAsync(
+        string from, string? to, string data, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(from);
+        ArgumentNullException.ThrowIfNull(data);
+
+        object call = to is null
+            ? new { from, data }
+            : new { from, to, data };
+        var result = await SendAsync("eth_estimateGas", [call], ct);
+        return ParseCanonicalHexQuantity(
+            GetRpcString(result, "eth_estimateGas result"),
+            "eth_estimateGas result");
+    }
 
     // ── JSON-RPC helpers ──────────────────────────────────────────────────────
 
     private async Task<JsonNode> SendAsync(string method, object[] @params, CancellationToken ct)
+    {
+        return await SendAllowingNullResultAsync(method, @params, ct)
+            ?? throw new EthereumInteractionException($"No 'result' field in RPC response for '{method}'.");
+    }
+
+    /// <summary>
+    /// Like <see cref="SendAsync"/>, but a JSON-null / absent <c>result</c> returns
+    /// <c>null</c> instead of throwing — required for eth_getTransactionReceipt, where
+    /// null is the specified "still pending" answer.
+    /// </summary>
+    private async Task<JsonNode?> SendAllowingNullResultAsync(string method, object[] @params, CancellationToken ct)
     {
         var id = Interlocked.Increment(ref _idCounter);
         var envelope = new { jsonrpc = "2.0", method, @params, id };
@@ -227,8 +343,7 @@ public sealed class DefaultEthereumRpcClient : IEthereumRpcClient
             throw new EthereumInteractionException(
                 $"RPC error for '{method}': {error}");
 
-        return responseObject["result"]
-            ?? throw new EthereumInteractionException($"No 'result' field in RPC response for '{method}'.");
+        return responseObject["result"];
     }
 
     /// <summary>
