@@ -351,7 +351,7 @@ Console.WriteLine("=== did:ethr — Registry deployment ===");
 // Public networks never need this — KnownNetworks carries the existing deployments.
 // For a private EVM chain, deploy the vendored official bytecode once:
 chain.RecognizeDeployableRegistry(Erc1056Registry.ModernCreationBytecode.ToArray(), legacyNonce: false);
-var deployed = await Erc1056Registry.DeployAsync(chain, NewActor().Signer);
+var deployed = await Erc1056Registry.DeployAsync(chain, NewActor().Signer, chainId: 11155111);
 Console.WriteLine($"  Erc1056Registry.DeployAsync → {deployed}");
 Console.WriteLine("  Then: new EthereumNetworkConfig { Name, RpcUrl, ChainId, RegistryAddress = … }");
 Console.WriteLine();

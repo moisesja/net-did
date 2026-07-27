@@ -20,7 +20,7 @@ public class DeactivationRealityTests(AnvilFixture anvil)
         using var funderPair = keyGen.FromPrivateKey(KeyType.Secp256k1, AnvilFixture.FunderKey);
         using var funder = new KeyPairSigner(funderPair, crypto, ownsKeyPair: false);
 
-        var registry = await Erc1056Registry.DeployAsync(anvil.Client, funder);
+        var registry = await Erc1056Registry.DeployAsync(anvil.Client, funder, AnvilFixture.ChainId);
         var identityAddress = EthereumAddress.FromCompressedPublicKey(funderPair.PublicKey).ToLowerInvariant();
 
         var network = new EthereumNetworkConfig

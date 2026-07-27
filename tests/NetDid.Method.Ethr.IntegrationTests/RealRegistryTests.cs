@@ -108,6 +108,7 @@ public class RealRegistryTests(AnvilFixture anvil)
             new KeyPairSigner(
                 new DefaultKeyGenerator().FromPrivateKey(KeyType.Secp256k1, AnvilFixture.FunderKey),
                 new DefaultCryptoProvider()),
+            AnvilFixture.ChainId,
             legacy);
 
     private DidEthrMethod MethodFor(string registryAddress)

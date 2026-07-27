@@ -46,6 +46,37 @@ internal static class TransactionPipeline
     /// </summary>
     public const string BroadcastTransactionKey = "netdid.ethr.broadcastTransaction";
 
+    /// <summary>
+    /// Recovers the Ethereum address that produced <paramref name="signature64"/> over
+    /// <paramref name="digest32"/>, validating length and scalars first. Used for BOTH the
+    /// outer transaction signature and the inner ERC-1056 meta-transaction signature — the
+    /// latter is spent by a relayer, so a signature that cannot be attributed to the
+    /// controller must be caught before any gas is paid.
+    /// </summary>
+    public static string RecoverSigner(
+        byte[] digest32, byte[] signature64, int recoveryId, string subject)
+    {
+        ArgumentNullException.ThrowIfNull(signature64);
+        if (signature64.Length != 64)
+            throw new EthereumInteractionException(
+                $"{subject} must be 64 bytes, got {signature64.Length}. Nothing was broadcast.");
+
+        try
+        {
+            return EthereumAddress.FromCompressedPublicKey(
+                Secp256k1Recoverable.RecoverPublicKey(
+                    digest32, signature64, recoveryId, compressed: true))
+                .ToLowerInvariant();
+        }
+        catch (Exception ex) when (ex is ArgumentException or ArgumentOutOfRangeException
+                                   or CryptographicException)
+        {
+            throw new EthereumInteractionException(
+                $"{subject} does not recover a public key ({ex.Message}). Nothing was broadcast.",
+                ex);
+        }
+    }
+
     /// <summary>Derives the signer's Ethereum address, validating the key type up front (NFR-3 style).</summary>
     public static string AddressOf(IRecoverableDigestSigner signer, string paramName)
     {
@@ -169,21 +200,8 @@ internal static class TransactionPipeline
         // broadcasting: a malformed or foreign signature otherwise burns a reverting
         // transaction, and an advertised-but-unused public key would pass the owner
         // pre-flight while signing with something else.
-        string recovered;
-        try
-        {
-            recovered = EthereumAddress.FromCompressedPublicKey(
-                Secp256k1Recoverable.RecoverPublicKey(
-                    signingDigest, signature.Signature64, signature.RecoveryId, compressed: true))
-                .ToLowerInvariant();
-        }
-        catch (Exception ex) when (ex is ArgumentException or ArgumentOutOfRangeException
-                                   or CryptographicException)
-        {
-            throw new EthereumInteractionException(
-                "The signer returned a signature that does not recover a public key " +
-                $"({ex.Message}). Nothing was broadcast.", ex);
-        }
+        var recovered = RecoverSigner(
+            signingDigest, signature.Signature64, signature.RecoveryId, "The signer");
         if (!string.Equals(recovered, sender, StringComparison.Ordinal))
             throw new EthereumInteractionException(
                 $"The signer's signature recovers to {recovered}, not to the address its " +

@@ -331,7 +331,7 @@ public class RedTeamWritePathTests
         // A forged contractAddress would become the caller's registry trust anchor for
         // every subsequent did:ethr read and write. CREATE is deterministic, so we can
         // and do check it locally instead of believing the node.
-        await FluentActions.Awaiting(() => Erc1056Registry.DeployAsync(hostile, deployer.Signer))
+        await FluentActions.Awaiting(() => Erc1056Registry.DeployAsync(hostile, deployer.Signer, SepoliaChainId))
             .Should().ThrowAsync<EthereumInteractionException>()
             .WithMessage($"*{AttackerRegistry}*deterministically yields*");
     }
@@ -344,7 +344,7 @@ public class RedTeamWritePathTests
             Erc1056Registry.ModernCreationBytecode.ToArray(), legacyNonce: false);
         var deployer = NewActor();
 
-        var deployed = await Erc1056Registry.DeployAsync(chain, deployer.Signer);
+        var deployed = await Erc1056Registry.DeployAsync(chain, deployer.Signer, SepoliaChainId);
 
         deployed.Should().Be(
             Transactions.TransactionPipeline.ContractCreationAddress(deployer.Address, 0));

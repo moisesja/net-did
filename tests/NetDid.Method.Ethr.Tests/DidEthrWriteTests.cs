@@ -628,7 +628,7 @@ public class DidEthrWriteTests
             Erc1056Registry.ModernCreationBytecode.ToArray(), legacyNonce: false);
         var deployer = NewActor();
 
-        var deployed = await Erc1056Registry.DeployAsync(chain, deployer.Signer);
+        var deployed = await Erc1056Registry.DeployAsync(chain, deployer.Signer, chainId: 11155111);
 
         deployed.Should().StartWith("0x").And.HaveLength(42);
         var owner = await chain.CallAsync(deployed, Erc1056Calls.IdentityOwner(deployer.Address));

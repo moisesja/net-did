@@ -603,6 +603,20 @@ public sealed class DidEthrMethod : DidMethodBase
         {
             throw AttachLandedTransactions(ex, transactionHashes);
         }
+
+        // ResolveAsync maps RPC/history failures to a NotFound RESULT rather than throwing
+        // (its documented never-throw contract), so the catch above does not see them.
+        // Reporting Success = false for a confirmed on-chain write whose effect we simply
+        // could not read is a false negative that invites an unnecessary — possibly unsafe —
+        // retry. Only report false when the state was read and is known not deactivated.
+        if (resolved.DidDocument is null || resolved.ResolutionMetadata.Error is not null)
+            throw AttachLandedTransactions(new EthereumInteractionException(
+                $"did:ethr deactivation transactions landed " +
+                $"[{string.Join(", ", transactionHashes)}] but the resulting state could not be " +
+                $"read back: {resolved.ResolutionMetadata.Error ?? "no document"}. The " +
+                "deactivation may well have taken effect — do not retry blindly."),
+                transactionHashes);
+
         return new DidDeactivateResult
         {
             Success = resolved.DocumentMetadata?.Deactivated == true,
@@ -717,6 +731,21 @@ public sealed class DidEthrMethod : DidMethodBase
                     var digest = Erc1056TransactionBuilder.MetaTransactionDigest(
                         registry, metaNonce, identity, operation);
                     var signature = await controllerKey.SignDigestAsync(digest, token);
+
+                    // The relayer is about to pay for this. TransactionPipeline verifies the
+                    // OUTER relayer signature, but nothing verified this inner one: a signer
+                    // that advertises the owner's public key while signing with another key
+                    // passes the owner pre-flight and produces a guaranteed registry revert
+                    // after the gas is spent. Recover it and require the controller.
+                    var recoveredController = TransactionPipeline.RecoverSigner(
+                        digest, signature.Signature64, signature.RecoveryId,
+                        "The controller signature");
+                    if (!string.Equals(recoveredController, controllerAddress, StringComparison.Ordinal))
+                        throw new EthereumInteractionException(
+                            $"The controller signature recovers to {recoveredController}, not to " +
+                            $"the address its public key advertises ({controllerAddress}). " +
+                            "Nothing was broadcast; the registry would have rejected it after " +
+                            "the relayer paid gas.");
                     if (signature.RecoveryId is not (0 or 1))
                         throw new EthereumInteractionException(
                             "The controller signature's recovery id cannot be encoded as an " +
@@ -730,9 +759,27 @@ public sealed class DidEthrMethod : DidMethodBase
                     calldata = operation.DirectCalldata;
                 }
 
-                var receipt = await TransactionPipeline.SubmitAndConfirmAsync(
-                    rpc, submitter, registry, Convert.FromHexString(calldata[2..]),
-                    chainId, maxGasPriceWei: network.MaxGasPriceWei, ct: token);
+                EthereumTransactionReceipt receipt;
+                try
+                {
+                    receipt = await TransactionPipeline.SubmitAndConfirmAsync(
+                        rpc, submitter, registry, Convert.FromHexString(calldata[2..]),
+                        chainId,
+                        maxGasPriceWei: network.MaxGasPriceWei,
+                        maxTransactionFeeWei: network.MaxTransactionFeeWei,
+                        ct: token);
+                }
+                catch (Exception ex)
+                    when (ex.Data[TransactionPipeline.BroadcastTransactionKey] is string inFlight)
+                {
+                    // The node ACCEPTED these bytes before the failure (an unverifiable hash
+                    // echo), so the transaction may confirm under the hash we computed. Record
+                    // it BEFORE the catch filters below run, or a forged echo on the first
+                    // operation leaves hashes empty, skips the `hashes.Count > 0` wrapper, and
+                    // tells the caller nothing happened — the unsafe-retry condition again.
+                    hashes.Add(inFlight);
+                    throw;
+                }
                 hashes.Add(receipt.TransactionHash);
             }
         }

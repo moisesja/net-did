@@ -85,6 +85,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (fragment, `serviceType`, `text/uri-list`), capability reporting, and DI registration.
   `dotnet run -- --live [rpcUrl]` (or `NETDID_ETHR_RPC_URL`) keeps the real-network path.
 
+- **`Erc1056Registry.DeployAsync` now requires an explicit `chainId`** and cross-checks it
+  against the node's `eth_chainId`. Taking the chain id from the endpoint let a malicious node
+  obtain a deployment transaction signed for a chain the caller did not choose, and forward it
+  there — the same class of flaw the Update path already rejects.
 - **`EthereumNetworkConfig.MaxGasPriceWei` / `MaxTransactionFeeWei`** — spend ceilings on the
   write path. The RPC endpoint is untrusted and its gas price becomes a fee the caller's key
   authorizes; bounding price and limit separately is insufficient because both are
