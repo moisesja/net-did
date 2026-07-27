@@ -200,11 +200,19 @@ public class DidEthrResolverHardeningTests
     // ── Finding 5: builder throws on decodable-but-hostile event ─────────────────
 
     [Fact]
-    public async Task ResolveAsync_ServiceEventWithEmptyEndpoint_ReturnsNotFound()
+    public async Task ResolveAsync_ServiceEventWithEmptyEndpoint_DropsTheServiceAndStillResolves()
     {
-        // A did/svc attribute that ABI-decodes cleanly but carries an EMPTY endpoint
-        // makes EthrDocumentBuilder → ServiceEndpointValue.FromUri throw ArgumentException.
-        // That escaped ResolveCoreAsync before the fix.
+        // A did/svc attribute that ABI-decodes cleanly but carries an EMPTY endpoint makes
+        // ServiceEndpointValue.FromUri throw. The property this test was written for (PR #104
+        // finding 5) is that NO exception escapes ResolveAsync — originally satisfied by
+        // wrapping everything into notFound.
+        //
+        // Issue #107 keeps that property and makes it precise: the builder now drops the one
+        // unrepresentable entry instead of erasing the whole document. Failing closed here was
+        // never an integrity protection — event-history validation (registry, identity, block,
+        // previousChange, logIndex) is untouched and still fails closed — and it WAS a denial
+        // of service: one junk attribute with a 10-year validity rendered the DID permanently
+        // unresolvable, including for a subsequent owner who never wrote it.
         const ulong block = 5;
         var log = ServiceAttributeLog(Identity, "did/svc/AgentService", value: [], validTo: 0xffffffff, block);
 
@@ -220,7 +228,10 @@ public class DidEthrResolverHardeningTests
 
         var result = await MakeMethod(rpc).ResolveAsync($"did:ethr:sepolia:{Identity}");
 
-        result.ResolutionMetadata.Error.Should().Be("notFound");
+        result.ResolutionMetadata.Error.Should().BeNull();
+        result.DidDocument.Should().NotBeNull();
+        result.DidDocument!.Service.Should().BeNull("the unrepresentable endpoint is dropped");
+        result.DidDocument.VerificationMethod.Should().ContainSingle("#controller survives");
     }
 
     // ── Sanity: a well-formed hostile-shaped-but-valid resolve still succeeds ─────

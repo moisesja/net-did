@@ -12,8 +12,35 @@ public sealed record EthereumNetworkConfig
     public required string RegistryAddress { get; init; }
     /// <summary>
     /// Contracts deployed before ethr-did-registry 0.0.3 track nonces differently for
-    /// meta-transactions. Relevant for Phase 2 (Update / Deactivate). Mirrors the JS
-    /// resolver's <c>legacyNonce</c> field.
+    /// meta-transactions. Mirrors the JS resolver's <c>legacyNonce</c> field.
     /// </summary>
     public bool LegacyNonce { get; init; } = false;
+
+    /// <summary>
+    /// Sanity ceiling (in wei) on the <c>eth_gasPrice</c> value this library will sign into a
+    /// transaction. The RPC endpoint is untrusted and the gas price it reports becomes a fee
+    /// the caller's key authorizes, so a hostile or compromised node could otherwise drain a
+    /// funded signer to the block producer while every operation still "succeeds". A price
+    /// above this ceiling aborts the write before anything is signed.
+    ///
+    /// <para>The default — 5,000 gwei — is roughly two orders of magnitude above normal
+    /// mainnet congestion, so it never rejects an honest price; it exists purely to bound a
+    /// malicious one. Chains with unusual native-token denominations, or callers who genuinely
+    /// need to outbid extreme congestion, should raise it deliberately.</para>
+    /// </summary>
+    public ulong MaxGasPriceWei { get; init; } = 5_000UL * 1_000_000_000UL;
+
+    /// <summary>
+    /// Ceiling on the TOTAL fee a single did:ethr transaction may authorize
+    /// (<c>gasPrice × gasLimit</c>), in wei. Bounding price and limit separately is not enough:
+    /// both are node-controlled, so their product — the money actually at risk — can reach the
+    /// product of the two ceilings while each looks individually reasonable. A transaction that
+    /// would exceed this is rejected before signing.
+    ///
+    /// <para>The default, 0.1 ETH, is roughly an order of magnitude above a registry write at
+    /// congested-mainnet prices. Raise it deliberately for chains whose native token is worth
+    /// far less per unit.</para>
+    /// </summary>
+    public System.Numerics.BigInteger MaxTransactionFeeWei { get; init; } =
+        System.Numerics.BigInteger.Pow(10, 17);
 }

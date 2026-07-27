@@ -26,6 +26,9 @@ Record the count **per project** as a regression ledger (it only ever goes up):
 - `NetDid.Method.Ethr.Tests`
 - `NetDid.Extensions.DependencyInjection.Tests`
 - `NetDid.Tests.W3CConformance`
+- `NetDid.Method.Ethr.IntegrationTests` — **skipped** in the default run (correct); run it
+  separately with `NETDID_ETHR_INTEGRATION=1` (needs Docker) when the ethr write path,
+  transaction encoding, or vendored registry bytecode changed, and report its count too.
 
 For a focused loop: `dotnet test tests/<Project>/<Project>.csproj --filter "FullyQualifiedName~<TestClass>"`.
 

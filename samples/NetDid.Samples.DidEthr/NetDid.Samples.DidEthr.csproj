@@ -9,6 +9,8 @@
     <ProjectReference Include="../../src/NetDid.Method.Ethr/NetDid.Method.Ethr.csproj" />
     <ProjectReference Include="../../src/NetDid.Core/NetDid.Core.csproj" />
     <ProjectReference Include="../../src/NetDid.Extensions.DependencyInjection/NetDid.Extensions.DependencyInjection.csproj" />
+    <!-- The in-memory ERC-1056 chain (never shipped) that lets every section below run offline. -->
+    <ProjectReference Include="../../tests/NetDid.Method.Ethr.Emulator/NetDid.Method.Ethr.Emulator.csproj" />
   </ItemGroup>
 
   <ItemGroup>

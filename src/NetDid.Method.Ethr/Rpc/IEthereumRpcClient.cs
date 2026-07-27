@@ -1,15 +1,12 @@
 namespace NetDid.Method.Ethr.Rpc;
 
 /// <summary>
-/// Ethereum JSON-RPC client interface used by the did:ethr resolver.
-///
-/// Phase 1 methods (Create + Resolve) are marked below.
-/// Phase 2 methods (Update / Deactivate) are declared here so the interface is
-/// stable; DefaultEthereumRpcClient throws NotImplementedException for them.
+/// Ethereum JSON-RPC client interface used by the did:ethr method — read methods for
+/// Create + Resolve, write methods for the on-chain Update / Deactivate path.
 /// </summary>
 public interface IEthereumRpcClient
 {
-    // ── Phase 1 ──────────────────────────────────────────────────────────────
+    // ── Read (Create + Resolve) ──────────────────────────────────────────────
 
     /// <summary>eth_call — call a read-only contract function.</summary>
     Task<string> CallAsync(string to, string data, CancellationToken ct = default);
@@ -29,14 +26,26 @@ public interface IEthereumRpcClient
     /// </summary>
     Task<ulong> GetBlockTimestampAsync(ulong blockNumber, CancellationToken ct = default);
 
-    // ── Phase 2 (declared; throw NotImplementedException in Phase 1) ──────────
+    // ── Write (Update / Deactivate) ──────────────────────────────────────────
 
-    /// <summary>eth_sendRawTransaction — broadcast a signed transaction.</summary>
+    /// <summary>eth_sendRawTransaction — broadcast a signed transaction; returns the 0x-prefixed tx hash.</summary>
     Task<string> SendRawTransactionAsync(byte[] signedTransaction, CancellationToken ct = default);
 
-    /// <summary>eth_getTransactionCount — nonce for an address.</summary>
+    /// <summary>eth_getTransactionCount (pending) — next nonce for an address.</summary>
     Task<ulong> GetTransactionCountAsync(string address, CancellationToken ct = default);
 
-    /// <summary>eth_gasPrice — current gas price.</summary>
+    /// <summary>eth_gasPrice — current gas price in wei.</summary>
     Task<ulong> GetGasPriceAsync(CancellationToken ct = default);
+
+    /// <summary>
+    /// eth_getTransactionReceipt — the mined transaction's receipt, or <c>null</c>
+    /// while the transaction is still pending / unknown.
+    /// </summary>
+    Task<EthereumTransactionReceipt?> GetTransactionReceiptAsync(string transactionHash, CancellationToken ct = default);
+
+    /// <summary>
+    /// eth_estimateGas — gas estimate for a call. <paramref name="to"/> is null for a
+    /// contract-creation transaction.
+    /// </summary>
+    Task<ulong> EstimateGasAsync(string from, string? to, string data, CancellationToken ct = default);
 }

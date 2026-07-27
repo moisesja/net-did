@@ -1,32 +1,100 @@
+using NetCrypto;
 using NetDid.Core.Model;
 
 namespace NetDid.Method.Ethr;
 
 /// <summary>
-/// Update options for did:ethr. Carries the full Phase 2 property shape so the API
-/// is stable; Phase 1 body throws OperationNotSupportedException.
+/// Update options for did:ethr. Each populated collection becomes one or more on-chain
+/// ERC-1056 transactions, submitted sequentially: revocations first, then additions, and
+/// — always last — the owner change, because <c>changeOwner</c> revokes the current key's
+/// authority over any subsequent operation.
 /// </summary>
+/// <remarks>
+/// <see cref="ControllerKey"/> is an <see cref="IRecoverableDigestSigner"/> (NetCrypto):
+/// Ethereum signatures are recoverable ECDSA over a caller-computed Keccak-256 digest, which
+/// the general-purpose <see cref="ISigner"/> cannot produce (it hashes internally and returns
+/// no recovery id). Any secp256k1 signer implementing the interface works — including
+/// HSM/key-store-backed ones whose private key is never extractable, and whose public key may
+/// be in either compressed or uncompressed SEC1 form.
+///
+/// <para><b>Meta-transaction hazards</b> (inherent to ERC-1056, verified against real registry
+/// bytecode): on a <c>LegacyNonce</c> registry the owner/delegate preimage nonce stops
+/// incrementing once ownership has been transferred, making such signatures replayable
+/// forever — NetDid refuses to sign them in that state. And because the preimage carries no
+/// chain id while one registry address serves several chains, a meta-transaction may be
+/// replayable on a sibling chain. Prefer direct submission when either applies.</para>
+/// </remarks>
 public sealed record DidEthrUpdateOptions : DidUpdateOptions
 {
     public IReadOnlyList<DidEthrServiceAttribute>? AddServices { get; init; }
     public IReadOnlyList<DidEthrServiceAttribute>? RemoveServices { get; init; }
     public IReadOnlyList<DidEthrDelegate>? AddDelegates { get; init; }
     public IReadOnlyList<DidEthrDelegate>? RevokeDelegates { get; init; }
+
+    /// <summary>
+    /// Raw ERC-1056 attributes (<c>setAttribute</c>), for names outside the service
+    /// convenience shape — most importantly <c>did/pub/&lt;alg&gt;/&lt;purpose&gt;/&lt;encoding&gt;</c>
+    /// entries that publish full key material (e.g. <c>did/pub/Ed25519/veriKey/base64</c>),
+    /// which the implicit blockchainAccountId controller VM cannot provide.
+    /// </summary>
+    public IReadOnlyList<DidEthrAttribute>? AddAttributes { get; init; }
+
+    /// <summary>Raw attribute revocations (<c>revokeAttribute</c>); Name and Value must match the original.</summary>
+    public IReadOnlyList<DidEthrAttribute>? RemoveAttributes { get; init; }
+
+    /// <summary>
+    /// Transfers the identity's update authority. Always submitted last.
+    /// <para><b>Passing the null address (<c>0x000…000</c>) performs a deactivation</b> — the
+    /// DID then resolves with <c>deactivated: true</c>. Prefer
+    /// <c>DidEthrMethod.DeactivateAsync</c>, which names that intent. See
+    /// <see cref="DidEthrDeactivateOptions"/> for why this is not an irreversible lock.</para>
+    /// </summary>
     public string? NewOwnerAddress { get; init; }
-    public required NetCrypto.ISigner ControllerKey { get; init; }
+
+    /// <summary>
+    /// The current identity owner's key. Signs the transactions directly, or — with
+    /// <see cref="UseMetaTransaction"/> — the ERC-1056 <c>0x19 0x00</c> meta-transaction
+    /// payloads that <see cref="Relayer"/> submits.
+    /// </summary>
+    public required IRecoverableDigestSigner ControllerKey { get; init; }
+
+    /// <summary>
+    /// When true, operations are submitted as ERC-1056 meta-transactions: the controller
+    /// key signs the operation payload and <see cref="Relayer"/> pays the gas — the
+    /// identity owner's account needs no ETH.
+    /// </summary>
     public bool UseMetaTransaction { get; init; } = false;
+
+    /// <summary>The funded key that signs and pays for the wrapping transactions. Required
+    /// when <see cref="UseMetaTransaction"/> is true; ignored otherwise.</summary>
+    public IRecoverableDigestSigner? Relayer { get; init; }
 }
 
 public sealed record DidEthrDelegate
 {
     public required string DelegateType { get; init; }     // "veriKey", "sigAuth"
     public required string DelegateAddress { get; init; }
-    public required TimeSpan Validity { get; init; }
+
+    /// <summary>How long the delegation stays valid. Used by additions; ignored — and
+    /// therefore optional — for revocations.</summary>
+    public TimeSpan Validity { get; init; } = TimeSpan.FromDays(365);
 }
 
 public sealed record DidEthrServiceAttribute
 {
     public required string ServiceType { get; init; }
     public required string ServiceEndpoint { get; init; }
+    public TimeSpan Validity { get; init; } = TimeSpan.FromDays(365 * 10);
+}
+
+/// <summary>A raw ERC-1056 attribute: a bytes32 name (≤ 32 UTF-8 bytes) and an opaque value.</summary>
+public sealed record DidEthrAttribute
+{
+    /// <summary>e.g. <c>did/pub/Ed25519/veriKey/base64</c> or <c>did/svc/MessagingService</c>.</summary>
+    public required string Name { get; init; }
+
+    public required byte[] Value { get; init; }
+
+    /// <summary>Used by additions; ignored for removals.</summary>
     public TimeSpan Validity { get; init; } = TimeSpan.FromDays(365 * 10);
 }

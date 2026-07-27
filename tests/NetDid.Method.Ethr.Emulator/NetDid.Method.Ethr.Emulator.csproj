@@ -1,0 +1,16 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <IsPackable>false</IsPackable>
+    <Description>In-memory ERC-1056 chain emulator for tests and samples. Never shipped.</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="../../src/NetDid.Method.Ethr/NetDid.Method.Ethr.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="NetCrypto" />
+  </ItemGroup>
+
+</Project>

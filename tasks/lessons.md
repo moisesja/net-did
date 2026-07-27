@@ -208,3 +208,124 @@
   malformed. Do not turn an optional advisory flag into a required compatibility gate unless the
   protocol defines omission as unsafe; a hostile provider that omits it could already lie with
   `false`.
+- When a dependency's public API is the thing blocking a feature, ask whether the fix belongs
+  UPSTREAM before designing a local workaround. did:ethr needed recoverable secp256k1 signing
+  over a caller-computed digest; `ISigner` cannot express it (it SHA-256-hashes internally and
+  returns no recovery id). My plan defined a net-did-local `IEthereumDigestSigner` — the user
+  asked "Can the ISigner issue be fixed upstream? Should it?" and the answer was yes on both:
+  NetCrypto already owned the primitive (`Secp256k1Recoverable`), so the abstraction belonged
+  next to it, and a local interface would have forked the signer ecosystem (an HSM/key-store
+  key would work for did:webvh but not did:ethr). The test for "upstream vs local": does the
+  dependency already own the primitive, and would a local interface force other consumers to
+  reimplement it? If yes to either, file it upstream. Keep the boundary the upstream library
+  documented — NetCrypto's FR-12 ruling puts keccak and EVM v-encoding in the wallet layer, so
+  those stayed in net-did.
+- "Filing an issue" and "implementing the fix" are separate asks across repo boundaries. When
+  a cross-repo dependency appears mid-task, propose the split and let the user choose who
+  implements — here the user said "I will fix the crypto-dotnet library separately. Just file
+  the issue with as much detail as possible along with justification." A cross-repo issue is a
+  SPEC handoff, not a bug report: include the exact proposed API, the implementations and their
+  input contracts, the boundary it must not cross, the test matrix, the chores (PublicAPI.txt,
+  CHANGELOG, version), and — most importantly — the JUSTIFICATION for why it belongs there
+  rather than downstream. Then keep building everything that doesn't depend on it and mark the
+  blocked phases explicitly.
+- A dev node is NOT a conformance oracle for consensus rules. Anvil accepts high-S signatures
+  and wrong-chain-id transactions that mainnet consensus rejects, so negative tests for EIP-2
+  low-S and EIP-155 replay protection FAIL against Anvil while passing against a stricter
+  in-memory emulator. Split the oracles deliberately: the real node proves contract semantics
+  and calldata/bytecode correctness; the emulator proves consensus-grade validation. Say which
+  oracle covers which class in the test file, or a later reader will "fix" the strict one to
+  match the permissive one.
+- Wall-clock-boundary assertions need slack on a real chain. ERC-1056 revocation sets
+  `validTo = block.timestamp`, and the JS-compatible resolver keeps an entry while
+  `validTo >= now`, so a revocation only takes effect the NEXT whole second. Against an
+  emulator with a controllable clock this is invisible; against a live node the assertion is
+  flaky until you step the clock past the boundary. When a spec's validity comparison is
+  inclusive, either advance the clock explicitly or assert after the boundary — never assume
+  "the write landed" means "the effect is visible".
+- A NORMATIVE SPEC CAN BE WRONG ABOUT ITS OWN DEPLOYED CONTRACT — verify security claims
+  against the artifact that enforces them, not only the prose. The did:ethr spec states that
+  deactivation via `changeOwner(0x0)` "is irreversible" and that "no further changes to the DID
+  document are possible". The deployed ERC-1056 registry does not enforce that: `identityOwner()`
+  is `owner != address(0) ? owner : identity`, so zeroing the owner slot returns control TO THE
+  IDENTITY ADDRESS. An EOA identity whose key survives can write again, and a later non-zero
+  `DIDOwnerChanged` clears the `deactivated` flag entirely. I had copied the spec's claim into
+  README, the PRD, XML docs, and a sample comment. The earlier lesson said "verify the claim
+  against the NORMATIVE spec text"; this extends it: when the spec describes what a piece of
+  code does, the code is the higher authority. Read the contract/reference implementation, and
+  when they disagree, document the OBSERVED behavior and name the divergence.
+- A mock that is wrong in a security-relevant direction does not just miss bugs, it MANUFACTURES
+  false conclusions. The chain emulator transcribed `identityOwner` as a plain dictionary lookup
+  instead of the contract's zero-means-self rule. Offline, deactivation therefore looked like a
+  permanent lock — and a second red-team agent, reasoning against that emulator, reported
+  "post-deactivation write REJECTED", the exact opposite of what real bytecode does. Two
+  defences: (1) transcribe contract logic line-by-line from the source and cite it in a comment,
+  never paraphrase from memory; (2) run at least one DIFFERENTIAL test per security-relevant
+  behavior — same scenario against the mock and against the real thing — because a mock's errors
+  are invisible to every test that uses only the mock.
+- Fixing a finding can encode the same misconception in a new place. Round 1 "fixed" the
+  zero-owner case by reporting an EMPTY set of effective update keys ("nobody can update"),
+  which was just the permanence myth in another form; the correct answer is the identity address.
+  When a fix asserts something about the world rather than about the code, re-derive it from the
+  authority (here: read the owner back from the chain) instead of hard-coding the conclusion.
+- Scope a security refusal to the vulnerable operations, not the vulnerable-looking situation.
+  The legacy ERC-1056 nonce divergence only breaks owner/delegate meta-transactions (their
+  preimage reads a slot nothing increments); attribute meta-transactions read the slot that IS
+  incremented and stay single-use. My first guard refused all meta-transactions once ownership
+  had moved, which broke a legitimate, demonstrably-safe path — caught by an existing test
+  failing. A guard that denies honest input is a defect too; derive the predicate from the
+  mechanism, not from the scenario in the exploit report.
+- Validate BOTH halves of a name/value pair at a write boundary. Round 2 rejected non-ASCII
+  attribute NAMES (the resolver decodes ASCII) but left VALUES unchecked, so writing the
+  spec-canonical `did/pub/Secp256k1/veriKey/hex` with a non-key value landed on-chain and then
+  threw inside the document builder — resolution returned notFound for the ENTIRE DID, for the
+  attribute's 10-year validity. One API call permanently bricked the identity. Two rules: (a)
+  when you harden one field of a structure, enumerate the sibling fields that reach the same
+  consumer; (b) a per-entry decode failure must degrade THAT ENTRY, not the whole document —
+  fail-closed belongs to authorization/history integrity, not to one optional key's encoding.
+  The tolerant read is also the interoperable one: an attribute another tool wrote that we
+  cannot decode should not erase a DID we can otherwise resolve.
+- A `try` block that wraps "the risky part" leaves the epilogue unguarded, and fixes tend to
+  RELOCATE that gap rather than close it. The landed-transaction evidence fix wrapped the
+  submission loop; the very same fix then ADDED a post-loop chain read, so a malformed response
+  there — plus cancellation before it, plus a resolve failure — reported "nothing landed" while
+  transactions sat on-chain. When the invariant is "after side effects begin, every exit path
+  carries the evidence", the guard must span from the first side effect to the return, not
+  around the loop that produces them.
+- Report the effect, not the bookkeeping. The hash-echo verification threw AFTER
+  `eth_sendRawTransaction` had already accepted the bytes, so the operation never reached the
+  landed list even though the chain applied it — the evidence was not merely missing but WRONG,
+  which is worse: a caller trusting it double-applies on retry. Record a side effect at the
+  moment it becomes possible (broadcast), not at the moment you finish validating the response.
+- Two ceilings on two node-controlled factors do not bound their product. Capping gas PRICE at
+  5,000 gwei and gas LIMIT at 3M still authorized 15 ETH per transaction. Bound the quantity the
+  user actually cares about — total fee — not only its inputs; a per-factor cap reads like
+  protection while leaving the real exposure at the product of the caps.
+- Strictness that a legitimate backend cannot satisfy is a defect, not rigor. Rejecting high-S
+  signatures looked like sound EIP-2 hygiene but broke every HSM whose PKCS#11 `CKM_ECDSA` does
+  not normalize — contradicting the same change's "HSM keys work" claim. The malleable twin is a
+  valid signature over the same digest recovering to the same key, so canonicalize (s' = n-s,
+  flip recid) instead of refusing. Before adding a validity check on data from a pluggable seam,
+  ask which real implementations produce the form you are about to reject.
+- `Exception.Data` on an exception thrown by a pluggable dependency is UNTRUSTED INPUT, not an
+  internal side channel. Reserved-looking string keys provide no provenance: an injected RPC
+  client used them to forge a "confirmed" transaction before any receipt existed and suppress
+  the real local candidate hash. Carry security-relevant lifecycle state in a private typed
+  object owned by the pipeline, bind receipts back to the locally computed request hash at the
+  outer trust boundary, and only then project sanitized evidence onto the public exception.
+- A deadline is not an overall bound if it starts after pre-flight or merely passes a token to
+  an injectable implementation. Start the clock before the first awaited dependency and apply
+  the bound to the returned task (`WaitAsync`), so an implementation that ignores cancellation
+  cannot hang the operation. When mapping cancellation, prove WHICH token fired; a spontaneous
+  dependency `OperationCanceledException` is not evidence that the internal deadline elapsed.
+- Typed side state is not enough if the final projection still writes into a dependency-owned
+  exception. `Exception.Data` is virtual; a custom RPC exception can throw from its getter or
+  expose a read-only dictionary, replacing the real failure exactly when the locally computed
+  hash must escape. Fold typed state first, then project it onto a fresh library-owned exception
+  with known-writable metadata; retain the hostile exception only as the inner cause.
+- Treat the whole dependency exception as untrusted, not only its `Data`: `Exception.Message`
+  is virtual too. A custom transport exception that threw from `Message` defeated the first
+  fresh-carrier fix before evidence could be attached. Carrier construction must use fixed
+  library-owned text (or text from an exact known-safe type) and retain the dependency exception
+  opaquely as `InnerException`; diagnostic formatting must never be on the evidence-critical
+  path.

@@ -7,7 +7,7 @@ A specification-compliant .NET library for Decentralized Identifiers (DIDs). Net
 
 ## Features
 
-- **DID methods**: `did:key`, `did:peer`, `did:webvh` (full CRUD), and `did:ethr` (Create + Resolve, including historical resolution)
+- **DID methods**: `did:key`, `did:peer`, `did:webvh`, and `did:ethr` (all full CRUD; did:ethr includes historical resolution and relayed meta-transactions)
 - **Eight key types**: Ed25519, X25519, P-256, P-384, P-521, secp256k1, BLS12-381 G1/G2
 - **BBS+ signatures**: Multi-message signing with selective disclosure proofs (IETF draft-10)
 - **W3C DID Core 1.0** compliant DID Document model and serialization
@@ -281,14 +281,7 @@ Console.WriteLine(result.Did);
 // Output: did:ethr:sepolia:0x4b0d...
 ```
 
-No on-chain transaction is required to create a `did:ethr`. The DID is derived deterministically from the secp256k1 key pair.
-
-`DidEthrMethod.Capabilities` is `Create | Resolve | ServiceEndpoints`. Writing ERC-1056
-events — `setAttribute`, `addDelegate`/`revokeDelegate`, `changeOwner`, and their
-meta-transaction variants — is not implemented yet, so `UpdateAsync` and `DeactivateAsync`
-throw `OperationNotSupportedException`. `DidEthrUpdateOptions` and
-`DidEthrDeactivateOptions` ship today so the public API is stable for that work.
-Resolution already *recognises* a deactivated identity (see below).
+No on-chain transaction is required to create a `did:ethr`. The DID is derived deterministically from the secp256k1 key pair. `DidEthrMethod.Capabilities` is `Create | Resolve | Update | Deactivate | ServiceEndpoints` — full CRUD.
 
 ### Resolve a did:ethr
 
@@ -360,6 +353,165 @@ var result = await method.CreateAsync(new DidEthrCreateOptions
 });
 ```
 
+### Update a did:ethr
+
+Updates are on-chain ERC-1056 transactions. The controller key is an
+`IRecoverableDigestSigner` (NetCrypto ≥ 1.4.0) — Ethereum signatures are recoverable ECDSA
+over a caller-computed keccak digest, which the general-purpose `ISigner` cannot produce, and
+the interface keeps HSM/key-store-held keys usable (`KeyPairSigner` implements it):
+
+```csharp
+var controller = new KeyPairSigner(existingKey, new DefaultCryptoProvider());
+
+var updated = await method.UpdateAsync(result.Did.Value, new DidEthrUpdateOptions
+{
+    ControllerKey = controller,
+    AddServices   = [new DidEthrServiceAttribute
+    {
+        ServiceType     = "MessagingService",
+        ServiceEndpoint = "https://hub.example.com/messages",
+    }],
+    AddDelegates  = [new DidEthrDelegate
+    {
+        DelegateType    = "sigAuth",              // → authentication + assertionMethod
+        DelegateAddress = "0xb0b0…0002",
+        Validity        = TimeSpan.FromDays(30),
+    }],
+    AddAttributes = [new DidEthrAttribute
+    {
+        // Raw did/pub attributes publish FULL key material — the implicit
+        // blockchainAccountId controller VM cannot (an address is a hash, not a key).
+        Name  = "did/pub/Ed25519/veriKey/base64",
+        Value = ed25519PublicKey,
+    }],
+    // NewOwnerAddress = "0x…",  // transfers the update authority; always submitted last.
+    //                            // Passing 0x000…000 here performs a DEACTIVATION —
+    //                            // prefer DeactivateAsync, which says so explicitly.
+});
+
+var txHashes = (IReadOnlyList<string>)updated.Artifacts!["transactions"];
+```
+
+Operations are submitted sequentially — revocations, then additions, then (always last) the
+owner change, because `changeOwner` strips the current key's authority over any later
+operation. The submitting account must hold ETH for gas; a pre-flight `identityOwner` check
+fails closed *before anything is broadcast* if `ControllerKey` is not the current owner, and
+every write — including post-transaction readback — is bounded by an overall deadline. Once
+transaction submission begins, failures carry evidence split by what the client actually
+proved:
+
+- `Exception.Data[DidEthrMethod.LandedTransactionsKey]` is a `string[]` of hashes with observed
+  receipts (including reverted transactions, which still consumed gas and account nonce).
+- `Exception.Data[DidEthrMethod.InFlightTransactionsKey]` is a `string[]` of locally computed
+  hashes that may have been broadcast but have no observed receipt. Query each hash before
+  retrying; a lost send response or receipt can hide a transaction that later confirms.
+
+Validation and pre-flight failures that occur before a transaction hash exists do not promise
+these evidence keys. Receipt evidence is accepted only when its hash matches the locally
+computed submitted hash; metadata on exceptions from an injected RPC client is never treated
+as transaction evidence. Evidence is projected onto a fresh library-owned exception, so a
+custom client cannot suppress the hashes with a throwing or read-only `Exception.Data`.
+The carrier surfaces the dependency's exception type and message for diagnosis, but reads them
+through a guard (a hostile `Message` accessor may throw), strips control characters so a
+dependency cannot forge log lines, and bounds the length. Well-known failure types keep their
+identity — notably `TaskCanceledException`, which is how `HttpClient` reports a timeout — so
+`catch` blocks that discriminate on type still match. The original exception remains available
+as `InnerException`, and dependency text is never treated as transaction evidence.
+
+`DidUpdateResult` carries the update-authority evidence
+(`AuthorizationChange`/`UpdateKeyChange` flip only on an owner change;
+`Effective`/`RevealedUpdateKeys` hold lowercase account addresses — did:ethr's canonical
+authority form).
+
+### Meta-transactions — the identity owner never needs ETH
+
+The controller signs the ERC-1056 `0x19 0x00` operation payload; a funded relayer signs and
+pays for the wrapping transaction:
+
+```csharp
+await method.UpdateAsync(did, new DidEthrUpdateOptions
+{
+    ControllerKey      = controller,     // signs the operation payloads only
+    UseMetaTransaction = true,
+    Relayer            = relayerSigner,  // pays gas
+    AddServices        = [ … ],
+});
+```
+
+The contract's own nonce mapping makes each signed payload single-use — replays revert.
+Registries predating `ethr-did-registry` 0.0.3 (the mainnet `0xdCa7EF03…` deployment) track
+that nonce differently; `EthereumNetworkConfig.LegacyNonce` — pre-set in `KnownNetworks` —
+selects the correct scheme, including the legacy quirk where attribute operations read
+`nonce[identity]` rather than the owner's nonce.
+
+> **Two meta-transaction hazards inherent to ERC-1056**, both verified against real registry
+> bytecode:
+>
+> 1. **Legacy registries lose replay protection after an ownership transfer.** The v0.0.3
+>    contract increments `nonce[identity]` but its `changeOwner` / `addDelegate` /
+>    `revokeDelegate` preimages read `nonce[identityOwner]`. Once those diverge, the preimage
+>    nonce never moves and the signed calldata replays *forever* — anyone who observed it can
+>    resurrect a revoked delegate. NetDid **refuses** to sign those operations in that state
+>    (submit them directly instead); attribute operations are unaffected, since they read the
+>    slot that does get incremented.
+> 2. **Signatures replay across chains.** The ERC-1056 preimage binds the registry address
+>    but **not** a chain id, and `KnownNetworks` maps one registry address to several chains
+>    (`0xdCa7EF03…` → mainnet/polygon/…, `0x03d5003b…` → sepolia/gnosis/…). A meta-transaction
+>    authorized on one of them is valid on the others whenever that identity's nonce there
+>    matches. NetDid cannot fix this — the contract has no chain binding. If the same key
+>    controls the same identity on more than one chain sharing a registry, prefer direct
+>    submission.
+
+### Deactivate a did:ethr
+
+```csharp
+var deactivated = await method.DeactivateAsync(did, new DidEthrDeactivateOptions
+{
+    ControllerKey = controller,          // UseMetaTransaction + Relayer also supported
+});
+// deactivated.Success == true; the DID now resolves with deactivated: true
+```
+
+Deactivation is `changeOwner` to `0x000…000`; resolution then returns a stripped document
+with `deactivated: true`, and historical resolution (`?versionId`) still reaches
+pre-deactivation states.
+
+> **Deactivation is not a lock.** The `did:ethr` spec calls this "irreversible", but the
+> deployed registry does not enforce that: `identityOwner()` is
+> `owner != 0 ? owner : identity`, so zeroing the owner slot returns control **to the
+> identity address itself**. If the identity is an EOA whose key you still hold, that key can
+> write again — and a later non-zero `DIDOwnerChanged` clears the `deactivated` flag.
+> Verified against the real registry bytecode (`DeactivationRealityTests`). Deactivation is
+> permanent only when nobody can act as the identity address (e.g. a contract identity, or a
+> discarded key). To make it stick, transfer ownership to an address that provably cannot
+> sign before zeroing it, or treat key destruction as part of the procedure.
+
+### Deploy the registry on a private chain
+
+Public networks never need this — the registry is already deployed at the `KnownNetworks`
+addresses. For a private/consortium EVM chain, deploy the vendored official bytecode
+(embedded from the MIT-licensed `ethr-did-registry` npm artifacts, keccak-pinned by tests)
+through the same transaction pipeline:
+
+```csharp
+const ulong chainId = 1234;
+var registryAddress = await Erc1056Registry.DeployAsync(
+    rpcClient, fundedDeployerKey, chainId);
+
+var network = new EthereumNetworkConfig
+{
+    Name = "mychain", RpcUrl = "https://rpc.internal", ChainId = "0x4d2",
+    RegistryAddress = registryAddress,
+};
+```
+
+The chain ID is required because it is the EIP-155 replay binding in the deployment
+signature. `DeployAsync` cross-checks it against the node's `eth_chainId` and aborts before
+signing on disagreement, so the RPC endpoint cannot choose which chain the key authorizes.
+Ambiguous deployment failures use the same
+`DidEthrMethod.LandedTransactionsKey`/`InFlightTransactionsKey` evidence contract as updates,
+so callers can query a possibly accepted deployment before retrying at a different nonce.
+
 ### Known networks
 
 `KnownNetworks` mirrors the [`deployments.ts`](https://github.com/decentralized-identity/ethr-did-resolver/blob/master/src/config/deployments.ts) catalogue from the JS reference resolver — correct registry addresses and `legacyNonce` flags pre-populated:
@@ -386,20 +538,24 @@ chain ID 5 without being advertised in `KnownNetworks.All`. Consumers can supply
 networks with `EthereumNetworkConfig`; the library does not attempt to enumerate every
 EVM-compatible chain.
 
-### Runnable examples
+### Runnable examples and tests
 
 ```bash
-dotnet run --project samples/NetDid.Samples.DidEthr              # offline, no network needed
+dotnet run --project samples/NetDid.Samples.DidEthr              # offline full CRUD, no network
 dotnet run --project samples/NetDid.Samples.DidEthr -- --live    # resolve a real Sepolia DID
+NETDID_ETHR_INTEGRATION=1 dotnet test tests/NetDid.Method.Ethr.IntegrationTests  # real EVM (Docker)
 ```
 
-The sample runs against an in-memory ERC-1056 registry that implements the public
-`IEthereumRpcClient` interface, so the real resolver replays a scripted on-chain history
-deterministically. It covers create (generated and existing keys), every identifier form,
-the `KnownNetworks` catalogue, full-history resolve, `?versionId` / `?versionTime` replay,
-delegate expiry and revocation, owner change, deactivation, every resolution error code,
-DID URL dereferencing, and DI registration. `--live` resolves a real DID over JSON-RPC
-(endpoint from the argument or `NETDID_ETHR_RPC_URL`).
+The sample runs against an in-memory ERC-1056 chain emulator that accepts genuinely signed
+transactions (strict RLP decoding, real `ecrecover` sender recovery, the verified contract
+semantics of both registry generations), so every section — create, update, meta-transactions,
+historical replay, expiry vs revocation, owner rotation, deactivation, registry deployment,
+error handling, dereferencing, DI — runs the real public API deterministically and offline.
+
+The integration suite is the real-EVM oracle: gated by `NETDID_ETHR_INTEGRATION=1`, it starts
+an Anvil (Foundry) container via Testcontainers, deploys the vendored registry bytecode of
+both generations, and proves the full lifecycle — including meta-transaction preimages and
+the legacy-nonce divergence — against actual contract execution.
 
 ## did:webvh
 
@@ -674,21 +830,21 @@ netdid/
 │   ├── NetDid.Method.Key/                   # did:key method
 │   ├── NetDid.Method.Peer/                  # did:peer method (numalgo 0, 2, 4)
 │   ├── NetDid.Method.WebVh/                 # did:webvh method (full CRUD)
-│   ├── NetDid.Method.Ethr/                  # did:ethr method (Create + Resolve)
+│   ├── NetDid.Method.Ethr/                  # did:ethr method (full CRUD, ERC-1056)
 │   └── NetDid.Extensions.DependencyInjection/  # Microsoft DI integration
 ├── tests/
 │   ├── NetDid.Core.Tests/                   # 377 unit tests
 │   ├── NetDid.Method.Key.Tests/             # 52 tests
 │   ├── NetDid.Method.Peer.Tests/            # 48 tests
 │   ├── NetDid.Method.WebVh.Tests/           # 411 tests
-│   ├── NetDid.Method.Ethr.Tests/            # 195 tests
+│   ├── NetDid.Method.Ethr.Tests/            # 316 tests
 │   ├── NetDid.Tests.W3CConformance/         # 233 W3C conformance tests
 │   └── NetDid.Extensions.DependencyInjection.Tests/  # 18 tests
 ├── samples/
 │   ├── NetDid.Samples.DidKey/               # did:key usage examples
 │   ├── NetDid.Samples.DidPeer/              # did:peer usage examples
 │   ├── NetDid.Samples.DidWebVh/             # did:webvh CRUD examples
-│   ├── NetDid.Samples.DidEthr/              # did:ethr create, resolve, history, deactivation
+│   ├── NetDid.Samples.DidEthr/              # did:ethr full CRUD (offline chain emulator)
 │   └── NetDid.Samples.DependencyInjection/  # DI registration pattern
 └── netdid.sln
 ```
@@ -726,7 +882,7 @@ NetDid is developed in four phases (see [NetDidPRD.md](NetDidPRD.md) for full de
 | **I** | Core Foundation — DID Document model, crypto primitives, encoding, serialization, resolver infrastructure | Complete |
 | **II** | `did:key` and `did:peer` method implementations | Complete |
 | **III** | `did:webvh` method implementation | Complete |
-| **IV** | `did:ethr` method implementation | Create + Resolve complete; on-chain Update/Deactivate planned |
+| **IV** | `did:ethr` method implementation | Complete (full CRUD incl. meta-transactions) |
 
 ## Specifications
 

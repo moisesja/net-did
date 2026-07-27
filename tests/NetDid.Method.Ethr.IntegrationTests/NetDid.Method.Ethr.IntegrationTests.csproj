@@ -10,13 +10,11 @@
     <PackageReference Include="xunit" />
     <PackageReference Include="xunit.runner.visualstudio" />
     <PackageReference Include="FluentAssertions" />
-    <PackageReference Include="NSubstitute" />
-    <PackageReference Include="coverlet.collector" />
+    <PackageReference Include="Testcontainers" />
   </ItemGroup>
 
   <ItemGroup>
     <ProjectReference Include="../../src/NetDid.Method.Ethr/NetDid.Method.Ethr.csproj" />
-    <ProjectReference Include="../NetDid.Method.Ethr.Emulator/NetDid.Method.Ethr.Emulator.csproj" />
   </ItemGroup>
 
 </Project>
