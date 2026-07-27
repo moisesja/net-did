@@ -491,6 +491,25 @@ public sealed class DidEthrMethod : DidMethodBase
             identifier, ethrOptions.ControllerKey, ethrOptions.UseMetaTransaction,
             ethrOptions.Relayer, operations, ct);
 
+        // EVERYTHING past this point runs with operations already on-chain, so every failure
+        // here must still carry the landed set — a post-loop throw that reported nothing was
+        // how the first evidence fix stayed reachable (it only guarded the submission loop).
+        try
+        {
+            return await BuildUpdateResultAsync(
+                did, identifier, transactionHashes, controllerAddress, newOwner, ct);
+        }
+        catch (Exception ex)
+        {
+            throw AttachLandedTransactions(ex, transactionHashes);
+        }
+    }
+
+    private async Task<DidUpdateResult> BuildUpdateResultAsync(
+        string did, EthrIdentifier identifier, List<string> transactionHashes,
+        string controllerAddress, string? newOwner, CancellationToken ct)
+    {
+        var identity = identifier.IdentityAddress;
         var resolved = await ResolveAsync(did, null, ct);
         if (resolved.DidDocument is null)
             throw new EthereumInteractionException(
@@ -507,6 +526,21 @@ public sealed class DidEthrMethod : DidMethodBase
         var effectiveOwner = ParseAddressWordResult(
             await _rpcFactory.GetOrCreate(network).CallAsync(
                 network.RegistryAddress, Erc1056Calls.IdentityOwner(identity), ct));
+
+        // That eth_call and the event log both come from the same untrusted node, so trusting
+        // it alone just swaps one unauthenticated oracle for another. The document the
+        // resolver just replayed already knows the controller; require the two to agree, so a
+        // node must forge BOTH consistently rather than one cheap call.
+        var documentController = resolved.DidDocument.VerificationMethod?
+            .FirstOrDefault(vm => vm.Id.EndsWith("#controller", StringComparison.Ordinal))?
+            .BlockchainAccountId;
+        if (documentController is not null
+            && !documentController.EndsWith(effectiveOwner[2..], StringComparison.OrdinalIgnoreCase))
+            throw new EthereumInteractionException(
+                $"did:ethr update transactions landed [{string.Join(", ", transactionHashes)}] " +
+                $"but the registry reports owner {effectiveOwner} while the replayed event " +
+                $"history yields controller '{documentController}'. Refusing to report " +
+                "contradictory update-authority evidence.");
 
         // The null address is unownable: nobody can authorize a further update. The empty list
         // is DidUpdateResult's documented "no keys are authorized" signal — reporting
@@ -548,8 +582,17 @@ public sealed class DidEthrMethod : DidMethodBase
             identifier, ethrOptions.ControllerKey, ethrOptions.UseMetaTransaction,
             ethrOptions.Relayer, operations, ct);
 
-        // Success is what the chain now says, not what we submitted.
-        var resolved = await ResolveAsync(did, null, ct);
+        // Success is what the chain now says, not what we submitted. As in Update, a failure
+        // in this post-batch read must still carry the transactions that already landed.
+        DidResolutionResult resolved;
+        try
+        {
+            resolved = await ResolveAsync(did, null, ct);
+        }
+        catch (Exception ex)
+        {
+            throw AttachLandedTransactions(ex, transactionHashes);
+        }
         return new DidDeactivateResult
         {
             Success = resolved.DocumentMetadata?.Deactivated == true,
@@ -606,7 +649,7 @@ public sealed class DidEthrMethod : DidMethodBase
                 "an explicit chain id: it is the EIP-155 replay binding in the signature, and " +
                 "auto-detecting it would let the RPC endpoint decide which chain your key " +
                 "signs for. Set EthereumNetworkConfig.ChainId (KnownNetworks entries already " +
-                "carry it).", "options");
+                "carry it).", nameof(EthereumNetworkConfig.ChainId));
         var chainId = await ResolveChainIdNumericAsync(network, rpc, callerCt);
 
         // Pre-flight (advisory; the contract's onlyOwner/checkSignature is the

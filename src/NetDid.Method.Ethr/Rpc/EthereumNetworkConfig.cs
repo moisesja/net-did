@@ -29,4 +29,18 @@ public sealed record EthereumNetworkConfig
     /// need to outbid extreme congestion, should raise it deliberately.</para>
     /// </summary>
     public ulong MaxGasPriceWei { get; init; } = 5_000UL * 1_000_000_000UL;
+
+    /// <summary>
+    /// Ceiling on the TOTAL fee a single did:ethr transaction may authorize
+    /// (<c>gasPrice × gasLimit</c>), in wei. Bounding price and limit separately is not enough:
+    /// both are node-controlled, so their product — the money actually at risk — can reach the
+    /// product of the two ceilings while each looks individually reasonable. A transaction that
+    /// would exceed this is rejected before signing.
+    ///
+    /// <para>The default, 0.1 ETH, is roughly an order of magnitude above a registry write at
+    /// congested-mainnet prices. Raise it deliberately for chains whose native token is worth
+    /// far less per unit.</para>
+    /// </summary>
+    public System.Numerics.BigInteger MaxTransactionFeeWei { get; init; } =
+        System.Numerics.BigInteger.Pow(10, 17);
 }

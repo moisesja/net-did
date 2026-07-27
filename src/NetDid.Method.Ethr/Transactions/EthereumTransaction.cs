@@ -86,15 +86,14 @@ internal sealed record EthereumTransaction
         var s = new BigInteger(signature64[32..], isUnsigned: true, isBigEndian: true);
 
         // Validate the scalars here rather than discovering it from a node rejection: the
-        // signature arrives through the caller-supplied IRecoverableDigestSigner seam, and
-        // every EVM node enforces canonical scalars plus EIP-2 low-S anyway.
+        // signature arrives through the caller-supplied IRecoverableDigestSigner seam.
         if (r.IsZero || s.IsZero || r >= Secp256k1Order || s >= Secp256k1Order)
             throw new ArgumentException(
                 "Signature scalars must be canonical values in [1, n-1].", nameof(signature64));
         if (s > Secp256k1HalfOrder)
             throw new ArgumentException(
-                "Signature must be low-S (EIP-2); every EVM node rejects the malleable twin.",
-                nameof(signature64));
+                "Signature must be low-S (EIP-2). Use CanonicalizeSignature first — HSM " +
+                "backends legitimately return the malleable twin.", nameof(signature64));
         var v = 35 + 2 * (BigInteger)ChainId + recoveryId;
 
         return RlpEncoder.EncodeList(
@@ -104,6 +103,37 @@ internal sealed record EthereumTransaction
             RlpEncoder.EncodeUnsigned(r),
             RlpEncoder.EncodeUnsigned(s),
         ]);
+    }
+
+    /// <summary>
+    /// Returns the EIP-2 canonical (low-S) form of a recoverable signature: when
+    /// <c>s > n/2</c>, replaces it with <c>n - s</c> and flips the recovery id. The result is
+    /// a valid signature over the same digest recovering to the same public key.
+    ///
+    /// <para>Needed because the <see cref="IRecoverableDigestSigner"/> seam is caller-supplied:
+    /// PKCS#11 <c>CKM_ECDSA</c> and many HSM/KMS backends do not normalize, and rejecting their
+    /// output would break exactly the HSM-backed signers the seam exists to support. (NetCrypto's
+    /// own signer already returns low-S, so this is a no-op for it.)</para>
+    /// </summary>
+    public static (byte[] Signature64, int RecoveryId) CanonicalizeSignature(
+        byte[] signature64, int recoveryId)
+    {
+        ArgumentNullException.ThrowIfNull(signature64);
+        if (signature64.Length != 64)
+            throw new ArgumentException(
+                $"Compact signature must be 64 bytes, got {signature64.Length}.", nameof(signature64));
+        if (recoveryId is not (0 or 1))
+            return (signature64, recoveryId); // let EncodeSigned report the real problem
+
+        var s = new BigInteger(signature64.AsSpan(32), isUnsigned: true, isBigEndian: true);
+        if (s <= Secp256k1HalfOrder)
+            return (signature64, recoveryId);
+
+        var canonical = new byte[64];
+        signature64.AsSpan(0, 32).CopyTo(canonical);
+        var lowS = (Secp256k1Order - s).ToByteArray(isUnsigned: true, isBigEndian: true);
+        lowS.CopyTo(canonical, 64 - lowS.Length);
+        return (canonical, recoveryId ^ 1);
     }
 
     /// <summary>The transaction hash of a raw signed transaction: 0x-prefixed keccak256.</summary>

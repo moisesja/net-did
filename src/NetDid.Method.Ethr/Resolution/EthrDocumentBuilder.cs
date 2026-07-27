@@ -179,9 +179,18 @@ public static class EthrDocumentBuilder
             var purpose   = parts.Length > 3 ? parts[3] : "veriKey";
             var vmId      = $"{did}#delegate-{counter}";
 
+            // A malformed VALUE must degrade this one entry, never the whole document.
+            // Key decoding throws for a value that is not a valid point / wrong length, and
+            // letting that escape made resolution return notFound for the entire DID —
+            // permanently, for the attribute's validity window. That also breaks interop:
+            // an attribute written by another tool that we cannot decode would erase a DID
+            // we can otherwise resolve. The authorization history stays fail-closed; this is
+            // about one entry's key material.
             VerificationMethod? vm = null;
-            switch (algorithm)
+            try
             {
+                switch (algorithm)
+                {
                 case "Secp256k1":
                     needsSecp256k1Key = true;
                     vm = new VerificationMethod
@@ -242,6 +251,13 @@ public static class EthrDocumentBuilder
                         AdditionalProperties = hexDict,
                     };
                     break;
+                }
+            }
+            catch (Exception ex) when (ex is ArgumentException or FormatException
+                                       or IndexOutOfRangeException)
+            {
+                // Undecodable key material for the declared algorithm: skip this entry.
+                continue;
             }
 
             if (vm is null) continue;

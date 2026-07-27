@@ -57,10 +57,17 @@ public static class Erc1056Registry
     /// build exists for compatibility testing.</param>
     /// <param name="ct">Cancellation token.</param>
     /// <returns>The 0x-prefixed address for <see cref="EthereumNetworkConfig.RegistryAddress"/>.</returns>
+    /// <param name="feeCeiling">
+    /// Optional network configuration whose <see cref="EthereumNetworkConfig.MaxGasPriceWei"/>
+    /// and <see cref="EthereumNetworkConfig.MaxTransactionFeeWei"/> bound what this deployment
+    /// may spend. Omit to use the library defaults. Pass the same config you will resolve and
+    /// write with, so one process cannot enforce a ceiling on updates while ignoring it here.
+    /// </param>
     public static async Task<string> DeployAsync(
         IEthereumRpcClient rpc,
         IRecoverableDigestSigner deployerKey,
         bool legacy = false,
+        EthereumNetworkConfig? feeCeiling = null,
         CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(rpc);
@@ -73,7 +80,10 @@ public static class Erc1056Registry
         // CREATE address before returning, so a node cannot nominate an attacker-controlled
         // contract as the caller's registry trust anchor.
         var receipt = await TransactionPipeline.SubmitAndConfirmAsync(
-            rpc, deployerKey, to: null, bytecode.ToArray(), chainId, ct: ct);
+            rpc, deployerKey, to: null, bytecode.ToArray(), chainId,
+            maxGasPriceWei: feeCeiling?.MaxGasPriceWei ?? TransactionPipeline.DefaultMaxGasPriceWei,
+            maxTransactionFeeWei: feeCeiling?.MaxTransactionFeeWei,
+            ct: ct);
 
         return receipt.ContractAddress
             ?? throw new EthereumInteractionException(

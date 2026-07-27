@@ -77,13 +77,14 @@ public class RedTeamWritePathTests
     }
 
     [Fact]
-    public async Task A1c_GasPriceAtTheCeiling_IsAccepted()
+    public async Task A1c_HonestlyExpensiveGasPrice_IsAccepted()
     {
-        // The bound must not deny honest, merely-expensive chains.
+        // The bounds must not deny honest, merely-expensive chains: 400 gwei is a bad day on
+        // mainnet, and a registry write at that price costs ~0.05 ETH — under the fee ceiling.
         var chain = new EmulatedEthereumChain(Registry);
         var owner = NewActor();
         var network = Network();
-        var hostile = new HostileRpcClient(chain) { GasPriceOverride = network.MaxGasPriceWei };
+        var hostile = new HostileRpcClient(chain) { GasPriceOverride = 400UL * 1_000_000_000UL };
         var method = new DidEthrMethod(
             new SingleNetworkRpcFactory("sepolia", hostile), [network], new DefaultKeyGenerator());
 
@@ -92,6 +93,28 @@ public class RedTeamWritePathTests
             new DidEthrUpdateOptions { ControllerKey = owner.Signer, AddServices = [Svc()] });
 
         result.DidDocument.Service.Should().ContainSingle();
+    }
+
+    [Fact]
+    public async Task A1d_PriceUnderTheCeilingButFeeOverIt_IsRejected()
+    {
+        // Price and limit are BOTH node-controlled, so bounding them separately still permits
+        // their product to reach the product of the ceilings. 5000 gwei passes the price
+        // ceiling exactly, yet ~125k gas puts the authorized fee at ~0.6 ETH.
+        var chain = new EmulatedEthereumChain(Registry);
+        var owner = NewActor();
+        var network = Network();
+        var hostile = new HostileRpcClient(chain) { GasPriceOverride = network.MaxGasPriceWei };
+        var method = new DidEthrMethod(
+            new SingleNetworkRpcFactory("sepolia", hostile), [network], new DefaultKeyGenerator());
+
+        var act = () => method.UpdateAsync(
+            $"did:ethr:sepolia:{owner.Address}",
+            new DidEthrUpdateOptions { ControllerKey = owner.Signer, AddServices = [Svc()] });
+
+        (await act.Should().ThrowAsync<EthereumInteractionException>())
+            .WithMessage("*wei in fees*ceiling*");
+        chain.CurrentBlockNumber.Should().Be(0);
     }
 
     [Fact]

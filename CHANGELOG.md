@@ -85,6 +85,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (fragment, `serviceType`, `text/uri-list`), capability reporting, and DI registration.
   `dotnet run -- --live [rpcUrl]` (or `NETDID_ETHR_RPC_URL`) keeps the real-network path.
 
+- **`EthereumNetworkConfig.MaxGasPriceWei` / `MaxTransactionFeeWei`** — spend ceilings on the
+  write path. The RPC endpoint is untrusted and its gas price becomes a fee the caller's key
+  authorizes; bounding price and limit separately is insufficient because both are
+  node-controlled, so the total fee (`gasPrice × gasLimit`) is bounded too. Defaults (5,000 gwei
+  / 0.1 ETH) sit well above honest mainnet congestion.
+- **`EthereumTransaction.CanonicalizeSignature`** — EIP-2 low-S normalization applied to whatever
+  the `IRecoverableDigestSigner` returns, so HSM/KMS backends that do not normalize (PKCS#11
+  `CKM_ECDSA`) work rather than being rejected.
+- **Landed-transaction evidence on failure** — `Exception.Data[DidEthrMethod.LandedTransactionsKey]`
+  carries the confirmed transaction hashes for *any* Update/Deactivate failure, including
+  post-batch ones, and `TransactionPipeline.BroadcastTransactionKey` carries an in-flight hash
+  when a node's hash echo cannot be verified, so a retry cannot double-apply.
+
 ### Changed
 
 - **`NetCrypto` 1.3.0 → 1.4.0** — did:ethr transactions and meta-transaction payloads are signed

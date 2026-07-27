@@ -31,6 +31,21 @@ internal static class TransactionPipeline
     /// </summary>
     public const ulong DefaultMaxGasPriceWei = 5_000UL * 1_000_000_000UL;
 
+    /// <summary>
+    /// Default ceiling on the TOTAL fee a single transaction may authorize
+    /// (<c>gasPrice × gasLimit</c>). Same rationale as
+    /// <see cref="EthereumNetworkConfig.MaxTransactionFeeWei"/>.
+    /// </summary>
+    public static readonly BigInteger DefaultMaxTransactionFeeWei =
+        BigInteger.Pow(10, 17); // 0.1 ETH — ~30x a congested-mainnet registry write
+
+    /// <summary>
+    /// Key under which a failure carries the hash of a transaction that WAS broadcast
+    /// (<see cref="Exception.Data"/>), so callers assembling landed-transaction evidence do
+    /// not under-report an in-flight transaction.
+    /// </summary>
+    public const string BroadcastTransactionKey = "netdid.ethr.broadcastTransaction";
+
     /// <summary>Derives the signer's Ethereum address, validating the key type up front (NFR-3 style).</summary>
     public static string AddressOf(IRecoverableDigestSigner signer, string paramName)
     {
@@ -75,10 +90,12 @@ internal static class TransactionPipeline
         ulong chainId,
         BigInteger? value = null,
         ulong maxGasPriceWei = DefaultMaxGasPriceWei,
+        BigInteger? maxTransactionFeeWei = null,
         CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(rpc);
         ArgumentNullException.ThrowIfNull(data);
+        var feeCeiling = maxTransactionFeeWei ?? DefaultMaxTransactionFeeWei;
 
         var sender = AddressOf(signer, nameof(signer));
         var dataHex = "0x" + Convert.ToHexString(data).ToLowerInvariant();
@@ -118,6 +135,18 @@ internal static class TransactionPipeline
                 $"above this library's {MaxGasLimit} ceiling for a single did:ethr transaction. " +
                 "Nothing was signed or broadcast. Split the update into smaller operations, or " +
                 "reduce the size of the attribute/service values being written.");
+
+        // Price and limit are BOTH node-controlled, so bounding them separately still allows
+        // their product — the actual money — to reach the product of the two ceilings. Bound
+        // the spend itself: this is the number a caller would actually reason about.
+        var maxFee = (BigInteger)gasPrice * gasLimit;
+        if (maxFee > feeCeiling)
+            throw new EthereumInteractionException(
+                $"This transaction would authorize up to {maxFee} wei in fees " +
+                $"({gasPrice} wei/gas × {gasLimit} gas), above the configured ceiling of " +
+                $"{feeCeiling} wei. Nothing was signed or broadcast. Raise " +
+                $"{nameof(EthereumNetworkConfig)}.{nameof(EthereumNetworkConfig.MaxTransactionFeeWei)} " +
+                "only if this chain's fees are legitimately this high.");
 
         var transaction = new EthereumTransaction
         {
@@ -160,7 +189,13 @@ internal static class TransactionPipeline
                 $"The signer's signature recovers to {recovered}, not to the address its " +
                 $"public key advertises ({sender}). Nothing was broadcast.");
 
-        var raw = transaction.EncodeSigned(signature.Signature64, signature.RecoveryId);
+        // PKCS#11 CKM_ECDSA and many HSM/KMS backends do not low-S normalize. The malleable
+        // twin is a VALID signature over the same digest recovering to the same key, so
+        // canonicalize it (s' = n - s, flip the recovery id) rather than rejecting a
+        // legitimate signer — rejecting would have made the "HSM keys work" claim false.
+        var (canonical, canonicalRecoveryId) =
+            EthereumTransaction.CanonicalizeSignature(signature.Signature64, signature.RecoveryId);
+        var raw = transaction.EncodeSigned(canonical, canonicalRecoveryId);
 
         // The transaction hash is keccak256(raw) — we can and must compute it ourselves.
         // Accepting the node's echo verbatim let a hostile endpoint write an arbitrary value
@@ -168,10 +203,18 @@ internal static class TransactionPipeline
         var expectedHash = EthereumTransaction.HashOf(raw);
         var reportedHash = await rpc.SendRawTransactionAsync(raw, ct);
         if (!string.Equals(reportedHash, expectedHash, StringComparison.OrdinalIgnoreCase))
-            throw new EthereumInteractionException(
+        {
+            // The node ALREADY accepted these bytes — the transaction is in flight under its
+            // true hash regardless of what the echo said. Carry that hash on the exception so
+            // the caller's landed-transaction evidence stays complete; discarding it here was
+            // how a first-round fix ended up under-reporting what had actually landed.
+            var mismatch = new EthereumInteractionException(
                 $"The RPC endpoint reported transaction hash {reportedHash}, but the broadcast " +
-                $"bytes hash to {expectedHash}. Refusing to report an unverifiable hash; the " +
-                "transaction may still have been accepted under its true hash.");
+                $"bytes hash to {expectedHash}. The transaction was accepted and may confirm " +
+                "under its true hash.");
+            mismatch.Data[BroadcastTransactionKey] = expectedHash;
+            throw mismatch;
+        }
         var transactionHash = expectedHash;
 
         while (true)
