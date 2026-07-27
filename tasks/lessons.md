@@ -275,3 +275,35 @@
   had moved, which broke a legitimate, demonstrably-safe path — caught by an existing test
   failing. A guard that denies honest input is a defect too; derive the predicate from the
   mechanism, not from the scenario in the exploit report.
+- Validate BOTH halves of a name/value pair at a write boundary. Round 2 rejected non-ASCII
+  attribute NAMES (the resolver decodes ASCII) but left VALUES unchecked, so writing the
+  spec-canonical `did/pub/Secp256k1/veriKey/hex` with a non-key value landed on-chain and then
+  threw inside the document builder — resolution returned notFound for the ENTIRE DID, for the
+  attribute's 10-year validity. One API call permanently bricked the identity. Two rules: (a)
+  when you harden one field of a structure, enumerate the sibling fields that reach the same
+  consumer; (b) a per-entry decode failure must degrade THAT ENTRY, not the whole document —
+  fail-closed belongs to authorization/history integrity, not to one optional key's encoding.
+  The tolerant read is also the interoperable one: an attribute another tool wrote that we
+  cannot decode should not erase a DID we can otherwise resolve.
+- A `try` block that wraps "the risky part" leaves the epilogue unguarded, and fixes tend to
+  RELOCATE that gap rather than close it. The landed-transaction evidence fix wrapped the
+  submission loop; the very same fix then ADDED a post-loop chain read, so a malformed response
+  there — plus cancellation before it, plus a resolve failure — reported "nothing landed" while
+  transactions sat on-chain. When the invariant is "after side effects begin, every exit path
+  carries the evidence", the guard must span from the first side effect to the return, not
+  around the loop that produces them.
+- Report the effect, not the bookkeeping. The hash-echo verification threw AFTER
+  `eth_sendRawTransaction` had already accepted the bytes, so the operation never reached the
+  landed list even though the chain applied it — the evidence was not merely missing but WRONG,
+  which is worse: a caller trusting it double-applies on retry. Record a side effect at the
+  moment it becomes possible (broadcast), not at the moment you finish validating the response.
+- Two ceilings on two node-controlled factors do not bound their product. Capping gas PRICE at
+  5,000 gwei and gas LIMIT at 3M still authorized 15 ETH per transaction. Bound the quantity the
+  user actually cares about — total fee — not only its inputs; a per-factor cap reads like
+  protection while leaving the real exposure at the product of the caps.
+- Strictness that a legitimate backend cannot satisfy is a defect, not rigor. Rejecting high-S
+  signatures looked like sound EIP-2 hygiene but broke every HSM whose PKCS#11 `CKM_ECDSA` does
+  not normalize — contradicting the same change's "HSM keys work" claim. The malleable twin is a
+  valid signature over the same digest recovering to the same key, so canonicalize (s' = n-s,
+  flip recid) instead of refusing. Before adding a validity check on data from a pluggable seam,
+  ask which real implementations produce the form you are about to reject.
