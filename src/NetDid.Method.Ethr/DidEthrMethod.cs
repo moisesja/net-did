@@ -936,37 +936,87 @@ public sealed class DidEthrMethod : DidMethodBase
     private static Exception CreateTrustedExceptionCarrier(Exception cause)
         => cause switch
         {
+            // TaskCanceledException is how HttpClient reports a TIMEOUT, so it is the most
+            // common real failure on this path. Preserve the exact type: re-typing it to the
+            // base class silently breaks `catch (TaskCanceledException)` for callers.
+            TaskCanceledException canceled
+                when canceled.GetType() == typeof(TaskCanceledException)
+                => new TaskCanceledException(
+                    SafeExceptionDetail(canceled), canceled, canceled.CancellationToken),
             OperationCanceledException canceled
                 when canceled.GetType() == typeof(OperationCanceledException)
                 => new OperationCanceledException(
                     canceled.Message, canceled, canceled.CancellationToken),
             OperationCanceledException canceled => new OperationCanceledException(
-                "A did:ethr dependency canceled during the write.", canceled),
+                SafeExceptionDetail(canceled), canceled),
             HttpRequestException http
                 when http.GetType() == typeof(HttpRequestException)
                 => new HttpRequestException(http.Message, http, http.StatusCode),
             HttpRequestException http => new HttpRequestException(
-                "A did:ethr RPC request failed during the write.", http),
+                SafeExceptionDetail(http), http),
             ArgumentException argument
                 when argument.GetType() == typeof(ArgumentException)
                 => new ArgumentException(argument.Message, argument.ParamName, argument),
             ArgumentException argument => new ArgumentException(
-                "A did:ethr write dependency reported an invalid argument.", argument),
+                SafeExceptionDetail(argument), argument),
             EthereumInteractionException interaction
                 when interaction.GetType() == typeof(EthereumInteractionException)
                 => new EthereumInteractionException(interaction.Message, interaction),
             EthereumInteractionException interaction => new EthereumInteractionException(
-                "A did:ethr interaction dependency failed during the write.", interaction),
-            _ => new EthereumInteractionException(
-                "A did:ethr dependency failed during the write.", cause),
+                SafeExceptionDetail(interaction), interaction),
+            _ => new EthereumInteractionException(SafeExceptionDetail(cause), cause),
         };
 
     private static string TrustedExceptionDetail(Exception cause)
         // Exact library-owned interaction exceptions use Exception's normal Message
-        // implementation. Never dereference a virtual Message override from a dependency type.
+        // implementation; anything else goes through the sanitizer rather than being dropped.
         => cause.GetType() == typeof(EthereumInteractionException)
             ? cause.Message
-            : "an untrusted dependency failed; inspect InnerException in a guarded diagnostic path.";
+            : SafeExceptionDetail(cause);
+
+    /// <summary>Longest dependency-supplied detail we will embed in a message we produce.</summary>
+    private const int MaxDependencyDetailLength = 400;
+
+    /// <summary>
+    /// Renders a dependency exception as diagnostic text that is safe to embed in a message we
+    /// own. Discarding the detail outright made the common case — an <c>HttpClient</c> timeout,
+    /// which arrives as a <see cref="TaskCanceledException"/> subclass — unreadable at the top
+    /// level. The detail is still untrusted, so it is:
+    /// <list type="bullet">
+    ///   <item><description>read inside a guard, because <see cref="Exception.Message"/> is
+    ///   virtual and a hostile override may throw;</description></item>
+    ///   <item><description>stripped of control characters, so it cannot forge log lines
+    ///   (CR/LF injection) in whatever consumes the message;</description></item>
+    ///   <item><description>length-bounded, so an oversized message cannot bloat logs.</description></item>
+    /// </list>
+    /// It is diagnostic text only and is never treated as transaction evidence.
+    /// </summary>
+    private static string SafeExceptionDetail(Exception cause)
+    {
+        // Type identity cannot be overridden, so it is always safe and is the single most
+        // useful thing to surface.
+        var typeName = cause.GetType().Name;
+
+        string? message;
+        try
+        {
+            message = cause.Message;
+        }
+        catch
+        {
+            return $"{typeName} (message unavailable: the dependency's Message accessor threw).";
+        }
+
+        if (string.IsNullOrWhiteSpace(message))
+            return $"{typeName} (no message supplied).";
+
+        var sanitized = new string(
+            message.Select(c => char.IsControl(c) ? ' ' : c).ToArray()).Trim();
+        if (sanitized.Length > MaxDependencyDetailLength)
+            sanitized = sanitized[..MaxDependencyDetailLength] + "…";
+
+        return $"{typeName}: {sanitized}";
+    }
 
     /// <summary>
     /// Key used once did:ethr transaction submission begins to record the <c>string[]</c> of

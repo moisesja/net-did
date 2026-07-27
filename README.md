@@ -411,8 +411,12 @@ these evidence keys. Receipt evidence is accepted only when its hash matches the
 computed submitted hash; metadata on exceptions from an injected RPC client is never treated
 as transaction evidence. Evidence is projected onto a fresh library-owned exception, so a
 custom client cannot suppress the hashes with a throwing or read-only `Exception.Data`.
-The carrier also avoids dereferencing virtual diagnostic properties on the untrusted
-exception; the original remains available as `InnerException`.
+The carrier surfaces the dependency's exception type and message for diagnosis, but reads them
+through a guard (a hostile `Message` accessor may throw), strips control characters so a
+dependency cannot forge log lines, and bounds the length. Well-known failure types keep their
+identity — notably `TaskCanceledException`, which is how `HttpClient` reports a timeout — so
+`catch` blocks that discriminate on type still match. The original exception remains available
+as `InnerException`, and dependency text is never treated as transaction evidence.
 
 `DidUpdateResult` carries the update-authority evidence
 (`AuthorizationChange`/`UpdateKeyChange` flip only on an owner change;

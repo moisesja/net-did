@@ -443,7 +443,12 @@ public class Issue107ReviewRound2Tests
         var thrown = (await act.Should().ThrowAsync<HttpRequestException>()).Which;
 
         chain.CurrentBlockNumber.Should().Be(1);
-        thrown.Message.Should().Be("A did:ethr RPC request failed during the write.");
+        // The carrier must not have propagated the throwing accessor. It now reports the
+        // dependency's TYPE plus an explicit note that the message could not be read, rather
+        // than a fixed opaque string — surfacing safe diagnostic detail was the point of the
+        // follow-up fix, and a throwing accessor is exactly where it must degrade gracefully.
+        thrown.Message.Should().Contain(nameof(PoisonMessageException))
+            .And.Contain("message unavailable");
         thrown.InnerException.Should().BeOfType<PoisonMessageException>();
         Confirmed(thrown).Should().BeEmpty();
         InFlight(thrown).Should().ContainSingle();

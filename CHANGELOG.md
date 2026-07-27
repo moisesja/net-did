@@ -87,6 +87,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (fragment, `serviceType`, `text/uri-list`), capability reporting, and DI registration.
   `dotnet run -- --live [rpcUrl]` (or `NETDID_ETHR_RPC_URL`) keeps the real-network path.
 
+- **Dependency failure diagnostics are preserved, not discarded.** The library-owned exception
+  carrier that protects transaction evidence previously replaced every non-exact dependency
+  exception's message with a fixed string and re-typed it to its base class. That made the most
+  common real failure — an `HttpClient` timeout, which arrives as a `TaskCanceledException`
+  subclass — read as a generic "a dependency canceled" and stop matching
+  `catch (TaskCanceledException)`. The carrier now preserves that type and surfaces the
+  dependency's type and message, read through a guard, stripped of control characters (no log-line
+  forgery) and length-bounded. The anti-forgery guarantees are unchanged: dependency text is
+  diagnostic only and is never treated as transaction evidence.
 - **`Erc1056Registry.DeployAsync` now requires an explicit `chainId`** and cross-checks it
   against the node's `eth_chainId`. Taking the chain id from the endpoint let a malicious node
   obtain a deployment transaction signed for a chain the caller did not choose, and forward it
