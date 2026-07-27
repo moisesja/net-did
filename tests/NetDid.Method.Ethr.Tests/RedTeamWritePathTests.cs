@@ -175,9 +175,11 @@ public class RedTeamWritePathTests
         // Operation #1 IS on chain, and the caller is told so — in the message AND
         // structurally, so a retry cannot double-apply it.
         chain.CurrentBlockNumber.Should().Be(1);
-        thrown.Message.Should().Contain("after landing 1 of 2 operations");
+        thrown.Message.Should().Contain("after confirming 1 of 2 transactions");
         thrown.Data[DidEthrMethod.LandedTransactionsKey].Should().BeOfType<string[]>()
             .Which.Should().ContainSingle().Which.Should().MatchRegex("^0x[0-9a-f]{64}$");
+        thrown.Data[DidEthrMethod.InFlightTransactionsKey].Should().BeOfType<string[]>()
+            .Which.Should().BeEmpty("operation 2 failed before eth_sendRawTransaction");
     }
 
     [Fact]
@@ -208,9 +210,11 @@ public class RedTeamWritePathTests
         var thrown = (await act.Should().ThrowAsync<EthereumInteractionException>()).Which;
 
         chain.CurrentBlockNumber.Should().Be(1, "operation #1 landed");
-        thrown.Message.Should().Contain("after landing 1 of 2 operations");
+        thrown.Message.Should().Contain("after confirming 1 of 2 transactions");
         thrown.Data[DidEthrMethod.LandedTransactionsKey].Should().BeOfType<string[]>()
             .Which.Should().ContainSingle();
+        thrown.Data[DidEthrMethod.InFlightTransactionsKey].Should().BeOfType<string[]>()
+            .Which.Should().BeEmpty("operation 2 failed before eth_sendRawTransaction");
     }
 
     [Fact]

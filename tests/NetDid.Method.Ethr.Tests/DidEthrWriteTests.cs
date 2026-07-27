@@ -564,8 +564,14 @@ public class DidEthrWriteTests
             ],
         });
 
-        (await act.Should().ThrowAsync<EthereumInteractionException>())
-            .WithMessage("*after landing 1 of 2 operations*");
+        var thrown = (await act.Should().ThrowAsync<EthereumInteractionException>())
+            .WithMessage("*after confirming 1 of 2 transactions*")
+            .Which;
+        thrown.Data[DidEthrMethod.LandedTransactionsKey].Should().BeOfType<string[]>()
+            .Which.Should().ContainSingle();
+        thrown.Data[DidEthrMethod.InFlightTransactionsKey].Should().BeOfType<string[]>()
+            .Which.Should().ContainSingle(
+                "the second eth_sendRawTransaction call failed without a receipt");
     }
 
     [Fact]
@@ -590,8 +596,13 @@ public class DidEthrWriteTests
                 ],
             });
 
-        (await act.Should().ThrowAsync<EthereumInteractionException>())
-            .WithMessage("*write deadline*may still confirm later*");
+        var thrown = (await act.Should().ThrowAsync<EthereumInteractionException>())
+            .WithMessage("*write deadline*may still confirm*")
+            .Which;
+        thrown.Data[DidEthrMethod.LandedTransactionsKey].Should().BeOfType<string[]>()
+            .Which.Should().BeEmpty();
+        thrown.Data[DidEthrMethod.InFlightTransactionsKey].Should().BeOfType<string[]>()
+            .Which.Should().ContainSingle();
     }
 
     [Fact]

@@ -423,8 +423,8 @@ public sealed class DidEthrMethod : DidMethodBase
 
     /// <summary>
     /// Overall wall-clock bound for one Update/Deactivate call (all of its transactions).
-    /// Internal so tests can shorten it; when it fires, the failure reports which
-    /// operations landed — a broadcast transaction may still confirm afterwards.
+    /// Internal so tests can shorten it; when it fires, the failure reports receipt-confirmed
+    /// transactions separately from locally known hashes that may still confirm.
     /// </summary>
     internal TimeSpan WriteDeadline { get; set; } = TimeSpan.FromMinutes(3);
 
@@ -487,21 +487,38 @@ public sealed class DidEthrMethod : DidMethodBase
         if (newOwner is not null)
             operations.Add(Erc1056TransactionBuilder.ChangeOwner(identity, newOwner));
 
+        using var deadlineCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        deadlineCts.CancelAfter(WriteDeadline);
+        var token = deadlineCts.Token;
+
         var (transactionHashes, controllerAddress) = await ExecuteOperationsAsync(
             identifier, ethrOptions.ControllerKey, ethrOptions.UseMetaTransaction,
-            ethrOptions.Relayer, operations, ct);
+            ethrOptions.Relayer, operations, ct, token);
 
         // EVERYTHING past this point runs with operations already on-chain, so every failure
         // here must still carry the landed set — a post-loop throw that reported nothing was
         // how the first evidence fix stayed reachable (it only guarded the submission loop).
         try
         {
-            return await BuildUpdateResultAsync(
-                did, identifier, transactionHashes, controllerAddress, newOwner, ct);
+            token.ThrowIfCancellationRequested();
+            var result = await BuildUpdateResultAsync(
+                did, identifier, transactionHashes, controllerAddress, newOwner, token)
+                .WaitAsync(token);
+            token.ThrowIfCancellationRequested();
+            return result;
+        }
+        catch (OperationCanceledException ex) when (ct.IsCancellationRequested)
+        {
+            throw AttachTransactionEvidence(ex, transactionHashes);
+        }
+        catch (OperationCanceledException ex) when (deadlineCts.IsCancellationRequested)
+        {
+            throw AttachTransactionEvidence(CreateDeadlineException(
+                ex, transactionHashes, [], operations.Count), transactionHashes);
         }
         catch (Exception ex)
         {
-            throw AttachLandedTransactions(ex, transactionHashes);
+            throw AttachTransactionEvidence(ex, transactionHashes);
         }
     }
 
@@ -510,7 +527,8 @@ public sealed class DidEthrMethod : DidMethodBase
         string controllerAddress, string? newOwner, CancellationToken ct)
     {
         var identity = identifier.IdentityAddress;
-        var resolved = await ResolveAsync(did, null, ct);
+        var resolved = await ResolveAsync(did, null, ct).WaitAsync(ct);
+        ct.ThrowIfCancellationRequested();
         if (resolved.DidDocument is null)
             throw new EthereumInteractionException(
                 $"did:ethr update transactions landed [{string.Join(", ", transactionHashes)}] " +
@@ -525,7 +543,9 @@ public sealed class DidEthrMethod : DidMethodBase
         var network = FindNetwork(identifier.Network);
         var effectiveOwner = ParseAddressWordResult(
             await _rpcFactory.GetOrCreate(network).CallAsync(
-                network.RegistryAddress, Erc1056Calls.IdentityOwner(identity), ct));
+                network.RegistryAddress, Erc1056Calls.IdentityOwner(identity), ct)
+                .WaitAsync(ct));
+        ct.ThrowIfCancellationRequested();
 
         // That eth_call and the event log both come from the same untrusted node, so trusting
         // it alone just swaps one unauthenticated oracle for another. The document the
@@ -588,20 +608,35 @@ public sealed class DidEthrMethod : DidMethodBase
             Erc1056TransactionBuilder.ChangeOwner(identifier.IdentityAddress, ZeroAddress),
         };
 
+        using var deadlineCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        deadlineCts.CancelAfter(WriteDeadline);
+        var token = deadlineCts.Token;
+
         var (transactionHashes, _) = await ExecuteOperationsAsync(
             identifier, ethrOptions.ControllerKey, ethrOptions.UseMetaTransaction,
-            ethrOptions.Relayer, operations, ct);
+            ethrOptions.Relayer, operations, ct, token);
 
         // Success is what the chain now says, not what we submitted. As in Update, a failure
         // in this post-batch read must still carry the transactions that already landed.
         DidResolutionResult resolved;
         try
         {
-            resolved = await ResolveAsync(did, null, ct);
+            token.ThrowIfCancellationRequested();
+            resolved = await ResolveAsync(did, null, token).WaitAsync(token);
+            token.ThrowIfCancellationRequested();
+        }
+        catch (OperationCanceledException ex) when (ct.IsCancellationRequested)
+        {
+            throw AttachTransactionEvidence(ex, transactionHashes);
+        }
+        catch (OperationCanceledException ex) when (deadlineCts.IsCancellationRequested)
+        {
+            throw AttachTransactionEvidence(CreateDeadlineException(
+                ex, transactionHashes, [], operations.Count), transactionHashes);
         }
         catch (Exception ex)
         {
-            throw AttachLandedTransactions(ex, transactionHashes);
+            throw AttachTransactionEvidence(ex, transactionHashes);
         }
 
         // ResolveAsync maps RPC/history failures to a NotFound RESULT rather than throwing
@@ -610,7 +645,7 @@ public sealed class DidEthrMethod : DidMethodBase
         // could not read is a false negative that invites an unnecessary — possibly unsafe —
         // retry. Only report false when the state was read and is known not deactivated.
         if (resolved.DidDocument is null || resolved.ResolutionMetadata.Error is not null)
-            throw AttachLandedTransactions(new EthereumInteractionException(
+            throw AttachTransactionEvidence(new EthereumInteractionException(
                 $"did:ethr deactivation transactions landed " +
                 $"[{string.Join(", ", transactionHashes)}] but the resulting state could not be " +
                 $"read back: {resolved.ResolutionMetadata.Error ?? "no document"}. The " +
@@ -639,7 +674,8 @@ public sealed class DidEthrMethod : DidMethodBase
         bool useMetaTransaction,
         IRecoverableDigestSigner? relayer,
         IReadOnlyList<Erc1056Operation> operations,
-        CancellationToken callerCt)
+        CancellationToken callerCt,
+        CancellationToken token)
     {
         var controllerAddress = TransactionPipeline.AddressOf(controllerKey, "ControllerKey");
         IRecoverableDigestSigner submitter;
@@ -662,61 +698,63 @@ public sealed class DidEthrMethod : DidMethodBase
         var identity = identifier.IdentityAddress;
         var rpc = _rpcFactory.GetOrCreate(network);
 
-        // For WRITES the chain id is a security parameter: it is the EIP-155 replay binding
-        // baked into the signature. Letting an unconfigured network fall back to the node's
-        // eth_chainId lets the endpoint choose what chain the caller's key authorizes — it
-        // can answer "1" for a devnet and forward the resulting valid mainnet transaction.
-        // Resolution may auto-detect (it only reads); writing must be told explicitly.
-        if (network.ChainId is null)
-            throw new ArgumentException(
-                $"Network '{network.Name}' has no configured ChainId. did:ethr writes require " +
-                "an explicit chain id: it is the EIP-155 replay binding in the signature, and " +
-                "auto-detecting it would let the RPC endpoint decide which chain your key " +
-                "signs for. Set EthereumNetworkConfig.ChainId (KnownNetworks entries already " +
-                "carry it).", nameof(EthereumNetworkConfig.ChainId));
-        var chainId = await ResolveChainIdNumericAsync(network, rpc, callerCt);
-
-        // Pre-flight (advisory; the contract's onlyOwner/checkSignature is the
-        // enforcement point): fail before broadcasting anything if the controller key
-        // is not the current identity owner.
-        var currentOwner = ParseAddressWordResult(await rpc.CallAsync(
-            registry, Erc1056Calls.IdentityOwner(identity), callerCt));
-        if (!string.Equals(currentOwner, controllerAddress, StringComparison.OrdinalIgnoreCase))
-            throw new EthereumInteractionException(
-                $"ControllerKey address {controllerAddress} is not the current owner " +
-                $"({currentOwner}) of identity {identity}; the registry would reject every operation.");
-
-        // ERC-1056 v0.0.3 (the LegacyNonce generation — mainnet 0xdCa7EF03… and friends)
-        // increments nonce[identity] in checkSignature, but the changeOwner / addDelegate /
-        // revokeDelegate preimages READ nonce[identityOwner(identity)]. While owner ==
-        // identity those are the same slot and replay protection works. Once ownership has
-        // been transferred they diverge and the preimage nonce is a counter nothing ever
-        // increments — the same signed calldata replays forever, letting anyone who observed
-        // it resurrect a revoked delegate at will. Demonstrated against real v0.0.3 bytecode.
-        //
-        // Attribute operations are NOT affected: their preimages read nonce[identity], which
-        // is the slot checkSignature increments, so they stay single-use. Refuse precisely the
-        // vulnerable operations rather than all meta-transactions on these networks.
-        if (useMetaTransaction && network.LegacyNonce
-            && !string.Equals(currentOwner, identity, StringComparison.OrdinalIgnoreCase)
-            && operations.FirstOrDefault(op => !op.UsesIdentityNonceOnLegacy) is { } vulnerable)
-            throw new EthereumInteractionException(
-                $"Refusing to sign a '{vulnerable.MethodName}' meta-transaction for identity " +
-                $"{identity} on '{network.Name}': this network runs the legacy ERC-1056 " +
-                "registry, whose owner/delegate meta-transaction nonce is never incremented " +
-                $"once ownership has been transferred (current owner {currentOwner}). Any " +
-                "signature produced here would be replayable indefinitely by anyone who " +
-                "observes it. Submit this operation directly (UseMetaTransaction = false).");
-
-        using var deadlineCts = CancellationTokenSource.CreateLinkedTokenSource(callerCt);
-        deadlineCts.CancelAfter(WriteDeadline);
-        var token = deadlineCts.Token;
-
         var hashes = new List<string>();
+        var inFlightHashes = new List<string>();
         try
         {
+            // For WRITES the chain id is a security parameter: it is the EIP-155 replay binding
+            // baked into the signature. Letting an unconfigured network fall back to the node's
+            // eth_chainId lets the endpoint choose what chain the caller's key authorizes — it
+            // can answer "1" for a devnet and forward the resulting valid mainnet transaction.
+            // Resolution may auto-detect (it only reads); writing must be told explicitly.
+            if (network.ChainId is null)
+                throw new ArgumentException(
+                    $"Network '{network.Name}' has no configured ChainId. did:ethr writes require " +
+                    "an explicit chain id: it is the EIP-155 replay binding in the signature, and " +
+                    "auto-detecting it would let the RPC endpoint decide which chain your key " +
+                    "signs for. Set EthereumNetworkConfig.ChainId (KnownNetworks entries already " +
+                    "carry it).", nameof(EthereumNetworkConfig.ChainId));
+            var chainId = await ResolveChainIdNumericAsync(network, rpc, token).WaitAsync(token);
+
+            // Pre-flight (advisory; the contract's onlyOwner/checkSignature is the
+            // enforcement point): fail before broadcasting anything if the controller key
+            // is not the current identity owner.
+            var currentOwner = ParseAddressWordResult(await rpc.CallAsync(
+                registry, Erc1056Calls.IdentityOwner(identity), token).WaitAsync(token));
+            if (!string.Equals(currentOwner, controllerAddress, StringComparison.OrdinalIgnoreCase))
+                throw new EthereumInteractionException(
+                    $"ControllerKey address {controllerAddress} is not the current owner " +
+                    $"({currentOwner}) of identity {identity}; the registry would reject every operation.");
+
+            // ERC-1056 v0.0.3 (the LegacyNonce generation — mainnet 0xdCa7EF03… and friends)
+            // increments nonce[identity] in checkSignature, but the changeOwner / addDelegate /
+            // revokeDelegate preimages READ nonce[identityOwner(identity)]. While owner ==
+            // identity those are the same slot and replay protection works. Once ownership has
+            // been transferred they diverge and the preimage nonce is a counter nothing ever
+            // increments — the same signed calldata replays forever, letting anyone who observed
+            // it resurrect a revoked delegate at will. Demonstrated against real v0.0.3 bytecode.
+            //
+            // Attribute operations are NOT affected: their preimages read nonce[identity], which
+            // is the slot checkSignature increments, so they stay single-use. Refuse precisely the
+            // vulnerable operations rather than all meta-transactions on these networks.
+            if (useMetaTransaction && network.LegacyNonce
+                && !string.Equals(currentOwner, identity, StringComparison.OrdinalIgnoreCase)
+                && operations.FirstOrDefault(op => !op.UsesIdentityNonceOnLegacy) is { } vulnerable)
+                throw new EthereumInteractionException(
+                    $"Refusing to sign a '{vulnerable.MethodName}' meta-transaction for identity " +
+                    $"{identity} on '{network.Name}': this network runs the legacy ERC-1056 " +
+                    "registry, whose owner/delegate meta-transaction nonce is never incremented " +
+                    $"once ownership has been transferred (current owner {currentOwner}). Any " +
+                    "signature produced here would be replayable indefinitely by anyone who " +
+                    "observes it. Submit this operation directly (UseMetaTransaction = false).");
+
             foreach (var operation in operations)
             {
+                // Task.WaitAsync does not throw for an already-completed dependency Task when
+                // cancellation raced with its completion. Never begin the next operation after
+                // the caller or overall deadline has canceled the write.
+                token.ThrowIfCancellationRequested();
+
                 string calldata;
                 if (useMetaTransaction)
                 {
@@ -726,11 +764,13 @@ public sealed class DidEthrMethod : DidMethodBase
                     var nonceKey = network.LegacyNonce && operation.UsesIdentityNonceOnLegacy
                         ? identity : currentOwner;
                     var metaNonce = ParseChangedResult(await rpc.CallAsync(
-                        registry, Erc1056TransactionBuilder.NonceCalldata(nonceKey), token));
+                        registry, Erc1056TransactionBuilder.NonceCalldata(nonceKey), token)
+                        .WaitAsync(token));
 
                     var digest = Erc1056TransactionBuilder.MetaTransactionDigest(
                         registry, metaNonce, identity, operation);
-                    var signature = await controllerKey.SignDigestAsync(digest, token);
+                    var signature = await controllerKey.SignDigestAsync(digest, token)
+                        .WaitAsync(token);
 
                     // The relayer is about to pay for this. TransactionPipeline verifies the
                     // OUTER relayer signature, but nothing verified this inner one: a signer
@@ -760,42 +800,50 @@ public sealed class DidEthrMethod : DidMethodBase
                 }
 
                 EthereumTransactionReceipt receipt;
+                var attemptEvidence = new TransactionAttemptEvidence();
                 try
                 {
                     receipt = await TransactionPipeline.SubmitAndConfirmAsync(
                         rpc, submitter, registry, Convert.FromHexString(calldata[2..]),
-                        chainId,
+                        chainId, attemptEvidence,
                         maxGasPriceWei: network.MaxGasPriceWei,
                         maxTransactionFeeWei: network.MaxTransactionFeeWei,
                         ct: token);
                 }
-                catch (Exception ex)
-                    when (ex.Data[TransactionPipeline.BroadcastTransactionKey] is string inFlight)
+                catch
                 {
-                    // The node ACCEPTED these bytes before the failure (an unverifiable hash
-                    // echo), so the transaction may confirm under the hash we computed. Record
-                    // it BEFORE the catch filters below run, or a forged echo on the first
-                    // operation leaves hashes empty, skips the `hashes.Count > 0` wrapper, and
-                    // tells the caller nothing happened — the unsafe-retry condition again.
-                    hashes.Add(inFlight);
+                    // TransactionPipeline classifies the current transaction at the lifecycle
+                    // boundary. A receipt-confirmed transaction belongs in the landed set even
+                    // when it reverted; a hash with no observed receipt stays explicitly
+                    // in-flight. Fold both BEFORE the outer catch filters run so operation 1
+                    // cannot escape without the only hash a caller can query before retrying.
+                    if (attemptEvidence.ConfirmedHash is { } confirmed)
+                        RecordConfirmed(hashes, inFlightHashes, confirmed);
+                    if (attemptEvidence.InFlightHash is { } inFlight)
+                        RecordInFlight(hashes, inFlightHashes, inFlight);
                     throw;
                 }
-                hashes.Add(receipt.TransactionHash);
+                RecordConfirmed(hashes, inFlightHashes, receipt.TransactionHash);
             }
         }
         catch (OperationCanceledException ex) when (callerCt.IsCancellationRequested)
         {
             // Caller cancellation keeps its type, but must still carry what landed:
             // silently discarding that evidence invites a double-applying retry.
-            throw AttachLandedTransactions(ex, hashes);
+            throw AttachTransactionEvidence(ex, hashes, inFlightHashes);
         }
-        catch (OperationCanceledException ex)
+        catch (OperationCanceledException ex) when (token.IsCancellationRequested)
         {
-            throw AttachLandedTransactions(new EthereumInteractionException(
-                $"did:ethr write deadline ({WriteDeadline}) exceeded after landing " +
-                $"{hashes.Count} of {operations.Count} operations " +
-                $"[{string.Join(", ", hashes)}]; a broadcast transaction may still confirm later.",
-                ex), hashes);
+            throw AttachTransactionEvidence(
+                CreateDeadlineException(ex, hashes, inFlightHashes, operations.Count),
+                hashes, inFlightHashes);
+        }
+        catch (OperationCanceledException ex) when (hashes.Count > 0 || inFlightHashes.Count > 0)
+        {
+            // A dependency can abort with OperationCanceledException even when neither the
+            // caller token nor our deadline fired. Preserve the real type/cause and evidence;
+            // do not falsely report an internal timeout.
+            throw AttachTransactionEvidence(ex, hashes, inFlightHashes);
         }
         catch (Exception ex) when (hashes.Count > 0)
         {
@@ -803,30 +851,143 @@ public sealed class DidEthrMethod : DidMethodBase
             // connection (HttpRequestException), anything — must report what already landed.
             // Catching only EthereumInteractionException here let those paths tell the caller
             // "nothing happened" while operations sat on-chain.
-            throw AttachLandedTransactions(new EthereumInteractionException(
-                $"did:ethr update failed after landing {hashes.Count} of {operations.Count} " +
-                $"operations [{string.Join(", ", hashes)}]: {ex.Message}", ex), hashes);
+            throw AttachTransactionEvidence(new EthereumInteractionException(
+                $"did:ethr update failed after confirming {hashes.Count} of {operations.Count} " +
+                $"transactions [{string.Join(", ", hashes)}]. Transactions without an observed " +
+                $"receipt may still confirm [{string.Join(", ", inFlightHashes)}]. " +
+                $"Failure: {TrustedExceptionDetail(ex)}",
+                ex), hashes, inFlightHashes);
+        }
+        catch (Exception ex) when (inFlightHashes.Count > 0)
+        {
+            // No receipt-confirmed transaction precedes the failure, so preserve the original
+            // exception type. Still attach the candidate hash: a first-operation transport
+            // failure is exactly where silently returning an empty landed set makes retries
+            // unsafe.
+            throw AttachTransactionEvidence(ex, hashes, inFlightHashes);
+        }
+        catch (Exception ex)
+        {
+            // These public keys are also guessable. A pre-flight dependency exception must not
+            // be able to arrive at the API boundary carrying forged evidence merely because no
+            // locally owned transaction state existed yet.
+            throw SanitizeUntrustedTransactionEvidence(ex);
         }
 
         return (hashes, controllerAddress);
     }
 
-    /// <summary>
-    /// Records the transactions that already landed on the exception, so a caller can read
-    /// them structurally instead of parsing the message.
-    /// </summary>
-    private static T AttachLandedTransactions<T>(T exception, IReadOnlyList<string> hashes)
-        where T : Exception
+    private static void RecordConfirmed(
+        List<string> confirmedHashes, List<string> inFlightHashes, string hash)
     {
-        exception.Data[LandedTransactionsKey] = hashes.ToArray();
-        return exception;
+        inFlightHashes.RemoveAll(
+            candidate => string.Equals(candidate, hash, StringComparison.Ordinal));
+        if (!confirmedHashes.Contains(hash, StringComparer.Ordinal))
+            confirmedHashes.Add(hash);
     }
 
+    private static void RecordInFlight(
+        IReadOnlyList<string> confirmedHashes, List<string> inFlightHashes, string hash)
+    {
+        if (!confirmedHashes.Contains(hash, StringComparer.Ordinal)
+            && !inFlightHashes.Contains(hash, StringComparer.Ordinal))
+            inFlightHashes.Add(hash);
+    }
+
+    private EthereumInteractionException CreateDeadlineException(
+        Exception cause,
+        IReadOnlyList<string> confirmedHashes,
+        IReadOnlyList<string> inFlightHashes,
+        int operationCount)
+        => new(
+            $"did:ethr write deadline ({WriteDeadline}) exceeded after confirming " +
+            $"{confirmedHashes.Count} of {operationCount} transactions " +
+            $"[{string.Join(", ", confirmedHashes)}]. Transactions without an observed receipt " +
+            $"may still confirm [{string.Join(", ", inFlightHashes)}]; query those hashes " +
+            "before retrying.",
+            cause);
+
     /// <summary>
-    /// Key under which a failed Update/Deactivate records the <c>string[]</c> of transaction
-    /// hashes that were already confirmed on-chain (<see cref="Exception.Data"/>).
+    /// Records receipt-confirmed and possibly-broadcast transactions separately, so callers
+    /// can inspect chain state before retrying instead of parsing a message or treating mempool
+    /// acceptance as confirmation.
+    /// </summary>
+    internal static Exception AttachTransactionEvidence(
+        Exception exception,
+        IReadOnlyList<string> confirmedHashes,
+        IReadOnlyList<string>? inFlightHashes = null)
+    {
+        // Never write to dependency-owned Exception.Data. Exception.Data is virtual; an
+        // injected client can return a throwing or read-only dictionary and otherwise destroy
+        // the pipeline-owned evidence while we try to attach it. A fresh carrier has trusted,
+        // writable Data and retains the original failure as InnerException.
+        var carrier = CreateTrustedExceptionCarrier(exception);
+        carrier.Data[LandedTransactionsKey] = confirmedHashes.ToArray();
+        carrier.Data[InFlightTransactionsKey] = inFlightHashes?.ToArray() ?? [];
+        return carrier;
+    }
+
+    internal static Exception SanitizeUntrustedTransactionEvidence(Exception exception)
+        // A successful Remove is not proof: a virtual Data getter can return a different
+        // dictionary on its next access. Cross the dependency boundary with a fresh carrier
+        // whose metadata is known to be empty.
+        => CreateTrustedExceptionCarrier(exception);
+
+    private static Exception CreateTrustedExceptionCarrier(Exception cause)
+        => cause switch
+        {
+            OperationCanceledException canceled
+                when canceled.GetType() == typeof(OperationCanceledException)
+                => new OperationCanceledException(
+                    canceled.Message, canceled, canceled.CancellationToken),
+            OperationCanceledException canceled => new OperationCanceledException(
+                "A did:ethr dependency canceled during the write.", canceled),
+            HttpRequestException http
+                when http.GetType() == typeof(HttpRequestException)
+                => new HttpRequestException(http.Message, http, http.StatusCode),
+            HttpRequestException http => new HttpRequestException(
+                "A did:ethr RPC request failed during the write.", http),
+            ArgumentException argument
+                when argument.GetType() == typeof(ArgumentException)
+                => new ArgumentException(argument.Message, argument.ParamName, argument),
+            ArgumentException argument => new ArgumentException(
+                "A did:ethr write dependency reported an invalid argument.", argument),
+            EthereumInteractionException interaction
+                when interaction.GetType() == typeof(EthereumInteractionException)
+                => new EthereumInteractionException(interaction.Message, interaction),
+            EthereumInteractionException interaction => new EthereumInteractionException(
+                "A did:ethr interaction dependency failed during the write.", interaction),
+            _ => new EthereumInteractionException(
+                "A did:ethr dependency failed during the write.", cause),
+        };
+
+    private static string TrustedExceptionDetail(Exception cause)
+        // Exact library-owned interaction exceptions use Exception's normal Message
+        // implementation. Never dereference a virtual Message override from a dependency type.
+        => cause.GetType() == typeof(EthereumInteractionException)
+            ? cause.Message
+            : "an untrusted dependency failed; inspect InnerException in a guarded diagnostic path.";
+
+    /// <summary>
+    /// Key used once did:ethr transaction submission begins to record the <c>string[]</c> of
+    /// hashes for which a matching receipt was observed on a failed Update, Deactivate, or
+    /// <see cref="Deployment.Erc1056Registry.DeployAsync"/> call
+    /// (<see cref="Exception.Data"/>). This includes reverted receipts: the operation did not
+    /// apply, but the transaction is confirmed and consumed gas/account nonce. Validation and
+    /// pre-flight failures before a transaction hash exists need not contain this key.
     /// </summary>
     public const string LandedTransactionsKey = "netdid.ethr.landedTransactions";
+
+    /// <summary>
+    /// Key used once did:ethr transaction submission begins to record the <c>string[]</c> of
+    /// locally computed hashes that may have been broadcast but were not receipt-confirmed on
+    /// a failed Update, Deactivate, or
+    /// <see cref="Deployment.Erc1056Registry.DeployAsync"/> call. Callers must query these
+    /// hashes before retrying; an immediate retry can double-apply an operation whose response
+    /// or receipt was lost. Validation and pre-flight failures before a transaction hash exists
+    /// need not contain this key.
+    /// </summary>
+    public const string InFlightTransactionsKey = "netdid.ethr.inFlightTransactions";
 
     /// <summary>
     /// A null ELEMENT inside an option collection is caller error, not a crash: without this

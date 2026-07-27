@@ -47,7 +47,10 @@ public static class Erc1056Registry
     /// deployed contract address. The deployment transaction is built, EIP-155-signed
     /// (through the NetCrypto <see cref="IRecoverableDigestSigner"/> seam), and confirmed
     /// by the same pipeline the did:ethr Update path uses; <paramref name="deployerKey"/>
-    /// must hold enough of the chain's native token for gas.
+    /// must hold enough of the chain's native token for gas. Once submission begins, failures
+    /// carry confirmed and possibly-broadcast transaction hashes through
+    /// <see cref="DidEthrMethod.LandedTransactionsKey"/> and
+    /// <see cref="DidEthrMethod.InFlightTransactionsKey"/>.
     /// </summary>
     /// <param name="rpc">Client for the target chain (e.g. via
     /// <see cref="DefaultEthereumRpcClientFactory.CreateDirect"/>).</param>
@@ -82,7 +85,15 @@ public static class Erc1056Registry
         ArgumentNullException.ThrowIfNull(rpc);
         ArgumentNullException.ThrowIfNull(deployerKey);
 
-        var reportedChainId = await rpc.GetChainIdAsync(ct);
+        ulong reportedChainId;
+        try
+        {
+            reportedChainId = await rpc.GetChainIdAsync(ct).WaitAsync(ct);
+        }
+        catch (Exception ex)
+        {
+            throw DidEthrMethod.SanitizeUntrustedTransactionEvidence(ex);
+        }
         if (reportedChainId != chainId)
             throw new EthereumInteractionException(
                 $"The RPC endpoint reports chain id {reportedChainId}, but the deployment was " +
@@ -95,11 +106,24 @@ public static class Erc1056Registry
         // The pipeline verifies the reported contract address against the deterministic
         // CREATE address before returning, so a node cannot nominate an attacker-controlled
         // contract as the caller's registry trust anchor.
-        var receipt = await TransactionPipeline.SubmitAndConfirmAsync(
-            rpc, deployerKey, to: null, bytecode.ToArray(), chainId,
-            maxGasPriceWei: feeCeiling?.MaxGasPriceWei ?? TransactionPipeline.DefaultMaxGasPriceWei,
-            maxTransactionFeeWei: feeCeiling?.MaxTransactionFeeWei,
-            ct: ct);
+        var attemptEvidence = new TransactionAttemptEvidence();
+        EthereumTransactionReceipt receipt;
+        try
+        {
+            receipt = await TransactionPipeline.SubmitAndConfirmAsync(
+                rpc, deployerKey, to: null, bytecode.ToArray(), chainId, attemptEvidence,
+                maxGasPriceWei: feeCeiling?.MaxGasPriceWei ?? TransactionPipeline.DefaultMaxGasPriceWei,
+                maxTransactionFeeWei: feeCeiling?.MaxTransactionFeeWei,
+                ct: ct);
+        }
+        catch (Exception ex)
+        {
+            if (attemptEvidence.ConfirmedHash is { } confirmed)
+                throw DidEthrMethod.AttachTransactionEvidence(ex, [confirmed]);
+            if (attemptEvidence.InFlightHash is { } inFlight)
+                throw DidEthrMethod.AttachTransactionEvidence(ex, [], [inFlight]);
+            throw DidEthrMethod.SanitizeUntrustedTransactionEvidence(ex);
+        }
 
         return receipt.ContractAddress
             ?? throw new EthereumInteractionException(

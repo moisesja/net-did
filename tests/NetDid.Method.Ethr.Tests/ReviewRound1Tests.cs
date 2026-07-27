@@ -114,6 +114,8 @@ public class ReviewRound1Tests
 
         chain.CurrentBlockNumber.Should().Be(1, "the node accepted and mined the transaction");
         thrown.Data[DidEthrMethod.LandedTransactionsKey].Should().BeOfType<string[]>()
+            .Which.Should().BeEmpty("the hash echo is not a receipt");
+        thrown.Data[DidEthrMethod.InFlightTransactionsKey].Should().BeOfType<string[]>()
             .Which.Should().ContainSingle().Which.Should().MatchRegex("^0x[0-9a-f]{64}$");
     }
 
@@ -140,7 +142,9 @@ public class ReviewRound1Tests
 
         chain.CurrentBlockNumber.Should().Be(2, "both transactions were accepted");
         thrown.Data[DidEthrMethod.LandedTransactionsKey].Should().BeOfType<string[]>()
-            .Which.Should().HaveCount(2, "the earlier AND the in-flight transaction");
+            .Which.Should().ContainSingle("only the earlier transaction has a receipt");
+        thrown.Data[DidEthrMethod.InFlightTransactionsKey].Should().BeOfType<string[]>()
+            .Which.Should().ContainSingle("the current transaction has no observed receipt");
     }
 
     // ── Finding 3: the untrusted node chose the deployment's EIP-155 chain binding ──

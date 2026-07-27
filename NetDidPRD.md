@@ -1490,9 +1490,27 @@ Write-path contract (each property pinned by a test):
 2. Per transaction: nonce → `eth_estimateGas` (+25 % headroom, hard cap; an estimate
    rejection surfaces as the pre-flight failure it is) → EIP-155 sign → broadcast →
    receipt polling. Strictly sequential, no fire-and-forget.
-3. One overall write deadline bounds the whole batch; on deadline or a mid-batch revert the
-   failure reports exactly which transactions landed (hashes) — no silent partial success.
-   Caller cancellation propagates as cancellation.
+3. One overall write deadline bounds the whole batch and post-transaction readback, including
+   pre-flight RPC and signer awaits even when an injected implementation ignores cancellation.
+   Explicit cancellation checks at operation and broadcast boundaries also close the
+   already-completed-task race in `Task.WaitAsync`. Once transaction submission begins, every
+   failure exit reports two non-overlapping evidence sets through `Exception.Data`:
+   - `DidEthrMethod.LandedTransactionsKey`: hashes with observed receipts, including reverted
+     transactions (confirmed on-chain and gas/nonce-consuming even though the operation failed);
+   - `DidEthrMethod.InFlightTransactionsKey`: locally computed hashes that may have been
+     broadcast but have no observed receipt.
+   Send-response loss, receipt-poll failure, caller cancellation, and the internal deadline
+   preserve the in-flight hash so callers can query it before retrying. Mempool acceptance is
+   never mislabeled as confirmation. Receipt confirmation is accepted only when the receipt
+   hash matches the locally computed submitted hash, and dependency-controlled exception
+   metadata is never promoted to evidence. Evidence is projected onto a fresh library-owned
+   exception rather than writing through a dependency's potentially hostile `Exception.Data`.
+   Carrier construction also does not read virtual diagnostic properties from the dependency
+   exception; the original exception is retained only as the inner cause.
+   Caller cancellation retains its exception type;
+   an unrelated dependency `OperationCanceledException` is not mislabeled as the deadline.
+   Validation and pre-flight failures before a local transaction hash exists do not promise
+   either evidence key.
 4. Meta-transactions fetch the contract nonce per operation with the generation-correct
    key: the modern registry reads `nonce[identityOwner(identity)]` for every method; the
    legacy (`LegacyNonce = true`) registry reads `nonce[identity]` for attribute methods.
@@ -1547,11 +1565,16 @@ public sealed record DidEthrDeactivateOptions : DidDeactivateOptions
 ### 8.7a Registry deployment (private chains)
 
 Public networks use the existing well-known deployments (`KnownNetworks`). For private or
-consortium EVM chains, `Erc1056Registry.DeployAsync(rpc, deployerKey, legacy = false)`
-deploys the registry through the same transaction pipeline, using creation bytecode
+consortium EVM chains,
+`Erc1056Registry.DeployAsync(rpc, deployerKey, chainId, legacy = false)` deploys the registry
+through the same transaction pipeline, using creation bytecode
 vendored verbatim from the official MIT-licensed npm artifacts (`ethr-did-registry@1.3.0`
 modern; `@0.0.3` legacy — the mainnet `0xdCa7EF03…` generation) with the keccak256 of each
-embedded artifact pinned by a unit test.
+embedded artifact pinned by a unit test. `chainId` is the caller-selected EIP-155 replay
+binding; the method cross-checks it against the node's `eth_chainId` and aborts before signing
+if they disagree. Ambiguous deployment failures expose confirmed and in-flight hashes through
+the same `DidEthrMethod.LandedTransactionsKey` and `InFlightTransactionsKey` contract as
+Update/Deactivate, so a caller can query the first deployment before retrying at a new nonce.
 
 ### 8.8 Ethereum RPC Abstraction
 

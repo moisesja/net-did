@@ -307,3 +307,25 @@
   valid signature over the same digest recovering to the same key, so canonicalize (s' = n-s,
   flip recid) instead of refusing. Before adding a validity check on data from a pluggable seam,
   ask which real implementations produce the form you are about to reject.
+- `Exception.Data` on an exception thrown by a pluggable dependency is UNTRUSTED INPUT, not an
+  internal side channel. Reserved-looking string keys provide no provenance: an injected RPC
+  client used them to forge a "confirmed" transaction before any receipt existed and suppress
+  the real local candidate hash. Carry security-relevant lifecycle state in a private typed
+  object owned by the pipeline, bind receipts back to the locally computed request hash at the
+  outer trust boundary, and only then project sanitized evidence onto the public exception.
+- A deadline is not an overall bound if it starts after pre-flight or merely passes a token to
+  an injectable implementation. Start the clock before the first awaited dependency and apply
+  the bound to the returned task (`WaitAsync`), so an implementation that ignores cancellation
+  cannot hang the operation. When mapping cancellation, prove WHICH token fired; a spontaneous
+  dependency `OperationCanceledException` is not evidence that the internal deadline elapsed.
+- Typed side state is not enough if the final projection still writes into a dependency-owned
+  exception. `Exception.Data` is virtual; a custom RPC exception can throw from its getter or
+  expose a read-only dictionary, replacing the real failure exactly when the locally computed
+  hash must escape. Fold typed state first, then project it onto a fresh library-owned exception
+  with known-writable metadata; retain the hostile exception only as the inner cause.
+- Treat the whole dependency exception as untrusted, not only its `Data`: `Exception.Message`
+  is virtual too. A custom transport exception that threw from `Message` defeated the first
+  fresh-carrier fix before evidence could be attached. Carrier construction must use fixed
+  library-owned text (or text from an exact known-safe type) and retain the dependency exception
+  opaquely as `InnerException`; diagnostic formatting must never be on the evidence-critical
+  path.

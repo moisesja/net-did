@@ -395,9 +395,26 @@ var txHashes = (IReadOnlyList<string>)updated.Artifacts!["transactions"];
 Operations are submitted sequentially — revocations, then additions, then (always last) the
 owner change, because `changeOwner` strips the current key's authority over any later
 operation. The submitting account must hold ETH for gas; a pre-flight `identityOwner` check
-fails closed *before anything is broadcast* if `ControllerKey` is not the current owner, a
-mid-batch revert reports exactly which transactions landed, and every write is bounded by an
-overall deadline. `DidUpdateResult` carries the update-authority evidence
+fails closed *before anything is broadcast* if `ControllerKey` is not the current owner, and
+every write — including post-transaction readback — is bounded by an overall deadline. Once
+transaction submission begins, failures carry evidence split by what the client actually
+proved:
+
+- `Exception.Data[DidEthrMethod.LandedTransactionsKey]` is a `string[]` of hashes with observed
+  receipts (including reverted transactions, which still consumed gas and account nonce).
+- `Exception.Data[DidEthrMethod.InFlightTransactionsKey]` is a `string[]` of locally computed
+  hashes that may have been broadcast but have no observed receipt. Query each hash before
+  retrying; a lost send response or receipt can hide a transaction that later confirms.
+
+Validation and pre-flight failures that occur before a transaction hash exists do not promise
+these evidence keys. Receipt evidence is accepted only when its hash matches the locally
+computed submitted hash; metadata on exceptions from an injected RPC client is never treated
+as transaction evidence. Evidence is projected onto a fresh library-owned exception, so a
+custom client cannot suppress the hashes with a throwing or read-only `Exception.Data`.
+The carrier also avoids dereferencing virtual diagnostic properties on the untrusted
+exception; the original remains available as `InnerException`.
+
+`DidUpdateResult` carries the update-authority evidence
 (`AuthorizationChange`/`UpdateKeyChange` flip only on an owner change;
 `Effective`/`RevealedUpdateKeys` hold lowercase account addresses — did:ethr's canonical
 authority form).
@@ -473,7 +490,9 @@ addresses. For a private/consortium EVM chain, deploy the vendored official byte
 through the same transaction pipeline:
 
 ```csharp
-var registryAddress = await Erc1056Registry.DeployAsync(rpcClient, fundedDeployerKey);
+const ulong chainId = 1234;
+var registryAddress = await Erc1056Registry.DeployAsync(
+    rpcClient, fundedDeployerKey, chainId);
 
 var network = new EthereumNetworkConfig
 {
@@ -481,6 +500,13 @@ var network = new EthereumNetworkConfig
     RegistryAddress = registryAddress,
 };
 ```
+
+The chain ID is required because it is the EIP-155 replay binding in the deployment
+signature. `DeployAsync` cross-checks it against the node's `eth_chainId` and aborts before
+signing on disagreement, so the RPC endpoint cannot choose which chain the key authorizes.
+Ambiguous deployment failures use the same
+`DidEthrMethod.LandedTransactionsKey`/`InFlightTransactionsKey` evidence contract as updates,
+so callers can query a possibly accepted deployment before retrying at a different nonce.
 
 ### Known networks
 

@@ -19,7 +19,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     `NewOwnerAddress`. Operations submit sequentially: revocations, additions, then the owner
     change **always last** (`changeOwner` strips the current key's authority over later
     operations). A pre-flight `identityOwner` check fails closed before anything is broadcast;
-    a mid-batch revert or the overall write deadline reports exactly which transactions landed;
+    failures report receipt-confirmed transactions separately from locally known hashes that
+    may still be in flight;
     `DidUpdateResult` carries tx hashes in `Artifacts["transactions"]` and update-authority
     evidence (`AuthorizationChange`/`UpdateKeyChange` flip only on owner change,
     `Revealed`/`EffectiveUpdateKeys` are lowercase account addresses).
@@ -39,8 +40,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - **`Erc1056Registry`** (public): creation bytecode of both registry generations vendored
     verbatim from the official MIT-licensed npm artifacts (`ethr-did-registry@1.3.0` and
     `@0.0.3`), keccak256-pinned by tests against digests from an independent implementation;
-    `DeployAsync(rpc, deployerKey, legacy)` deploys to private/consortium chains through the
-    same transaction pipeline. Public networks keep using the `KnownNetworks` addresses.
+    `DeployAsync(rpc, deployerKey, chainId, legacy)` deploys to private/consortium chains
+    through the same transaction pipeline, with the explicit chain ID cross-checked against
+    the node before signing. Public networks keep using the `KnownNetworks` addresses.
   - **`IEthereumRpcClient`**: implemented `SendRawTransactionAsync`, `GetTransactionCountAsync`
     (pending tag), `GetGasPriceAsync`; added `GetTransactionReceiptAsync` (null while pending;
     receipts must echo the requested hash and a Byzantium `0x0`/`0x1` status) and
@@ -97,10 +99,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`EthereumTransaction.CanonicalizeSignature`** — EIP-2 low-S normalization applied to whatever
   the `IRecoverableDigestSigner` returns, so HSM/KMS backends that do not normalize (PKCS#11
   `CKM_ECDSA`) work rather than being rejected.
-- **Landed-transaction evidence on failure** — `Exception.Data[DidEthrMethod.LandedTransactionsKey]`
-  carries the confirmed transaction hashes for *any* Update/Deactivate failure, including
-  post-batch ones, and `TransactionPipeline.BroadcastTransactionKey` carries an in-flight hash
-  when a node's hash echo cannot be verified, so a retry cannot double-apply.
+- **Confirmed vs. in-flight transaction evidence on failure** —
+  `Exception.Data[DidEthrMethod.LandedTransactionsKey]` carries hashes with observed receipts
+  (including reverted transactions), while
+  `Exception.Data[DidEthrMethod.InFlightTransactionsKey]` carries locally computed hashes that
+  may have been broadcast but are not receipt-confirmed. Both sets survive send-response loss,
+  receipt-poll failure, caller cancellation, the write deadline, operation-N failure, and
+  post-batch failure, so callers can query uncertain transactions before retrying.
+- Transaction lifecycle evidence is pipeline-owned rather than read from injectable RPC
+  exception metadata; receipt hashes must match the locally computed submitted hash, confirmed
+  hashes dominate duplicate in-flight candidates, registry deployment preserves ambiguous
+  transaction hashes too, and the overall deadline now covers non-cooperative pre-flight and
+  post-write RPC/signer awaits without mislabeling unrelated cancellation or allowing an
+  already-completed task to start another transaction after cancellation. Public evidence is
+  written only to fresh library-owned exceptions, so hostile/read-only dependency
+  `Exception.Data` implementations cannot suppress it.
 
 ### Changed
 

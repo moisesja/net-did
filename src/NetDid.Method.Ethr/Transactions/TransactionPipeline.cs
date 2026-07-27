@@ -8,6 +8,40 @@ using NetDid.Method.Ethr.Rpc;
 namespace NetDid.Method.Ethr.Transactions;
 
 /// <summary>
+/// Pipeline-owned transaction state. This is deliberately a typed side channel rather than
+/// reserved <see cref="Exception.Data"/> keys: RPC clients are injectable and their exceptions
+/// are untrusted, so dependency-controlled metadata must never be promoted to confirmed
+/// transaction evidence.
+/// </summary>
+internal sealed class TransactionAttemptEvidence
+{
+    public string? ConfirmedHash { get; private set; }
+    public string? InFlightHash { get; private set; }
+
+    public void MarkInFlight(string locallyComputedHash)
+    {
+        EnsureCanonicalLocalHash(locallyComputedHash);
+        if (ConfirmedHash is null)
+            InFlightHash = locallyComputedHash;
+    }
+
+    public void MarkConfirmed(string locallyComputedHash)
+    {
+        EnsureCanonicalLocalHash(locallyComputedHash);
+        ConfirmedHash = locallyComputedHash;
+        InFlightHash = null;
+    }
+
+    private static void EnsureCanonicalLocalHash(string hash)
+    {
+        if (hash.Length != 66 || !hash.StartsWith("0x", StringComparison.Ordinal)
+            || hash.AsSpan(2).ContainsAnyExcept("0123456789abcdef"))
+            throw new InvalidOperationException(
+                "Transaction evidence must be a canonical locally computed Ethereum hash.");
+    }
+}
+
+/// <summary>
 /// The did:ethr write pipeline: nonce → gas → EIP-155 sign (through
 /// <see cref="IRecoverableDigestSigner"/> — the NetCrypto seam, so HSM/key-store-held
 /// keys work) → <c>eth_sendRawTransaction</c> → receipt confirmation. One transaction
@@ -38,13 +72,6 @@ internal static class TransactionPipeline
     /// </summary>
     public static readonly BigInteger DefaultMaxTransactionFeeWei =
         BigInteger.Pow(10, 17); // 0.1 ETH — ~30x a congested-mainnet registry write
-
-    /// <summary>
-    /// Key under which a failure carries the hash of a transaction that WAS broadcast
-    /// (<see cref="Exception.Data"/>), so callers assembling landed-transaction evidence do
-    /// not under-report an in-flight transaction.
-    /// </summary>
-    public const string BroadcastTransactionKey = "netdid.ethr.broadcastTransaction";
 
     /// <summary>
     /// Recovers the Ethereum address that produced <paramref name="signature64"/> over
@@ -119,6 +146,7 @@ internal static class TransactionPipeline
         string? to,
         byte[] data,
         ulong chainId,
+        TransactionAttemptEvidence attemptEvidence,
         BigInteger? value = null,
         ulong maxGasPriceWei = DefaultMaxGasPriceWei,
         BigInteger? maxTransactionFeeWei = null,
@@ -126,17 +154,18 @@ internal static class TransactionPipeline
     {
         ArgumentNullException.ThrowIfNull(rpc);
         ArgumentNullException.ThrowIfNull(data);
+        ArgumentNullException.ThrowIfNull(attemptEvidence);
         var feeCeiling = maxTransactionFeeWei ?? DefaultMaxTransactionFeeWei;
 
         var sender = AddressOf(signer, nameof(signer));
         var dataHex = "0x" + Convert.ToHexString(data).ToLowerInvariant();
 
-        var nonce = await rpc.GetTransactionCountAsync(sender, ct);
+        var nonce = await rpc.GetTransactionCountAsync(sender, ct).WaitAsync(ct);
 
         // The node is untrusted and its gas price becomes a fee THIS key authorizes. Without a
         // ceiling a hostile endpoint can report a price that drains the signer to the block
         // producer while every operation still reports success. Reject before signing.
-        var gasPrice = await rpc.GetGasPriceAsync(ct);
+        var gasPrice = await rpc.GetGasPriceAsync(ct).WaitAsync(ct);
         if (gasPrice > maxGasPriceWei)
             throw new EthereumInteractionException(
                 $"The RPC endpoint reported a gas price of {gasPrice} wei, above the configured " +
@@ -147,14 +176,15 @@ internal static class TransactionPipeline
         ulong gasEstimate;
         try
         {
-            gasEstimate = await rpc.EstimateGasAsync(sender, to, dataHex, ct);
+            gasEstimate = await rpc.EstimateGasAsync(sender, to, dataHex, ct).WaitAsync(ct);
         }
         catch (EthereumInteractionException ex)
         {
             // Nodes reject the estimate when the call would revert — surface that as the
             // pre-flight failure it is, before anything is signed or broadcast.
             throw new EthereumInteractionException(
-                $"did:ethr transaction from {sender} would fail (gas estimation rejected): {ex.Message}", ex);
+                $"did:ethr transaction from {sender} would fail because gas estimation was " +
+                "rejected. Nothing was signed or broadcast.", ex);
         }
         // Fail closed rather than under-provision. Silently clamping a larger estimate down to
         // the cap signs a transaction that is GUARANTEED to run out of gas — burning the whole
@@ -193,7 +223,7 @@ internal static class TransactionPipeline
         // Freeze ONE digest and derive everything from it: re-deriving the payload after the
         // await would let a caller-supplied signer mutate Data between signing and encoding.
         var signingDigest = transaction.SigningDigest();
-        var signature = await signer.SignDigestAsync(signingDigest, ct);
+        var signature = await signer.SignDigestAsync(signingDigest, ct).WaitAsync(ct);
 
         // The IRecoverableDigestSigner seam is caller-supplied (HSM, KMS, remote service).
         // Verify what came back actually authorizes THIS transaction as THIS sender before
@@ -219,26 +249,46 @@ internal static class TransactionPipeline
         // Accepting the node's echo verbatim let a hostile endpoint write an arbitrary value
         // into the caller's audit record (DidUpdateResult.Artifacts["transactions"]).
         var expectedHash = EthereumTransaction.HashOf(raw);
-        var reportedHash = await rpc.SendRawTransactionAsync(raw, ct);
+        // Once the call begins, a transport failure is ambiguous: the request may have reached
+        // the node even if no response reaches us. Record the deterministic local hash before
+        // invoking the untrusted transport, then promote it only after a matching receipt.
+        ct.ThrowIfCancellationRequested();
+        attemptEvidence.MarkInFlight(expectedHash);
+        var reportedHash = await rpc.SendRawTransactionAsync(raw, ct).WaitAsync(ct);
+        // WaitAsync deliberately returns an already-completed task even if its token was
+        // canceled. Re-check explicitly before trusting the response or beginning more work.
+        ct.ThrowIfCancellationRequested();
         if (!string.Equals(reportedHash, expectedHash, StringComparison.OrdinalIgnoreCase))
         {
-            // The node ALREADY accepted these bytes — the transaction is in flight under its
-            // true hash regardless of what the echo said. Carry that hash on the exception so
-            // the caller's landed-transaction evidence stays complete; discarding it here was
-            // how a first-round fix ended up under-reporting what had actually landed.
+            // A response proves the node consumed the request, but not that the transaction was
+            // mined. Keep the locally computed hash explicitly IN-FLIGHT until a receipt proves
+            // confirmation; treating mempool acceptance as "landed" is a false postcondition.
             var mismatch = new EthereumInteractionException(
                 $"The RPC endpoint reported transaction hash {reportedHash}, but the broadcast " +
                 $"bytes hash to {expectedHash}. The transaction was accepted and may confirm " +
                 "under its true hash.");
-            mismatch.Data[BroadcastTransactionKey] = expectedHash;
             throw mismatch;
         }
         var transactionHash = expectedHash;
 
         while (true)
         {
-            if (await rpc.GetTransactionReceiptAsync(transactionHash, ct) is { } receipt)
+            if (await rpc.GetTransactionReceiptAsync(transactionHash, ct).WaitAsync(ct)
+                is { } receipt)
             {
+                // The injectable interface is a trust boundary. The default client validates
+                // this too, but the pipeline itself must bind confirmation to the exact locally
+                // computed transaction it requested.
+                if (!string.Equals(
+                        receipt.TransactionHash, transactionHash,
+                        StringComparison.OrdinalIgnoreCase))
+                    throw new EthereumInteractionException(
+                        $"The RPC endpoint returned a receipt for transaction " +
+                        $"{receipt.TransactionHash}, but the submitted bytes hash to " +
+                        $"{transactionHash}. No matching receipt was observed.");
+
+                attemptEvidence.MarkConfirmed(transactionHash);
+
                 if (!receipt.Succeeded)
                     throw new EthereumInteractionException(
                         $"did:ethr transaction {transactionHash} reverted on-chain " +
@@ -258,7 +308,8 @@ internal static class TransactionPipeline
                             $"{expected}. Refusing to trust the reported address.");
                 }
 
-                return receipt;
+                // Normalize the evidence-bearing field to the canonical locally computed hash.
+                return receipt with { TransactionHash = transactionHash };
             }
 
             await Task.Delay(ReceiptPollInterval, ct);
