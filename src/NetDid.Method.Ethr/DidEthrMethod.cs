@@ -534,13 +534,23 @@ public sealed class DidEthrMethod : DidMethodBase
         var documentController = resolved.DidDocument.VerificationMethod?
             .FirstOrDefault(vm => vm.Id.EndsWith("#controller", StringComparison.Ordinal))?
             .BlockchainAccountId;
-        if (documentController is not null
-            && !documentController.EndsWith(effectiveOwner[2..], StringComparison.OrdinalIgnoreCase))
+
+        // A deactivated document carries NO verification methods, so there is no controller
+        // to compare against — the naive "skip when null" left the read-back unchecked in
+        // exactly that case. The event history still pins the answer: it says the owner slot
+        // was zeroed, and the contract's identityOwner() returns the identity when the slot
+        // is zero, so the registry must report the identity itself.
+        var expectedOwner = resolved.DocumentMetadata?.Deactivated == true
+            ? identity
+            : ExtractAddress(documentController);
+
+        if (expectedOwner is not null
+            && !string.Equals(expectedOwner, effectiveOwner, StringComparison.OrdinalIgnoreCase))
             throw new EthereumInteractionException(
                 $"did:ethr update transactions landed [{string.Join(", ", transactionHashes)}] " +
                 $"but the registry reports owner {effectiveOwner} while the replayed event " +
-                $"history yields controller '{documentController}'. Refusing to report " +
-                "contradictory update-authority evidence.");
+                $"history implies {expectedOwner}. Refusing to report contradictory " +
+                "update-authority evidence.");
 
         // The null address is unownable: nobody can authorize a further update. The empty list
         // is DidUpdateResult's documented "no keys are authorized" signal — reporting
@@ -786,6 +796,24 @@ public sealed class DidEthrMethod : DidMethodBase
                 "Validity must be positive — the registry would record an already-expired entry.",
                 nameof(validity));
         return (ulong)validity.TotalSeconds;
+    }
+
+    /// <summary>
+    /// Extracts the lowercase 0x address from a CAIP-10 <c>blockchainAccountId</c>
+    /// (<c>eip155:&lt;chain&gt;:&lt;address&gt;</c>). Compared as a whole address rather than with a
+    /// suffix match, which could report a false match on an unrelated trailing substring.
+    /// </summary>
+    private static string? ExtractAddress(string? blockchainAccountId)
+    {
+        if (blockchainAccountId is null)
+            return null;
+        var lastSeparator = blockchainAccountId.LastIndexOf(':');
+        var address = lastSeparator >= 0
+            ? blockchainAccountId[(lastSeparator + 1)..]
+            : blockchainAccountId;
+        return address.Length == 42 && address.StartsWith("0x", StringComparison.OrdinalIgnoreCase)
+            ? address.ToLowerInvariant()
+            : null;
     }
 
     /// <summary>Parses an eth_call result carrying one ABI address word.</summary>

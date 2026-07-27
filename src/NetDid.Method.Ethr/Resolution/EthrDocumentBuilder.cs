@@ -268,13 +268,29 @@ public static class EthrDocumentBuilder
             else                            asserts.Add(rel); // veriKey default
         }
 
-        // Services
-        var svcList = validServices.Select(kv => new Service
+        // Services. As with key material above, an endpoint value we cannot represent must
+        // drop THAT service, never the whole document: `ServiceEndpointValue.FromUri` rejects
+        // an empty or whitespace-only string, and letting that escape made one on-chain
+        // attribute render the entire DID unresolvable for its validity window.
+        var svcList = new List<Service>();
+        foreach (var (counter, entry) in validServices)
         {
-            Id              = $"{did}#service-{kv.Counter}",
-            Type            = kv.Entry.ServiceName,
-            ServiceEndpoint = ServiceEndpointValue.FromUri(kv.Entry.Endpoint),
-        }).ToList();
+            ServiceEndpointValue endpoint;
+            try
+            {
+                endpoint = ServiceEndpointValue.FromUri(entry.Endpoint);
+            }
+            catch (Exception ex) when (ex is ArgumentException or FormatException or UriFormatException)
+            {
+                continue;
+            }
+            svcList.Add(new Service
+            {
+                Id              = $"{did}#service-{counter}",
+                Type            = entry.ServiceName,
+                ServiceEndpoint = endpoint,
+            });
+        }
 
         return new DidDocument
         {
