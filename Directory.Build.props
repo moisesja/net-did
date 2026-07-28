@@ -3,7 +3,7 @@
     <TargetFramework>net10.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
-    <NetDidVersion>2.3.0</NetDidVersion>
+    <NetDidVersion>3.0.0</NetDidVersion>
     <GenerateDocumentationFile>true</GenerateDocumentationFile>
     <NoWarn>$(NoWarn);1591</NoWarn>
     <Deterministic>true</Deterministic>
@@ -19,7 +19,7 @@
     <PackageProjectUrl>https://github.com/moisesja/net-did</PackageProjectUrl>
     <RepositoryUrl>https://github.com/moisesja/net-did</RepositoryUrl>
     <RepositoryType>git</RepositoryType>
-    <PackageTags>did;decentralized-identity;ssi;did-key;did-peer;did-webvh;w3c;verifiable-credentials</PackageTags>
+    <PackageTags>did;decentralized-identity;ssi;did-key;did-peer;did-webvh;did-ethr;w3c;verifiable-credentials</PackageTags>
     <PackageReadmeFile>README.md</PackageReadmeFile>
     <IncludeSymbols>true</IncludeSymbols>
     <SymbolPackageFormat>snupkg</SymbolPackageFormat>

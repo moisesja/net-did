@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.0.0] - 2026-07-28
+
+**Upgrading from 2.3.0 requires no code changes.** The major version signals the scale of this
+release — a new DID method (`did:ethr`, shipped as the new `NetDid.Method.Ethr` package) and the
+`DataProofsDotnet` major crossing beneath `did:webvh` — not a break. Every change to the public API
+that 2.x consumers actually compile against is additive (`VerificationMethod.AdditionalProperties`,
+`DidResolutionResult.InvalidOptions`, `NetDidBuilder.AddDidEthr()`). The entries below marked
+"Breaking" apply only to the `did:ethr` API, which had not previously shipped.
+
 ### Added
 
 - **`did:ethr` on-chain write path — full CRUD** (issue #107). `DidEthrMethod` now advertises
