@@ -555,7 +555,10 @@ error handling, dereferencing, DI — runs the real public API deterministically
 The integration suite is the real-EVM oracle: gated by `NETDID_ETHR_INTEGRATION=1`, it starts
 an Anvil (Foundry) container via Testcontainers, deploys the vendored registry bytecode of
 both generations, and proves the full lifecycle — including meta-transaction preimages and
-the legacy-nonce divergence — against actual contract execution.
+the legacy-nonce divergence — against actual contract execution. The variable alone decides
+skipping; once it is set, Docker must be reachable — the suite fails with one actionable
+message rather than silently skipping, so a green opted-in run always means the real-EVM
+tests actually executed.
 
 ## did:webvh
 

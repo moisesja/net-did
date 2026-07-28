@@ -360,3 +360,11 @@
 - A lexical source guard must be whitespace-tolerant AND pin the positive inventory
   (per-file expected call-site counts): banning `.WaitAsync(` alone misses `.WaitAsync (`
   and — worse — cannot see a DELETED wrapper, which silently un-bounds the await it guarded.
+- Scale process to the change's severity, and never queue a SECOND blocking review round.
+  A Low-severity test-harness/doc fix gets one adversarial pass at most; once its CONFIRMED
+  findings are fixed and re-verified, OPEN THE PR — a re-attack of the rework lands as a PR
+  comment + follow-up commit, not a gate. The user pinged "what takes so long" on issue #112
+  (a harness ergonomics fix) exactly while a round-2 re-attack was being queued — the same
+  failure mode as the earlier "taking too long" lesson, now from proportionality: ceremony
+  (two agents, containerized oracles, doc sweeps) is justified by what the diff can break,
+  not by the workflow's default shape.
