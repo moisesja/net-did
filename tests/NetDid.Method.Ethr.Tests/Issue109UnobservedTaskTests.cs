@@ -1,7 +1,8 @@
 using System.Reflection;
 using System.Runtime.CompilerServices;
-using System.Text.RegularExpressions;
 using FluentAssertions;
+using Microsoft.CodeAnalysis.CSharp;
+using Microsoft.CodeAnalysis.CSharp.Syntax;
 using NetCrypto;
 using NetDid.Core.Exceptions;
 using NetDid.Method.Ethr.Crypto;
@@ -65,7 +66,7 @@ public class Issue109UnobservedTaskTests
         await ForceFinalizationAsync();
 
         probe.EscalationCount.Should().Be(0,
-            "WaitAsyncObserved must observe the orphan's fault before abandoning it");
+            "WaitAsyncObserved must observe a fault raised after the bounded wait abandons it");
     }
 
     // The abandoned/faulted references must live in a frame the test method no longer
@@ -127,6 +128,50 @@ public class Issue109UnobservedTaskTests
             var act = () => hungDependency.Task.WaitAsyncObserved(cts.Token);
             await act.Should().ThrowAsync<OperationCanceledException>();
             return weak;
+        }
+        finally
+        {
+            AmbientRequestState.Value = null;
+        }
+    }
+
+    [Fact]
+    public async Task Issue109_PendingCancellationMonitor_DoesNotRetainRegistrationExecutionContext()
+    {
+        // Review round 4: the earlier retention test pre-canceled its token, so the
+        // bounded-task monitor ran synchronously and only pinned the persistent source
+        // observer. Keep both source and bounded wait pending and rooted to prove the
+        // monitor registration itself does not capture the request ExecutionContext.
+        var source = new TaskCompletionSource<int>();
+        using var cts = new CancellationTokenSource();
+        var (bounded, weakPayload) =
+            RegisterPendingMonitorWithAmbientPayload(source.Task, cts.Token);
+
+        for (var i = 0; i < 3; i++)
+        {
+            GC.Collect();
+            GC.WaitForPendingFinalizers();
+            GC.Collect();
+        }
+
+        weakPayload.IsAlive.Should().BeFalse(
+            "the live cancellation monitor must not retain ambient request state");
+
+        source.SetResult(7);
+        (await bounded).Should().Be(7);
+        GC.KeepAlive(source);
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static (Task<int> Bounded, WeakReference Payload)
+        RegisterPendingMonitorWithAmbientPayload(Task<int> source, CancellationToken token)
+    {
+        var payload = new byte[1024 * 1024];
+        var weak = new WeakReference(payload);
+        AmbientRequestState.Value = payload;
+        try
+        {
+            return (source.WaitAsyncObserved(token), weak);
         }
         finally
         {
@@ -197,6 +242,107 @@ public class Issue109UnobservedTaskTests
         using var canceled = new CancellationTokenSource();
         canceled.Cancel();
         (await Task.FromResult(42).WaitAsyncObserved(canceled.Token)).Should().Be(42);
+    }
+
+    [Fact]
+    public async Task Issue109_PendingSourceFaultedWithOperationCanceledException_StaysFaulted()
+    {
+        // PR #113 re-review: an async wrapper that catches every OCE transforms a
+        // dependency FAULT carrying OCE into wrapper CANCELLATION. Bare WaitAsync does
+        // not: its task remains Faulted, retains AggregateException, and awaiting it
+        // throws the original dependency exception instance.
+        using var waitCts = new CancellationTokenSource();
+        using var dependencyCts = new CancellationTokenSource();
+        var source = new TaskCompletionSource<int>();
+        var original = new OperationCanceledException(
+            "dependency fault, not wait cancellation", dependencyCts.Token);
+
+        var bare = source.Task.WaitAsync(waitCts.Token);
+        var observed = source.Task.WaitAsyncObserved(waitCts.Token);
+        source.SetException(original);
+
+        (await Task.WhenAny(observed, Task.Delay(TimeSpan.FromSeconds(1))))
+            .Should().BeSameAs(observed, "the bounded await must settle with its source");
+        bare.Status.Should().Be(TaskStatus.Faulted);
+        observed.Status.Should().Be(bare.Status);
+        observed.Exception.Should().NotBeNull();
+        observed.Exception!.InnerExceptions.Should().ContainSingle()
+            .Which.Should().BeSameAs(original);
+
+        var bareAct = () => bare;
+        var observedAct = () => observed;
+        (await bareAct.Should().ThrowAsync<OperationCanceledException>())
+            .Which.Should().BeSameAs(original);
+        (await observedAct.Should().ThrowAsync<OperationCanceledException>())
+            .Which.Should().BeSameAs(original);
+    }
+
+    [Fact]
+    public async Task Issue109_SourceSelfCancellation_PreservesTokenWithoutObserverState()
+    {
+        // A live wait token did not win here: the dependency canceled itself. Bare
+        // WaitAsync propagates that cancellation token. The helper must do the same and
+        // must not register the source as an abandoned task that could later fault.
+        using var waitCts = new CancellationTokenSource();
+        using var dependencyCts = new CancellationTokenSource();
+        var source = new TaskCompletionSource<int>();
+
+        var bare = source.Task.WaitAsync(waitCts.Token);
+        var observed = source.Task.WaitAsyncObserved(waitCts.Token);
+        source.SetCanceled(dependencyCts.Token);
+
+        var bareAct = () => bare;
+        var observedAct = () => observed;
+        var bareCancellation =
+            (await bareAct.Should().ThrowAsync<OperationCanceledException>()).Which;
+        var observedCancellation =
+            (await observedAct.Should().ThrowAsync<OperationCanceledException>()).Which;
+
+        observed.Status.Should().Be(bare.Status);
+        observed.Exception.Should().BeNull();
+        observedCancellation.GetType().Should().Be(bareCancellation.GetType());
+        observedCancellation.CancellationToken.Should().Be(dependencyCts.Token);
+        HasAbandonmentObserver(source.Task).Should().BeFalse(
+            "source self-cancellation is completion, not abandonment");
+    }
+
+    private static bool HasAbandonmentObserver(Task source)
+    {
+        var field = typeof(AbandonableTaskExtensions).GetField(
+            "ObservedTasks", BindingFlags.Static | BindingFlags.NonPublic);
+        field.Should().NotBeNull(
+            "the state characterization is pinned to the helper's observer table; " +
+            "update this probe if the implementation moves it");
+        var table = Assert.IsType<ConditionalWeakTable<Task, object>>(field!.GetValue(null));
+        return table.TryGetValue(source, out _);
+    }
+
+    [Fact]
+    public async Task Issue109_CancellationMonitor_SourceFaultedBeforeCallback_ObservesRaceFault()
+    {
+        // The bounded wait can cancel just before the source faults. If the cancellation
+        // monitor then sees an already-faulted source, bare WaitAsync no longer owns that
+        // fault; the monitor must consume it directly rather than install a later observer.
+        var marker = Guid.NewGuid().ToString("N");
+        using var probe = new UnobservedEscalationProbe(marker);
+
+        InvokeCancellationMonitorForAlreadyFaultedSource(marker);
+        await ForceFinalizationAsync();
+
+        probe.EscalationCount.Should().Be(0,
+            "a source fault that lands before the cancellation callback must be observed");
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static void InvokeCancellationMonitorForAlreadyFaultedSource(string marker)
+    {
+        var source = Task.FromException<int>(new Issue109MarkerException(marker));
+        var callback = typeof(AbandonableTaskExtensions).GetMethod(
+            "ObserveAfterBoundedCancellation", BindingFlags.Static | BindingFlags.NonPublic);
+        callback.Should().NotBeNull(
+            "this probe directly pins the cancellation/source-fault race branch; update " +
+            "it if that branch moves");
+        callback!.Invoke(null, [source]);
     }
 
     [Fact]
@@ -397,11 +543,28 @@ public class Issue109UnobservedTaskTests
 
     // ── Class guard ──────────────────────────────────────────────────────────
 
-    // Bare WaitAsync tolerates whitespace before the argument list (PR #113 review
-    // finding 4: the exact-text scan missed ".WaitAsync ("). "WaitAsyncObserved" does
-    // not match: 'O' follows the name, not whitespace or '('.
-    private static readonly Regex BareWaitAsyncCall = new(@"\.WaitAsync\s*\(");
-    private static readonly Regex ObservedWaitAsyncCall = new(@"\.WaitAsyncObserved\s*\(");
+    [Theory]
+    [InlineData("await dependency.WaitAsync\n    (ct);")]
+    [InlineData("await dependency.WaitAsync /* block comment */ (ct);")]
+    [InlineData("await dependency.WaitAsync // line comment\n    (ct);")]
+    public void Issue109_SourceGuard_DetectsBareWaitAsyncAcrossTrivia(string source)
+    {
+        FindBareWaitAsyncCalls("Synthetic.cs", source).Should().ContainSingle(
+            "legal whitespace or comment trivia must not hide a bare dependency wait");
+    }
+
+    [Theory]
+    [InlineData("// await dependency.WaitAsync(ct);")]
+    [InlineData("var text = \".WaitAsync(ct)\";")]
+    [InlineData("var text = @\".WaitAsync(ct)\";")]
+    [InlineData("var text = \"\"\".WaitAsync(ct)\"\"\";")]
+    public void Issue109_SourceGuard_IgnoresCommentsAndStringLiterals(string source)
+    {
+        FindBareWaitAsyncCalls("Synthetic.cs", source).Should().BeEmpty(
+            "comments and string contents are not executable invocations");
+        CountInvocations(source, "WaitAsyncObserved").Should().Be(0,
+            "comments and strings must not spoof the positive inventory");
+    }
 
     [Fact]
     public void Issue109_DeadlineBoundedAwaitInventory_NoBareSitesAndCountsPinned()
@@ -429,20 +592,17 @@ public class Issue109UnobservedTaskTests
                 && Path.GetFileName(f) != "AbandonableTaskExtensions.cs")
             .Select(f => (
                 Path: Path.GetRelativePath(root, f).Replace('\\', '/'),
-                Lines: File.ReadLines(f).ToList()))
+                Source: File.ReadAllText(f)))
             .ToList();
 
         var offenders = sources
-            .SelectMany(s => s.Lines
-                .Select((line, i) => (s.Path, Line: i + 1, Text: line))
-                .Where(l => BareWaitAsyncCall.IsMatch(l.Text)))
-            .Select(l => $"{l.Path}:{l.Line}")
+            .SelectMany(s => FindBareWaitAsyncCalls(s.Path, s.Source))
             .ToList();
         offenders.Should().BeEmpty(
             "every deadline-bounded await must observe abandonment via WaitAsyncObserved");
 
         var inventory = sources
-            .Select(s => (s.Path, Count: s.Lines.Sum(l => ObservedWaitAsyncCall.Matches(l).Count)))
+            .Select(s => (s.Path, Count: CountInvocations(s.Source, "WaitAsyncObserved")))
             .Where(s => s.Count > 0)
             .ToDictionary(s => s.Path, s => s.Count);
         inventory.Should().Equal(new Dictionary<string, int>
@@ -453,6 +613,33 @@ public class Issue109UnobservedTaskTests
         }, "removing a WaitAsyncObserved wrapper un-bounds a dependency await; update " +
            "this inventory only for a deliberate call-site change");
     }
+
+    private static IReadOnlyList<string> FindBareWaitAsyncCalls(string path, string source)
+        => InvocationsNamed(source, "WaitAsync")
+            .Select(invocation =>
+                $"{path}:{invocation.GetLocation().GetLineSpan().StartLinePosition.Line + 1}")
+            .ToList();
+
+    private static int CountInvocations(string source, string methodName)
+        => InvocationsNamed(source, methodName).Count();
+
+    private static IEnumerable<InvocationExpressionSyntax> InvocationsNamed(
+        string source, string methodName)
+        => CSharpSyntaxTree
+            .ParseText(source)
+            .GetRoot()
+            .DescendantNodes()
+            .OfType<InvocationExpressionSyntax>()
+            .Where(invocation => InvokedMethodName(invocation.Expression) == methodName);
+
+    private static string? InvokedMethodName(ExpressionSyntax expression)
+        => expression switch
+        {
+            MemberAccessExpressionSyntax member => member.Name.Identifier.ValueText,
+            MemberBindingExpressionSyntax binding => binding.Name.Identifier.ValueText,
+            IdentifierNameSyntax identifier => identifier.Identifier.ValueText,
+            _ => null,
+        };
 
     private static string? FindRepositoryRoot()
     {

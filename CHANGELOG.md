@@ -192,12 +192,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   cancellation actually abandons a still-pending dependency task, attaches a fault observer —
   one per task instance, registered with `ExecutionContext` flow suppressed so a hung task
   cannot pin the abandoning request's `AsyncLocal` graph (request state, `Activity` baggage,
-  credentials). Completed tasks and normally completing awaits carry no observer state, no
-  lock, and no extra allocation. Deadline and cancellation semantics, the
-  already-completed-task race handling, and the `LandedTransactionsKey` /
-  `InFlightTransactionsKey` evidence contract are unchanged; a source-scan regression test
-  keeps bare `.WaitAsync(` call sites out of `NetDid.Method.Ethr` and pins the per-file
-  `WaitAsyncObserved` call-site inventory.
+  credentials). Completed tasks and non-cancelable waits take the bare `WaitAsync` fast path.
+  Pending cancelable waits carry a short-lived, flow-suppressed cancellation monitor, but
+  normally completing waits never touch the observer table or its lock; only actual
+  abandonment can install the deduplicated source observer. The helper returns bare
+  `WaitAsync`'s task unchanged, preserving task status, aggregate-exception shape,
+  cancellation-token identity, and the already-completed-task race handling. The
+  `LandedTransactionsKey` /
+  `InFlightTransactionsKey` evidence contract are unchanged; a syntax-tree regression test
+  recognizes invocations independently of whitespace/comment trivia, ignores comments and
+  string literals, keeps bare `.WaitAsync(` call sites out of `NetDid.Method.Ethr`, and pins
+  the per-file `WaitAsyncObserved` call-site inventory.
 
 ### Security
 

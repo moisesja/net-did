@@ -27,9 +27,10 @@ internal static class AbandonableTaskExtensions
     /// Identical semantics on every non-fault path, including returning an
     /// already-completed task's result even when <paramref name="ct"/> has fired —
     /// call sites that must not proceed after cancellation re-check the token
-    /// explicitly, exactly as with bare <c>WaitAsync</c>. Observer state exists only
-    /// once cancellation actually abandons a still-pending task; completed tasks and
-    /// normally completing awaits pay nothing.
+    /// explicitly, exactly as with bare <c>WaitAsync</c>. Completed tasks and
+    /// non-cancelable waits take the bare fast path. A pending cancelable wait carries
+    /// a short-lived, flow-suppressed cancellation monitor; persistent source-observer
+    /// state exists only when cancellation leaves the source task still pending.
     /// </summary>
     public static Task<T> WaitAsyncObserved<T>(this Task<T> task, CancellationToken ct)
     {
@@ -38,24 +39,54 @@ internal static class AbandonableTaskExtensions
         // completed-task-beats-canceled-token race semantics.
         if (!ct.CanBeCanceled || task.IsCompleted)
             return task.WaitAsync(ct);
-        return AwaitObservingAbandonment(task, task.WaitAsync(ct));
+
+        // Return WaitAsync's task unchanged. In particular, a dependency fault carrying
+        // OperationCanceledException must remain a Faulted task with a non-null
+        // AggregateException; an async catch/rethrow wrapper would turn it into Canceled.
+        var bounded = task.WaitAsync(ct);
+        MonitorCancellation(task, bounded);
+        return bounded;
     }
 
-    private static async Task<T> AwaitObservingAbandonment<T>(Task<T> source, Task<T> bounded)
+    private static void MonitorCancellation(Task source, Task bounded)
     {
+        // The monitor is attached to the bounded task, not the source: OnlyOnCanceled
+        // therefore runs precisely when bare WaitAsync reports cancellation. Suppress
+        // flow because even this short-lived continuation must not retain an ambient
+        // request graph while a hostile dependency ignores cancellation.
+        var suppress = !ExecutionContext.IsFlowSuppressed();
+        var flow = suppress ? ExecutionContext.SuppressFlow() : default;
         try
         {
-            return await bounded.ConfigureAwait(false);
+            _ = bounded.ContinueWith(
+                static (_, state) => ObserveAfterBoundedCancellation((Task)state!),
+                source,
+                CancellationToken.None,
+                TaskContinuationOptions.OnlyOnCanceled |
+                TaskContinuationOptions.ExecuteSynchronously,
+                TaskScheduler.Default);
         }
-        catch (OperationCanceledException)
+        finally
         {
-            // Cancellation is the only path on which WaitAsync detaches from a
-            // still-pending source. Attach the observer now, while this frame still
-            // roots the source, so a fault raised after abandonment is observed
-            // rather than escalated. If the source completed in the race anyway,
-            // OnlyOnFaulted resolves immediately and harmlessly.
+            if (suppress)
+                flow.Undo();
+        }
+    }
+
+    private static void ObserveAfterBoundedCancellation(Task source)
+    {
+        if (!source.IsCompleted)
+        {
+            // Wait-token cancellation won while the source was still pending. Attach
+            // one source observer so a later fault cannot escalate in the host.
             ObserveFaultOf(source);
-            throw;
+        }
+        else if (source.IsFaulted)
+        {
+            // The wait token won the bounded-task race, but the source faulted before
+            // this monitor ran. Bare WaitAsync no longer owns that fault, so consume it
+            // directly. Success and source self-cancellation need no observer.
+            _ = source.Exception;
         }
     }
 
