@@ -114,6 +114,35 @@ public class Issue109UnobservedTaskTests
         (await Task.FromResult(42).WaitAsyncObserved(canceled.Token)).Should().Be(42);
     }
 
+    [Fact]
+    public async Task Issue109_RepeatedAbandonedAwaitsOfOneSharedTask_BoundedRetentionStillObserved()
+    {
+        var marker = Guid.NewGuid().ToString("N");
+        using var probe = new UnobservedEscalationProbe(marker);
+
+        // Adversarial-review finding: WaitAsync removes its own continuation when the
+        // token fires, but a ContinueWith observer is permanent — a hostile client
+        // returning ONE shared forever-pending task from a retried call must not grow
+        // one observer per attempt. Un-deduped, 200k attempts retain ~50 MB.
+        var shared = new TaskCompletionSource<int>();
+        using var cts = new CancellationTokenSource();
+        cts.Cancel();
+
+        var before = GC.GetTotalMemory(forceFullCollection: true);
+        for (var i = 0; i < 200_000; i++)
+            _ = shared.Task.WaitAsyncObserved(cts.Token);
+        var after = GC.GetTotalMemory(forceFullCollection: true);
+
+        (after - before).Should().BeLessThan(10_000_000,
+            "repeated abandoned awaits of one shared task must not accumulate observers");
+
+        // The single deduped observer must still cover the fault.
+        shared.SetException(new Issue109MarkerException(marker));
+        await ForceFinalizationAsync();
+        probe.EscalationCount.Should().Be(0,
+            "one observer per task instance is sufficient to observe its fault");
+    }
+
     // ── End-to-end: the write path's abandonment sites ───────────────────────
 
     [Fact]
@@ -250,10 +279,15 @@ public class Issue109UnobservedTaskTests
     {
         // A bare .WaitAsync( on a dependency task reintroduces the abandonment leak; every
         // site must go through WaitAsyncObserved. Walked from the repo checkout; passes
-        // vacuously when the sources are not present (packaged test run).
+        // vacuously when the sources are not present (packaged test run) — but never on CI,
+        // where a silent disarm would be indistinguishable from a real scan.
         var root = FindRepositoryRoot();
         if (root is null)
+        {
+            Environment.GetEnvironmentVariable("CI").Should().BeNullOrEmpty(
+                "the source guard must not silently disarm on CI");
             return;
+        }
 
         var offenders = Directory
             .EnumerateFiles(Path.Combine(root, "src", "NetDid.Method.Ethr"), "*.cs",

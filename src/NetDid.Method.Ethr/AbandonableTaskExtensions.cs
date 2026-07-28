@@ -1,3 +1,5 @@
+using System.Runtime.CompilerServices;
+
 namespace NetDid.Method.Ethr;
 
 /// <summary>
@@ -12,6 +14,14 @@ namespace NetDid.Method.Ethr;
 /// </summary>
 internal static class AbandonableTaskExtensions
 {
+    // Unlike WaitAsync — which removes its own continuation when the token fires — a
+    // ContinueWith observer is permanent for the source task's lifetime. A hostile
+    // dependency returning one shared forever-pending task from a retried call would
+    // grow one continuation per attempt, so register at most one observer per task
+    // instance. Reference-identity keyed; the entry dies with the task.
+    private static readonly ConditionalWeakTable<Task, object> ObservedTasks = [];
+    private static readonly object ObservedSentinel = new();
+
     /// <summary>
     /// <see cref="Task.WaitAsync(CancellationToken)"/> with the abandonment fault
     /// observed. Identical semantics on every non-fault path, including returning an
@@ -21,14 +31,19 @@ internal static class AbandonableTaskExtensions
     /// </summary>
     public static Task<T> WaitAsyncObserved<T>(this Task<T> task, CancellationToken ct)
     {
-        // OnlyOnFaulted: on success or cancellation the continuation is itself
-        // canceled, and canceled tasks never raise UnobservedTaskException.
-        // CancellationToken.None: the observer must outlive every caller token.
-        _ = task.ContinueWith(
-            static t => _ = t.Exception,
-            CancellationToken.None,
-            TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously,
-            TaskScheduler.Default);
+        // A token that can never fire cannot abandon: WaitAsync returns the task
+        // itself and the call site's await observes any fault directly.
+        if (ct.CanBeCanceled && ObservedTasks.TryAdd(task, ObservedSentinel))
+        {
+            // OnlyOnFaulted: on success or cancellation the continuation is itself
+            // canceled, and canceled tasks never raise UnobservedTaskException.
+            // CancellationToken.None: the observer must outlive every caller token.
+            _ = task.ContinueWith(
+                static t => _ = t.Exception,
+                CancellationToken.None,
+                TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously,
+                TaskScheduler.Default);
+        }
         return task.WaitAsync(ct);
     }
 }
