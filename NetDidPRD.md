@@ -1494,9 +1494,12 @@ Write-path contract (each property pinned by a test):
    pre-flight RPC and signer awaits even when an injected implementation ignores cancellation.
    Explicit cancellation checks at operation and broadcast boundaries also close the
    already-completed-task race in `Task.WaitAsync`. Because `WaitAsync` abandons rather than
-   cancels a token-ignoring dependency task, every such await attaches a fault observer before
-   abandoning, so an orphan that faults later can never surface as a
-   `TaskScheduler.UnobservedTaskException` escalation in the host. Once transaction submission begins, every
+   cancels a token-ignoring dependency task, cancellation of such an await attaches a fault
+   observer to the still-pending task (one per task, registered with `ExecutionContext` flow
+   suppressed so a hung task cannot pin the abandoning request's ambient state), so an orphan
+   that faults later can never surface as a `TaskScheduler.UnobservedTaskException`
+   escalation in the host; completed tasks and normally completing awaits carry no observer
+   state. Once transaction submission begins, every
    failure exit reports two non-overlapping evidence sets through `Exception.Data`:
    - `DidEthrMethod.LandedTransactionsKey`: hashes with observed receipts, including reverted
      transactions (confirmed on-chain and gas/nonce-consuming even though the operation failed);

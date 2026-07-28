@@ -339,3 +339,24 @@
   probe-validated rework can land as a PR comment (and a follow-up commit if confirmed)
   instead of blocking the open PR — the user pinged "taking too long" exactly here. Post the
   PR, let the re-attack arrive asynchronously, fix on the branch.
+- A `static` lambda stops CLOSURE capture, not EXECUTION-CONTEXT capture. `ContinueWith`
+  (and awaiter registration generally) snapshots the current ExecutionContext, so a
+  long-lived/permanent continuation silently pins the registering request's AsyncLocal graph
+  (HttpContext, Activity baggage, credentials) for the antecedent's lifetime. Register
+  observers/monitors under `ExecutionContext.SuppressFlow()` (guard `IsFlowSuppressed` for
+  already-suppressed callers) and pin with an AsyncLocal-payload + WeakReference test that
+  keeps the antecedent ROOTED while asserting the payload is collectible. (PR #113 review.)
+- Attach recovery/bookkeeping state only when the failure mode it serves can actually occur,
+  not eagerly on every call. The eager observer put a table insert + continuation on paths
+  that can never abandon (completed tasks — the in-memory signer's every write). Structure:
+  fast-path out states where the hazard is impossible, and attach in the code path where the
+  hazard materializes (the cancellation catch). Pin hot-path cost DIFFERENTIALLY against the
+  bare primitive so the baseline cancels out of the assertion. (PR #113 review.)
+- `GC.GetTotalMemory` is a process-global oracle — invalid under parallel test runners.
+  Count the specific resource on the specific object (reflection into the continuation slot,
+  failing loudly if the BCL field moves) or use WeakReferences. And an "unobserved fault does
+  not escalate" assert is only probative if the faulted task is COLLECTIBLE when finalization
+  is forced — scope ownership into a helper frame; a rooted task never escalates regardless.
+- A lexical source guard must be whitespace-tolerant AND pin the positive inventory
+  (per-file expected call-site counts): banning `.WaitAsync(` alone misses `.WaitAsync (`
+  and — worse — cannot see a DELETED wrapper, which silently un-bounds the await it guarded.

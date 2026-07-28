@@ -1,4 +1,6 @@
+using System.Reflection;
 using System.Runtime.CompilerServices;
+using System.Text.RegularExpressions;
 using FluentAssertions;
 using NetCrypto;
 using NetDid.Core.Exceptions;
@@ -83,6 +85,89 @@ public class Issue109UnobservedTaskTests
         dependency.SetException(new Issue109MarkerException(marker));
     }
 
+    private static readonly AsyncLocal<object?> AmbientRequestState = new();
+
+    [Fact]
+    public async Task Issue109_AbandonmentObserver_DoesNotRetainAbandoningExecutionContext()
+    {
+        // PR #113 review finding 1: a static ContinueWith delegate prevents a closure but
+        // not ExecutionContext capture. The observer lives as long as the hung dependency
+        // task, so without suppressed flow it pins the abandoning request's AsyncLocal
+        // graph (HttpContext, Activity baggage, credentials) after the deadline returned.
+        var hungDependency = new TaskCompletionSource<int>();
+        var weakPayload = await AbandonWithAmbientPayloadAsync(hungDependency);
+
+        for (var i = 0; i < 3; i++)
+        {
+            GC.Collect();
+            GC.WaitForPendingFinalizers();
+            GC.Collect();
+        }
+
+        weakPayload.IsAlive.Should().BeFalse(
+            "the abandonment observer must not retain the abandoning request's ambient " +
+            "state while the dependency task is still hung");
+
+        // Rooted through the whole probe: the retention must be gone WHILE the source
+        // task is still alive and pending, not because the task itself was collected.
+        hungDependency.SetResult(0);
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static async Task<WeakReference> AbandonWithAmbientPayloadAsync(
+        TaskCompletionSource<int> hungDependency)
+    {
+        var payload = new byte[1024 * 1024];
+        var weak = new WeakReference(payload);
+        AmbientRequestState.Value = payload;
+        try
+        {
+            using var cts = new CancellationTokenSource();
+            cts.Cancel();
+            var act = () => hungDependency.Task.WaitAsyncObserved(cts.Token);
+            await act.Should().ThrowAsync<OperationCanceledException>();
+            return weak;
+        }
+        finally
+        {
+            AmbientRequestState.Value = null;
+        }
+    }
+
+    [Fact]
+    public void Issue109_FreshCompletedTaskAwaits_PayNoObserverStateOverBareWaitAsync()
+    {
+        // PR #113 review finding 2: a completed task cannot be abandoned, so it must take
+        // bare WaitAsync's same-instance fast path — no observer bookkeeping, no lock, no
+        // per-await allocation. Fresh task per await is the shape that matters: the
+        // in-memory signer returns a new completed task on every write, and a fresh task
+        // always misses a dedupe cache. Differential against bare WaitAsync so the
+        // Task.FromResult baseline cancels out.
+        using var live = new CancellationTokenSource();
+
+        static long AllocatedBy(Func<Task<int>, CancellationToken, Task<int>> boundedAwait,
+            CancellationToken token)
+        {
+            for (var i = 0; i < 1_000; i++)
+                _ = boundedAwait(Task.FromResult(i), token);
+            var before = GC.GetAllocatedBytesForCurrentThread();
+            for (var i = 0; i < 10_000; i++)
+                _ = boundedAwait(Task.FromResult(i), token);
+            return GC.GetAllocatedBytesForCurrentThread() - before;
+        }
+
+        var bare = AllocatedBy(static (t, ct) => t.WaitAsync(ct), live.Token);
+        var observed = AllocatedBy(static (t, ct) => t.WaitAsyncObserved(ct), live.Token);
+
+        (observed - bare).Should().BeLessThan(160_000,
+            "10k fresh completed-task awaits must not pay per-await observer state " +
+            "(the unfixed shape added ~224 B and a table insert per await)");
+
+        var completed = Task.FromResult(42);
+        ReferenceEquals(completed.WaitAsyncObserved(live.Token), completed).Should().BeTrue(
+            "a completed task takes WaitAsync's same-instance fast path");
+    }
+
     [Fact]
     public async Task Issue109_WaitAsyncObserved_PreservesBareWaitAsyncSemantics()
     {
@@ -115,7 +200,7 @@ public class Issue109UnobservedTaskTests
     }
 
     [Fact]
-    public async Task Issue109_RepeatedAbandonedAwaitsOfOneSharedTask_BoundedRetentionStillObserved()
+    public async Task Issue109_RepeatedAbandonedAwaitsOfOneSharedTask_AttachOneObserverStillObserved()
     {
         var marker = Guid.NewGuid().ToString("N");
         using var probe = new UnobservedEscalationProbe(marker);
@@ -123,24 +208,62 @@ public class Issue109UnobservedTaskTests
         // Adversarial-review finding: WaitAsync removes its own continuation when the
         // token fires, but a ContinueWith observer is permanent — a hostile client
         // returning ONE shared forever-pending task from a retried call must not grow
-        // one observer per attempt. Un-deduped, 200k attempts retain ~50 MB.
+        // one observer per attempt. Counted on the specific task rather than via
+        // process-global heap deltas (PR #113 review finding 3: the suite runs in
+        // parallel, so global memory is not a valid retention oracle).
+        var observerCount = await AbandonManyTimesThenFaultAsync(marker);
+
+        observerCount.Should().BeLessThanOrEqualTo(1,
+            "repeated abandoned awaits of one shared task must not accumulate observers");
+
+        // The helper owned the TaskCompletionSource, so the faulted task is collectible
+        // here and an unobserved fault WOULD escalate — the zero assertion is probative.
+        await ForceFinalizationAsync();
+        probe.EscalationCount.Should().Be(0,
+            "one observer per task instance is sufficient to observe its fault");
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static async Task<int> AbandonManyTimesThenFaultAsync(string marker)
+    {
         var shared = new TaskCompletionSource<int>();
         using var cts = new CancellationTokenSource();
         cts.Cancel();
 
-        var before = GC.GetTotalMemory(forceFullCollection: true);
-        for (var i = 0; i < 200_000; i++)
-            _ = shared.Task.WaitAsyncObserved(cts.Token);
-        var after = GC.GetTotalMemory(forceFullCollection: true);
+        for (var i = 0; i < 10_000; i++)
+        {
+            try
+            {
+                _ = await shared.Task.WaitAsyncObserved(cts.Token);
+            }
+            catch (OperationCanceledException)
+            {
+            }
+        }
 
-        (after - before).Should().BeLessThan(10_000_000,
-            "repeated abandoned awaits of one shared task must not accumulate observers");
-
-        // The single deduped observer must still cover the fault.
+        var count = RegisteredContinuationCount(shared.Task);
         shared.SetException(new Issue109MarkerException(marker));
-        await ForceFinalizationAsync();
-        probe.EscalationCount.Should().Be(0,
-            "one observer per task instance is sufficient to observe its fault");
+        return count;
+    }
+
+    /// <summary>
+    /// Counts continuations registered on <paramref name="task"/> via the BCL-internal
+    /// continuation slot (pinned to .NET 10; fails loudly if the field moves). Canceled
+    /// WaitAsync proxies remove their own registrations, so what remains is observer state.
+    /// </summary>
+    private static int RegisteredContinuationCount(Task task)
+    {
+        var field = typeof(Task).GetField(
+            "m_continuationObject", BindingFlags.Instance | BindingFlags.NonPublic);
+        field.Should().NotBeNull(
+            "the retention pin reads Task's internal continuation slot; update this " +
+            "helper if the BCL renames it");
+        return field!.GetValue(task) switch
+        {
+            null => 0,
+            List<object?> list => list.Count(entry => entry is not null),
+            _ => 1,
+        };
     }
 
     // ── End-to-end: the write path's abandonment sites ───────────────────────
@@ -274,13 +397,22 @@ public class Issue109UnobservedTaskTests
 
     // ── Class guard ──────────────────────────────────────────────────────────
 
+    // Bare WaitAsync tolerates whitespace before the argument list (PR #113 review
+    // finding 4: the exact-text scan missed ".WaitAsync ("). "WaitAsyncObserved" does
+    // not match: 'O' follows the name, not whitespace or '('.
+    private static readonly Regex BareWaitAsyncCall = new(@"\.WaitAsync\s*\(");
+    private static readonly Regex ObservedWaitAsyncCall = new(@"\.WaitAsyncObserved\s*\(");
+
     [Fact]
-    public void Issue109_NoBareWaitAsyncCallSitesRemainInEthrSources()
+    public void Issue109_DeadlineBoundedAwaitInventory_NoBareSitesAndCountsPinned()
     {
-        // A bare .WaitAsync( on a dependency task reintroduces the abandonment leak; every
-        // site must go through WaitAsyncObserved. Walked from the repo checkout; passes
-        // vacuously when the sources are not present (packaged test run) — but never on CI,
-        // where a silent disarm would be indistinguishable from a real scan.
+        // A bare .WaitAsync( on a dependency task reintroduces the abandonment leak, and
+        // DELETING a WaitAsyncObserved wrapper silently un-bounds an await — so pin both
+        // directions: zero bare sites AND the exact per-file observed-call inventory
+        // (update the counts when a dependency await is legitimately added or removed).
+        // Walked from the repo checkout; passes vacuously when the sources are not
+        // present (packaged test run) — but never on CI, where a silent disarm would be
+        // indistinguishable from a real scan.
         var root = FindRepositoryRoot();
         if (root is null)
         {
@@ -289,20 +421,37 @@ public class Issue109UnobservedTaskTests
             return;
         }
 
-        var offenders = Directory
+        var sources = Directory
             .EnumerateFiles(Path.Combine(root, "src", "NetDid.Method.Ethr"), "*.cs",
                 SearchOption.AllDirectories)
             .Where(f => !f.Contains($"{Path.DirectorySeparatorChar}obj{Path.DirectorySeparatorChar}")
                 && !f.Contains($"{Path.DirectorySeparatorChar}bin{Path.DirectorySeparatorChar}")
                 && Path.GetFileName(f) != "AbandonableTaskExtensions.cs")
-            .SelectMany(f => File.ReadLines(f)
-                .Select((line, i) => (File: f, Line: i + 1, Text: line))
-                .Where(l => l.Text.Contains(".WaitAsync(", StringComparison.Ordinal)))
-            .Select(l => $"{Path.GetRelativePath(root, l.File)}:{l.Line}")
+            .Select(f => (
+                Path: Path.GetRelativePath(root, f).Replace('\\', '/'),
+                Lines: File.ReadLines(f).ToList()))
             .ToList();
 
+        var offenders = sources
+            .SelectMany(s => s.Lines
+                .Select((line, i) => (s.Path, Line: i + 1, Text: line))
+                .Where(l => BareWaitAsyncCall.IsMatch(l.Text)))
+            .Select(l => $"{l.Path}:{l.Line}")
+            .ToList();
         offenders.Should().BeEmpty(
             "every deadline-bounded await must observe abandonment via WaitAsyncObserved");
+
+        var inventory = sources
+            .Select(s => (s.Path, Count: s.Lines.Sum(l => ObservedWaitAsyncCall.Matches(l).Count)))
+            .Where(s => s.Count > 0)
+            .ToDictionary(s => s.Path, s => s.Count);
+        inventory.Should().Equal(new Dictionary<string, int>
+        {
+            ["src/NetDid.Method.Ethr/DidEthrMethod.cs"] = 8,
+            ["src/NetDid.Method.Ethr/Transactions/TransactionPipeline.cs"] = 6,
+            ["src/NetDid.Method.Ethr/Deployment/Erc1056Registry.cs"] = 1,
+        }, "removing a WaitAsyncObserved wrapper un-bounds a dependency await; update " +
+           "this inventory only for a deliberate call-site change");
     }
 
     private static string? FindRepositoryRoot()

@@ -188,11 +188,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `TaskScheduler.UnobservedTaskException`: background noise for hosts that hook the event
   (Application Insights, Sentry), a process kill under opt-in `ThrowUnobservedTaskExceptions`.
   All fifteen deadline-bounded RPC/signer awaits in `TransactionPipeline`, `DidEthrMethod`,
-  and `Erc1056Registry` now go through an internal `WaitAsyncObserved` helper that attaches a
-  fault observer before abandoning. Deadline and cancellation semantics, the
+  and `Erc1056Registry` now go through an internal `WaitAsyncObserved` helper that, when
+  cancellation actually abandons a still-pending dependency task, attaches a fault observer —
+  one per task instance, registered with `ExecutionContext` flow suppressed so a hung task
+  cannot pin the abandoning request's `AsyncLocal` graph (request state, `Activity` baggage,
+  credentials). Completed tasks and normally completing awaits carry no observer state, no
+  lock, and no extra allocation. Deadline and cancellation semantics, the
   already-completed-task race handling, and the `LandedTransactionsKey` /
   `InFlightTransactionsKey` evidence contract are unchanged; a source-scan regression test
-  keeps bare `.WaitAsync(` call sites out of `NetDid.Method.Ethr`.
+  keeps bare `.WaitAsync(` call sites out of `NetDid.Method.Ethr` and pins the per-file
+  `WaitAsyncObserved` call-site inventory.
 
 ### Security
 
