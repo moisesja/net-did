@@ -839,8 +839,9 @@ netdid/
 │   ├── NetDid.Core.Tests/                   # 377 unit tests
 │   ├── NetDid.Method.Key.Tests/             # 52 tests
 │   ├── NetDid.Method.Peer.Tests/            # 48 tests
-│   ├── NetDid.Method.WebVh.Tests/           # 411 tests
-│   ├── NetDid.Method.Ethr.Tests/            # 316 tests
+│   ├── NetDid.Method.WebVh.Tests/           # 420 tests
+│   ├── NetDid.Method.Ethr.Tests/            # 382 tests
+│   ├── NetDid.Method.Ethr.IntegrationTests/ # 18 tests (7 real-EVM, opt-in via NETDID_ETHR_INTEGRATION)
 │   ├── NetDid.Tests.W3CConformance/         # 233 W3C conformance tests
 │   └── NetDid.Extensions.DependencyInjection.Tests/  # 18 tests
 ├── samples/
