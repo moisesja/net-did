@@ -126,6 +126,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **`DataProofsDotnet.Core` 0.1.0-preview.1 → 1.1.1** (issue #110) — five releases, crossing a
+  major, under the `did:webvh` Data Integrity verification path. No behaviour change was needed
+  in net-did: the bump is source-compatible and the full suite passes with no assertion relaxed.
+  Because a green suite only proves the new version verifies what the new version produced, the
+  upgrade is guarded by a `did.jsonl` and `eddsa-jcs-2022` proof **captured from the pre-upgrade
+  library** and committed as a fixture; it still verifies, so there is no wire-format drift for
+  DIDs published by earlier releases or other implementations. Additional guards pin the three
+  hazards this particular bump carried: 1.0.0 made `Base64Url.Decode` strict (padding,
+  whitespace and standard-base64 alphabet now throw), so malformed `proofValue`s are asserted to
+  surface as resolution errors rather than raw faults; 1.0.0 added proof-`type` dispatch and the
+  `DataProofsDotnet.Legacy` LD-Signature suites, so a legacy-typed proof is asserted to remain
+  **rejected** — the accepted cryptosuite set has not silently widened. net-did was never exposed
+  to the `AngleSharp` advisory fixed in 1.1.1 (that reaches consumers via `DataProofsDotnet.Rdfc`
+  → `dotNetRdf.Core`, which net-did does not reference), and the dependency tree still pulls
+  neither package.
+
+
+
 - **`NetCrypto` 1.3.0 → 1.4.0** — did:ethr transactions and meta-transaction payloads are signed
   through the new `IRecoverableDigestSigner` seam (crypto-dotnet#21, requested for this work):
   recoverable secp256k1 ECDSA over a caller-computed keccak digest, which the general-purpose
