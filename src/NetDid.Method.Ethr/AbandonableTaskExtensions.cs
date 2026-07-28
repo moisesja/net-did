@@ -32,8 +32,12 @@ internal static class AbandonableTaskExtensions
     public static Task<T> WaitAsyncObserved<T>(this Task<T> task, CancellationToken ct)
     {
         // A token that can never fire cannot abandon: WaitAsync returns the task
-        // itself and the call site's await observes any fault directly.
-        if (ct.CanBeCanceled && ObservedTasks.TryAdd(task, ObservedSentinel))
+        // itself and the call site's await observes any fault directly. TryGetValue
+        // first: it is lock-free, while TryAdd locks the table even on a dedupe hit —
+        // without it, one static lock serializes every deadline-bounded await in the
+        // process. TryAdd still closes the two-registrant race.
+        if (ct.CanBeCanceled && !ObservedTasks.TryGetValue(task, out _)
+            && ObservedTasks.TryAdd(task, ObservedSentinel))
         {
             // OnlyOnFaulted: on success or cancellation the continuation is itself
             // canceled, and canceled tasks never raise UnobservedTaskException.
