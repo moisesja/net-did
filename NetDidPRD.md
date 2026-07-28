@@ -1493,7 +1493,10 @@ Write-path contract (each property pinned by a test):
 3. One overall write deadline bounds the whole batch and post-transaction readback, including
    pre-flight RPC and signer awaits even when an injected implementation ignores cancellation.
    Explicit cancellation checks at operation and broadcast boundaries also close the
-   already-completed-task race in `Task.WaitAsync`. Once transaction submission begins, every
+   already-completed-task race in `Task.WaitAsync`. Because `WaitAsync` abandons rather than
+   cancels a token-ignoring dependency task, every such await attaches a fault observer before
+   abandoning, so an orphan that faults later can never surface as a
+   `TaskScheduler.UnobservedTaskException` escalation in the host. Once transaction submission begins, every
    failure exit reports two non-overlapping evidence sets through `Exception.Data`:
    - `DidEthrMethod.LandedTransactionsKey`: hashes with observed receipts, including reverted
      transactions (confirmed on-chain and gas/nonce-consuming even though the operation failed);

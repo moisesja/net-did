@@ -179,6 +179,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `EthereumNetworkConfig` (`LegacyNonce`, required `RegistryAddress`), and documents
   `IEthereumRpcClientFactory` and `KnownNetworks`.
 
+### Fixed
+
+- **did:ethr write path no longer leaks unobserved task faults into the host** (issue #109).
+  The `Task.WaitAsync(ct)` deadline-bounding added with the on-chain write path abandons — not
+  cancels — a dependency task whose implementation ignores the token; if that orphan later
+  faulted, nothing observed the exception and the task finalizer escalated it through
+  `TaskScheduler.UnobservedTaskException`: background noise for hosts that hook the event
+  (Application Insights, Sentry), a process kill under opt-in `ThrowUnobservedTaskExceptions`.
+  All fifteen deadline-bounded RPC/signer awaits in `TransactionPipeline`, `DidEthrMethod`,
+  and `Erc1056Registry` now go through an internal `WaitAsyncObserved` helper that attaches a
+  fault observer before abandoning. Deadline and cancellation semantics, the
+  already-completed-task race handling, and the `LandedTransactionsKey` /
+  `InFlightTransactionsKey` evidence contract are unchanged; a source-scan regression test
+  keeps bare `.WaitAsync(` call sites out of `NetDid.Method.Ethr`.
+
 ### Security
 
 - **did:ethr resolution hardened against a hostile RPC node** (adversarial review of the
