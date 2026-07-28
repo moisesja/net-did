@@ -160,12 +160,12 @@ internal static class TransactionPipeline
         var sender = AddressOf(signer, nameof(signer));
         var dataHex = "0x" + Convert.ToHexString(data).ToLowerInvariant();
 
-        var nonce = await rpc.GetTransactionCountAsync(sender, ct).WaitAsync(ct);
+        var nonce = await rpc.GetTransactionCountAsync(sender, ct).WaitAsyncObserved(ct);
 
         // The node is untrusted and its gas price becomes a fee THIS key authorizes. Without a
         // ceiling a hostile endpoint can report a price that drains the signer to the block
         // producer while every operation still reports success. Reject before signing.
-        var gasPrice = await rpc.GetGasPriceAsync(ct).WaitAsync(ct);
+        var gasPrice = await rpc.GetGasPriceAsync(ct).WaitAsyncObserved(ct);
         if (gasPrice > maxGasPriceWei)
             throw new EthereumInteractionException(
                 $"The RPC endpoint reported a gas price of {gasPrice} wei, above the configured " +
@@ -176,7 +176,7 @@ internal static class TransactionPipeline
         ulong gasEstimate;
         try
         {
-            gasEstimate = await rpc.EstimateGasAsync(sender, to, dataHex, ct).WaitAsync(ct);
+            gasEstimate = await rpc.EstimateGasAsync(sender, to, dataHex, ct).WaitAsyncObserved(ct);
         }
         catch (EthereumInteractionException ex)
         {
@@ -223,7 +223,7 @@ internal static class TransactionPipeline
         // Freeze ONE digest and derive everything from it: re-deriving the payload after the
         // await would let a caller-supplied signer mutate Data between signing and encoding.
         var signingDigest = transaction.SigningDigest();
-        var signature = await signer.SignDigestAsync(signingDigest, ct).WaitAsync(ct);
+        var signature = await signer.SignDigestAsync(signingDigest, ct).WaitAsyncObserved(ct);
 
         // The IRecoverableDigestSigner seam is caller-supplied (HSM, KMS, remote service).
         // Verify what came back actually authorizes THIS transaction as THIS sender before
@@ -254,7 +254,7 @@ internal static class TransactionPipeline
         // invoking the untrusted transport, then promote it only after a matching receipt.
         ct.ThrowIfCancellationRequested();
         attemptEvidence.MarkInFlight(expectedHash);
-        var reportedHash = await rpc.SendRawTransactionAsync(raw, ct).WaitAsync(ct);
+        var reportedHash = await rpc.SendRawTransactionAsync(raw, ct).WaitAsyncObserved(ct);
         // WaitAsync deliberately returns an already-completed task even if its token was
         // canceled. Re-check explicitly before trusting the response or beginning more work.
         ct.ThrowIfCancellationRequested();
@@ -273,7 +273,7 @@ internal static class TransactionPipeline
 
         while (true)
         {
-            if (await rpc.GetTransactionReceiptAsync(transactionHash, ct).WaitAsync(ct)
+            if (await rpc.GetTransactionReceiptAsync(transactionHash, ct).WaitAsyncObserved(ct)
                 is { } receipt)
             {
                 // The injectable interface is a trust boundary. The default client validates
