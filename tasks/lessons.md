@@ -329,3 +329,13 @@
   library-owned text (or text from an exact known-safe type) and retain the dependency exception
   opaquely as `InnerException`; diagnostic formatting must never be on the evidence-critical
   path.
+- Commit the real fix BEFORE any revert/mutate/restore dance. `git checkout <file>` restores
+  the last COMMITTED state, so restoring after a mutation run clobbers an uncommitted fix in
+  the same file (the #109 dedupe fix vanished this way; caught only because `git diff --stat`
+  was re-checked afterwards, per the existing clobber lesson). Sequence: commit fix → mutate →
+  run → `git checkout` restore → verify diff intact.
+- Do not serialize PR-opening behind an adversarial RE-ATTACK of a fix the finder itself
+  already validated. Round-1 findings gate the PR; a round-2 re-attack on a Low-severity,
+  probe-validated rework can land as a PR comment (and a follow-up commit if confirmed)
+  instead of blocking the open PR — the user pinged "taking too long" exactly here. Post the
+  PR, let the re-attack arrive asynchronously, fix on the branch.
