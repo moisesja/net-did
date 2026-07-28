@@ -8,7 +8,7 @@
          Re-add a pin only if a project takes a direct PackageReference. -->
     <PackageVersion Include="NetCrypto" Version="1.4.0" />
     <!-- Data Integrity proofs (did:webvh) -->
-    <PackageVersion Include="DataProofsDotnet.Core" Version="0.1.0-preview.1" />
+    <PackageVersion Include="DataProofsDotnet.Core" Version="1.1.1" />
     <!-- Encoding -->
     <PackageVersion Include="NetCid" Version="1.6.0" />
     <PackageVersion Include="Testcontainers" Version="4.13.0" />
