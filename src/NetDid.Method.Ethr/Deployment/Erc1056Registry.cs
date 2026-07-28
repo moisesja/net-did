@@ -88,7 +88,7 @@ public static class Erc1056Registry
         ulong reportedChainId;
         try
         {
-            reportedChainId = await rpc.GetChainIdAsync(ct).WaitAsync(ct);
+            reportedChainId = await rpc.GetChainIdAsync(ct).WaitAsyncObserved(ct);
         }
         catch (Exception ex)
         {

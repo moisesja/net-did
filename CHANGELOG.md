@@ -179,6 +179,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `EthereumNetworkConfig` (`LegacyNonce`, required `RegistryAddress`), and documents
   `IEthereumRpcClientFactory` and `KnownNetworks`.
 
+### Fixed
+
+- **did:ethr write path no longer leaks unobserved task faults into the host** (issue #109).
+  The `Task.WaitAsync(ct)` deadline-bounding added with the on-chain write path abandons — not
+  cancels — a dependency task whose implementation ignores the token; if that orphan later
+  faulted, nothing observed the exception and the task finalizer escalated it through
+  `TaskScheduler.UnobservedTaskException`: background noise for hosts that hook the event
+  (Application Insights, Sentry), a process kill under opt-in `ThrowUnobservedTaskExceptions`.
+  All fifteen deadline-bounded RPC/signer awaits in `TransactionPipeline`, `DidEthrMethod`,
+  and `Erc1056Registry` now go through an internal `WaitAsyncObserved` helper that, when
+  cancellation actually abandons a still-pending dependency task, attaches a fault observer —
+  one per task instance, registered with `ExecutionContext` flow suppressed so a hung task
+  cannot pin the abandoning request's `AsyncLocal` graph (request state, `Activity` baggage,
+  credentials). Completed tasks and non-cancelable waits take the bare `WaitAsync` fast path.
+  Pending cancelable waits carry a short-lived, flow-suppressed cancellation monitor, but
+  normally completing waits never touch the observer table or its lock; only actual
+  abandonment can install the deduplicated source observer. The helper returns bare
+  `WaitAsync`'s task unchanged, preserving task status, aggregate-exception shape,
+  cancellation-token identity, and the already-completed-task race handling. The
+  `LandedTransactionsKey` /
+  `InFlightTransactionsKey` evidence contract are unchanged; a syntax-tree regression test
+  recognizes invocations independently of whitespace/comment trivia, ignores comments and
+  string literals, keeps bare `.WaitAsync(` call sites out of `NetDid.Method.Ethr`, and pins
+  the per-file `WaitAsyncObserved` call-site inventory.
+
 ### Security
 
 - **did:ethr resolution hardened against a hostile RPC node** (adversarial review of the

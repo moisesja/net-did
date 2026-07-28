@@ -503,7 +503,7 @@ public sealed class DidEthrMethod : DidMethodBase
             token.ThrowIfCancellationRequested();
             var result = await BuildUpdateResultAsync(
                 did, identifier, transactionHashes, controllerAddress, newOwner, token)
-                .WaitAsync(token);
+                .WaitAsyncObserved(token);
             token.ThrowIfCancellationRequested();
             return result;
         }
@@ -527,7 +527,7 @@ public sealed class DidEthrMethod : DidMethodBase
         string controllerAddress, string? newOwner, CancellationToken ct)
     {
         var identity = identifier.IdentityAddress;
-        var resolved = await ResolveAsync(did, null, ct).WaitAsync(ct);
+        var resolved = await ResolveAsync(did, null, ct).WaitAsyncObserved(ct);
         ct.ThrowIfCancellationRequested();
         if (resolved.DidDocument is null)
             throw new EthereumInteractionException(
@@ -544,7 +544,7 @@ public sealed class DidEthrMethod : DidMethodBase
         var effectiveOwner = ParseAddressWordResult(
             await _rpcFactory.GetOrCreate(network).CallAsync(
                 network.RegistryAddress, Erc1056Calls.IdentityOwner(identity), ct)
-                .WaitAsync(ct));
+                .WaitAsyncObserved(ct));
         ct.ThrowIfCancellationRequested();
 
         // That eth_call and the event log both come from the same untrusted node, so trusting
@@ -622,7 +622,7 @@ public sealed class DidEthrMethod : DidMethodBase
         try
         {
             token.ThrowIfCancellationRequested();
-            resolved = await ResolveAsync(did, null, token).WaitAsync(token);
+            resolved = await ResolveAsync(did, null, token).WaitAsyncObserved(token);
             token.ThrowIfCancellationRequested();
         }
         catch (OperationCanceledException ex) when (ct.IsCancellationRequested)
@@ -714,13 +714,13 @@ public sealed class DidEthrMethod : DidMethodBase
                     "auto-detecting it would let the RPC endpoint decide which chain your key " +
                     "signs for. Set EthereumNetworkConfig.ChainId (KnownNetworks entries already " +
                     "carry it).", nameof(EthereumNetworkConfig.ChainId));
-            var chainId = await ResolveChainIdNumericAsync(network, rpc, token).WaitAsync(token);
+            var chainId = await ResolveChainIdNumericAsync(network, rpc, token).WaitAsyncObserved(token);
 
             // Pre-flight (advisory; the contract's onlyOwner/checkSignature is the
             // enforcement point): fail before broadcasting anything if the controller key
             // is not the current identity owner.
             var currentOwner = ParseAddressWordResult(await rpc.CallAsync(
-                registry, Erc1056Calls.IdentityOwner(identity), token).WaitAsync(token));
+                registry, Erc1056Calls.IdentityOwner(identity), token).WaitAsyncObserved(token));
             if (!string.Equals(currentOwner, controllerAddress, StringComparison.OrdinalIgnoreCase))
                 throw new EthereumInteractionException(
                     $"ControllerKey address {controllerAddress} is not the current owner " +
@@ -765,12 +765,12 @@ public sealed class DidEthrMethod : DidMethodBase
                         ? identity : currentOwner;
                     var metaNonce = ParseChangedResult(await rpc.CallAsync(
                         registry, Erc1056TransactionBuilder.NonceCalldata(nonceKey), token)
-                        .WaitAsync(token));
+                        .WaitAsyncObserved(token));
 
                     var digest = Erc1056TransactionBuilder.MetaTransactionDigest(
                         registry, metaNonce, identity, operation);
                     var signature = await controllerKey.SignDigestAsync(digest, token)
-                        .WaitAsync(token);
+                        .WaitAsyncObserved(token);
 
                     // The relayer is about to pay for this. TransactionPipeline verifies the
                     // OUTER relayer signature, but nothing verified this inner one: a signer
