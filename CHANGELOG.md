@@ -53,8 +53,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     strictly RLP-decodes raw transactions, recovers senders with real ecrecover, enforces
     chain id / account nonces / EIP-2 low-S, and executes the transcribed semantics of both
     contract generations (reverts mine a block and consume the nonce, like the EVM); and
-    `tests/NetDid.Method.Ethr.IntegrationTests` — an env-gated (`NETDID_ETHR_INTEGRATION=1`,
-    Docker) Testcontainers suite running Anvil (Foundry v1.7.1, pinned) that deploys the real
+    `tests/NetDid.Method.Ethr.IntegrationTests` — an env-gated (`NETDID_ETHR_INTEGRATION=1`;
+    once opted in, a reachable Docker daemon is required — the suite fails rather than skips
+    without one) Testcontainers suite running Anvil (Foundry v1.7.1, pinned) that deploys the real
     vendored bytecode and proves deployment, direct writes, meta-transactions (incl. replay
     rejection and the legacy-nonce divergence), and the full public-API lifecycle against real
     EVM execution. The default `dotnet test` run stays offline.
@@ -180,6 +181,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `IEthereumRpcClientFactory` and `KnownNetworks`.
 
 ### Fixed
+
+- **did:ethr integration suite: Docker-gate behaviour and documentation now agree** (issue
+  #112). The opt-in gate reads only `NETDID_ETHR_INTEGRATION` — Docker never participated in
+  the skip decision, despite docs claiming "skipped unless … Docker is reachable". Resolved by
+  making the code's behaviour the documented contract (fail loudly, not skip silently: opting
+  in requests real-EVM coverage, and a green run must never hide a suite that did not execute).
+  With the variable set and Docker unreachable, every gated test now fails with the same
+  single actionable message (xUnit reports a collection-fixture failure once per test) —
+  naming the variable, stating fail-not-skip, giving both remedies, and preserving
+  Testcontainers' endpoint list — instead of raw `DockerUnavailableException` stack traces.
+  The failure preserves Testcontainers' endpoint list and the inner-exception chain's
+  per-endpoint reasons as text (a permission-denied socket is misconfiguration, not a stopped
+  daemon). The default `dotnet test` run's offline behaviour is unchanged — all real-EVM tests
+  skip without touching Docker — and the gate itself is now pinned by always-run tests that
+  execute offline in the default run, driving the skip decision through an internal test-seam
+  constructor so no test mutates process environment.
 
 - **did:ethr write path no longer leaks unobserved task faults into the host** (issue #109).
   The `Task.WaitAsync(ct)` deadline-bounding added with the on-chain write path abandons — not
