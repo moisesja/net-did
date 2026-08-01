@@ -400,3 +400,26 @@
   (ecosystem compatibility, one-PR scope), say so explicitly in docs/PR and file the
   migration issue — a reviewer reading the current TR will otherwise refute the claim.
   (PR #122 rounds 1-2, issue #123.)
+- "Bound the dependency await" has a THIRD leg: already-completed tasks. WaitAsync(Observed)
+  deliberately lets a completed task beat a fired token, so a token-ignoring dependency
+  returning COMPLETED tasks keeps the whole loop synchronous and the deadline never
+  interrupts it — 1,000 post-cancel RPC calls in PR #122 round 3. A cancellation bound is
+  three checks, not one: (1) wrap the pending task (WaitAsyncObserved), (2) observe/dedupe
+  abandonment, (3) `ct.ThrowIfCancellationRequested()` before every dependency call and per
+  loop iteration on the completed-task fast path. Test BOTH modes: shared-pending task AND
+  completed-task fast path (cancel mid-loop ⇒ exactly one further call issued: zero).
+- When a bounded-extraction design keeps failing review, switch from bounding the DATA to
+  eliminating the READ. Extracting a "capped prefix" of an attacker string still (a)
+  materializes the full decoded value first (JsonValue.TryGetValue<string> allocates all of
+  it — the DOM holds UTF-8, not the decoded string), (b) forwards decoded control chars
+  (CR/LF/ESC/U+2028) into logs, and (c) can split surrogate pairs. Only a value with an
+  intrinsically bounded type (a JSON number via TryGetValue<long>) is safe to surface.
+  Fixed diagnostic + numeric code = bounded by construction; three review rounds of caps
+  and sanitizers were all dominated by simply not reading the member.
+- Touching how a JsonObject/JsonNode member is ACCESSED changes which exceptions escape:
+  lazy JsonObject materialization throws ArgumentException on duplicate keys, so replacing
+  `node.ToJsonString()` (serializes raw, never materializes the dictionary) with
+  `TryGetPropertyValue` INTRODUCED a raw JSON-layer escape at a boundary that promised
+  EthereumInteractionException. Any switch between serialize-style and dictionary-style
+  access on untrusted JSON needs the boundary catch re-checked and a duplicate-member test
+  (envelope AND nested object).

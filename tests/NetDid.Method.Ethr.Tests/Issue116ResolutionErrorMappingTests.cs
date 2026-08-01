@@ -335,6 +335,73 @@ public class Issue116ResolutionErrorMappingTests
             "an abandoned resolution must never issue RPC calls after its caller timed out");
     }
 
+    [Fact]
+    public async Task Issue116_CompletedTaskFastPath_CallerCancellation_StopsTheWalkImmediately()
+    {
+        // PR #122 review round 3, finding 1: WaitAsyncObserved deliberately lets an
+        // already-completed task win over a fired token, so a token-ignoring client
+        // returning COMPLETED tasks kept the whole synchronous walk running after
+        // cancellation (reviewer repro: all 1,000 hops issued post-cancel). With the
+        // explicit per-call token checks, cancelling during hop 1 means hop 2 never
+        // happens.
+        const ulong startBlock = 10_000;
+        using var cts = new CancellationTokenSource();
+        var getLogsCalls = 0;
+        var rpc = Substitute.For<IEthereumRpcClient>();
+        rpc.CallAsync(default!, default!, default)
+           .ReturnsForAnyArgs("0x" + startBlock.ToString("x64"));
+        rpc.GetLogsAsync(default!, default).ReturnsForAnyArgs(call =>
+        {
+            Interlocked.Increment(ref getLogsCalls);
+            cts.Cancel();   // caller cancels while the walk is on its first hop
+            var block = call.Arg<EthereumLogFilter>().FromBlock;
+            return Task.FromResult<IReadOnlyList<EthereumLogEntry>>(
+                [OwnerChangedLog(Identity, Identity, block, block - 1)]);
+        });
+
+        var act = () => MakeMethod(rpc)
+            .ResolveAsync($"did:ethr:sepolia:{Identity}", options: null, cts.Token);
+
+        await act.Should().ThrowAsync<OperationCanceledException>(
+            "caller cancellation propagates even on the completed-task fast path");
+        getLogsCalls.Should().Be(1,
+            "no dependency call may be issued after cancellation");
+    }
+
+    [Fact]
+    public async Task Issue116_CompletedTaskFastPath_DeadlineExpiry_StopsTheWalkImmediately()
+    {
+        // Deadline variant of the same class: the first hop outlives the 50 ms
+        // deadline synchronously (token-ignoring client, completed tasks); the
+        // per-hop check must stop the walk on the next iteration — internalError,
+        // exactly one GetLogsAsync call, not the full 10,000-hop chain.
+        const ulong startBlock = 10_000;
+        var getLogsCalls = 0;
+        var rpc = Substitute.For<IEthereumRpcClient>();
+        rpc.CallAsync(default!, default!, default)
+           .ReturnsForAnyArgs("0x" + startBlock.ToString("x64"));
+        rpc.GetLogsAsync(default!, default).ReturnsForAnyArgs(call =>
+        {
+            if (Interlocked.Increment(ref getLogsCalls) == 1)
+                Thread.Sleep(300);   // synchronously outlive the deadline
+            var block = call.Arg<EthereumLogFilter>().FromBlock;
+            return Task.FromResult<IReadOnlyList<EthereumLogEntry>>(
+                [OwnerChangedLog(Identity, Identity, block, block - 1)]);
+        });
+        var factory = Substitute.For<IEthereumRpcClientFactory>();
+        factory.GetOrCreate(Arg.Any<EthereumNetworkConfig>()).Returns(rpc);
+        var method = new DidEthrMethod(factory, [Sepolia], new DefaultKeyGenerator())
+        {
+            ResolutionDeadline = TimeSpan.FromMilliseconds(50),
+        };
+
+        var result = await method.ResolveAsync($"did:ethr:sepolia:{Identity}");
+
+        result.ResolutionMetadata.Error.Should().Be("internalError");
+        getLogsCalls.Should().Be(1,
+            "the walk must observe the expired deadline before issuing the next hop");
+    }
+
     /// <summary>
     /// Counts continuations on the BCL-internal slot (same pin as the Issue109 suite:
     /// .NET 10 field name, failing loudly if it moves).

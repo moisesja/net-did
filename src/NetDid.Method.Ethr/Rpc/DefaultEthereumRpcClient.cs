@@ -340,41 +340,64 @@ public sealed class DefaultEthereumRpcClient : IEthereumRpcClient
                 ex);
         }
 
-        if (responseObject["error"] is JsonNode error)
+        // Envelope member access materializes JsonObject's property dictionary
+        // lazily, which throws ArgumentException on hostile duplicate members
+        // ({"error":…,"error":…}) — map that at this trust boundary instead of
+        // leaking a raw JSON-layer exception.
+        JsonNode? errorNode;
+        JsonNode? resultNode;
+        try
+        {
+            errorNode  = responseObject["error"];
+            resultNode = responseObject["result"];
+        }
+        catch (Exception ex) when (ex is ArgumentException or InvalidOperationException
+            or JsonException)
+        {
+            throw new EthereumInteractionException(
+                $"Malformed RPC response for '{method}': invalid or duplicate envelope members.",
+                ex);
+        }
+
+        if (errorNode is JsonNode error)
             throw new EthereumInteractionException(
                 $"RPC error for '{method}': {DescribeRpcError(error)}");
 
-        return responseObject["result"];
+        return resultNode;
     }
 
     /// <summary>
-    /// Bounded diagnostic for a node-authored JSON-RPC error. NEVER serializes the
-    /// node: with the default JSON encoder, escaping can multiply attacker-controlled
-    /// content ~6x before any truncation (a near-response-cap error would transiently
-    /// allocate ~100M+ chars). Only the JSON-RPC 2.0 scalar members are read — the
-    /// numeric <c>code</c> and a capped prefix of the string <c>message</c> — so the
-    /// only transient allocation is the message string the parsed DOM already holds.
+    /// Bounded diagnostic for a node-authored JSON-RPC error. The error node is
+    /// attacker-controlled and attacker-sized, so nothing from it is materialized,
+    /// serialized, quoted, or logged except the numeric JSON-RPC 2.0 <c>code</c>:
+    /// decoding the string <c>message</c> would allocate the full decoded value
+    /// (up to the response cap) before any truncation could bound it, and its
+    /// content can carry log-forging control characters (CR/LF/ESC/U+2028) or
+    /// invalid UTF-16 that truncation could also create by splitting a surrogate
+    /// pair. Operators needing the node's message text can capture wire traffic.
+    /// JSON access itself can throw on hostile shapes (duplicate members surface
+    /// ArgumentException from lazy JsonObject materialization) — kept inside the
+    /// boundary and mapped to fixed text.
     /// </summary>
     private static string DescribeRpcError(JsonNode error)
     {
-        const int MaxMessageChars = 256;
+        try
+        {
+            if (error is not JsonObject errorObject)
+                return "non-object error member";
 
-        if (error is not JsonObject errorObject)
-            return "non-object error member";
+            if (errorObject.TryGetPropertyValue("code", out var codeNode)
+                && codeNode is JsonValue codeValue
+                && codeValue.TryGetValue<long>(out var numericCode))
+                return "code " + numericCode.ToString(CultureInfo.InvariantCulture);
 
-        var code = "?";
-        if (errorObject.TryGetPropertyValue("code", out var codeNode)
-            && codeNode is JsonValue codeValue
-            && codeValue.TryGetValue<long>(out var numericCode))
-            code = numericCode.ToString(CultureInfo.InvariantCulture);
-
-        var message = "(no message)";
-        if (errorObject.TryGetPropertyValue("message", out var messageNode)
-            && messageNode is JsonValue messageValue
-            && messageValue.TryGetValue<string>(out var text))
-            message = text.Length <= MaxMessageChars ? text : text[..MaxMessageChars];
-
-        return $"code {code}, message: {message}";
+            return "no numeric code";
+        }
+        catch (Exception ex) when (ex is ArgumentException or InvalidOperationException
+            or KeyNotFoundException or OverflowException or JsonException)
+        {
+            return "malformed error member";
+        }
     }
 
     /// <summary>

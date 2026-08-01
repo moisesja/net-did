@@ -56,30 +56,60 @@ public class DefaultEthereumRpcClientTests
         var client = ClientReturning(HttpStatusCode.OK, new StringContent(
             "{\"jsonrpc\":\"2.0\",\"id\":1,\"error\":{\"code\":-32000,\"message\":\"boom\"}}"));
 
-        await client.Invoking(c => c.GetChainIdAsync())
+        // Only the numeric code is surfaced — the node-authored message string is
+        // never read (PR #122 round 3: decoding it is an unbounded allocation and a
+        // log-injection channel, even for an honest-looking value).
+        var assertion = await client.Invoking(c => c.GetChainIdAsync())
             .Should().ThrowAsync<EthereumInteractionException>()
-            .WithMessage("*RPC error*code -32000*boom*");
+            .WithMessage("*RPC error*code -32000*");
+        assertion.Which.Message.Should().NotContain("boom");
     }
 
     [Fact]
-    public async Task Issue116_OversizedHighlyEscapableRpcError_MessageBoundedWithoutSerializingNode()
+    public async Task Issue116_OversizedRpcErrorMessage_NeverMaterialized()
     {
-        // PR #122 review round 2, finding 2: serializing the attacker-controlled error
-        // node before truncating amplifies it (~6x with the default encoder) — a
-        // near-cap response transiently allocated ~100M+ chars. The diagnostic must be
-        // built from bounded scalar members only. 1M '&' chars in message (each would
-        // serialize as &) plus a nested decoy object must yield a small message.
-        var hugeEscapable = new string('&', 1_000_000);
+        // PR #122 review round 3, finding 2: TryGetValue<string> materialized the full
+        // attacker string before truncation (~16 MB message → ~32 MB LOH churn). The
+        // diagnostic now never reads the message member at all — only the numeric code
+        // — so no attacker content of any size can reach the exception or logs.
+        var huge = new string('&', 1_000_000);
         var body = "{\"jsonrpc\":\"2.0\",\"id\":1,\"error\":{\"code\":-32000,\"message\":\""
-                   + hugeEscapable + "\",\"data\":{\"nested\":\"" + hugeEscapable + "\"}}}";
+                   + huge + "\",\"data\":{\"nested\":\"" + huge + "\"}}}";
         var client = ClientReturning(HttpStatusCode.OK, new StringContent(body));
 
-        var exceptionAssertion = await client.Invoking(c => c.GetChainIdAsync())
+        var assertion = await client.Invoking(c => c.GetChainIdAsync())
             .Should().ThrowAsync<EthereumInteractionException>();
 
-        exceptionAssertion.Which.Message.Length.Should().BeLessThan(600,
-            "the diagnostic is built from capped scalar members, never the serialized node");
-        exceptionAssertion.Which.Message.Should().Contain("code -32000");
+        assertion.Which.Message.Length.Should().BeLessThan(200,
+            "the diagnostic carries only the bounded numeric code");
+        assertion.Which.Message.Should().Contain("code -32000");
+        assertion.Which.Message.Should().NotContain("&");
+    }
+
+    [Fact]
+    public async Task Issue116_LogForgingRpcErrorMessage_NoHostileContentInDiagnostic()
+    {
+        // CR/LF (log-line forging), ANSI ESC, U+2028 (JS line separator), and an
+        // astral pair positioned where a naive truncation would split it - none may
+        // reach the exception/log text. (A lone surrogate cannot even be delivered:
+        // System.Text.Json rejects it at parse.) The fixed diagnostic guarantees this
+        // structurally; the test pins the property. All hostile bytes arrive as JSON
+        // \u escapes so this source file stays free of literal control characters.
+        const string marker = "FORGED-WARN-admin";
+        var hostile = "ok\\r\\n" + marker + " \\u001b[31m\\u2028NEXT\\ud83d\\ude00";
+        var body = "{\"jsonrpc\":\"2.0\",\"id\":1,\"error\":{\"code\":-32000,\"message\":\""
+                   + hostile + "\"}}";
+        var client = ClientReturning(HttpStatusCode.OK, new StringContent(body));
+
+        var assertion = await client.Invoking(c => c.GetChainIdAsync())
+            .Should().ThrowAsync<EthereumInteractionException>();
+
+        var text = assertion.Which.Message;
+        text.Should().NotContain(marker);
+        text.Should().NotContainAny("\r", "\n", "\u001b", "\u2028");
+        text.Should().NotContain("NEXT");
+        foreach (var ch in text)
+            char.IsSurrogate(ch).Should().BeFalse("the diagnostic must be valid, plain UTF-16");
     }
 
     [Fact]
@@ -91,6 +121,31 @@ public class DefaultEthereumRpcClientTests
         await client.Invoking(c => c.GetChainIdAsync())
             .Should().ThrowAsync<EthereumInteractionException>()
             .WithMessage("*RPC error*non-object error member*");
+    }
+
+    [Fact]
+    public async Task Issue116_DuplicateMembersInsideErrorObject_MappedAtTrustBoundary()
+    {
+        // Lazy JsonObject materialization throws ArgumentException on duplicate keys;
+        // PR #122 round 3: that must surface as the boundary's EthereumInteractionException,
+        // never a raw JSON-layer exception.
+        var client = ClientReturning(HttpStatusCode.OK, new StringContent(
+            "{\"jsonrpc\":\"2.0\",\"id\":1,\"error\":{\"code\":-32000,\"code\":-32001,\"message\":\"x\"}}"));
+
+        await client.Invoking(c => c.GetChainIdAsync())
+            .Should().ThrowAsync<EthereumInteractionException>()
+            .WithMessage("*RPC error*malformed error member*");
+    }
+
+    [Fact]
+    public async Task Issue116_DuplicateEnvelopeMembers_MappedAtTrustBoundary()
+    {
+        var client = ClientReturning(HttpStatusCode.OK, new StringContent(
+            "{\"jsonrpc\":\"2.0\",\"id\":1,\"error\":{\"code\":-1},\"error\":{\"code\":-2}}"));
+
+        await client.Invoking(c => c.GetChainIdAsync())
+            .Should().ThrowAsync<EthereumInteractionException>()
+            .WithMessage("*invalid or duplicate envelope members*");
     }
 
     [Fact]

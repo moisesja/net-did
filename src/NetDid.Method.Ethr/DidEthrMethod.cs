@@ -256,10 +256,17 @@ public sealed class DidEthrMethod : DidMethodBase
         IEthereumRpcClient rpc, ulong? versionBlockNumber,
         DateTimeOffset? versionTime, CancellationToken ct)
     {
+        // WaitAsyncObserved deliberately lets an ALREADY-COMPLETED dependency task win
+        // over an already-fired token, so a token-ignoring client that returns completed
+        // tasks would otherwise drive the whole synchronous fast path (including the
+        // full history walk) past the deadline. Re-check the token explicitly before
+        // every dependency call — here and per iteration in the loops below.
+        ct.ThrowIfCancellationRequested();
         var chainId = await ResolveChainId(network, rpc, ct);
 
         // changed(identity) → first block that has a relevant event
         var changedHex    = Erc1056Calls.Changed(identifier.IdentityAddress);
+        ct.ThrowIfCancellationRequested();
         var changedResult = await rpc.CallAsync(network.RegistryAddress, changedHex, ct)
             .WaitAsyncObserved(ct);
         var latestChange  = ParseChangedResult(changedResult);
@@ -300,6 +307,7 @@ public sealed class DidEthrMethod : DidMethodBase
             // reference clock (there is no other clock for a past block); this grants a
             // hostile node no power it lacks over validTo itself. Default (non-historical)
             // resolution uses the trusted local UtcNow below.
+            ct.ThrowIfCancellationRequested();
             var ts = await rpc.GetBlockTimestampAsync(version, ct).WaitAsyncObserved(ct);
             referenceTime = DateTimeOffset.FromUnixTimeSeconds((long)ts);
         }
@@ -312,6 +320,8 @@ public sealed class DidEthrMethod : DidMethodBase
             ulong? previousTimestamp = null;
             foreach (var blockEvents in collectedEvents.GroupBy(ev => ev.BlockNumber))
             {
+                // Per-iteration: completed-task fast paths must not outrun the deadline.
+                ct.ThrowIfCancellationRequested();
                 var bts = await rpc.GetBlockTimestampAsync(blockEvents.Key, ct)
                     .WaitAsyncObserved(ct);
                 if (previousTimestamp is { } prior && bts < prior)
@@ -403,6 +413,10 @@ public sealed class DidEthrMethod : DidMethodBase
                 ],
             };
 
+            // Per-hop: a token-ignoring client returning already-completed tasks keeps
+            // the walk synchronous, so the loop itself must observe cancellation or a
+            // hostile chain runs its full hop budget after the deadline has fired.
+            ct.ThrowIfCancellationRequested();
             var logs = (await rpc.GetLogsAsync(filter, ct).WaitAsyncObserved(ct))?.ToList()
                 ?? throw new EthereumInteractionException(
                     $"did:ethr history for identity {identityAddress} returned a null log collection.");
@@ -1200,6 +1214,7 @@ public sealed class DidEthrMethod : DidMethodBase
                 ? network.ChainId[2..] : network.ChainId;
             return Convert.ToUInt64(hex, 16);
         }
+        ct.ThrowIfCancellationRequested();
         return await rpc.GetChainIdAsync(ct).WaitAsyncObserved(ct);
     }
 
