@@ -368,3 +368,96 @@
   failure mode as the earlier "taking too long" lesson, now from proportionality: ceremony
   (two agents, containerized oracles, doc sweeps) is justified by what the diff can break,
   not by the workflow's default shape.
+- Bound the DEPENDENCY task at its own await site, not a wrapper task you created around
+  your own state machine. Wrapping ResolveFromChainAsync (our task) in WaitAsyncObserved
+  "returned control" on deadline but abandoned the inner machine at its bare
+  `await rpc.X(...)` — one retained continuation per resolution on a shared hung
+  dependency task, and a late completion resumed every abandoned machine into a
+  post-deadline RPC fan-out. The existing "apply the bound to the returned task" lesson
+  means the task RETURNED BY THE DEPENDENCY: wrap each rpc/signer await (the write path
+  already did — symmetry with existing call sites was the tell). Prove it with a
+  shared-TCS regression: N concurrent ops, continuation-slot count ≤1, late completion
+  ⇒ zero further dependency calls. (PR #122 round 2.)
+- Truncating attacker-controlled data AFTER materializing it is not a bound.
+  `error.ToJsonString()[..1024]` first serialized the full node — default JSON-encoder
+  escaping amplifies ~6x, so a near-response-cap error transiently allocated ~192 MiB
+  before the slice. Bound at the point of EXTRACTION: read only the schema's scalar
+  members (numeric code, ≤256-char prefix of the message string the DOM already holds),
+  never serialize the hostile node. Generalize: for any cap, ask what has already been
+  allocated/computed by the time the cap applies. (PR #122 round 2.)
+- Exact runtime type is provenance ONLY for types hostile code cannot construct. A public
+  exception type with a public ctor can be thrown by an injected dependency carrying
+  arbitrary text, so `GetType() == typeof(PublicException)` does not make its Message
+  trustworthy. For caller-facing diagnostics from a catch, publish fixed library-owned
+  text and select the category via an internal sealed marker exception type
+  (uninstantiable outside the assembly). And a guarded log call's FALLBACK needs its own
+  guard: providers can throw on every Log call — logging must end in a final swallow to
+  preserve a never-throw contract. (PR #122 rounds 1-2.)
+- Do not claim current-spec conformance from memory of an older vocabulary: the W3C DID
+  Resolution draft moved to RFC 9457 error OBJECTS (https://www.w3.org/ns/did#INTERNAL_ERROR
+  type URIs, empty didDocumentMetadata on failure); the camelCase string codes this library
+  uses are the legacy DID Spec Registries form. When staying on a legacy form deliberately
+  (ecosystem compatibility, one-PR scope), say so explicitly in docs/PR and file the
+  migration issue — a reviewer reading the current TR will otherwise refute the claim.
+  (PR #122 rounds 1-2, issue #123.)
+- "Bound the dependency await" has a THIRD leg: already-completed tasks. WaitAsync(Observed)
+  deliberately lets a completed task beat a fired token, so a token-ignoring dependency
+  returning COMPLETED tasks keeps the whole loop synchronous and the deadline never
+  interrupts it — 1,000 post-cancel RPC calls in PR #122 round 3. A cancellation bound is
+  three checks, not one: (1) wrap the pending task (WaitAsyncObserved), (2) observe/dedupe
+  abandonment, (3) `ct.ThrowIfCancellationRequested()` before every dependency call and per
+  loop iteration on the completed-task fast path. Test BOTH modes: shared-pending task AND
+  completed-task fast path (cancel mid-loop ⇒ exactly one further call issued: zero).
+- When a bounded-extraction design keeps failing review, switch from bounding the DATA to
+  eliminating the READ. Extracting a "capped prefix" of an attacker string still (a)
+  materializes the full decoded value first (JsonValue.TryGetValue<string> allocates all of
+  it — the DOM holds UTF-8, not the decoded string), (b) forwards decoded control chars
+  (CR/LF/ESC/U+2028) into logs, and (c) can split surrogate pairs. Only a value with an
+  intrinsically bounded type (a JSON number via TryGetValue<long>) is safe to surface.
+  Fixed diagnostic + numeric code = bounded by construction; three review rounds of caps
+  and sanitizers were all dominated by simply not reading the member.
+- Touching how a JsonObject/JsonNode member is ACCESSED changes which exceptions escape:
+  lazy JsonObject materialization throws ArgumentException on duplicate keys, so replacing
+  `node.ToJsonString()` (serializes raw, never materializes the dictionary) with
+  `TryGetPropertyValue` INTRODUCED a raw JSON-layer escape at a boundary that promised
+  EthereumInteractionException. Any switch between serialize-style and dictionary-style
+  access on untrusted JSON needs the boundary catch re-checked and a duplicate-member test
+  (envelope AND nested object).
+- Guard placement must be SYMMETRIC around every dependency interaction, or the guard just
+  relocates the hole to the terminal element (the existing "epilogue unguarded" lesson, now
+  proven for loops): pre-call/loop-head token checks cannot observe cancellation that fires
+  during the LAST call — there is no next iteration — so resolution returned a stale SUCCESS
+  to a cancelled caller. The complete pattern per dependency await: check BEFORE the call,
+  check AFTER the await (before parsing), check PER ITEM when materializing a
+  dependency-owned collection (never bare .ToList() — a hostile enumerator is unbounded
+  synchronous work), and one final check BEFORE the success return. Test matrix must include
+  the terminal element of every loop and the single-call paths (changed()=0, final
+  timestamp), in BOTH cancellation modes — a test whose hostile hop forces a second
+  iteration validates only the loop-head check and hides the terminal bug.
+- State honestly what a token-based bound can never do: it cannot preempt synchronous
+  blocking inside an injected implementation (method body before returning its task, or a
+  collection's MoveNext). Don't paper over it with wrappers — scope the claim ("hard bound
+  against hostile NODES via the async default client; in-process hostile CLIENT
+  implementations need process isolation") in the knob's doc, and update it the moment a
+  reviewer shows the gap. Fail-first discipline applies to review-round fixes too: prove the
+  new tests red on the pre-fix source — and expect a pre-fix HANG (not a failure) when the
+  old bug is an unbounded loop; run that proof with a short timeout and without the hanging
+  test in the batch.
+- A cancellation check inside a `foreach` body does NOT cover the enumeration boundary:
+  `MoveNext(false)` and enumerator `Dispose()` execute without entering the body. If either
+  cancels the caller, an empty-result/error branch can win first and misclassify genuine
+  cancellation. Check the token once more immediately AFTER enumeration, before sorting,
+  empty checks, or other classification. Pin it with an iterator that cancels then
+  `yield break`s, so the body is provably never entered. (PR #122 round-4 follow-up.)
+- Local post-operation gates are still bypassed when dependency code CANCELS and then
+  THROWS (for example, enumerator `Dispose()` cancels the caller and throws before the
+  post-foreach check). At an async trust boundary whose contract says caller cancellation
+  propagates, put a caller-token-priority catch filter before domain/generic mappings and
+  call `ct.ThrowIfCancellationRequested()`. Pin the cancel-then-throw shape; testing only
+  cancel-then-return leaves this race open.
+- Reflection into `Task.m_continuationObject` observes a transient implementation detail,
+  not an atomic steady-state snapshot. A canceled `WaitAsync` source continuation may
+  briefly coexist with the one permanent deduped fault observer after the caller-visible
+  task completes; PR #122 CI saw 2 while stress iteration 60 reproduced it locally. Poll
+  for bounded cleanup before asserting the permanent count, with a short timeout that
+  still fails a real retained-continuation leak. Never weaken the final ≤1 invariant.

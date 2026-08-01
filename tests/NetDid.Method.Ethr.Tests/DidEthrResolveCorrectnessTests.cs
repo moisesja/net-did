@@ -117,10 +117,10 @@ public class DidEthrResolveCorrectnessTests
             .Which.Id.Should().EndWith("#controller");
     }
 
-    // ── #2 Incomplete history must fail CLOSED (notFound) ────────────────────────
+    // ── #2 Incomplete history must fail CLOSED (internalError) ────────────────────────
 
     [Fact]
-    public async Task ResolveAsync_PointerBlockEmpty_ReturnsNotFound()
+    public async Task ResolveAsync_PointerBlockEmpty_ReturnsInternalError()
     {
         // changed()=N>0 asserts an event at N; an empty result (pruned/non-archive node)
         // must not silently produce a genesis document.
@@ -128,11 +128,11 @@ public class DidEthrResolveCorrectnessTests
 
         var result = await MakeMethod(rpc).ResolveAsync($"did:ethr:sepolia:{Identity}");
 
-        result.ResolutionMetadata.Error.Should().Be("notFound");
+        result.ResolutionMetadata.Error.Should().Be("internalError");
     }
 
     [Fact]
-    public async Task ResolveAsync_PointerBlockOnlyMalformedLog_ReturnsNotFound()
+    public async Task ResolveAsync_PointerBlockOnlyMalformedLog_ReturnsInternalError()
     {
         // A hostile node returns a garbage-topic log at the pointer block to erase the
         // real (e.g. revoke/owner-change) event. Skipped-as-unparseable → zero valid
@@ -142,11 +142,11 @@ public class DidEthrResolveCorrectnessTests
 
         var result = await MakeMethod(rpc).ResolveAsync($"did:ethr:sepolia:{Identity}");
 
-        result.ResolutionMetadata.Error.Should().Be("notFound");
+        result.ResolutionMetadata.Error.Should().Be("internalError");
     }
 
     [Fact]
-    public async Task Pr104Round2_MixedValidAndMalformedLogs_ReturnsNotFound()
+    public async Task Pr104Round2_MixedValidAndMalformedLogs_ReturnsInternalError()
     {
         const ulong block = 89;
         var future = (ulong)(DateTimeOffset.UtcNow.ToUnixTimeSeconds() + 3600);
@@ -160,12 +160,12 @@ public class DidEthrResolveCorrectnessTests
 
         var result = await MakeMethod(rpc).ResolveAsync($"did:ethr:sepolia:{Identity}");
 
-        result.ResolutionMetadata.Error.Should().Be("notFound",
+        result.ResolutionMetadata.Error.Should().Be("internalError",
             "one malformed authorization log must invalidate the entire asserted history block");
     }
 
     [Fact]
-    public async Task Pr104Round2_DuplicateSameBlockLogIndices_ReturnsNotFound()
+    public async Task Pr104Round2_DuplicateSameBlockLogIndices_ReturnsInternalError()
     {
         const ulong block = 90;
         var future = (ulong)(DateTimeOffset.UtcNow.ToUnixTimeSeconds() + 3600);
@@ -180,7 +180,7 @@ public class DidEthrResolveCorrectnessTests
 
         var result = await MakeMethod(rpc).ResolveAsync($"did:ethr:sepolia:{Identity}");
 
-        result.ResolutionMetadata.Error.Should().Be("notFound");
+        result.ResolutionMetadata.Error.Should().Be("internalError");
     }
 
     [Fact]
@@ -203,7 +203,7 @@ public class DidEthrResolveCorrectnessTests
     }
 
     [Fact]
-    public async Task Pr104Round2_ForeignRegistryAddress_ReturnsNotFound()
+    public async Task Pr104Round2_ForeignRegistryAddress_ReturnsInternalError()
     {
         const ulong block = 92;
         var rpc = RpcWith(block, b => b == block
@@ -212,11 +212,11 @@ public class DidEthrResolveCorrectnessTests
 
         var result = await MakeMethod(rpc).ResolveAsync($"did:ethr:sepolia:{Identity}");
 
-        result.ResolutionMetadata.Error.Should().Be("notFound");
+        result.ResolutionMetadata.Error.Should().Be("internalError");
     }
 
     [Fact]
-    public async Task Pr104Round2_ForeignIdentityMixedWithValidLog_ReturnsNotFound()
+    public async Task Pr104Round2_ForeignIdentityMixedWithValidLog_ReturnsInternalError()
     {
         const ulong block = 93;
         var rpc = RpcWith(block, b => b == block
@@ -229,11 +229,11 @@ public class DidEthrResolveCorrectnessTests
 
         var result = await MakeMethod(rpc).ResolveAsync($"did:ethr:sepolia:{Identity}");
 
-        result.ResolutionMetadata.Error.Should().Be("notFound");
+        result.ResolutionMetadata.Error.Should().Be("internalError");
     }
 
     [Fact]
-    public async Task Pr104Round2_MismatchedBlockNumber_ReturnsNotFound()
+    public async Task Pr104Round2_MismatchedBlockNumber_ReturnsInternalError()
     {
         const ulong block = 94;
         var rpc = RpcWith(block, b => b == block
@@ -242,11 +242,11 @@ public class DidEthrResolveCorrectnessTests
 
         var result = await MakeMethod(rpc).ResolveAsync($"did:ethr:sepolia:{Identity}");
 
-        result.ResolutionMetadata.Error.Should().Be("notFound");
+        result.ResolutionMetadata.Error.Should().Be("internalError");
     }
 
     [Fact]
-    public async Task Pr104Round2_ForwardPointingPreviousChange_ReturnsNotFound()
+    public async Task Pr104Round2_ForwardPointingPreviousChange_ReturnsInternalError()
     {
         const ulong block = 95;
         var rpc = RpcWith(block, b => b == block
@@ -255,11 +255,11 @@ public class DidEthrResolveCorrectnessTests
 
         var result = await MakeMethod(rpc).ResolveAsync($"did:ethr:sepolia:{Identity}");
 
-        result.ResolutionMetadata.Error.Should().Be("notFound");
+        result.ResolutionMetadata.Error.Should().Be("internalError");
     }
 
     [Fact]
-    public async Task Pr104Round2_SoleSameBlockPreviousChange_ReturnsNotFound()
+    public async Task Pr104Round2_SoleSameBlockPreviousChange_ReturnsInternalError()
     {
         const ulong block = 96;
         var rpc = RpcWith(block, b => b == block
@@ -268,12 +268,12 @@ public class DidEthrResolveCorrectnessTests
 
         var result = await MakeMethod(rpc).ResolveAsync($"did:ethr:sepolia:{Identity}");
 
-        result.ResolutionMetadata.Error.Should().Be("notFound",
+        result.ResolutionMetadata.Error.Should().Be("internalError",
             "a first event pointing to its own block proves an earlier same-block event was omitted");
     }
 
     [Fact]
-    public async Task Pr104Round2_LaterEventWithConflictingBackwardPointer_ReturnsNotFound()
+    public async Task Pr104Round2_LaterEventWithConflictingBackwardPointer_ReturnsInternalError()
     {
         const ulong block = 97;
         var future = (ulong)(DateTimeOffset.UtcNow.ToUnixTimeSeconds() + 3600);
@@ -290,12 +290,12 @@ public class DidEthrResolveCorrectnessTests
 
         var result = await MakeMethod(rpc).ResolveAsync($"did:ethr:sepolia:{Identity}");
 
-        result.ResolutionMetadata.Error.Should().Be("notFound",
+        result.ResolutionMetadata.Error.Should().Be("internalError",
             "after the first event, every same-identity event must point to the current block");
     }
 
     [Fact]
-    public async Task Pr104Review_DecreasingBlockTimestamps_ReturnsNotFound()
+    public async Task Pr104Review_DecreasingBlockTimestamps_ReturnsInternalError()
     {
         var rpc = OwnerHistory((10, OwnerA, 0), (20, OwnerB, 10));
         rpc.GetBlockTimestampAsync(10, Arg.Any<CancellationToken>()).Returns(200UL);
@@ -305,7 +305,7 @@ public class DidEthrResolveCorrectnessTests
             $"did:ethr:sepolia:{Identity}",
             new DidEthrResolveOptions { VersionTime = "1970-01-01T00:02:30Z" });
 
-        result.ResolutionMetadata.Error.Should().Be("notFound");
+        result.ResolutionMetadata.Error.Should().Be("internalError");
     }
 
     [Fact]

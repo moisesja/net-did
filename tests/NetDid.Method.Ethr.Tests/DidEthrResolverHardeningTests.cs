@@ -36,11 +36,11 @@ public class DidEthrResolverHardeningTests
     // ── Finding 1 (CRITICAL): unbounded event-chain walk ────────────────────────
 
     [Fact]
-    public async Task ResolveAsync_HostileDescendingChain_AbortsBounded_ReturnsNotFound()
+    public async Task ResolveAsync_HostileDescendingChain_AbortsBounded_ReturnsInternalError()
     {
         // A hostile node points every block's previousChange one block lower, so the
         // walker would issue one eth_getLogs per block down to 0. Starting height is
-        // set far above the internal hop cap; resolution must abort (notFound) after a
+        // set far above the internal hop cap; resolution must abort (internalError) after a
         // BOUNDED number of round-trips, not walk all 200_000 blocks.
         const ulong startBlock = 200_000;
         var getLogsCalls = 0;
@@ -59,16 +59,16 @@ public class DidEthrResolverHardeningTests
 
         var result = await MakeMethod(rpc).ResolveAsync($"did:ethr:sepolia:{Identity}");
 
-        result.ResolutionMetadata.Error.Should().Be("notFound");
+        result.ResolutionMetadata.Error.Should().Be("internalError");
         getLogsCalls.Should().BeLessThanOrEqualTo(10_001,
             "the walker must stop at the hop cap, not traverse all 200_000 blocks");
     }
 
     [Fact]
-    public async Task ResolveAsync_SingleBlockEventFlood_AbortsReturnsNotFound()
+    public async Task ResolveAsync_SingleBlockEventFlood_AbortsReturnsInternalError()
     {
         // A single block packed with more matching logs than the event cap → the
-        // accumulator would grow without bound. Resolution must abort to notFound.
+        // accumulator would grow without bound. Resolution must abort to internalError.
         const ulong block = 1;
         var flood = new List<EthereumLogEntry>(6_000);
         for (var i = 0; i < 6_000; i++)   // > MaxCollectedEvents (5_000)
@@ -85,7 +85,7 @@ public class DidEthrResolverHardeningTests
 
         var result = await MakeMethod(rpc).ResolveAsync($"did:ethr:sepolia:{Identity}");
 
-        result.ResolutionMetadata.Error.Should().Be("notFound");
+        result.ResolutionMetadata.Error.Should().Be("internalError");
     }
 
     [Fact]
@@ -93,7 +93,7 @@ public class DidEthrResolverHardeningTests
     {
         // The event COUNT cap is byte-blind: one large-value attribute per hop stays
         // under it, yet retains ~value-size heap per hop. The aggregate-byte budget
-        // must abort before the heap is exhausted. Few hops, big values → notFound.
+        // must abort before the heap is exhausted. Few hops, big values → internalError.
         const int  valueBytes = 4 * 1024 * 1024;   // 4 MiB per attribute value
         var big = new byte[valueBytes];
 
@@ -112,14 +112,14 @@ public class DidEthrResolverHardeningTests
 
         var result = await MakeMethod(rpc).ResolveAsync($"did:ethr:sepolia:{Identity}");
 
-        result.ResolutionMetadata.Error.Should().Be("notFound");
+        result.ResolutionMetadata.Error.Should().Be("internalError");
     }
 
     [Fact]
     public async Task ResolveAsync_NonHexAddressIdentifier_ReturnsInvalidDid()
     {
         // 40-char (0x + 40) address form with non-hex chars must map to invalidDid,
-        // not flow a garbage address into the RPC layer (notFound).
+        // not flow a garbage address into the RPC layer (internalError).
         var rpc = Substitute.For<IEthereumRpcClient>();
         var nonHex = "0x" + new string('g', 40);
 
@@ -137,20 +137,20 @@ public class DidEthrResolverHardeningTests
     [InlineData("")]
     [InlineData("0x")]
     [InlineData("0x0")]
-    public async Task ResolveAsync_MalformedChangedResult_ReturnsNotFound(string changedResult)
+    public async Task ResolveAsync_MalformedChangedResult_ReturnsInternalError(string changedResult)
     {
         var rpc = Substitute.For<IEthereumRpcClient>();
         rpc.CallAsync(default!, default!, default).ReturnsForAnyArgs(changedResult);
 
         var result = await MakeMethod(rpc).ResolveAsync($"did:ethr:sepolia:{Identity}");
 
-        result.ResolutionMetadata.Error.Should().Be("notFound");
+        result.ResolutionMetadata.Error.Should().Be("internalError");
     }
 
     [Theory]
     [InlineData('A')]
     [InlineData('f')]
-    public async Task Pr104Round2_ChangedResult_NonCanonicalOrOverflowingWord_ReturnsNotFound(
+    public async Task Pr104Round2_ChangedResult_NonCanonicalOrOverflowingWord_ReturnsInternalError(
         char fill)
     {
         var rpc = Substitute.For<IEthereumRpcClient>();
@@ -159,7 +159,7 @@ public class DidEthrResolverHardeningTests
 
         var result = await MakeMethod(rpc).ResolveAsync($"did:ethr:sepolia:{Identity}");
 
-        result.ResolutionMetadata.Error.Should().Be("notFound");
+        result.ResolutionMetadata.Error.Should().Be("internalError");
     }
 
     // ── Finding 2 (identifier): non-hex 66-char id must map to invalidDid ────────
@@ -180,11 +180,11 @@ public class DidEthrResolverHardeningTests
     // ── Finding 3 (simulated): RPC client shape-exception escapes the walker ─────
 
     [Fact]
-    public async Task ResolveAsync_RpcClientThrowsInvalidOperation_ReturnsNotFound()
+    public async Task ResolveAsync_RpcClientThrowsInvalidOperation_ReturnsInternalError()
     {
         // Simulates DefaultEthereumRpcClient hitting a malformed eth_getLogs JSON
         // shape (InvalidOperationException / NullReferenceException) — the type the
-        // walker's per-log `catch (ArgumentException)` does NOT catch. Must map to notFound.
+        // walker's per-log `catch (ArgumentException)` does NOT catch. Must map to internalError.
         var rpc = Substitute.For<IEthereumRpcClient>();
         rpc.CallAsync(default!, default!, default)
            .ReturnsForAnyArgs("0x" + (5UL).ToString("x64"));
@@ -194,7 +194,7 @@ public class DidEthrResolverHardeningTests
 
         var result = await MakeMethod(rpc).ResolveAsync($"did:ethr:sepolia:{Identity}");
 
-        result.ResolutionMetadata.Error.Should().Be("notFound");
+        result.ResolutionMetadata.Error.Should().Be("internalError");
     }
 
     // ── Finding 5: builder throws on decodable-but-hostile event ─────────────────
@@ -205,7 +205,7 @@ public class DidEthrResolverHardeningTests
         // A did/svc attribute that ABI-decodes cleanly but carries an EMPTY endpoint makes
         // ServiceEndpointValue.FromUri throw. The property this test was written for (PR #104
         // finding 5) is that NO exception escapes ResolveAsync — originally satisfied by
-        // wrapping everything into notFound.
+        // wrapping everything into notFound (now internalError, issue #116).
         //
         // Issue #107 keeps that property and makes it precise: the builder now drops the one
         // unrepresentable entry instead of erasing the whole document. Failing closed here was

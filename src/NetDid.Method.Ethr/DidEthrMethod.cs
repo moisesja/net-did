@@ -60,14 +60,34 @@ public sealed class DidEthrMethod : DidMethodBase
     //   • aggregate bytes — the event count cap is byte-blind: one large-value
     //                       attribute per hop stays under it yet retains ~response-cap
     //                       bytes per hop → multi-GB heap. Bound total retained bytes.
-    //   • aggregate time  — hops × the per-request timeout is hours; an overall
-    //                       resolution deadline (see ResolveCoreAsync) bounds wall-clock,
-    //                       covering the post-walk per-event block-timestamp fan-out too.
+    //   • aggregate time  — hops × the per-request timeout is hours; one overall
+    //                       resolution deadline (see ResolveCoreAsync) spans all awaited
+    //                       work and is cooperatively observed during synchronous work,
+    //                       including post-walk block-timestamp fan-out.
     // Exceeding any bound aborts resolution, mapped to a resolution error.
     private const int  MaxEventChainHops   = 1_000;
     private const int  MaxCollectedEvents  = 5_000;
     private const long MaxCollectedBytes   = 32L * 1024 * 1024; // 32 MiB retained
-    private static readonly TimeSpan ResolutionDeadline = TimeSpan.FromSeconds(120);
+
+    /// <summary>
+    /// Cooperative overall deadline for one resolution. Internal so tests can shorten it.
+    /// <see cref="AbandonableTaskExtensions.WaitAsyncObserved{T}"/> bounds every dependency
+    /// await, so a pending client task that ignores cancellation cannot retain one
+    /// resolver continuation per call or resume abandoned resolver work later. The token
+    /// is additionally observed before and after dependency calls, while materializing
+    /// and processing dependency-owned collections, and before successful return, so
+    /// completed-task fast paths cannot silently return stale success.
+    /// </summary>
+    /// <remarks>
+    /// This is cancellation, not CPU preemption. Caller-visible waits stop at the
+    /// deadline, and bounded synchronous resolver work stops at its next token checkpoint.
+    /// Code already executing synchronously — including JSON parsing, collection
+    /// MoveNext/Dispose, sorting, or an injected client method before it returns a task —
+    /// may run until that checkpoint. Size/count caps bound the shipped client's work;
+    /// callers needing a preemptive guarantee for an untrusted in-process
+    /// <see cref="Rpc.IEthereumRpcClient"/> implementation must isolate it in another process.
+    /// </remarks>
+    internal TimeSpan ResolutionDeadline { get; set; } = TimeSpan.FromSeconds(120);
 
     // ── Create ────────────────────────────────────────────────────────────────
 
@@ -118,7 +138,8 @@ public sealed class DidEthrMethod : DidMethodBase
         try { identifier = EthrIdentifier.Parse(did); }
         catch (ArgumentException ex)
         {
-            _logger.LogWarning(ex, "Failed to parse did:ethr identifier: {Did}", did);
+            try { _logger.LogWarning(ex, "Failed to parse did:ethr identifier: {Did}", did); }
+            catch { /* logging is best-effort; the resolver never throws */ }
             return DidResolutionResult.InvalidDid(did);
         }
 
@@ -130,37 +151,119 @@ public sealed class DidEthrMethod : DidMethodBase
         try { network = FindNetwork(identifier.Network); }
         catch (InvalidOperationException ex)
         {
-            _logger.LogWarning(ex, "Network not configured for did:ethr: {Did}", did);
+            try { _logger.LogWarning(ex, "Network not configured for did:ethr: {Did}", did); }
+            catch { /* logging is best-effort; the resolver never throws */ }
             return DidResolutionResult.NotFound(did);
         }
-        var rpc     = _rpcFactory.GetOrCreate(network);
-
         // Everything past this point consumes UNTRUSTED data from the RPC node
         // (event bytes, hex fields, JSON shape). A resolver must never throw out
-        // of ResolveAsync — it must return resolutionMetadata.error. Map any such
-        // failure to notFound, but let genuine caller cancellation propagate.
+        // of ResolveAsync — it must return resolutionMetadata.error. Every failure
+        // in here is resolver INFRASTRUCTURE (pruned/hostile node, transport,
+        // timeout), never a statement about the DID's existence — a genuinely
+        // unregistered identity resolves to the ERC-1056 genesis document instead
+        // of erroring. Map failures to internalError (issue #116); genuine caller
+        // cancellation propagates.
         //
-        // An overall deadline bounds total wall-clock across the walk and the
-        // post-walk block-timestamp fan-out, so a slow-drip node cannot tie up
-        // resolution for hours within the per-request timeouts. When THIS token
-        // fires (not the caller's), ct.IsCancellationRequested is false, so it
-        // falls through to notFound rather than propagating as cancellation.
+        // An overall cooperative deadline spans the walk and post-walk timestamp
+        // fan-out, so a slow-drip node cannot multiply per-request timeouts into hours.
+        // When THIS token fires (not the caller's), ct.IsCancellationRequested is false,
+        // so it falls through to internalError rather than propagating as cancellation.
         using var deadlineCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
         deadlineCts.CancelAfter(ResolutionDeadline);
         try
         {
+            // The client factory is an injected dependency: a throw from it is
+            // infrastructure too, and must not defeat the never-throw contract.
+            //
+            // Deadline mechanics: every dependency await INSIDE the resolve path
+            // (CallAsync / GetLogsAsync / GetBlockTimestampAsync / GetChainIdAsync) is
+            // individually bounded with WaitAsyncObserved, so when the deadline fires
+            // the resolver stops awaiting a still-pending source task — BCL WaitAsync
+            // removes its continuation, and a client that ignores
+            // cancellation and returns one shared forever-pending task retains at most
+            // ONE deduped fault observer, not one continuation per resolution, and can
+            // never resume abandoned work (no post-deadline RPC fan-out on late
+            // completion). The outer wrap below is defense in depth for any future
+            // non-dependency await added to ResolveFromChainAsync.
+            var rpc = _rpcFactory.GetOrCreate(network);
             return await ResolveFromChainAsync(
-                did, identifier, network, rpc, versionBlockNumber, versionTime,
-                deadlineCts.Token);
+                    did, identifier, network, rpc, versionBlockNumber, versionTime,
+                    deadlineCts.Token)
+                .WaitAsyncObserved(deadlineCts.Token);
         }
-        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        catch (Exception) when (ct.IsCancellationRequested)
         {
+            // Caller cancellation has priority over a simultaneous dependency/parser
+            // fault. A hostile enumerator can cancel from MoveNext/Dispose and then
+            // throw before any local post-operation token gate is reached; mapping that
+            // fault to internalError would violate the public cancellation contract.
+            ct.ThrowIfCancellationRequested();
             throw;
+        }
+        catch (OperationCanceledException ex)
+        {
+            // The caller's token did NOT fire: this is the overall resolution deadline
+            // or the RPC client's per-request timeout — resolver infrastructure.
+            LogResolveFailure(ex, did);
+            return DidResolutionResult.InternalError(did,
+                "did:ethr resolution timed out against the RPC endpoint before the " +
+                "event history could be retrieved; the DID's existence was not determined.");
+        }
+        catch (EthereumInteractionException ex)
+        {
+            LogResolveFailure(ex, did);
+            // Fixed, library-owned reason text ONLY: Exception.Message arriving through
+            // an injectable seam is untrusted regardless of exception type — anyone can
+            // construct the public EthereumInteractionException with arbitrary text, and
+            // our own messages interpolate node-supplied fragments. The one category
+            // callers need to distinguish (pruned/incomplete history, issue #116) is
+            // identified by an internal sealed marker type that code outside this
+            // assembly cannot instantiate — the TYPE is the trusted provenance, and the
+            // caller-facing text is a constant.
+            var reason = ex is IncompleteEventHistoryException
+                ? "did:ethr event history is incomplete: a block asserted by the " +
+                  "registry's changed() pointer returned no matching ERC-1056 events " +
+                  "(pruned/non-archive or hostile RPC endpoint); retry against an " +
+                  "archive node."
+                : "Ethereum RPC interaction failed.";
+            return DidResolutionResult.InternalError(did, reason);
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "did:ethr resolution failed against RPC data for {Did}", did);
-            return DidResolutionResult.NotFound(did);
+            LogResolveFailure(ex, did);
+            return DidResolutionResult.InternalError(did,
+                "did:ethr resolution failed against RPC data.");
+        }
+    }
+
+    /// <summary>
+    /// Logs a resolution failure without letting logging defeat the resolver's
+    /// never-throw contract: providers may format the exception eagerly
+    /// (ToString → Message) and a hostile injected dependency can throw from those
+    /// virtual members — and the provider itself may throw on ANY call. First
+    /// attempt carries the exception; the retry carries type-name-only diagnostics;
+    /// after that the failure is swallowed — logging is best-effort.
+    /// </summary>
+    private void LogResolveFailure(Exception ex, string did)
+    {
+        try
+        {
+            _logger.LogWarning(ex,
+                "did:ethr resolution failed against RPC infrastructure for {Did}", did);
+        }
+        catch
+        {
+            try
+            {
+                _logger.LogWarning(
+                    "did:ethr resolution failed against RPC infrastructure for {Did}; " +
+                    "diagnostics unavailable — {ExceptionType} or the logging provider " +
+                    "threw while formatting", did, ex.GetType().FullName);
+            }
+            catch
+            {
+                // An always-throwing provider must not break resolution.
+            }
         }
     }
 
@@ -169,11 +272,25 @@ public sealed class DidEthrMethod : DidMethodBase
         IEthereumRpcClient rpc, ulong? versionBlockNumber,
         DateTimeOffset? versionTime, CancellationToken ct)
     {
+        // WaitAsyncObserved deliberately lets an ALREADY-COMPLETED dependency task win
+        // over an already-fired token, so a token-ignoring client that returns completed
+        // tasks would otherwise drive the whole synchronous fast path (including the
+        // full history walk) past the deadline. Re-check the token explicitly BEFORE
+        // every dependency call (here and per iteration in the loops below) AND
+        // immediately AFTER every await, before the result is parsed or processed —
+        // a pre-call-only guard has a terminal-path hole: when cancellation fires
+        // during the LAST dependency call there is no next iteration to observe it,
+        // and resolution would return a stale success (PR #122 round 4).
+        ct.ThrowIfCancellationRequested();
         var chainId = await ResolveChainId(network, rpc, ct);
+        ct.ThrowIfCancellationRequested();
 
         // changed(identity) → first block that has a relevant event
         var changedHex    = Erc1056Calls.Changed(identifier.IdentityAddress);
-        var changedResult = await rpc.CallAsync(network.RegistryAddress, changedHex, ct);
+        ct.ThrowIfCancellationRequested();
+        var changedResult = await rpc.CallAsync(network.RegistryAddress, changedHex, ct)
+            .WaitAsyncObserved(ct);
+        ct.ThrowIfCancellationRequested();
         var latestChange  = ParseChangedResult(changedResult);
 
         // Collect the FULL event history (walk from the latest change to genesis).
@@ -212,7 +329,9 @@ public sealed class DidEthrMethod : DidMethodBase
             // reference clock (there is no other clock for a past block); this grants a
             // hostile node no power it lacks over validTo itself. Default (non-historical)
             // resolution uses the trusted local UtcNow below.
-            var ts = await rpc.GetBlockTimestampAsync(version, ct);
+            ct.ThrowIfCancellationRequested();
+            var ts = await rpc.GetBlockTimestampAsync(version, ct).WaitAsyncObserved(ct);
+            ct.ThrowIfCancellationRequested();
             referenceTime = DateTimeOffset.FromUnixTimeSeconds((long)ts);
         }
         else if (versionTime is { } vt)
@@ -224,7 +343,12 @@ public sealed class DidEthrMethod : DidMethodBase
             ulong? previousTimestamp = null;
             foreach (var blockEvents in collectedEvents.GroupBy(ev => ev.BlockNumber))
             {
-                var bts = await rpc.GetBlockTimestampAsync(blockEvents.Key, ct);
+                // Per-iteration AND post-await: completed-task fast paths must not
+                // outrun the deadline, including on the FINAL iteration.
+                ct.ThrowIfCancellationRequested();
+                var bts = await rpc.GetBlockTimestampAsync(blockEvents.Key, ct)
+                    .WaitAsyncObserved(ct);
+                ct.ThrowIfCancellationRequested();
                 if (previousTimestamp is { } prior && bts < prior)
                     throw new EthereumInteractionException(
                         $"did:ethr block timestamps decrease: block " +
@@ -264,6 +388,10 @@ public sealed class DidEthrMethod : DidMethodBase
             NextVersionId = nextVersionId?.ToString(),
         };
 
+        // Final gate before SUCCESS: a caller that cancelled (or a deadline that
+        // expired) during the last dependency call must never receive a document —
+        // stale success is worse than a reported infrastructure failure.
+        ct.ThrowIfCancellationRequested();
         return new DidResolutionResult
         {
             DidDocument        = doc,
@@ -314,9 +442,40 @@ public sealed class DidEthrMethod : DidMethodBase
                 ],
             };
 
-            var logs = (await rpc.GetLogsAsync(filter, ct))?.ToList()
+            // Per-hop: a token-ignoring client returning already-completed tasks keeps
+            // the walk synchronous, so the loop itself must observe cancellation or a
+            // hostile chain runs its full hop budget after the deadline has fired.
+            ct.ThrowIfCancellationRequested();
+            var rawLogs = await rpc.GetLogsAsync(filter, ct).WaitAsyncObserved(ct)
                 ?? throw new EthereumInteractionException(
                     $"did:ethr history for identity {identityAddress} returned a null log collection.");
+            // Post-await: on the TERMINAL hop there is no next iteration to observe a
+            // deadline that fired during the call — check before processing the result.
+            ct.ThrowIfCancellationRequested();
+
+            // The returned collection is dependency-owned: enumerate it ourselves with
+            // a count bound and per-item token checks, so a hostile IReadOnlyList whose
+            // enumerator never terminates (or outlives the deadline) cannot run
+            // unbounded — a bare .ToList() would.
+            var logs = new List<EthereumLogEntry>();
+            foreach (var log in rawLogs)
+            {
+                ct.ThrowIfCancellationRequested();
+                if (logs.Count >= MaxCollectedEvents)
+                    throw new EthereumInteractionException(
+                        $"did:ethr history for identity {identityAddress} returned more " +
+                        $"than {MaxCollectedEvents} logs for block {currentBlock}; " +
+                        "aborting to bound work.");
+                if (log is null)
+                    throw new EthereumInteractionException(
+                        $"did:ethr history for identity {identityAddress} contains a null log " +
+                        $"at block {currentBlock}.");
+                logs.Add(log);
+            }
+            // MoveNext(false) and enumerator Dispose run outside the foreach body. They
+            // can be the operation that observes/cancels the caller, so check once more
+            // before empty-history classification or any further processing.
+            ct.ThrowIfCancellationRequested();
 
             // nextBlock = the highest previousChange value that is STRICTLY less than
             // currentBlock.  Later transactions in the same block emit
@@ -331,13 +490,14 @@ public sealed class DidEthrMethod : DidMethodBase
             // Canonical intra-block order: sort by logIndex rather than trusting the node's
             // response array order, so a same-block add→revoke of one key always applies in
             // chain order (the block-level OrderBy in ResolveFromChainAsync is stable and
-            // preserves this).
-            foreach (var log in logs.OrderBy(l => l.LogIndex))
+            // preserves this). Sorting is bounded by MaxCollectedEvents; observe the
+            // token on both sides and during parsing.
+            ct.ThrowIfCancellationRequested();
+            logs.Sort(static (left, right) => left.LogIndex.CompareTo(right.LogIndex));
+            ct.ThrowIfCancellationRequested();
+            foreach (var log in logs)
             {
-                if (log is null)
-                    throw new EthereumInteractionException(
-                        $"did:ethr history for identity {identityAddress} contains a null log " +
-                        $"at block {currentBlock}.");
+                ct.ThrowIfCancellationRequested();
                 if (!string.Equals(log.Address, registryAddress,
                         StringComparison.OrdinalIgnoreCase))
                     throw new EthereumInteractionException(
@@ -365,13 +525,14 @@ public sealed class DidEthrMethod : DidMethodBase
 
                 blockEvents.Add(ev);
             }
+            ct.ThrowIfCancellationRequested();
 
             // changed()/previousChange asserts a real event exists at this block. If the
             // node returned no matching event, the authorization history is incomplete or corrupt —
             // fail CLOSED to a resolution error rather than silently returning a partial
             // document that could re-authorize a revoked key or hide a deactivation.
             if (blockEvents.Count == 0)
-                throw new EthereumInteractionException(
+                throw new IncompleteEventHistoryException(
                     $"did:ethr history for identity {identityAddress} is incomplete: block " +
                     $"{currentBlock} has no valid matching ERC-1056 event (pruned/non-archive " +
                     "or hostile RPC node).");
@@ -639,7 +800,7 @@ public sealed class DidEthrMethod : DidMethodBase
             throw AttachTransactionEvidence(ex, transactionHashes);
         }
 
-        // ResolveAsync maps RPC/history failures to a NotFound RESULT rather than throwing
+        // ResolveAsync maps RPC/history failures to an internalError RESULT rather than throwing
         // (its documented never-throw contract), so the catch above does not see them.
         // Reporting Success = false for a confirmed on-chain write whose effect we simply
         // could not read is a false negative that invites an unnecessary — possibly unsafe —
@@ -1111,7 +1272,10 @@ public sealed class DidEthrMethod : DidMethodBase
                 ? network.ChainId[2..] : network.ChainId;
             return Convert.ToUInt64(hex, 16);
         }
-        return await rpc.GetChainIdAsync(ct);
+        ct.ThrowIfCancellationRequested();
+        var chainId = await rpc.GetChainIdAsync(ct).WaitAsyncObserved(ct);
+        ct.ThrowIfCancellationRequested();
+        return chainId;
     }
 
     private static async Task<string> ResolveChainId(

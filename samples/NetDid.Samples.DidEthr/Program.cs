@@ -305,8 +305,9 @@ foreach (var (label, did, options) in new (string, string, DidEthrResolveOptions
     Console.WriteLine($"  {label,-26} → error = {failed.ResolutionMetadata.Error}");
 }
 
-// Fail-closed replay: a node asserting a change it never serves gets notFound,
-// never a partial document that could hide a revocation.
+// Fail-closed replay: a node asserting a change it never serves gets internalError
+// (an infrastructure failure, not a statement about the DID — issue #116), never a
+// partial document that could hide a revocation.
 chain.AssertedChangedBlockOverride = 999_999;
 var truncated = await ethr.ResolveAsync(aliceDid);
 Console.WriteLine($"  {"incomplete event history",-26} → error = {truncated.ResolutionMetadata.Error} (no partial document)");

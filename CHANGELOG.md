@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **`did:ethr`: RPC infrastructure failures now resolve as `internalError`, not `notFound`**
+  (issue #116). Pruned/non-archive or hostile-node detection, transport errors, internal
+  timeouts, and any other failure while consuming RPC data previously surfaced as
+  `resolutionMetadata.error = "notFound"` — a spec-defined statement that the DID does not
+  exist — inviting callers to purge caches or reject credentials when the correct reaction is
+  "retry against an archive node". These now return `internalError`, with a fixed,
+  library-owned `message` in the resolution metadata (mirroring the reference
+  `ethr-did-resolver`'s `message`-beside-`error` shape) that distinguishes a pruned/incomplete
+  history from a generic RPC failure. Exception text arriving through injectable seams is never
+  exposed — the pruned-history category is identified by an internal sealed exception type
+  (trusted provenance), not by message content. A genuinely unregistered identity still
+  resolves to the ERC-1056 genesis document with no error; `invalidDid`/`invalidOptions` are
+  unchanged. **Behavior change:** callers matching on `notFound` for these failure modes must
+  now match `internalError`. New `DidResolutionResult.InternalError(did, reason)` factory in
+  `NetDid.Core`. Vocabulary note: error codes remain the legacy DID Spec Registries strings
+  used across the library and the reference-resolver ecosystem; the current W3C DID Resolution
+  draft's RFC 9457 error-object model (type `https://www.w3.org/ns/did#INTERNAL_ERROR`, empty
+  document metadata on failure) is a library-wide migration tracked in #123. Hardening from the
+  adversarial + review rounds: the never-throw resolution contract holds under any logging
+  provider (including always-throwing ones) and a throwing `IEthereumRpcClientFactory`; the
+  resolution deadline now binds the returned task via the observed-wait mechanism, so an
+  injected RPC client that ignores cancellation cannot hang resolution (`ResolutionDeadline` is
+  internal-settable for tests); and node-authored JSON-RPC error text is bounded at the source
+  before it reaches logs.
+
 ## [3.0.0] - 2026-07-28
 
 **Upgrading from 2.3.0 requires no code changes.** The major version signals the scale of this
