@@ -241,7 +241,7 @@ public class ReviewRound1Tests
     [Fact]
     public async Task F5_DeactivateWithUnreadablePostWriteState_ThrowsWithEvidence_NotSuccessFalse()
     {
-        // ResolveAsync maps RPC failure to a NotFound RESULT rather than an exception, so
+        // ResolveAsync maps RPC failure to an internalError RESULT rather than an exception, so
         // the catch was bypassed and a confirmed on-chain deactivation returned
         // Success = false — inviting an unnecessary, possibly unsafe retry.
         var chain = new EmulatedEthereumChain(Registry);
@@ -252,7 +252,7 @@ public class ReviewRound1Tests
             // Break only the post-write read: `changed(identity)` drives resolution.
             CallOverride = (to, data) =>
                 writeDone && data.StartsWith("0xf96d0f9f", StringComparison.Ordinal)
-                    ? "0xdeadbeef"     // not one canonical ABI word → resolution notFound
+                    ? "0xdeadbeef"     // not one canonical ABI word → resolution internalError
                     : null,
             AfterReceipt = () => { writeDone = true; return Task.CompletedTask; },
         };

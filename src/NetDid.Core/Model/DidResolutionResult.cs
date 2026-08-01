@@ -36,4 +36,23 @@ public sealed record DidResolutionResult
         DidDocument = null,
         ResolutionMetadata = new DidResolutionMetadata { Error = "notFound" }
     };
+
+    /// <summary>
+    /// Resolver-infrastructure failure (W3C DID Resolution: unexpected errors during
+    /// the resolution algorithm), as opposed to <see cref="NotFound"/>, which asserts
+    /// the DID does not exist. <paramref name="reason"/>, when supplied, is carried as
+    /// a "message" beside "error" in the resolution metadata so callers can tell e.g.
+    /// a pruned RPC node from a generic failure.
+    /// </summary>
+    public static DidResolutionResult InternalError(string did, string? reason = null) => new()
+    {
+        DidDocument = null,
+        ResolutionMetadata = new DidResolutionMetadata
+        {
+            Error = "internalError",
+            AdditionalProperties = reason is null
+                ? null
+                : new Dictionary<string, object> { ["message"] = reason },
+        }
+    };
 }

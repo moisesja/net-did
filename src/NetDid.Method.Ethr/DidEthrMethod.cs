@@ -137,14 +137,18 @@ public sealed class DidEthrMethod : DidMethodBase
 
         // Everything past this point consumes UNTRUSTED data from the RPC node
         // (event bytes, hex fields, JSON shape). A resolver must never throw out
-        // of ResolveAsync — it must return resolutionMetadata.error. Map any such
-        // failure to notFound, but let genuine caller cancellation propagate.
+        // of ResolveAsync — it must return resolutionMetadata.error. Every failure
+        // in here is resolver INFRASTRUCTURE (pruned/hostile node, transport,
+        // timeout), never a statement about the DID's existence — a genuinely
+        // unregistered identity resolves to the ERC-1056 genesis document instead
+        // of erroring. Map failures to internalError (issue #116); genuine caller
+        // cancellation propagates.
         //
         // An overall deadline bounds total wall-clock across the walk and the
         // post-walk block-timestamp fan-out, so a slow-drip node cannot tie up
         // resolution for hours within the per-request timeouts. When THIS token
         // fires (not the caller's), ct.IsCancellationRequested is false, so it
-        // falls through to notFound rather than propagating as cancellation.
+        // falls through to internalError rather than propagating as cancellation.
         using var deadlineCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
         deadlineCts.CancelAfter(ResolutionDeadline);
         try
@@ -157,11 +161,36 @@ public sealed class DidEthrMethod : DidMethodBase
         {
             throw;
         }
+        catch (OperationCanceledException ex)
+        {
+            // The caller's token did NOT fire: this is the overall resolution deadline
+            // or the RPC client's per-request timeout — resolver infrastructure.
+            _logger.LogWarning(ex, "did:ethr resolution timed out against the RPC endpoint for {Did}", did);
+            return DidResolutionResult.InternalError(did,
+                "did:ethr resolution timed out against the RPC endpoint before the " +
+                "event history could be retrieved; the DID's existence was not determined.");
+        }
+        catch (EthereumInteractionException ex)
+        {
+            _logger.LogWarning(ex, "did:ethr resolution failed against RPC data for {Did}", did);
+            // Exception.Message is virtual; only trust the exact library-owned type.
+            // (An injected RPC client can throw a hostile subclass whose getter throws
+            // or returns unbounded text.) Our own messages can still interpolate
+            // node-supplied fragments (e.g. the RPC error JSON), so bound the length.
+            var reason = ex.GetType() == typeof(EthereumInteractionException)
+                ? Truncate(ex.Message, 500)
+                : "Ethereum RPC interaction failed.";
+            return DidResolutionResult.InternalError(did, reason);
+        }
         catch (Exception ex)
         {
             _logger.LogWarning(ex, "did:ethr resolution failed against RPC data for {Did}", did);
-            return DidResolutionResult.NotFound(did);
+            return DidResolutionResult.InternalError(did,
+                "did:ethr resolution failed against RPC data.");
         }
+
+        static string Truncate(string value, int max)
+            => value.Length <= max ? value : value[..max];
     }
 
     private async Task<DidResolutionResult> ResolveFromChainAsync(
@@ -639,7 +668,7 @@ public sealed class DidEthrMethod : DidMethodBase
             throw AttachTransactionEvidence(ex, transactionHashes);
         }
 
-        // ResolveAsync maps RPC/history failures to a NotFound RESULT rather than throwing
+        // ResolveAsync maps RPC/history failures to an internalError RESULT rather than throwing
         // (its documented never-throw contract), so the catch above does not see them.
         // Reporting Success = false for a confirmed on-chain write whose effect we simply
         // could not read is a false negative that invites an unnecessary — possibly unsafe —
