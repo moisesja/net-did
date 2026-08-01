@@ -614,7 +614,9 @@ public class Issue109UnobservedTaskTests
             // inner state machine at bare awaits, retaining one continuation per
             // resolution on a shared hung dependency task and resuming abandoned
             // work on late completion.
-            ["src/NetDid.Method.Ethr/DidEthrMethod.cs"] = 14,
+            // Site 15 added by issue #117: the cache-miss GetBlockTimestampAsync in
+            // GetBlockTimestampCachedAsync serving the updated/nextUpdate metadata.
+            ["src/NetDid.Method.Ethr/DidEthrMethod.cs"] = 15,
             ["src/NetDid.Method.Ethr/Transactions/TransactionPipeline.cs"] = 6,
             ["src/NetDid.Method.Ethr/Deployment/Erc1056Registry.cs"] = 1,
         }, "removing a WaitAsyncObserved wrapper un-bounds a dependency await; update " +
