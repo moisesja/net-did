@@ -58,7 +58,39 @@ public class DefaultEthereumRpcClientTests
 
         await client.Invoking(c => c.GetChainIdAsync())
             .Should().ThrowAsync<EthereumInteractionException>()
-            .WithMessage("*RPC error*");
+            .WithMessage("*RPC error*code -32000*boom*");
+    }
+
+    [Fact]
+    public async Task Issue116_OversizedHighlyEscapableRpcError_MessageBoundedWithoutSerializingNode()
+    {
+        // PR #122 review round 2, finding 2: serializing the attacker-controlled error
+        // node before truncating amplifies it (~6x with the default encoder) — a
+        // near-cap response transiently allocated ~100M+ chars. The diagnostic must be
+        // built from bounded scalar members only. 1M '&' chars in message (each would
+        // serialize as &) plus a nested decoy object must yield a small message.
+        var hugeEscapable = new string('&', 1_000_000);
+        var body = "{\"jsonrpc\":\"2.0\",\"id\":1,\"error\":{\"code\":-32000,\"message\":\""
+                   + hugeEscapable + "\",\"data\":{\"nested\":\"" + hugeEscapable + "\"}}}";
+        var client = ClientReturning(HttpStatusCode.OK, new StringContent(body));
+
+        var exceptionAssertion = await client.Invoking(c => c.GetChainIdAsync())
+            .Should().ThrowAsync<EthereumInteractionException>();
+
+        exceptionAssertion.Which.Message.Length.Should().BeLessThan(600,
+            "the diagnostic is built from capped scalar members, never the serialized node");
+        exceptionAssertion.Which.Message.Should().Contain("code -32000");
+    }
+
+    [Fact]
+    public async Task Issue116_NonObjectRpcError_YieldsFixedDiagnostic()
+    {
+        var client = ClientReturning(HttpStatusCode.OK, new StringContent(
+            "{\"jsonrpc\":\"2.0\",\"id\":1,\"error\":\"just a string\"}"));
+
+        await client.Invoking(c => c.GetChainIdAsync())
+            .Should().ThrowAsync<EthereumInteractionException>()
+            .WithMessage("*RPC error*non-object error member*");
     }
 
     [Fact]

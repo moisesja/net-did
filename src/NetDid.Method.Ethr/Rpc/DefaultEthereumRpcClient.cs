@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Net.Http.Json;
 using System.Text.Json;
 using System.Text.Json.Nodes;
@@ -340,17 +341,40 @@ public sealed class DefaultEthereumRpcClient : IEthereumRpcClient
         }
 
         if (responseObject["error"] is JsonNode error)
-        {
-            // Bound the node-authored error text: it is attacker-sized (up to the
-            // response cap) and this message flows into logs on every failure.
-            var errorText = error.ToJsonString();
-            if (errorText.Length > 1024)
-                errorText = errorText[..1024];
             throw new EthereumInteractionException(
-                $"RPC error for '{method}': {errorText}");
-        }
+                $"RPC error for '{method}': {DescribeRpcError(error)}");
 
         return responseObject["result"];
+    }
+
+    /// <summary>
+    /// Bounded diagnostic for a node-authored JSON-RPC error. NEVER serializes the
+    /// node: with the default JSON encoder, escaping can multiply attacker-controlled
+    /// content ~6x before any truncation (a near-response-cap error would transiently
+    /// allocate ~100M+ chars). Only the JSON-RPC 2.0 scalar members are read — the
+    /// numeric <c>code</c> and a capped prefix of the string <c>message</c> — so the
+    /// only transient allocation is the message string the parsed DOM already holds.
+    /// </summary>
+    private static string DescribeRpcError(JsonNode error)
+    {
+        const int MaxMessageChars = 256;
+
+        if (error is not JsonObject errorObject)
+            return "non-object error member";
+
+        var code = "?";
+        if (errorObject.TryGetPropertyValue("code", out var codeNode)
+            && codeNode is JsonValue codeValue
+            && codeValue.TryGetValue<long>(out var numericCode))
+            code = numericCode.ToString(CultureInfo.InvariantCulture);
+
+        var message = "(no message)";
+        if (errorObject.TryGetPropertyValue("message", out var messageNode)
+            && messageNode is JsonValue messageValue
+            && messageValue.TryGetValue<string>(out var text))
+            message = text.Length <= MaxMessageChars ? text : text[..MaxMessageChars];
+
+        return $"code {code}, message: {message}";
     }
 
     /// <summary>

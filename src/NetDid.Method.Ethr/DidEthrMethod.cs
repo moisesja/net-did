@@ -70,8 +70,10 @@ public sealed class DidEthrMethod : DidMethodBase
 
     /// <summary>
     /// Overall wall-clock bound for one resolution. Internal so tests can shorten it.
-    /// Enforced with <see cref="AbandonableTaskExtensions.WaitAsyncObserved{T}"/> so even
-    /// an injected RPC client that ignores cancellation cannot hang resolution past it.
+    /// Enforced with <see cref="AbandonableTaskExtensions.WaitAsyncObserved{T}"/> on
+    /// every dependency await in the resolve path, so even an injected RPC client that
+    /// ignores cancellation cannot hang resolution past it, retain per-resolution
+    /// continuations on a shared hung task, or resume abandoned work later.
     /// </summary>
     internal TimeSpan ResolutionDeadline { get; set; } = TimeSpan.FromSeconds(120);
 
@@ -161,9 +163,17 @@ public sealed class DidEthrMethod : DidMethodBase
         {
             // The client factory is an injected dependency: a throw from it is
             // infrastructure too, and must not defeat the never-throw contract.
-            // WaitAsyncObserved applies the deadline to the RETURNED task, so even an
-            // injected client that ignores cancellation and never completes cannot
-            // hang resolution past the bound (the abandoned task stays observed).
+            //
+            // Deadline mechanics: every dependency await INSIDE the resolve path
+            // (CallAsync / GetLogsAsync / GetBlockTimestampAsync / GetChainIdAsync) is
+            // individually bounded with WaitAsyncObserved, so when the deadline fires
+            // the inner state machine unwinds immediately — BCL WaitAsync removes its
+            // continuation from the dependency task, and a client that ignores
+            // cancellation and returns one shared forever-pending task retains at most
+            // ONE deduped fault observer, not one continuation per resolution, and can
+            // never resume abandoned work (no post-deadline RPC fan-out on late
+            // completion). The outer wrap below is defense in depth for any future
+            // non-dependency await added to ResolveFromChainAsync.
             var rpc = _rpcFactory.GetOrCreate(network);
             return await ResolveFromChainAsync(
                     did, identifier, network, rpc, versionBlockNumber, versionTime,
@@ -250,7 +260,8 @@ public sealed class DidEthrMethod : DidMethodBase
 
         // changed(identity) → first block that has a relevant event
         var changedHex    = Erc1056Calls.Changed(identifier.IdentityAddress);
-        var changedResult = await rpc.CallAsync(network.RegistryAddress, changedHex, ct);
+        var changedResult = await rpc.CallAsync(network.RegistryAddress, changedHex, ct)
+            .WaitAsyncObserved(ct);
         var latestChange  = ParseChangedResult(changedResult);
 
         // Collect the FULL event history (walk from the latest change to genesis).
@@ -289,7 +300,7 @@ public sealed class DidEthrMethod : DidMethodBase
             // reference clock (there is no other clock for a past block); this grants a
             // hostile node no power it lacks over validTo itself. Default (non-historical)
             // resolution uses the trusted local UtcNow below.
-            var ts = await rpc.GetBlockTimestampAsync(version, ct);
+            var ts = await rpc.GetBlockTimestampAsync(version, ct).WaitAsyncObserved(ct);
             referenceTime = DateTimeOffset.FromUnixTimeSeconds((long)ts);
         }
         else if (versionTime is { } vt)
@@ -301,7 +312,8 @@ public sealed class DidEthrMethod : DidMethodBase
             ulong? previousTimestamp = null;
             foreach (var blockEvents in collectedEvents.GroupBy(ev => ev.BlockNumber))
             {
-                var bts = await rpc.GetBlockTimestampAsync(blockEvents.Key, ct);
+                var bts = await rpc.GetBlockTimestampAsync(blockEvents.Key, ct)
+                    .WaitAsyncObserved(ct);
                 if (previousTimestamp is { } prior && bts < prior)
                     throw new EthereumInteractionException(
                         $"did:ethr block timestamps decrease: block " +
@@ -391,7 +403,7 @@ public sealed class DidEthrMethod : DidMethodBase
                 ],
             };
 
-            var logs = (await rpc.GetLogsAsync(filter, ct))?.ToList()
+            var logs = (await rpc.GetLogsAsync(filter, ct).WaitAsyncObserved(ct))?.ToList()
                 ?? throw new EthereumInteractionException(
                     $"did:ethr history for identity {identityAddress} returned a null log collection.");
 
@@ -1188,7 +1200,7 @@ public sealed class DidEthrMethod : DidMethodBase
                 ? network.ChainId[2..] : network.ChainId;
             return Convert.ToUInt64(hex, 16);
         }
-        return await rpc.GetChainIdAsync(ct);
+        return await rpc.GetChainIdAsync(ct).WaitAsyncObserved(ct);
     }
 
     private static async Task<string> ResolveChainId(

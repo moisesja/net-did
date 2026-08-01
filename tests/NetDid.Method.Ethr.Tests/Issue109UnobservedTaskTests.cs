@@ -607,10 +607,14 @@ public class Issue109UnobservedTaskTests
             .ToDictionary(s => s.Path, s => s.Count);
         inventory.Should().Equal(new Dictionary<string, int>
         {
-            // 9th site added by issue #116: the resolution deadline binds the returned
-            // ResolveFromChainAsync task, so a cancellation-ignoring RPC client cannot
-            // hang resolution.
-            ["src/NetDid.Method.Ethr/DidEthrMethod.cs"] = 9,
+            // Sites 9-14 added by issue #116 (PR #122 review rounds): the outer
+            // ResolveFromChainAsync wrap plus every read-path dependency await
+            // (changed() CallAsync, GetLogsAsync, 2× GetBlockTimestampAsync,
+            // GetChainIdAsync fallback) — bounding only the outer task abandoned the
+            // inner state machine at bare awaits, retaining one continuation per
+            // resolution on a shared hung dependency task and resuming abandoned
+            // work on late completion.
+            ["src/NetDid.Method.Ethr/DidEthrMethod.cs"] = 14,
             ["src/NetDid.Method.Ethr/Transactions/TransactionPipeline.cs"] = 6,
             ["src/NetDid.Method.Ethr/Deployment/Erc1056Registry.cs"] = 1,
         }, "removing a WaitAsyncObserved wrapper un-bounds a dependency await; update " +

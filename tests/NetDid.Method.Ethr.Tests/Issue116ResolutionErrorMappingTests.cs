@@ -58,8 +58,9 @@ public class Issue116ResolutionErrorMappingTests
     [Fact]
     public async Task Issue116_PrunedNodeReason_SurfacesInMetadataMessage()
     {
-        // Callers must be able to tell "pruned node" from generic failure: the
-        // walker's diagnostic (which names the incomplete block) is carried as a
+        // Callers must be able to tell "pruned node" from generic failure: a FIXED
+        // library-owned incomplete-history message (selected by the internal marker
+        // exception type, never by untrusted message content) is carried as a
         // "message" beside "error", mirroring the reference resolver's metadata shape.
         var rpc = Substitute.For<IEthereumRpcClient>();
         rpc.CallAsync(default!, default!, default)
@@ -277,11 +278,81 @@ public class Issue116ResolutionErrorMappingTests
             ResolutionDeadline = TimeSpan.FromMilliseconds(250),
         };
 
+        var stopwatch = System.Diagnostics.Stopwatch.StartNew();
         var resolve = method.ResolveAsync($"did:ethr:sepolia:{Identity}");
         var winner = await Task.WhenAny(resolve, Task.Delay(TimeSpan.FromSeconds(30)));
+        stopwatch.Stop();
 
         winner.Should().BeSameAs(resolve, "the deadline must fire even when the client ignores cancellation");
+        // Well below the 30 s fallback: the configured 250 ms deadline (plus scheduler
+        // slack) is what returned control, not some larger implicit timeout.
+        stopwatch.Elapsed.Should().BeLessThan(TimeSpan.FromSeconds(10));
         (await resolve).ResolutionMetadata.Error.Should().Be("internalError");
+    }
+
+    [Fact]
+    public async Task Issue116_SharedHungRpcTask_NoPerCallRetention_NoLateRpcFanout()
+    {
+        // PR #122 review round 2, finding 1: bounding only the OUTER ResolveFromChainAsync
+        // task abandoned the inner state machine at its bare dependency await — a client
+        // returning ONE shared forever-pending task retained one continuation per
+        // resolution, and completing it later resumed every abandoned resolution,
+        // fanning out post-deadline GetLogsAsync calls. With every dependency await
+        // individually bounded: BCL WaitAsync removes its continuation on cancellation
+        // (at most the single deduped fault observer remains), and late completion
+        // resumes nothing.
+        const int Resolutions = 20;
+        var shared = new TaskCompletionSource<string>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var getLogsCalls = 0;
+        var rpc = Substitute.For<IEthereumRpcClient>();
+        rpc.CallAsync(default!, default!, default).ReturnsForAnyArgs(shared.Task);
+        rpc.GetLogsAsync(default!, default).ReturnsForAnyArgs(_ =>
+        {
+            Interlocked.Increment(ref getLogsCalls);
+            return Task.FromResult<IReadOnlyList<EthereumLogEntry>>([]);
+        });
+        var factory = Substitute.For<IEthereumRpcClientFactory>();
+        factory.GetOrCreate(Arg.Any<EthereumNetworkConfig>()).Returns(rpc);
+        var method = new DidEthrMethod(factory, [Sepolia], new DefaultKeyGenerator())
+        {
+            ResolutionDeadline = TimeSpan.FromMilliseconds(100),
+        };
+
+        var results = await Task.WhenAll(Enumerable.Range(0, Resolutions)
+            .Select(_ => method.ResolveAsync($"did:ethr:sepolia:{Identity}")));
+
+        results.Should().OnlyContain(r => r.ResolutionMetadata.Error == "internalError");
+        RegisteredContinuationCount(shared.Task).Should().BeLessThanOrEqualTo(1,
+            "cancelled waits must remove their continuations from the shared dependency " +
+            "task; only the single deduped fault observer may remain");
+
+        // Late completion: a block-5 changed() answer. No abandoned state machine may
+        // resume — zero RPC calls after every caller has already received its result.
+        shared.SetResult("0x" + 5UL.ToString("x64"));
+        await Task.Delay(250);
+        getLogsCalls.Should().Be(0,
+            "an abandoned resolution must never issue RPC calls after its caller timed out");
+    }
+
+    /// <summary>
+    /// Counts continuations on the BCL-internal slot (same pin as the Issue109 suite:
+    /// .NET 10 field name, failing loudly if it moves).
+    /// </summary>
+    private static int RegisteredContinuationCount(Task task)
+    {
+        var field = typeof(Task).GetField(
+            "m_continuationObject",
+            System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic);
+        field.Should().NotBeNull(
+            "the retention pin reads Task's internal continuation slot; update this " +
+            "helper if the BCL renames it");
+        return field!.GetValue(task) switch
+        {
+            null => 0,
+            List<object?> list => list.Count(entry => entry is not null),
+            _ => 1,
+        };
     }
 
     // ── Hostile dependency exception must not defeat the mapping ─────────────────
