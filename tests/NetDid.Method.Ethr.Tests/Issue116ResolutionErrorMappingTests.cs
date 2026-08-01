@@ -323,7 +323,13 @@ public class Issue116ResolutionErrorMappingTests
             .Select(_ => method.ResolveAsync($"did:ethr:sepolia:{Identity}")));
 
         results.Should().OnlyContain(r => r.ResolutionMetadata.Error == "internalError");
-        RegisteredContinuationCount(shared.Task).Should().BeLessThanOrEqualTo(1,
+        // WaitAsync removes its source continuation asynchronously relative to the
+        // caller-visible cancellation completion. Under CI load, the steady-state
+        // observer can briefly coexist with one BCL wait continuation. Wait for that
+        // transient cleanup, then assert the permanent-retention invariant.
+        var continuationCount = await WaitForContinuationCountAtMostAsync(
+            shared.Task, maximum: 1, timeout: TimeSpan.FromSeconds(2));
+        continuationCount.Should().BeLessThanOrEqualTo(1,
             "cancelled waits must remove their continuations from the shared dependency " +
             "task; only the single deduped fault observer may remain");
 
@@ -526,6 +532,109 @@ public class Issue116ResolutionErrorMappingTests
     }
 
     /// <summary>
+    /// Empty dependency collection whose terminal MoveNext cancels the caller and
+    /// returns false. A foreach-body token check never runs for this shape.
+    /// </summary>
+    private sealed class CancelOnEmptyEnumerationLogList(CancellationTokenSource cts)
+        : IReadOnlyList<EthereumLogEntry>
+    {
+        public int Count => 0;
+        public EthereumLogEntry this[int index] => throw new ArgumentOutOfRangeException(nameof(index));
+        public IEnumerator<EthereumLogEntry> GetEnumerator()
+        {
+            cts.Cancel();
+            yield break;
+        }
+        System.Collections.IEnumerator System.Collections.IEnumerable.GetEnumerator()
+            => GetEnumerator();
+    }
+
+    [Fact]
+    public async Task Issue116_EmptyEnumeration_CallerCancelledOnTerminalMoveNext_Propagates()
+    {
+        // The enumerator cancels and returns false on its first MoveNext. The loop
+        // body never runs, so cancellation must be checked after enumeration before
+        // the empty-history error can incorrectly win and map to internalError.
+        const ulong block = 1;
+        using var cts = new CancellationTokenSource();
+        var rpc = Substitute.For<IEthereumRpcClient>();
+        rpc.CallAsync(default!, default!, default)
+           .ReturnsForAnyArgs("0x" + block.ToString("x64"));
+        rpc.GetLogsAsync(default!, default).ReturnsForAnyArgs(_ =>
+            Task.FromResult<IReadOnlyList<EthereumLogEntry>>(
+                new CancelOnEmptyEnumerationLogList(cts)));
+
+        var act = () => MakeMethod(rpc)
+            .ResolveAsync($"did:ethr:sepolia:{Identity}", options: null, cts.Token);
+
+        await act.Should().ThrowAsync<OperationCanceledException>(
+            "genuine caller cancellation must win over empty-history classification");
+    }
+
+    /// <summary>
+    /// Dependency enumerator that yields one valid event, then cancels the caller and
+    /// throws while foreach disposes it. The post-loop token gate is never reached.
+    /// </summary>
+    private sealed class CancelAndThrowOnDisposeLogList(
+        CancellationTokenSource cts, EthereumLogEntry entry)
+        : IReadOnlyList<EthereumLogEntry>
+    {
+        public int Count => 1;
+        public EthereumLogEntry this[int index] => index == 0
+            ? entry
+            : throw new ArgumentOutOfRangeException(nameof(index));
+        public IEnumerator<EthereumLogEntry> GetEnumerator()
+            => new Enumerator(cts, entry);
+        System.Collections.IEnumerator System.Collections.IEnumerable.GetEnumerator()
+            => GetEnumerator();
+
+        private sealed class Enumerator(
+            CancellationTokenSource cts, EthereumLogEntry entry)
+            : IEnumerator<EthereumLogEntry>
+        {
+            private bool _yielded;
+            public EthereumLogEntry Current => entry;
+            object System.Collections.IEnumerator.Current => Current;
+            public bool MoveNext()
+            {
+                if (_yielded)
+                    return false;
+                _yielded = true;
+                return true;
+            }
+            public void Reset() => throw new NotSupportedException();
+            public void Dispose()
+            {
+                cts.Cancel();
+                throw new InvalidOperationException("hostile enumerator dispose");
+            }
+        }
+    }
+
+    [Fact]
+    public async Task Issue116_EnumeratorDisposeFaultAfterCallerCancellation_PropagatesCancellation()
+    {
+        // A fault can bypass every local post-operation token gate. The outer trust
+        // boundary must prioritize a genuinely cancelled caller over a simultaneous
+        // dependency-owned enumeration fault.
+        const ulong block = 1;
+        using var cts = new CancellationTokenSource();
+        var rpc = Substitute.For<IEthereumRpcClient>();
+        rpc.CallAsync(default!, default!, default)
+           .ReturnsForAnyArgs("0x" + block.ToString("x64"));
+        rpc.GetLogsAsync(default!, default).ReturnsForAnyArgs(_ =>
+            Task.FromResult<IReadOnlyList<EthereumLogEntry>>(
+                new CancelAndThrowOnDisposeLogList(
+                    cts, OwnerChangedLog(Identity, Identity, block, prev: 0))));
+
+        var act = () => MakeMethod(rpc)
+            .ResolveAsync($"did:ethr:sepolia:{Identity}", options: null, cts.Token);
+
+        await act.Should().ThrowAsync<OperationCanceledException>(
+            "caller cancellation must win over a simultaneous dependency fault");
+    }
+
+    /// <summary>
     /// Hostile dependency-owned list whose enumerator never terminates. Count lies.
     /// </summary>
     private sealed class NonterminatingLogList(Func<int, EthereumLogEntry> make)
@@ -644,6 +753,20 @@ public class Issue116ResolutionErrorMappingTests
             List<object?> list => list.Count(entry => entry is not null),
             _ => 1,
         };
+    }
+
+    private static async Task<int> WaitForContinuationCountAtMostAsync(
+        Task task, int maximum, TimeSpan timeout)
+    {
+        var stopwatch = System.Diagnostics.Stopwatch.StartNew();
+        var count = RegisteredContinuationCount(task);
+        while (count > maximum && stopwatch.Elapsed < timeout)
+        {
+            await Task.Delay(10);
+            count = RegisteredContinuationCount(task);
+        }
+
+        return count;
     }
 
     // ── Hostile dependency exception must not defeat the mapping ─────────────────

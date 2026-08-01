@@ -60,35 +60,32 @@ public sealed class DidEthrMethod : DidMethodBase
     //   • aggregate bytes — the event count cap is byte-blind: one large-value
     //                       attribute per hop stays under it yet retains ~response-cap
     //                       bytes per hop → multi-GB heap. Bound total retained bytes.
-    //   • aggregate time  — hops × the per-request timeout is hours; an overall
-    //                       resolution deadline (see ResolveCoreAsync) bounds wall-clock,
-    //                       covering the post-walk per-event block-timestamp fan-out too.
+    //   • aggregate time  — hops × the per-request timeout is hours; one overall
+    //                       resolution deadline (see ResolveCoreAsync) spans all awaited
+    //                       work and is cooperatively observed during synchronous work,
+    //                       including post-walk block-timestamp fan-out.
     // Exceeding any bound aborts resolution, mapped to a resolution error.
     private const int  MaxEventChainHops   = 1_000;
     private const int  MaxCollectedEvents  = 5_000;
     private const long MaxCollectedBytes   = 32L * 1024 * 1024; // 32 MiB retained
 
     /// <summary>
-    /// Overall wall-clock bound for one resolution. Internal so tests can shorten it.
-    /// Enforced with <see cref="AbandonableTaskExtensions.WaitAsyncObserved{T}"/> on
-    /// every dependency await in the resolve path, so even an injected RPC client that
-    /// ignores cancellation cannot hang resolution past it, retain per-resolution
-    /// continuations on a shared hung task, or resume abandoned work later. The token
-    /// is additionally observed before every dependency call, after every await,
-    /// per item while materializing dependency-owned collections, and before the
-    /// successful return, so completed-task fast paths cannot outrun it either.
+    /// Cooperative overall deadline for one resolution. Internal so tests can shorten it.
+    /// <see cref="AbandonableTaskExtensions.WaitAsyncObserved{T}"/> bounds every dependency
+    /// await, so a pending client task that ignores cancellation cannot retain one
+    /// resolver continuation per call or resume abandoned resolver work later. The token
+    /// is additionally observed before and after dependency calls, while materializing
+    /// and processing dependency-owned collections, and before successful return, so
+    /// completed-task fast paths cannot silently return stale success.
     /// </summary>
     /// <remarks>
-    /// Contract precision: the deadline is observed at every asynchronous wait and at
-    /// every iteration/observation point of the resolver's own work. Like any
-    /// in-process token-based bound in .NET, it cannot preempt a dependency that
-    /// blocks SYNCHRONOUSLY — inside a client method before it returns its task, or
-    /// inside a hostile collection's MoveNext — the bound then takes effect at the
-    /// first observation point after the blocking call returns. The shipped
-    /// <see cref="Rpc.DefaultEthereumRpcClient"/> is fully asynchronous, so against
-    /// hostile RPC NODES the deadline is a hard bound; callers injecting an untrusted
-    /// <see cref="Rpc.IEthereumRpcClient"/> IMPLEMENTATION need process-level
-    /// isolation for a guarantee no library can provide in-process.
+    /// This is cancellation, not CPU preemption. Caller-visible waits stop at the
+    /// deadline, and bounded synchronous resolver work stops at its next token checkpoint.
+    /// Code already executing synchronously — including JSON parsing, collection
+    /// MoveNext/Dispose, sorting, or an injected client method before it returns a task —
+    /// may run until that checkpoint. Size/count caps bound the shipped client's work;
+    /// callers needing a preemptive guarantee for an untrusted in-process
+    /// <see cref="Rpc.IEthereumRpcClient"/> implementation must isolate it in another process.
     /// </remarks>
     internal TimeSpan ResolutionDeadline { get; set; } = TimeSpan.FromSeconds(120);
 
@@ -167,11 +164,10 @@ public sealed class DidEthrMethod : DidMethodBase
         // of erroring. Map failures to internalError (issue #116); genuine caller
         // cancellation propagates.
         //
-        // An overall deadline bounds total wall-clock across the walk and the
-        // post-walk block-timestamp fan-out, so a slow-drip node cannot tie up
-        // resolution for hours within the per-request timeouts. When THIS token
-        // fires (not the caller's), ct.IsCancellationRequested is false, so it
-        // falls through to internalError rather than propagating as cancellation.
+        // An overall cooperative deadline spans the walk and post-walk timestamp
+        // fan-out, so a slow-drip node cannot multiply per-request timeouts into hours.
+        // When THIS token fires (not the caller's), ct.IsCancellationRequested is false,
+        // so it falls through to internalError rather than propagating as cancellation.
         using var deadlineCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
         deadlineCts.CancelAfter(ResolutionDeadline);
         try
@@ -182,8 +178,8 @@ public sealed class DidEthrMethod : DidMethodBase
             // Deadline mechanics: every dependency await INSIDE the resolve path
             // (CallAsync / GetLogsAsync / GetBlockTimestampAsync / GetChainIdAsync) is
             // individually bounded with WaitAsyncObserved, so when the deadline fires
-            // the inner state machine unwinds immediately — BCL WaitAsync removes its
-            // continuation from the dependency task, and a client that ignores
+            // the resolver stops awaiting a still-pending source task — BCL WaitAsync
+            // removes its continuation, and a client that ignores
             // cancellation and returns one shared forever-pending task retains at most
             // ONE deduped fault observer, not one continuation per resolution, and can
             // never resume abandoned work (no post-deadline RPC fan-out on late
@@ -195,8 +191,13 @@ public sealed class DidEthrMethod : DidMethodBase
                     deadlineCts.Token)
                 .WaitAsyncObserved(deadlineCts.Token);
         }
-        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        catch (Exception) when (ct.IsCancellationRequested)
         {
+            // Caller cancellation has priority over a simultaneous dependency/parser
+            // fault. A hostile enumerator can cancel from MoveNext/Dispose and then
+            // throw before any local post-operation token gate is reached; mapping that
+            // fault to internalError would violate the public cancellation contract.
+            ct.ThrowIfCancellationRequested();
             throw;
         }
         catch (OperationCanceledException ex)
@@ -465,8 +466,16 @@ public sealed class DidEthrMethod : DidMethodBase
                         $"did:ethr history for identity {identityAddress} returned more " +
                         $"than {MaxCollectedEvents} logs for block {currentBlock}; " +
                         "aborting to bound work.");
+                if (log is null)
+                    throw new EthereumInteractionException(
+                        $"did:ethr history for identity {identityAddress} contains a null log " +
+                        $"at block {currentBlock}.");
                 logs.Add(log);
             }
+            // MoveNext(false) and enumerator Dispose run outside the foreach body. They
+            // can be the operation that observes/cancels the caller, so check once more
+            // before empty-history classification or any further processing.
+            ct.ThrowIfCancellationRequested();
 
             // nextBlock = the highest previousChange value that is STRICTLY less than
             // currentBlock.  Later transactions in the same block emit
@@ -481,13 +490,14 @@ public sealed class DidEthrMethod : DidMethodBase
             // Canonical intra-block order: sort by logIndex rather than trusting the node's
             // response array order, so a same-block add→revoke of one key always applies in
             // chain order (the block-level OrderBy in ResolveFromChainAsync is stable and
-            // preserves this).
-            foreach (var log in logs.OrderBy(l => l.LogIndex))
+            // preserves this). Sorting is bounded by MaxCollectedEvents; observe the
+            // token on both sides and during parsing.
+            ct.ThrowIfCancellationRequested();
+            logs.Sort(static (left, right) => left.LogIndex.CompareTo(right.LogIndex));
+            ct.ThrowIfCancellationRequested();
+            foreach (var log in logs)
             {
-                if (log is null)
-                    throw new EthereumInteractionException(
-                        $"did:ethr history for identity {identityAddress} contains a null log " +
-                        $"at block {currentBlock}.");
+                ct.ThrowIfCancellationRequested();
                 if (!string.Equals(log.Address, registryAddress,
                         StringComparison.OrdinalIgnoreCase))
                     throw new EthereumInteractionException(
@@ -515,6 +525,7 @@ public sealed class DidEthrMethod : DidMethodBase
 
                 blockEvents.Add(ev);
             }
+            ct.ThrowIfCancellationRequested();
 
             // changed()/previousChange asserts a real event exists at this block. If the
             // node returned no matching event, the authorization history is incomplete or corrupt —

@@ -443,3 +443,21 @@
   new tests red on the pre-fix source — and expect a pre-fix HANG (not a failure) when the
   old bug is an unbounded loop; run that proof with a short timeout and without the hanging
   test in the batch.
+- A cancellation check inside a `foreach` body does NOT cover the enumeration boundary:
+  `MoveNext(false)` and enumerator `Dispose()` execute without entering the body. If either
+  cancels the caller, an empty-result/error branch can win first and misclassify genuine
+  cancellation. Check the token once more immediately AFTER enumeration, before sorting,
+  empty checks, or other classification. Pin it with an iterator that cancels then
+  `yield break`s, so the body is provably never entered. (PR #122 round-4 follow-up.)
+- Local post-operation gates are still bypassed when dependency code CANCELS and then
+  THROWS (for example, enumerator `Dispose()` cancels the caller and throws before the
+  post-foreach check). At an async trust boundary whose contract says caller cancellation
+  propagates, put a caller-token-priority catch filter before domain/generic mappings and
+  call `ct.ThrowIfCancellationRequested()`. Pin the cancel-then-throw shape; testing only
+  cancel-then-return leaves this race open.
+- Reflection into `Task.m_continuationObject` observes a transient implementation detail,
+  not an atomic steady-state snapshot. A canceled `WaitAsync` source continuation may
+  briefly coexist with the one permanent deduped fault observer after the caller-visible
+  task completes; PR #122 CI saw 2 while stress iteration 60 reproduced it locally. Poll
+  for bounded cleanup before asserting the permanent count, with a short timeout that
+  still fails a real retained-continuation leak. Never weaken the final ≤1 invariant.
