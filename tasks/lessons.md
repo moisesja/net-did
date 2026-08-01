@@ -368,3 +368,35 @@
   failure mode as the earlier "taking too long" lesson, now from proportionality: ceremony
   (two agents, containerized oracles, doc sweeps) is justified by what the diff can break,
   not by the workflow's default shape.
+- Bound the DEPENDENCY task at its own await site, not a wrapper task you created around
+  your own state machine. Wrapping ResolveFromChainAsync (our task) in WaitAsyncObserved
+  "returned control" on deadline but abandoned the inner machine at its bare
+  `await rpc.X(...)` — one retained continuation per resolution on a shared hung
+  dependency task, and a late completion resumed every abandoned machine into a
+  post-deadline RPC fan-out. The existing "apply the bound to the returned task" lesson
+  means the task RETURNED BY THE DEPENDENCY: wrap each rpc/signer await (the write path
+  already did — symmetry with existing call sites was the tell). Prove it with a
+  shared-TCS regression: N concurrent ops, continuation-slot count ≤1, late completion
+  ⇒ zero further dependency calls. (PR #122 round 2.)
+- Truncating attacker-controlled data AFTER materializing it is not a bound.
+  `error.ToJsonString()[..1024]` first serialized the full node — default JSON-encoder
+  escaping amplifies ~6x, so a near-response-cap error transiently allocated ~192 MiB
+  before the slice. Bound at the point of EXTRACTION: read only the schema's scalar
+  members (numeric code, ≤256-char prefix of the message string the DOM already holds),
+  never serialize the hostile node. Generalize: for any cap, ask what has already been
+  allocated/computed by the time the cap applies. (PR #122 round 2.)
+- Exact runtime type is provenance ONLY for types hostile code cannot construct. A public
+  exception type with a public ctor can be thrown by an injected dependency carrying
+  arbitrary text, so `GetType() == typeof(PublicException)` does not make its Message
+  trustworthy. For caller-facing diagnostics from a catch, publish fixed library-owned
+  text and select the category via an internal sealed marker exception type
+  (uninstantiable outside the assembly). And a guarded log call's FALLBACK needs its own
+  guard: providers can throw on every Log call — logging must end in a final swallow to
+  preserve a never-throw contract. (PR #122 rounds 1-2.)
+- Do not claim current-spec conformance from memory of an older vocabulary: the W3C DID
+  Resolution draft moved to RFC 9457 error OBJECTS (https://www.w3.org/ns/did#INTERNAL_ERROR
+  type URIs, empty didDocumentMetadata on failure); the camelCase string codes this library
+  uses are the legacy DID Spec Registries form. When staying on a legacy form deliberately
+  (ecosystem compatibility, one-PR scope), say so explicitly in docs/PR and file the
+  migration issue — a reviewer reading the current TR will otherwise refute the claim.
+  (PR #122 rounds 1-2, issue #123.)
