@@ -190,6 +190,45 @@ public class EmulatedEthereumChainTests
         latest.DocumentMetadata!.VersionId.Should().Be((firstWriteBlock + 1).ToString());
     }
 
+    [Fact]
+    public async Task Issue117_MetadataTimestamps_MatchEmulatedBlockTimes()
+    {
+        // Differential pin for issue #117: updated/nextUpdate must equal the emulator's
+        // actual block times — current resolution carries updated only; a historical
+        // query carries nextUpdate beside nextVersionId in the reference resolver's
+        // ISO 8601 UTC whole-second form.
+        var chain = new EmulatedEthereumChain(Registry);
+        var owner = NewActor();
+        var delegateActor = NewActor();
+        var did = $"did:ethr:sepolia:{owner.Address}";
+        var method = MethodFor(chain);
+
+        await SendAsync(chain, owner, Registry, Erc1056TransactionBuilder
+            .AddDelegate(owner.Address, "veriKey", delegateActor.Address, 86_400).DirectCalldata);
+        var firstWriteBlock = chain.CurrentBlockNumber;
+        await SendAsync(chain, owner, Registry, Erc1056TransactionBuilder
+            .SetAttribute(owner.Address, "did/svc/Hub", Encoding.UTF8.GetBytes("https://hub"), 86_400)
+            .DirectCalldata);
+        var secondWriteBlock = chain.CurrentBlockNumber;
+
+        var firstTime = DateTimeOffset.FromUnixTimeSeconds(
+            (long)await chain.GetBlockTimestampAsync(firstWriteBlock));
+        var secondTime = DateTimeOffset.FromUnixTimeSeconds(
+            (long)await chain.GetBlockTimestampAsync(secondWriteBlock));
+
+        var historical = await method.ResolveAsync(did,
+            new DidEthrResolveOptions { VersionId = firstWriteBlock.ToString() });
+        historical.DocumentMetadata!.Updated.Should().Be(firstTime);
+        historical.DocumentMetadata.NextUpdate.Should()
+            .Be(secondTime.UtcDateTime.ToString(
+                "yyyy'-'MM'-'dd'T'HH':'mm':'ss'Z'",
+                System.Globalization.CultureInfo.InvariantCulture));
+
+        var latest = await method.ResolveAsync(did);
+        latest.DocumentMetadata!.Updated.Should().Be(secondTime);
+        latest.DocumentMetadata.NextUpdate.Should().BeNull();
+    }
+
     // ── Meta-transactions ────────────────────────────────────────────────────
 
     [Fact]
