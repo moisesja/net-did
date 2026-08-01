@@ -3321,4 +3321,69 @@ public class DidWebVhMethodTests
         // (#101) rejects it during chain validation (see the Update variant above).
         await act.Should().ThrowAsync<LogChainValidationException>().WithMessage("*SCID*");
     }
+
+    // ================================================================
+    // ISSUE #121: VERIFICATION-METHOD CONTROLLER IS REQUIRED ON A FETCHED STATE
+    // ================================================================
+
+    // Take a real, valid genesis log and mutate the FIRST entry's state so its verification
+    // method carries the given controller shape (null token = remove the property entirely).
+    private static byte[] MutateGenesisVmController(string logContent, string? controllerJsonOrNull)
+    {
+        var firstLine = logContent.Split('\n', StringSplitOptions.RemoveEmptyEntries)[0];
+        var node = System.Text.Json.Nodes.JsonNode.Parse(firstLine)!;
+        var vm = node["state"]!["verificationMethod"]!.AsArray()[0]!.AsObject();
+        vm.Remove("controller");
+        if (controllerJsonOrNull is not null)
+            vm["controller"] = System.Text.Json.Nodes.JsonNode.Parse(controllerJsonOrNull);
+        return Encoding.UTF8.GetBytes(node.ToJsonString());
+    }
+
+    [Fact]
+    public async Task Issue121_FetchedState_OmittedVmController_ResolvesInvalidDidLog()
+    {
+        // An attacker publishes a log whose state key has NO controller. Absence is invalid per
+        // §5.2 (it does not default to the subject), so resolution must reject the log — never
+        // bind the attacker-held key to the subject as a self-controlled key.
+        var (method, httpClient) = CreateMethod();
+        var signer = CreateEd25519Signer();
+        var createResult = await method.CreateAsync(new DidWebVhCreateOptions
+        {
+            Domain = "example.com",
+            UpdateKey = signer
+        });
+        var did = createResult.Did.Value;
+        var tampered = MutateGenesisVmController(
+            (string)createResult.Artifacts![DidWebVhArtifacts.DidJsonl], controllerJsonOrNull: null);
+        httpClient.SetLogResponse(DidUrlMapper.MapToLogUrl(did), tampered);
+
+        var resolveResult = await method.ResolveAsync(did);
+
+        resolveResult.DidDocument.Should().BeNull();
+        resolveResult.ResolutionMetadata.Error.Should().Be("invalidDidLog");
+    }
+
+    [Fact]
+    public async Task Issue121_FetchedState_MalformedStringVmController_ResolvesInvalidDidLog()
+    {
+        // A syntactically invalid controller string throws InvalidDidException from the Did
+        // constructor during state parsing; that must map to invalidDidLog at the trust
+        // boundary, not escape to notFound (issue #121 review, finding 5).
+        var (method, httpClient) = CreateMethod();
+        var signer = CreateEd25519Signer();
+        var createResult = await method.CreateAsync(new DidWebVhCreateOptions
+        {
+            Domain = "example.com",
+            UpdateKey = signer
+        });
+        var did = createResult.Did.Value;
+        var tampered = MutateGenesisVmController(
+            (string)createResult.Artifacts![DidWebVhArtifacts.DidJsonl], "\"not-a-did\"");
+        httpClient.SetLogResponse(DidUrlMapper.MapToLogUrl(did), tampered);
+
+        var resolveResult = await method.ResolveAsync(did);
+
+        resolveResult.DidDocument.Should().BeNull();
+        resolveResult.ResolutionMetadata.Error.Should().Be("invalidDidLog");
+    }
 }

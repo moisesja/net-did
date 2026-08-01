@@ -34,6 +34,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   internal-settable for tests); and node-authored JSON-RPC error text is bounded at the source
   before it reaches logs.
 
+### Security
+
+- **Verification-method `controller` type-confusion — identity forgery (issue #121).** A
+  verification method's `controller` is authorization-relevant, and W3C DID Core §5.2 makes it
+  **required**: it MUST be a single string and does **not** default to — and cannot be inferred
+  as — the DID subject. The consumer previously (a) accepted a verification method with the
+  `controller` **omitted**, and (b) silently discarded a present-but-non-string `controller`
+  (e.g. an array). Both produced `default(Did)` (null `Value`), and a downstream consumer that
+  treats an absent controller as self-controlled would then bind the attacker-held key to the
+  document subject — a fail-open identity forgery (demonstrated end-to-end in `didcomm-dotnet`).
+  `DidDocumentSerializer.Deserialize` now **rejects** (throws `JsonException`) a verification
+  method — top-level or embedded in a relationship — whose `controller` is missing or is present
+  but not a single string. Enforcement is **symmetric on production**: the public
+  `Serialize`/`SerializeToUtf8` now throw `ArgumentException` rather than author a resolved
+  document whose verification method omits `controller`, so NetDid can never publicly emit the
+  very shape it rejects on consumption. Production snapshots the caller's document once —
+  freezing every interface-typed collection so a hostile implementation (or concurrent mutation)
+  cannot present one set of verification methods to the validator and another to the writer — and
+  rejects reserved member names in `AdditionalProperties` (e.g. a raw `verificationMethod` array),
+  closing both a validate-then-emit TOCTOU and an extension-property injection of a controllerless
+  method. Consumption also **rejects duplicate JSON members**
+  recursively, so a decoy `"controller":[attacker],"controller":self` can no longer smuggle an
+  unvalidated value past the guard. Document-level `controller` (§5.1.2) closes the same shape class: values that
+  are neither a string nor an array of strings previously collapsed to an empty list, and a
+  non-string array element escaped as an unhandled `InvalidOperationException`; both now throw
+  `JsonException`. A single string and a set of strings remain accepted at the document level,
+  preserving the intentional §5.1.2 (DID Controller) / §5.2 (Verification Methods) asymmetry.
+  For `did:webvh`, a state whose verification method omits `controller`, carries a malformed
+  controller, or duplicates it now resolves as `invalidDidLog` rather than `notFound` or a
+  self-controlled document. `did:peer:4`'s pre-contextualization template — whose verification
+  methods legitimately omit `controller` because it is derived from the DID at resolution time —
+  continues to work through method-internal tolerant read *and write* paths; the public
+  consumption and production boundaries both require a controller. Reachable for any method that parses published JSON
+  (e.g. `did:webvh`); not reachable for `did:key`/`did:peer`, whose documents are derived in code
+  rather than parsed from untrusted JSON. **No public API change**: `VerificationMethod.Controller`
+  remains `Did` (an earlier iteration of this fix proposed `Did?`; that was dropped to avoid a
+  binary break — failing closed in the parser makes it unnecessary).
+
 ## [3.0.0] - 2026-07-28
 
 **Upgrading from 2.3.0 requires no code changes.** The major version signals the scale of this

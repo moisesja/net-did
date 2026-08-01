@@ -8,6 +8,10 @@
 
   <ItemGroup>
     <InternalsVisibleTo Include="NetDid.Core.Tests" />
+    <!-- did:peer:4 consumes its pre-contextualization template via the internal tolerant
+         deserialize path (verification-method controllers are derived from the DID at
+         resolution time); the public consumption boundary requires a controller per §5.2. -->
+    <InternalsVisibleTo Include="NetDid.Method.Peer" />
   </ItemGroup>
 
   <ItemGroup>

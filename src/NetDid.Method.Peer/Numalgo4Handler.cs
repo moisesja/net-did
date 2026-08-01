@@ -28,7 +28,11 @@ internal sealed class Numalgo4Handler
         // 3. Multihash prefix [0x12, 0x20] → multibase base58btc
         // Serialize the input document. Using JSON-LD preserves @context for round-trip.
         // The id field is omitted automatically when Id.Value is null (per spec: input doc MUST NOT have id).
-        var json = DidDocumentSerializer.Serialize(options.InputDocument, DidContentTypes.JsonLd);
+        // did:peer:4's template legitimately omits verification-method controllers (they are
+        // contextualized to this DID at resolution), so use the internal tolerant serializer; the
+        // public Serialize requires a controller on every VM (W3C DID Core §5.2).
+        var json = DidDocumentSerializer.SerializeAllowingIncompleteVerificationMethods(
+            options.InputDocument, DidContentTypes.JsonLd);
         var docBytes = Encoding.UTF8.GetBytes(json);
 
         // Long-form: multicodec(JSON) prefix + multibase base58btc
@@ -103,12 +107,14 @@ internal sealed class Numalgo4Handler
         if (shortForm != expectedShortForm)
             return null; // Hash mismatch — tampered document
 
-        // Parse the document
+        // Parse the document. did:peer:4's encoded template legitimately omits verification-method
+        // controllers (they are contextualized to this DID below), so use the tolerant internal
+        // path rather than the public consumption boundary, which requires a controller per §5.2.
         var json = Encoding.UTF8.GetString(docBytes);
         DidDocument inputDoc;
         try
         {
-            inputDoc = DidDocumentSerializer.Deserialize(json);
+            inputDoc = DidDocumentSerializer.DeserializeAllowingIncompleteVerificationMethods(json);
         }
         catch
         {
@@ -182,7 +188,8 @@ internal sealed class Numalgo4Handler
         VerificationMethod vm, string did, Did didValue, string? originalDid)
     {
         // Set controller to the DID if it matches the original placeholder or was not set
-        var controller = (vm.Controller.Value == originalDid || vm.Controller.Value is null)
+        // (the template legitimately omits it — contextualization fills it in here).
+        var controller = (vm.Controller.Value is null || vm.Controller.Value == originalDid)
             ? didValue : vm.Controller;
 
         return new VerificationMethod
