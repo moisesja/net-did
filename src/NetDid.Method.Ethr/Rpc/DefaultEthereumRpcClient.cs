@@ -340,8 +340,15 @@ public sealed class DefaultEthereumRpcClient : IEthereumRpcClient
         }
 
         if (responseObject["error"] is JsonNode error)
+        {
+            // Bound the node-authored error text: it is attacker-sized (up to the
+            // response cap) and this message flows into logs on every failure.
+            var errorText = error.ToJsonString();
+            if (errorText.Length > 1024)
+                errorText = errorText[..1024];
             throw new EthereumInteractionException(
-                $"RPC error for '{method}': {error}");
+                $"RPC error for '{method}': {errorText}");
+        }
 
         return responseObject["result"];
     }

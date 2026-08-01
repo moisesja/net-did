@@ -338,12 +338,15 @@ must return one exact ABI word; within each sorted block, the first event must p
 block and every later event must point to the current block. `versionTime` replay also requires
 event-block timestamps to be non-decreasing. Equal whole-second timestamps are valid for distinct
 ordered blocks; a decrease is rejected. Missing, malformed, removed, duplicated, or inconsistent
-history metadata returns `internalError` rather than a partial DID Document — per the W3C DID
-Resolution spec these are resolver-infrastructure failures (pruned/non-archive or hostile node,
-transport error, timeout), never a statement that the DID does not exist, so `notFound` is not
-used on the RPC path. The resolution metadata carries a bounded, sanitized `message` beside
-`error` (untrusted node-influenced text — escape it before rendering); a genuinely unregistered
-identity resolves to the ERC-1056 genesis document with no error.
+history metadata returns `internalError` rather than a partial DID Document — these are
+resolver-infrastructure failures (pruned/non-archive or hostile node, transport error, timeout),
+never a statement that the DID does not exist, so `notFound` is not used on the RPC path. The
+resolution metadata carries a fixed, library-owned `message` beside `error` (a pruned/incomplete
+history is distinguished from a generic RPC failure; exception text from injectable seams is
+never exposed); a genuinely unregistered identity resolves to the ERC-1056 genesis document with
+no error. Error codes use the legacy DID Spec Registries string vocabulary (`internalError`,
+`notFound`, …) shared by the whole library and the reference `ethr-did-resolver`; migration to
+the current W3C DID Resolution draft's RFC 9457 error-object model is tracked in issue #123.
 
 ### Use an existing key
 

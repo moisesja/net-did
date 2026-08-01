@@ -14,18 +14,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   timeouts, and any other failure while consuming RPC data previously surfaced as
   `resolutionMetadata.error = "notFound"` — a spec-defined statement that the DID does not
   exist — inviting callers to purge caches or reject credentials when the correct reaction is
-  "retry against an archive node". These now return the W3C DID Resolution code
-  `internalError`, with a bounded, control-character-sanitized `message` in the resolution
-  metadata (mirroring the reference `ethr-did-resolver`'s `message`-beside-`error` shape) so a
-  pruned node is distinguishable from a generic failure. Treat `message` as untrusted
-  node-influenced text and escape it before rendering. A genuinely unregistered identity still
+  "retry against an archive node". These now return `internalError`, with a fixed,
+  library-owned `message` in the resolution metadata (mirroring the reference
+  `ethr-did-resolver`'s `message`-beside-`error` shape) that distinguishes a pruned/incomplete
+  history from a generic RPC failure. Exception text arriving through injectable seams is never
+  exposed — the pruned-history category is identified by an internal sealed exception type
+  (trusted provenance), not by message content. A genuinely unregistered identity still
   resolves to the ERC-1056 genesis document with no error; `invalidDid`/`invalidOptions` are
   unchanged. **Behavior change:** callers matching on `notFound` for these failure modes must
   now match `internalError`. New `DidResolutionResult.InternalError(did, reason)` factory in
-  `NetDid.Core`. Hardening from the adversarial pass: the never-throw resolution contract now
-  holds under eagerly-formatting logging providers and a throwing `IEthereumRpcClientFactory`,
-  and the metadata reason is only ever read from the exact library-owned exception type,
-  truncated without splitting surrogate pairs.
+  `NetDid.Core`. Vocabulary note: error codes remain the legacy DID Spec Registries strings
+  used across the library and the reference-resolver ecosystem; the current W3C DID Resolution
+  draft's RFC 9457 error-object model (type `https://www.w3.org/ns/did#INTERNAL_ERROR`, empty
+  document metadata on failure) is a library-wide migration tracked in #123. Hardening from the
+  adversarial + review rounds: the never-throw resolution contract holds under any logging
+  provider (including always-throwing ones) and a throwing `IEthereumRpcClientFactory`; the
+  resolution deadline now binds the returned task via the observed-wait mechanism, so an
+  injected RPC client that ignores cancellation cannot hang resolution (`ResolutionDeadline` is
+  internal-settable for tests); and node-authored JSON-RPC error text is bounded at the source
+  before it reaches logs.
 
 ## [3.0.0] - 2026-07-28
 

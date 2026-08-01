@@ -237,44 +237,51 @@ public class Issue116ResolutionErrorMappingTests
         result.ResolutionMetadata.Error.Should().Be("internalError");
     }
 
-    // ── Metadata reason sanitization ─────────────────────────────────────────────
+    // ── Reason provenance: injected-seam text never reaches metadata ─────────────
 
     [Fact]
-    public async Task Issue116_ReasonWithControlCharacters_IsSanitizedSingleLine()
+    public async Task Issue116_ExactTypeExceptionMessage_NeverPublishedToMetadata()
     {
-        // Node-supplied fragments interpolated into library messages can carry
-        // newlines/control chars; the caller-facing reason must be single-line.
+        // PR #122 review finding 2: EthereumInteractionException has a PUBLIC
+        // constructor, so the exact runtime type is not provenance — an injected RPC
+        // client can throw it with arbitrary (even secret-bearing) text. The metadata
+        // reason must be fixed library-owned wording, never Exception.Message.
         var rpc = Substitute.For<IEthereumRpcClient>();
         rpc.CallAsync(default!, default!, default)
            .ReturnsForAnyArgs<Task<string>>(_ => throw new EthereumInteractionException(
-               "RPC error for 'eth_call': {\n\"message\": \"evil text\"\r\n}"));
+               "Authorization: Bearer secret-token-value"));
 
         var result = await MakeMethod(rpc).ResolveAsync($"did:ethr:sepolia:{Identity}");
 
         result.ResolutionMetadata.Error.Should().Be("internalError");
         var message = (string)result.ResolutionMetadata.AdditionalProperties!["message"];
-        message.Should().NotContainAny("\n", "\r");
-        message.Should().Contain("evil text", "control chars are replaced, content retained");
+        message.Should().NotContain("secret", "injected-seam exception text is untrusted");
+        message.Should().Be("Ethereum RPC interaction failed.");
     }
 
+    // ── Never-completing, cancellation-ignoring dependency ───────────────────────
+
     [Fact]
-    public async Task Issue116_OversizedReason_TruncatedWithoutSplittingSurrogatePair()
+    public async Task Issue116_CancellationIgnoringRpcClient_BoundedByResolutionDeadline()
     {
-        // The 500-char bound must not cut a surrogate pair in half: a node can pad
-        // the hostile fragment so an astral char straddles the boundary, handing
-        // callers invalid UTF-16.
-        var padded = new string('a', 499) + "\U0001F600" + new string('b', 100);
+        // PR #122 review: the deadline must bind the RETURNED task, not merely pass a
+        // token — an injected client that ignores cancellation and never completes
+        // must not hang resolution forever.
         var rpc = Substitute.For<IEthereumRpcClient>();
         rpc.CallAsync(default!, default!, default)
-           .ReturnsForAnyArgs<Task<string>>(
-               _ => throw new EthereumInteractionException(padded));
+           .ReturnsForAnyArgs(new TaskCompletionSource<string>().Task);
+        var factory = Substitute.For<IEthereumRpcClientFactory>();
+        factory.GetOrCreate(Arg.Any<EthereumNetworkConfig>()).Returns(rpc);
+        var method = new DidEthrMethod(factory, [Sepolia], new DefaultKeyGenerator())
+        {
+            ResolutionDeadline = TimeSpan.FromMilliseconds(250),
+        };
 
-        var result = await MakeMethod(rpc).ResolveAsync($"did:ethr:sepolia:{Identity}");
+        var resolve = method.ResolveAsync($"did:ethr:sepolia:{Identity}");
+        var winner = await Task.WhenAny(resolve, Task.Delay(TimeSpan.FromSeconds(30)));
 
-        var message = (string)result.ResolutionMetadata.AdditionalProperties!["message"];
-        message.Length.Should().BeLessThanOrEqualTo(500);
-        char.IsHighSurrogate(message[^1]).Should().BeFalse(
-            "truncation must never produce a lone surrogate");
+        winner.Should().BeSameAs(resolve, "the deadline must fire even when the client ignores cancellation");
+        (await resolve).ResolutionMetadata.Error.Should().Be("internalError");
     }
 
     // ── Hostile dependency exception must not defeat the mapping ─────────────────
@@ -340,6 +347,63 @@ public class Issue116ResolutionErrorMappingTests
         var result = await method.ResolveAsync($"did:ethr:sepolia:{Identity}");
 
         result.ResolutionMetadata.Error.Should().Be("internalError");
+    }
+
+    /// <summary>
+    /// A provider that throws on EVERY Log call — including the type-name-only
+    /// fallback. PR #122 review finding 1: the fallback log call was unguarded, so
+    /// this provider let the exception escape ResolveAsync.
+    /// </summary>
+    private sealed class AlwaysThrowingLogger : Microsoft.Extensions.Logging.ILogger<DidEthrMethod>
+    {
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+        public bool IsEnabled(Microsoft.Extensions.Logging.LogLevel logLevel) => true;
+        public void Log<TState>(
+            Microsoft.Extensions.Logging.LogLevel logLevel,
+            Microsoft.Extensions.Logging.EventId eventId,
+            TState state, Exception? exception,
+            Func<TState, Exception?, string> formatter)
+            => throw new InvalidOperationException("logger failed");
+    }
+
+    [Fact]
+    public async Task Issue116_AlwaysThrowingLogger_FactoryThrow_StillReturnsInternalError()
+    {
+        var factory = Substitute.For<IEthereumRpcClientFactory>();
+        factory.GetOrCreate(Arg.Any<EthereumNetworkConfig>())
+               .Returns(_ => throw new InvalidOperationException("hostile factory"));
+        var method = new DidEthrMethod(
+            factory, [Sepolia], new DefaultKeyGenerator(), new AlwaysThrowingLogger());
+
+        var result = await method.ResolveAsync($"did:ethr:sepolia:{Identity}");
+
+        result.ResolutionMetadata.Error.Should().Be("internalError");
+    }
+
+    [Fact]
+    public async Task Issue116_AlwaysThrowingLogger_InvalidIdentifier_StillReturnsInvalidDid()
+    {
+        // The never-throw contract covers the pre-RPC warning sites too (identifier
+        // parse, network lookup): logging is best-effort on every resolution path.
+        var factory = Substitute.For<IEthereumRpcClientFactory>();
+        var method = new DidEthrMethod(
+            factory, [Sepolia], new DefaultKeyGenerator(), new AlwaysThrowingLogger());
+
+        var result = await method.ResolveAsync("did:ethr:sepolia:0xnothex");
+
+        result.ResolutionMetadata.Error.Should().Be("invalidDid");
+    }
+
+    [Fact]
+    public async Task Issue116_AlwaysThrowingLogger_UnconfiguredNetwork_StillReturnsResult()
+    {
+        var factory = Substitute.For<IEthereumRpcClientFactory>();
+        var method = new DidEthrMethod(
+            factory, [Sepolia], new DefaultKeyGenerator(), new AlwaysThrowingLogger());
+
+        var result = await method.ResolveAsync($"did:ethr:polygon:{Identity}");
+
+        result.ResolutionMetadata.Error.Should().NotBeNull();
     }
 
     // ── Log-entry fixtures ───────────────────────────────────────────────────────

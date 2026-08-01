@@ -67,7 +67,13 @@ public sealed class DidEthrMethod : DidMethodBase
     private const int  MaxEventChainHops   = 1_000;
     private const int  MaxCollectedEvents  = 5_000;
     private const long MaxCollectedBytes   = 32L * 1024 * 1024; // 32 MiB retained
-    private static readonly TimeSpan ResolutionDeadline = TimeSpan.FromSeconds(120);
+
+    /// <summary>
+    /// Overall wall-clock bound for one resolution. Internal so tests can shorten it.
+    /// Enforced with <see cref="AbandonableTaskExtensions.WaitAsyncObserved{T}"/> so even
+    /// an injected RPC client that ignores cancellation cannot hang resolution past it.
+    /// </summary>
+    internal TimeSpan ResolutionDeadline { get; set; } = TimeSpan.FromSeconds(120);
 
     // ── Create ────────────────────────────────────────────────────────────────
 
@@ -118,7 +124,8 @@ public sealed class DidEthrMethod : DidMethodBase
         try { identifier = EthrIdentifier.Parse(did); }
         catch (ArgumentException ex)
         {
-            _logger.LogWarning(ex, "Failed to parse did:ethr identifier: {Did}", did);
+            try { _logger.LogWarning(ex, "Failed to parse did:ethr identifier: {Did}", did); }
+            catch { /* logging is best-effort; the resolver never throws */ }
             return DidResolutionResult.InvalidDid(did);
         }
 
@@ -130,7 +137,8 @@ public sealed class DidEthrMethod : DidMethodBase
         try { network = FindNetwork(identifier.Network); }
         catch (InvalidOperationException ex)
         {
-            _logger.LogWarning(ex, "Network not configured for did:ethr: {Did}", did);
+            try { _logger.LogWarning(ex, "Network not configured for did:ethr: {Did}", did); }
+            catch { /* logging is best-effort; the resolver never throws */ }
             return DidResolutionResult.NotFound(did);
         }
         // Everything past this point consumes UNTRUSTED data from the RPC node
@@ -153,10 +161,14 @@ public sealed class DidEthrMethod : DidMethodBase
         {
             // The client factory is an injected dependency: a throw from it is
             // infrastructure too, and must not defeat the never-throw contract.
+            // WaitAsyncObserved applies the deadline to the RETURNED task, so even an
+            // injected client that ignores cancellation and never completes cannot
+            // hang resolution past the bound (the abandoned task stays observed).
             var rpc = _rpcFactory.GetOrCreate(network);
             return await ResolveFromChainAsync(
-                did, identifier, network, rpc, versionBlockNumber, versionTime,
-                deadlineCts.Token);
+                    did, identifier, network, rpc, versionBlockNumber, versionTime,
+                    deadlineCts.Token)
+                .WaitAsyncObserved(deadlineCts.Token);
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
@@ -174,13 +186,19 @@ public sealed class DidEthrMethod : DidMethodBase
         catch (EthereumInteractionException ex)
         {
             LogResolveFailure(ex, did);
-            // Exception.Message is virtual; only trust the exact library-owned type.
-            // (An injected RPC client can throw a hostile subclass whose getter throws
-            // or returns unbounded text.) Our own messages can still interpolate
-            // node-supplied fragments (e.g. the RPC error JSON), so sanitize and
-            // bound them before exposing them to callers.
-            var reason = ex.GetType() == typeof(EthereumInteractionException)
-                ? SanitizeReason(ex.Message)
+            // Fixed, library-owned reason text ONLY: Exception.Message arriving through
+            // an injectable seam is untrusted regardless of exception type — anyone can
+            // construct the public EthereumInteractionException with arbitrary text, and
+            // our own messages interpolate node-supplied fragments. The one category
+            // callers need to distinguish (pruned/incomplete history, issue #116) is
+            // identified by an internal sealed marker type that code outside this
+            // assembly cannot instantiate — the TYPE is the trusted provenance, and the
+            // caller-facing text is a constant.
+            var reason = ex is IncompleteEventHistoryException
+                ? "did:ethr event history is incomplete: a block asserted by the " +
+                  "registry's changed() pointer returned no matching ERC-1056 events " +
+                  "(pruned/non-archive or hostile RPC endpoint); retry against an " +
+                  "archive node."
                 : "Ethereum RPC interaction failed.";
             return DidResolutionResult.InternalError(did, reason);
         }
@@ -193,10 +211,12 @@ public sealed class DidEthrMethod : DidMethodBase
     }
 
     /// <summary>
-    /// Logs a resolution failure without letting the exception defeat the resolver's
-    /// never-throw contract: logging providers may format the exception eagerly
-    /// (ToString → Message), and a hostile injected dependency can throw from those
-    /// virtual members. Falls back to type-name-only diagnostics.
+    /// Logs a resolution failure without letting logging defeat the resolver's
+    /// never-throw contract: providers may format the exception eagerly
+    /// (ToString → Message) and a hostile injected dependency can throw from those
+    /// virtual members — and the provider itself may throw on ANY call. First
+    /// attempt carries the exception; the retry carries type-name-only diagnostics;
+    /// after that the failure is swallowed — logging is best-effort.
     /// </summary>
     private void LogResolveFailure(Exception ex, string did)
     {
@@ -207,32 +227,18 @@ public sealed class DidEthrMethod : DidMethodBase
         }
         catch
         {
-            _logger.LogWarning(
-                "did:ethr resolution failed against RPC infrastructure for {Did}; " +
-                "diagnostics unavailable — {ExceptionType} threw while being formatted",
-                did, ex.GetType().FullName);
+            try
+            {
+                _logger.LogWarning(
+                    "did:ethr resolution failed against RPC infrastructure for {Did}; " +
+                    "diagnostics unavailable — {ExceptionType} or the logging provider " +
+                    "threw while formatting", did, ex.GetType().FullName);
+            }
+            catch
+            {
+                // An always-throwing provider must not break resolution.
+            }
         }
-    }
-
-    /// <summary>
-    /// Bounds and cleans a diagnostic destined for resolution metadata: our own
-    /// messages can interpolate node-supplied fragments, which are attacker-sized
-    /// and may carry control characters. Keeps the text single-line, at most 500
-    /// chars, and never splits a surrogate pair.
-    /// </summary>
-    private static string SanitizeReason(string value)
-    {
-        const int MaxReasonChars = 500;
-        var builder = new StringBuilder(Math.Min(value.Length, MaxReasonChars));
-        foreach (var ch in value)
-        {
-            if (builder.Length >= MaxReasonChars)
-                break;
-            builder.Append(char.IsControl(ch) ? ' ' : ch);
-        }
-        if (builder.Length > 0 && char.IsHighSurrogate(builder[^1]))
-            builder.Length--;
-        return builder.ToString();
     }
 
     private async Task<DidResolutionResult> ResolveFromChainAsync(
@@ -442,7 +448,7 @@ public sealed class DidEthrMethod : DidMethodBase
             // fail CLOSED to a resolution error rather than silently returning a partial
             // document that could re-authorize a revoked key or hide a deactivation.
             if (blockEvents.Count == 0)
-                throw new EthereumInteractionException(
+                throw new IncompleteEventHistoryException(
                     $"did:ethr history for identity {identityAddress} is incomplete: block " +
                     $"{currentBlock} has no valid matching ERC-1056 event (pruned/non-archive " +
                     "or hostile RPC node).");

@@ -607,7 +607,10 @@ public class Issue109UnobservedTaskTests
             .ToDictionary(s => s.Path, s => s.Count);
         inventory.Should().Equal(new Dictionary<string, int>
         {
-            ["src/NetDid.Method.Ethr/DidEthrMethod.cs"] = 8,
+            // 9th site added by issue #116: the resolution deadline binds the returned
+            // ResolveFromChainAsync task, so a cancellation-ignoring RPC client cannot
+            // hang resolution.
+            ["src/NetDid.Method.Ethr/DidEthrMethod.cs"] = 9,
             ["src/NetDid.Method.Ethr/Transactions/TransactionPipeline.cs"] = 6,
             ["src/NetDid.Method.Ethr/Deployment/Erc1056Registry.cs"] = 1,
         }, "removing a WaitAsyncObserved wrapper un-bounds a dependency await; update " +
