@@ -207,7 +207,8 @@ public sealed class DidEthrMethod : DidMethodBase
             LogResolveFailure(ex, did);
             return DidResolutionResult.InternalError(did,
                 "did:ethr resolution timed out against the RPC endpoint before the " +
-                "event history could be retrieved; the DID's existence was not determined.");
+                "event history and block metadata could be retrieved; the DID's " +
+                "existence was not determined.");
         }
         catch (EthereumInteractionException ex)
         {

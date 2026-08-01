@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`did:ethr`: `didDocumentMetadata.updated` and `nextUpdate`** (issue #117). Resolution
+  metadata now matches the reference `ethr-did-resolver`: `updated` carries the ISO 8601 UTC
+  block time (whole seconds, e.g. `2021-03-22T18:14:29Z`) of the last applied change whenever
+  `versionId` is reported — on current and historical resolution alike — and historical
+  (`versionId`/`versionTime`) queries report `nextUpdate` beside the existing `nextVersionId`.
+  Genesis documents (no events) omit all four fields; `deactivated` merges alongside them.
+  Block timestamps already fetched during resolution (the `versionTime` walk, the requested
+  `versionId` block) are reused; otherwise at most two additional `eth_getBlockByNumber` calls
+  run under the existing overall resolution deadline with the same bounded-await cancellation
+  discipline. Verified live against the maintainer's 14 comparison DIDs across mainnet,
+  Sepolia, Gnosis, Polygon, and Aurora: 14/14 `updated` values match the reference resolver's
+  recorded output, with historical `nextVersionId`/`nextUpdate` consistency on every DID.
+  Hardening: node-supplied block timestamps beyond `DateTimeOffset`'s representable range
+  (after `9999-12-31T23:59:59Z`) now fail closed as `internalError` at every conversion site —
+  previously such values silently wrapped to pre-1970 instants on the historical paths, which
+  could mass-expire delegates/attributes in a historical document.
+
 ### Fixed
 
 - **`did:ethr`: RPC infrastructure failures now resolve as `internalError`, not `notFound`**
