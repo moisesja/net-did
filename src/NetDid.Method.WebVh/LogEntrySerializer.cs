@@ -3,6 +3,7 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using NetDid.Core;
+using NetDid.Core.Exceptions;
 using NetDid.Core.Model;
 using NetDid.Core.Serialization;
 using NetDid.Method.WebVh.Model;
@@ -431,12 +432,15 @@ public static class LogEntrySerializer
             or KeyNotFoundException
             or OverflowException
             or ArgumentException
+            or InvalidDidException
             or JsonException)
         {
             // Map JSON-access failures at this trust boundary to FormatException so a fetched
             // log with malformed content (e.g. a string carrying an unpaired surrogate that
-            // parses as a token but throws on GetString) resolves as invalidDidLog, not notFound
-            // or an unhandled exception. Deliberate FormatExceptions above propagate unchanged.
+            // parses as a token but throws on GetString, or a state verification method whose
+            // 'controller' is a syntactically invalid DID string → InvalidDidException from the
+            // Did constructor) resolves as invalidDidLog, not notFound or an unhandled exception.
+            // Deliberate FormatExceptions above propagate unchanged.
             throw new FormatException("did:webvh log entry contains malformed content.", ex);
         }
     }

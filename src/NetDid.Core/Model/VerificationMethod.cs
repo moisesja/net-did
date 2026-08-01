@@ -12,9 +12,13 @@ public sealed class VerificationMethod
     public required string Type { get; init; }
 
     /// <summary>
-    /// The DID of the controller. Required for resolved documents.
-    /// May be omitted in input documents (e.g., did:peer:4) where the controller
-    /// is inferred during contextualization.
+    /// The DID of the controller. Per W3C DID Core §5.2 this property is REQUIRED on a
+    /// verification method and MUST be stated explicitly — it does NOT default to, and cannot
+    /// be inferred as, the DID subject. Consuming a resolved DID document that omits it
+    /// throws (issue #121); the string path validates via the <see cref="Did"/> constructor.
+    /// A <c>default(Did)</c> (null <see cref="Did.Value"/>) is permitted only as a transient,
+    /// method-internal pre-contextualization state (e.g. a did:peer:4 template whose controller
+    /// is derived from the DID at resolution time) and is never valid in a resolved document.
     /// </summary>
     public Did Controller { get; init; }
 

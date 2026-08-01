@@ -37,34 +37,125 @@ public static class DidDocumentSerializer
     /// <summary>
     /// Produce the DID Document as a JSON string in the specified representation.
     /// </summary>
+    /// <exception cref="ArgumentException">
+    /// A verification method (top-level or embedded) omits the required <c>controller</c>
+    /// (W3C DID Core §5.2). A resolved DID document must state it explicitly.
+    /// </exception>
     public static string Serialize(DidDocument doc, string contentType = DidContentTypes.JsonLd,
         JsonSerializerOptions? options = null)
+    {
+        var snapshot = SnapshotForSerialization(doc);
+        RequireVerificationMethodControllersForProduction(snapshot);
+        return SerializeCore(snapshot, contentType, options);
+    }
+
+    /// <summary>
+    /// Produce the DID Document as UTF-8 bytes.
+    /// </summary>
+    /// <exception cref="ArgumentException">
+    /// A verification method (top-level or embedded) omits the required <c>controller</c>
+    /// (W3C DID Core §5.2). A resolved DID document must state it explicitly.
+    /// </exception>
+    public static byte[] SerializeToUtf8(DidDocument doc, string contentType = DidContentTypes.JsonLd,
+        JsonSerializerOptions? options = null)
+    {
+        var snapshot = SnapshotForSerialization(doc);
+        RequireVerificationMethodControllersForProduction(snapshot);
+        return SerializeToUtf8Core(snapshot, contentType, options);
+    }
+
+    /// <summary>
+    /// Produce a DID document that MAY contain verification methods without a <c>controller</c>.
+    /// Method-internal counterpart to <see cref="DeserializeAllowingIncompleteVerificationMethods"/>,
+    /// used only for did:peer:4's pre-contextualization template (its controllers are derived from
+    /// the DID at resolution time). Never expose this on a public production path.
+    /// </summary>
+    internal static string SerializeAllowingIncompleteVerificationMethods(
+        DidDocument doc, string contentType = DidContentTypes.JsonLd)
+        => SerializeCore(SnapshotForSerialization(doc), contentType, options: null);
+
+    /// <summary>
+    /// Document-level member names that have a modeled representation. They must never appear in
+    /// <see cref="DidDocument.AdditionalProperties"/> (deserialization already excludes them), and
+    /// are rejected on serialization so a caller cannot inject e.g. a raw controllerless
+    /// <c>verificationMethod</c> array past the modeled-controller validation (issue #121 review).
+    /// </summary>
+    private static readonly HashSet<string> ReservedDocumentMemberNames = new(StringComparer.Ordinal)
+    {
+        "@context", "id", "alsoKnownAs", "controller", "verificationMethod",
+        "authentication", "assertionMethod", "keyAgreement",
+        "capabilityInvocation", "capabilityDelegation", "service"
+    };
+
+    // Snapshot the caller's document ONCE at the production trust boundary. Every field that is a
+    // caller-supplied interface-typed collection is materialized into a private frozen copy, so
+    // controller validation, @context computation, and emission all read identical data — a hostile
+    // implementation (or concurrent mutation) cannot return one set of verification methods to the
+    // validator and another to the writer (repo trust-boundary rule; issue #121 review). Reserved
+    // member names in AdditionalProperties are rejected here, before anything is written.
+    private static DidDocument SnapshotForSerialization(DidDocument doc)
+    {
+        ArgumentNullException.ThrowIfNull(doc);
+
+        Dictionary<string, JsonElement>? additional = null;
+        if (doc.AdditionalProperties is not null)
+        {
+            additional = new Dictionary<string, JsonElement>(StringComparer.Ordinal);
+            foreach (var (key, val) in doc.AdditionalProperties)
+            {
+                if (ReservedDocumentMemberNames.Contains(key))
+                    throw new ArgumentException(
+                        $"AdditionalProperties contains the reserved DID document member '{key}', which " +
+                        "has a modeled representation and must not be supplied as an extension property.",
+                        nameof(doc));
+                additional[key] = val;
+            }
+        }
+
+        return doc with
+        {
+            AlsoKnownAs = doc.AlsoKnownAs?.ToArray(),
+            Controller = doc.Controller?.ToArray(),
+            VerificationMethod = doc.VerificationMethod?.ToArray(),
+            Authentication = doc.Authentication?.ToArray(),
+            AssertionMethod = doc.AssertionMethod?.ToArray(),
+            KeyAgreement = doc.KeyAgreement?.ToArray(),
+            CapabilityInvocation = doc.CapabilityInvocation?.ToArray(),
+            CapabilityDelegation = doc.CapabilityDelegation?.ToArray(),
+            Service = doc.Service?.ToArray(),
+            Context = doc.Context?.ToArray(),
+            AdditionalProperties = additional
+        };
+    }
+
+    private static string SerializeCore(DidDocument doc, string contentType, JsonSerializerOptions? options)
     {
         var effective = options ?? DefaultOptions;
         var wrapper = new SerializationContext(doc, contentType);
         return JsonSerializer.Serialize(wrapper, effective);
     }
 
-    /// <summary>
-    /// Produce the DID Document as UTF-8 bytes.
-    /// </summary>
-    public static byte[] SerializeToUtf8(DidDocument doc, string contentType = DidContentTypes.JsonLd,
-        JsonSerializerOptions? options = null)
+    private static byte[] SerializeToUtf8Core(DidDocument doc, string contentType, JsonSerializerOptions? options)
     {
         var effective = options ?? DefaultOptions;
         var wrapper = new SerializationContext(doc, contentType);
         return JsonSerializer.SerializeToUtf8Bytes(wrapper, effective);
     }
 
+    private static readonly JsonDocumentOptions RejectDuplicatesOptions =
+        new() { AllowDuplicateProperties = false };
+
     /// <summary>
     /// Consume (deserialize) a DID Document from JSON.
     /// </summary>
     public static DidDocument Deserialize(string json, string? contentType = null)
     {
+        RejectDuplicateMembers(json);
         var doc = JsonSerializer.Deserialize<DidDocument>(json, DefaultOptions)
             ?? throw new JsonException("Failed to deserialize DID Document.");
 
         ValidateConsumption(doc, contentType);
+        ValidateVerificationMethodControllers(doc);
         return doc;
     }
 
@@ -73,11 +164,97 @@ public static class DidDocumentSerializer
     /// </summary>
     public static DidDocument Deserialize(ReadOnlySpan<byte> utf8Json, string? contentType = null)
     {
+        RejectDuplicateMembers(utf8Json);
         var doc = JsonSerializer.Deserialize<DidDocument>(utf8Json, DefaultOptions)
             ?? throw new JsonException("Failed to deserialize DID Document.");
 
         ValidateConsumption(doc, contentType);
+        ValidateVerificationMethodControllers(doc);
         return doc;
+    }
+
+    /// <summary>
+    /// Consume a DID document that MAY contain verification methods without a <c>controller</c>.
+    /// This is a method-internal path for did:peer:4's pre-contextualization template, whose
+    /// verification-method controllers are legitimately omitted because they are derived from the
+    /// DID — itself a hash of the document — at resolution time, then filled in during
+    /// contextualization. Duplicate-member rejection and present-but-non-string-controller
+    /// rejection still apply; only the "controller MUST be present" completeness rule
+    /// (W3C DID Core §5.2, required of a <em>resolved</em> document) is deferred. Do not expose
+    /// this on a public resolution/consumption path.
+    /// </summary>
+    internal static DidDocument DeserializeAllowingIncompleteVerificationMethods(string json)
+    {
+        RejectDuplicateMembers(json);
+        var doc = JsonSerializer.Deserialize<DidDocument>(json, DefaultOptions)
+            ?? throw new JsonException("Failed to deserialize DID Document.");
+
+        ValidateConsumption(doc, contentType: null);
+        return doc;
+    }
+
+    // Reject duplicate JSON members recursively at the consumption trust boundary. JsonDocument
+    // with default options keeps the LAST of a duplicated member, so a decoy
+    // ("controller":[attacker],"controller":self) would smuggle an unvalidated value past the
+    // per-property guards and diverge from first-wins/reject consumers (issue #121). Fail closed.
+    private static void RejectDuplicateMembers(string json)
+    {
+        using (JsonDocument.Parse(json, RejectDuplicatesOptions)) { }
+    }
+
+    private static void RejectDuplicateMembers(ReadOnlySpan<byte> utf8Json)
+    {
+        // JsonDocument.Parse has no ReadOnlySpan<byte> overload; copy to honor the same guard.
+        using (JsonDocument.Parse(utf8Json.ToArray(), RejectDuplicatesOptions)) { }
+    }
+
+    // W3C DID Core §5.2: a verification method's `controller` is REQUIRED and cannot be inferred
+    // from the document — it does NOT default to the DID subject. Reject a resolved document whose
+    // verification method (top-level or embedded in a relationship) omits it. Without this an
+    // attacker publishes a key with no controller and a consumer that (wrongly) treats absence as
+    // self-control binds the attacker's key to the subject — the same forgery class as a dropped
+    // non-string controller, reached with the simpler payload (issue #121).
+    // Consumption boundary: a missing controller is malformed input → JsonException.
+    private static void ValidateVerificationMethodControllers(DidDocument doc)
+        => RequireVerificationMethodControllers(doc, id => new JsonException(
+            $"Verification method '{id}' is missing the required 'controller' property " +
+            "(W3C DID Core §5.2). A verification method's controller MUST be stated " +
+            "explicitly; it does not default to the DID subject."));
+
+    // Production boundary: authoring a resolved document without a controller is a caller error
+    // → ArgumentException. NetDid must never publicly emit the omitted-controller shape it
+    // rejects on consumption (issue #121 review): the check is symmetric on read and write.
+    private static void RequireVerificationMethodControllersForProduction(DidDocument doc)
+        => RequireVerificationMethodControllers(doc, id => new ArgumentException(
+            $"Verification method '{id}' is missing the required 'controller' property " +
+            "(W3C DID Core §5.2). A resolved DID document MUST state each verification method's " +
+            "controller explicitly; it does not default to the DID subject.", nameof(doc)));
+
+    private static void RequireVerificationMethodControllers(DidDocument doc, Func<string, Exception> onMissing)
+    {
+        if (doc.VerificationMethod is not null)
+            foreach (var vm in doc.VerificationMethod)
+                RequireController(vm);
+
+        RequireControllerOnEmbedded(doc.Authentication);
+        RequireControllerOnEmbedded(doc.AssertionMethod);
+        RequireControllerOnEmbedded(doc.KeyAgreement);
+        RequireControllerOnEmbedded(doc.CapabilityInvocation);
+        RequireControllerOnEmbedded(doc.CapabilityDelegation);
+
+        void RequireControllerOnEmbedded(IReadOnlyList<VerificationRelationshipEntry>? entries)
+        {
+            if (entries is null) return;
+            foreach (var entry in entries)
+                if (!entry.IsReference && entry.EmbeddedMethod is not null)
+                    RequireController(entry.EmbeddedMethod);
+        }
+
+        void RequireController(VerificationMethod vm)
+        {
+            if (vm.Controller.Value is null)
+                throw onMissing(vm.Id);
+        }
     }
 
     private static void ValidateConsumption(DidDocument doc, string? contentType)
@@ -301,9 +478,22 @@ public static class DidDocumentSerializer
             if (root.TryGetProperty("blockchainAccountId", out var bca))
                 blockchainAccountId = bca.GetString();
 
+            // Issue #121: a present-but-non-string controller must fail closed. Silently
+            // dropping it made the document indistinguishable from one that OMITTED the
+            // controller. Absence is enforced separately, after deserialization, at the
+            // consumption boundary (ValidateVerificationMethodControllers) so did:peer:4's
+            // pre-contextualization template — whose controller is legitimately omitted — can
+            // opt out via the internal tolerant path. A present controller MUST be a single
+            // string (W3C DID Core §5.2 Verification Methods).
             Did controller = default;
-            if (root.TryGetProperty("controller", out var ctrlElement) && ctrlElement.ValueKind == JsonValueKind.String)
+            if (root.TryGetProperty("controller", out var ctrlElement))
+            {
+                if (ctrlElement.ValueKind != JsonValueKind.String)
+                    throw new JsonException(
+                        "A verification method's 'controller' must be a single string " +
+                        $"(W3C DID Core §5.2 Verification Methods); found {ctrlElement.ValueKind}.");
                 controller = new Did(ctrlElement.GetString()!);
+            }
 
             // Preserve unknown members (e.g. did:ethr's publicKeyHex, the ONLY key material
             // on those VMs) so a round-trip does not silently drop them. Mirrors ServiceJsonConverter.
@@ -334,6 +524,9 @@ public static class DidDocumentSerializer
             writer.WriteStartObject();
             writer.WriteString("id", value.Id);
             writer.WriteString("type", value.Type);
+            // Omit a transient default(Did) rather than emitting "controller": null (which the
+            // consumer would then reject). A resolved document must carry a controller; that
+            // completeness rule is enforced on the read side (ValidateVerificationMethodControllers).
             if (value.Controller.Value is not null)
                 writer.WriteString("controller", value.Controller.Value);
 
@@ -538,14 +731,34 @@ public static class DidDocumentSerializer
             if (root.TryGetProperty("alsoKnownAs", out var akaProp))
                 alsoKnownAs = akaProp.EnumerateArray().Select(e => e.GetString()!).ToList();
 
+            // Issue #121 (same class as the VM-level fix): any shape other than a string or
+            // an array of strings previously collapsed to an EMPTY list — present-but-malformed
+            // must be rejected, not silently read as "no controller" (W3C DID Core §5.1.2).
             List<Did>? controller = null;
             if (root.TryGetProperty("controller", out var ctrlProp))
             {
                 controller = new List<Did>();
                 if (ctrlProp.ValueKind == JsonValueKind.String)
+                {
                     controller.Add(new Did(ctrlProp.GetString()!));
+                }
                 else if (ctrlProp.ValueKind == JsonValueKind.Array)
-                    controller.AddRange(ctrlProp.EnumerateArray().Select(e => new Did(e.GetString()!)));
+                {
+                    foreach (var elem in ctrlProp.EnumerateArray())
+                    {
+                        if (elem.ValueKind != JsonValueKind.String)
+                            throw new JsonException(
+                                "A DID document's 'controller' must be a string or a set of " +
+                                $"strings (W3C DID Core §5.1.2); found an array element of kind {elem.ValueKind}.");
+                        controller.Add(new Did(elem.GetString()!));
+                    }
+                }
+                else
+                {
+                    throw new JsonException(
+                        "A DID document's 'controller' must be a string or a set of strings " +
+                        $"(W3C DID Core §5.1.2); found {ctrlProp.ValueKind}.");
+                }
             }
 
             List<VerificationMethod>? vms = null;

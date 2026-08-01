@@ -1716,7 +1716,11 @@ public sealed class VerificationMethod
 {
     public required string Id { get; init; }          // DID URL (validated at deserialization)
     public required string Type { get; init; }        // "Multikey", "JsonWebKey2020", "EcdsaSecp256k1VerificationKey2019"
-    public required Did Controller { get; init; }
+    public Did Controller { get; init; }               // REQUIRED per W3C DID Core §5.2; MUST be a single string and
+                                                       // does NOT default to the subject. Consuming a resolved document
+                                                       // that omits it, carries a non-string controller, or duplicates
+                                                       // the member throws JsonException (issue #121). default(Did) is a
+                                                       // transient pre-contextualization state (did:peer:4) only.
     public string? PublicKeyMultibase { get; init; }   // for Multikey representation
     public JsonWebKey? PublicKeyJwk { get; init; }     // for JWK representation
     public string? BlockchainAccountId { get; init; }  // for did:ethr (CAIP-10 format)
