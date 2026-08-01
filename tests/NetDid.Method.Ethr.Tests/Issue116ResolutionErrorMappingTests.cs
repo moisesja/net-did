@@ -175,6 +175,108 @@ public class Issue116ResolutionErrorMappingTests
         result.ResolutionMetadata.Error.Should().Be("invalidDid");
     }
 
+    // ── Adversarial-review pins: other infrastructure paths in the try block ─────
+
+    [Fact]
+    public async Task Issue116_ChainIdRpcFallbackFailure_ReturnsInternalError()
+    {
+        // With no configured ChainId the resolver falls back to eth_chainId over RPC;
+        // a transport failure there is infrastructure like any other.
+        var noChainId = new EthereumNetworkConfig
+        {
+            Name = "sepolia", RpcUrl = "https://rpc.sepolia.example",
+            RegistryAddress = Registry,
+        };
+        var rpc = Substitute.For<IEthereumRpcClient>();
+        rpc.GetChainIdAsync(default)
+           .ReturnsForAnyArgs<Task<ulong>>(_ => throw new HttpRequestException("down"));
+        var factory = Substitute.For<IEthereumRpcClientFactory>();
+        factory.GetOrCreate(Arg.Any<EthereumNetworkConfig>()).Returns(rpc);
+        var method = new DidEthrMethod(factory, [noChainId], new DefaultKeyGenerator());
+
+        var result = await method.ResolveAsync($"did:ethr:sepolia:{Identity}");
+
+        result.ResolutionMetadata.Error.Should().Be("internalError");
+    }
+
+    [Fact]
+    public async Task Issue116_BlockTimestampFailureDuringVersionId_ReturnsInternalError()
+    {
+        // Historical (versionId) resolution fans out to eth_getBlockByNumber for the
+        // reference timestamp; a failure there must not surface as notFound either.
+        const ulong block = 10;
+        var rpc = Substitute.For<IEthereumRpcClient>();
+        rpc.CallAsync(default!, default!, default)
+           .ReturnsForAnyArgs("0x" + block.ToString("x64"));
+        rpc.GetLogsAsync(default!, default)
+           .ReturnsForAnyArgs(call => Task.FromResult<IReadOnlyList<EthereumLogEntry>>(
+               call.Arg<EthereumLogFilter>().FromBlock == block
+                   ? [OwnerChangedLog(Identity, Identity, block, 0)]
+                   : []));
+        rpc.GetBlockTimestampAsync(default, default)
+           .ReturnsForAnyArgs<Task<ulong>>(_ => throw new HttpRequestException("pruned"));
+
+        var result = await MakeMethod(rpc).ResolveAsync(
+            $"did:ethr:sepolia:{Identity}", new DidEthrResolveOptions { VersionId = "10" });
+
+        result.ResolutionMetadata.Error.Should().Be("internalError");
+    }
+
+    [Fact]
+    public async Task Issue116_RpcClientFactoryThrows_ReturnsInternalError()
+    {
+        // The factory is an injected dependency; a throw from it must not escape
+        // ResolveAsync (adversarial finding: it used to sit outside the try block).
+        var factory = Substitute.For<IEthereumRpcClientFactory>();
+        factory.GetOrCreate(Arg.Any<EthereumNetworkConfig>())
+               .Returns(_ => throw new InvalidOperationException("hostile factory"));
+        var method = new DidEthrMethod(factory, [Sepolia], new DefaultKeyGenerator());
+
+        var result = await method.ResolveAsync($"did:ethr:sepolia:{Identity}");
+
+        result.ResolutionMetadata.Error.Should().Be("internalError");
+    }
+
+    // ── Metadata reason sanitization ─────────────────────────────────────────────
+
+    [Fact]
+    public async Task Issue116_ReasonWithControlCharacters_IsSanitizedSingleLine()
+    {
+        // Node-supplied fragments interpolated into library messages can carry
+        // newlines/control chars; the caller-facing reason must be single-line.
+        var rpc = Substitute.For<IEthereumRpcClient>();
+        rpc.CallAsync(default!, default!, default)
+           .ReturnsForAnyArgs<Task<string>>(_ => throw new EthereumInteractionException(
+               "RPC error for 'eth_call': {\n\"message\": \"evil text\"\r\n}"));
+
+        var result = await MakeMethod(rpc).ResolveAsync($"did:ethr:sepolia:{Identity}");
+
+        result.ResolutionMetadata.Error.Should().Be("internalError");
+        var message = (string)result.ResolutionMetadata.AdditionalProperties!["message"];
+        message.Should().NotContainAny("\n", "\r");
+        message.Should().Contain("evil text", "control chars are replaced, content retained");
+    }
+
+    [Fact]
+    public async Task Issue116_OversizedReason_TruncatedWithoutSplittingSurrogatePair()
+    {
+        // The 500-char bound must not cut a surrogate pair in half: a node can pad
+        // the hostile fragment so an astral char straddles the boundary, handing
+        // callers invalid UTF-16.
+        var padded = new string('a', 499) + "\U0001F600" + new string('b', 100);
+        var rpc = Substitute.For<IEthereumRpcClient>();
+        rpc.CallAsync(default!, default!, default)
+           .ReturnsForAnyArgs<Task<string>>(
+               _ => throw new EthereumInteractionException(padded));
+
+        var result = await MakeMethod(rpc).ResolveAsync($"did:ethr:sepolia:{Identity}");
+
+        var message = (string)result.ResolutionMetadata.AdditionalProperties!["message"];
+        message.Length.Should().BeLessThanOrEqualTo(500);
+        char.IsHighSurrogate(message[^1]).Should().BeFalse(
+            "truncation must never produce a lone surrogate");
+    }
+
     // ── Hostile dependency exception must not defeat the mapping ─────────────────
 
     private sealed class ThrowingMessageException : EthereumInteractionException
@@ -199,5 +301,61 @@ public class Issue116ResolutionErrorMappingTests
         result.ResolutionMetadata.AdditionalProperties.Should().ContainKey("message")
             .WhoseValue.Should().BeOfType<string>()
             .Which.Should().NotContain("hostile");
+    }
+
+    /// <summary>
+    /// A logging provider that formats the exception EAGERLY (ToString → Message),
+    /// like console/file providers do — unlike NullLogger, which touches nothing.
+    /// </summary>
+    private sealed class EagerFormattingLogger : Microsoft.Extensions.Logging.ILogger<DidEthrMethod>
+    {
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+        public bool IsEnabled(Microsoft.Extensions.Logging.LogLevel logLevel) => true;
+        public void Log<TState>(
+            Microsoft.Extensions.Logging.LogLevel logLevel,
+            Microsoft.Extensions.Logging.EventId eventId,
+            TState state, Exception? exception,
+            Func<TState, Exception?, string> formatter)
+        {
+            _ = formatter(state, exception);
+            _ = exception?.ToString();   // the eager render a real provider performs
+        }
+    }
+
+    [Fact]
+    public async Task Issue116_HostileException_EagerFormattingLogger_DoesNotEscapeResolveAsync()
+    {
+        // Adversarial finding (round 1, High): with a REAL logger the LogWarning call
+        // itself rendered the hostile exception before the type-exactness guard ran,
+        // and the provider's throw escaped ResolveAsync. The logging path must be
+        // guarded so the never-throw contract holds under any logging provider.
+        var rpc = Substitute.For<IEthereumRpcClient>();
+        rpc.CallAsync(default!, default!, default)
+           .ReturnsForAnyArgs<Task<string>>(_ => throw new ThrowingMessageException());
+        var factory = Substitute.For<IEthereumRpcClientFactory>();
+        factory.GetOrCreate(Arg.Any<EthereumNetworkConfig>()).Returns(rpc);
+        var method = new DidEthrMethod(
+            factory, [Sepolia], new DefaultKeyGenerator(), new EagerFormattingLogger());
+
+        var result = await method.ResolveAsync($"did:ethr:sepolia:{Identity}");
+
+        result.ResolutionMetadata.Error.Should().Be("internalError");
+    }
+
+    // ── Log-entry fixtures ───────────────────────────────────────────────────────
+
+    private static EthereumLogEntry OwnerChangedLog(
+        string identity, string newOwner, ulong block, ulong prev)
+    {
+        var ownerHex = newOwner.StartsWith("0x") ? newOwner[2..] : newOwner;
+        var identityHex = identity.StartsWith("0x") ? identity[2..] : identity;
+        return new EthereumLogEntry
+        {
+            Address = Registry,
+            Topics = [Erc1056Topics.DIDOwnerChanged, "0x" + identityHex.PadLeft(64, '0')],
+            Data = "0x" + "000000000000000000000000" + ownerHex + prev.ToString("x64"),
+            BlockNumber = "0x" + block.ToString("x"),
+            LogIndex = 0,
+        };
     }
 }

@@ -133,8 +133,6 @@ public sealed class DidEthrMethod : DidMethodBase
             _logger.LogWarning(ex, "Network not configured for did:ethr: {Did}", did);
             return DidResolutionResult.NotFound(did);
         }
-        var rpc     = _rpcFactory.GetOrCreate(network);
-
         // Everything past this point consumes UNTRUSTED data from the RPC node
         // (event bytes, hex fields, JSON shape). A resolver must never throw out
         // of ResolveAsync — it must return resolutionMetadata.error. Every failure
@@ -153,6 +151,9 @@ public sealed class DidEthrMethod : DidMethodBase
         deadlineCts.CancelAfter(ResolutionDeadline);
         try
         {
+            // The client factory is an injected dependency: a throw from it is
+            // infrastructure too, and must not defeat the never-throw contract.
+            var rpc = _rpcFactory.GetOrCreate(network);
             return await ResolveFromChainAsync(
                 did, identifier, network, rpc, versionBlockNumber, versionTime,
                 deadlineCts.Token);
@@ -165,32 +166,73 @@ public sealed class DidEthrMethod : DidMethodBase
         {
             // The caller's token did NOT fire: this is the overall resolution deadline
             // or the RPC client's per-request timeout — resolver infrastructure.
-            _logger.LogWarning(ex, "did:ethr resolution timed out against the RPC endpoint for {Did}", did);
+            LogResolveFailure(ex, did);
             return DidResolutionResult.InternalError(did,
                 "did:ethr resolution timed out against the RPC endpoint before the " +
                 "event history could be retrieved; the DID's existence was not determined.");
         }
         catch (EthereumInteractionException ex)
         {
-            _logger.LogWarning(ex, "did:ethr resolution failed against RPC data for {Did}", did);
+            LogResolveFailure(ex, did);
             // Exception.Message is virtual; only trust the exact library-owned type.
             // (An injected RPC client can throw a hostile subclass whose getter throws
             // or returns unbounded text.) Our own messages can still interpolate
-            // node-supplied fragments (e.g. the RPC error JSON), so bound the length.
+            // node-supplied fragments (e.g. the RPC error JSON), so sanitize and
+            // bound them before exposing them to callers.
             var reason = ex.GetType() == typeof(EthereumInteractionException)
-                ? Truncate(ex.Message, 500)
+                ? SanitizeReason(ex.Message)
                 : "Ethereum RPC interaction failed.";
             return DidResolutionResult.InternalError(did, reason);
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "did:ethr resolution failed against RPC data for {Did}", did);
+            LogResolveFailure(ex, did);
             return DidResolutionResult.InternalError(did,
                 "did:ethr resolution failed against RPC data.");
         }
+    }
 
-        static string Truncate(string value, int max)
-            => value.Length <= max ? value : value[..max];
+    /// <summary>
+    /// Logs a resolution failure without letting the exception defeat the resolver's
+    /// never-throw contract: logging providers may format the exception eagerly
+    /// (ToString → Message), and a hostile injected dependency can throw from those
+    /// virtual members. Falls back to type-name-only diagnostics.
+    /// </summary>
+    private void LogResolveFailure(Exception ex, string did)
+    {
+        try
+        {
+            _logger.LogWarning(ex,
+                "did:ethr resolution failed against RPC infrastructure for {Did}", did);
+        }
+        catch
+        {
+            _logger.LogWarning(
+                "did:ethr resolution failed against RPC infrastructure for {Did}; " +
+                "diagnostics unavailable — {ExceptionType} threw while being formatted",
+                did, ex.GetType().FullName);
+        }
+    }
+
+    /// <summary>
+    /// Bounds and cleans a diagnostic destined for resolution metadata: our own
+    /// messages can interpolate node-supplied fragments, which are attacker-sized
+    /// and may carry control characters. Keeps the text single-line, at most 500
+    /// chars, and never splits a surrogate pair.
+    /// </summary>
+    private static string SanitizeReason(string value)
+    {
+        const int MaxReasonChars = 500;
+        var builder = new StringBuilder(Math.Min(value.Length, MaxReasonChars));
+        foreach (var ch in value)
+        {
+            if (builder.Length >= MaxReasonChars)
+                break;
+            builder.Append(char.IsControl(ch) ? ' ' : ch);
+        }
+        if (builder.Length > 0 && char.IsHighSurrogate(builder[^1]))
+            builder.Length--;
+        return builder.ToString();
     }
 
     private async Task<DidResolutionResult> ResolveFromChainAsync(
