@@ -402,6 +402,230 @@ public class Issue116ResolutionErrorMappingTests
             "the walk must observe the expired deadline before issuing the next hop");
     }
 
+    // ── Round 4: the TERMINAL dependency call has no next iteration ──────────────
+
+    [Fact]
+    public async Task Issue116_ChangedZero_CallerCancelledDuringCompletedCall_NoSuccessReturned()
+    {
+        // Cancellation lands during the very first (and only) dependency call, which
+        // returns a completed changed()=0 result. Pre-call-only guards would fall
+        // through to a "successful" genesis document for a caller that already
+        // cancelled — the post-await check must propagate instead.
+        using var cts = new CancellationTokenSource();
+        var rpc = Substitute.For<IEthereumRpcClient>();
+        rpc.CallAsync(default!, default!, default).ReturnsForAnyArgs(_ =>
+        {
+            cts.Cancel();
+            return Task.FromResult("0x" + 0UL.ToString("x64"));
+        });
+
+        var act = () => MakeMethod(rpc)
+            .ResolveAsync($"did:ethr:sepolia:{Identity}", options: null, cts.Token);
+
+        await act.Should().ThrowAsync<OperationCanceledException>(
+            "a cancelled caller must never receive a document");
+    }
+
+    [Fact]
+    public async Task Issue116_ChangedZero_DeadlineExpiredDuringCompletedCall_InternalError()
+    {
+        var rpc = Substitute.For<IEthereumRpcClient>();
+        rpc.CallAsync(default!, default!, default).ReturnsForAnyArgs(_ =>
+        {
+            Thread.Sleep(300);   // synchronously outlive the 50 ms deadline
+            return Task.FromResult("0x" + 0UL.ToString("x64"));
+        });
+        var factory = Substitute.For<IEthereumRpcClientFactory>();
+        factory.GetOrCreate(Arg.Any<EthereumNetworkConfig>()).Returns(rpc);
+        var method = new DidEthrMethod(factory, [Sepolia], new DefaultKeyGenerator())
+        {
+            ResolutionDeadline = TimeSpan.FromMilliseconds(50),
+        };
+
+        var result = await method.ResolveAsync($"did:ethr:sepolia:{Identity}");
+
+        result.ResolutionMetadata.Error.Should().Be("internalError",
+            "an expired deadline must not fall through to a stale genesis document");
+        result.DidDocument.Should().BeNull();
+    }
+
+    /// <summary>
+    /// Dependency-owned log collection whose enumerator sleeps past the deadline
+    /// before yielding its single (valid, terminal) event — the reviewer's round-4
+    /// repro: result materialization outliving the deadline on the LAST hop.
+    /// </summary>
+    private sealed class SlowEnumerationLogList(EthereumLogEntry entry, TimeSpan delay)
+        : IReadOnlyList<EthereumLogEntry>
+    {
+        public int Count => 1;
+        public EthereumLogEntry this[int index] => entry;
+        public IEnumerator<EthereumLogEntry> GetEnumerator()
+        {
+            Thread.Sleep(delay);
+            yield return entry;
+        }
+        System.Collections.IEnumerator System.Collections.IEnumerable.GetEnumerator()
+            => GetEnumerator();
+    }
+
+    [Fact]
+    public async Task Issue116_TerminalHop_SlowEnumerationPastDeadline_InternalError_NotSuccess()
+    {
+        // changed()=1 with a terminal event (previousChange=0): there is no second
+        // walk iteration, so only the post-await / per-item checks can observe the
+        // deadline that expires while the hostile list is being enumerated.
+        const ulong block = 1;
+        var getLogsCalls = 0;
+        var rpc = Substitute.For<IEthereumRpcClient>();
+        rpc.CallAsync(default!, default!, default)
+           .ReturnsForAnyArgs("0x" + block.ToString("x64"));
+        rpc.GetLogsAsync(default!, default).ReturnsForAnyArgs(_ =>
+        {
+            Interlocked.Increment(ref getLogsCalls);
+            return Task.FromResult<IReadOnlyList<EthereumLogEntry>>(
+                new SlowEnumerationLogList(
+                    OwnerChangedLog(Identity, Identity, block, prev: 0),
+                    TimeSpan.FromMilliseconds(300)));
+        });
+        var factory = Substitute.For<IEthereumRpcClientFactory>();
+        factory.GetOrCreate(Arg.Any<EthereumNetworkConfig>()).Returns(rpc);
+        var method = new DidEthrMethod(factory, [Sepolia], new DefaultKeyGenerator())
+        {
+            ResolutionDeadline = TimeSpan.FromMilliseconds(50),
+        };
+
+        var stopwatch = System.Diagnostics.Stopwatch.StartNew();
+        var result = await method.ResolveAsync($"did:ethr:sepolia:{Identity}");
+        stopwatch.Stop();
+
+        result.ResolutionMetadata.Error.Should().Be("internalError");
+        result.DidDocument.Should().BeNull();
+        getLogsCalls.Should().Be(1);
+        stopwatch.Elapsed.Should().BeLessThan(TimeSpan.FromSeconds(10));
+    }
+
+    [Fact]
+    public async Task Issue116_TerminalHop_CallerCancelledDuringFinalGetLogs_Propagates()
+    {
+        const ulong block = 1;
+        using var cts = new CancellationTokenSource();
+        var rpc = Substitute.For<IEthereumRpcClient>();
+        rpc.CallAsync(default!, default!, default)
+           .ReturnsForAnyArgs("0x" + block.ToString("x64"));
+        rpc.GetLogsAsync(default!, default).ReturnsForAnyArgs(_ =>
+        {
+            cts.Cancel();   // fires during the LAST hop — no next iteration exists
+            return Task.FromResult<IReadOnlyList<EthereumLogEntry>>(
+                [OwnerChangedLog(Identity, Identity, block, prev: 0)]);
+        });
+
+        var act = () => MakeMethod(rpc)
+            .ResolveAsync($"did:ethr:sepolia:{Identity}", options: null, cts.Token);
+
+        await act.Should().ThrowAsync<OperationCanceledException>();
+    }
+
+    /// <summary>
+    /// Hostile dependency-owned list whose enumerator never terminates. Count lies.
+    /// </summary>
+    private sealed class NonterminatingLogList(Func<int, EthereumLogEntry> make)
+        : IReadOnlyList<EthereumLogEntry>
+    {
+        public int Count => 1;
+        public EthereumLogEntry this[int index] => make(index);
+        public IEnumerator<EthereumLogEntry> GetEnumerator()
+        {
+            for (var i = 0; ; i++)
+                yield return make(i);
+        }
+        System.Collections.IEnumerator System.Collections.IEnumerable.GetEnumerator()
+            => GetEnumerator();
+    }
+
+    [Fact]
+    public async Task Issue116_NonterminatingLogEnumeration_BoundedByCount_InternalError()
+    {
+        // A bare .ToList() on the dependency-owned collection would spin forever.
+        // The resolver's own bounded materialization must stop at the count cap.
+        const ulong block = 1;
+        var rpc = Substitute.For<IEthereumRpcClient>();
+        rpc.CallAsync(default!, default!, default)
+           .ReturnsForAnyArgs("0x" + block.ToString("x64"));
+        rpc.GetLogsAsync(default!, default).ReturnsForAnyArgs(_ =>
+            Task.FromResult<IReadOnlyList<EthereumLogEntry>>(new NonterminatingLogList(
+                i => OwnerChangedLog(Identity, Identity, block, prev: 0) with
+                {
+                    LogIndex = (ulong)i,
+                })));
+
+        var result = await MakeMethod(rpc).ResolveAsync($"did:ethr:sepolia:{Identity}");
+
+        result.ResolutionMetadata.Error.Should().Be("internalError");
+        result.DidDocument.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task Issue116_FinalVersionIdTimestamp_DeadlineExpired_InternalError()
+    {
+        // The versionId block-timestamp fetch is the LAST dependency call on that
+        // path — a deadline expiring inside it must not fall through to success.
+        const ulong block = 10;
+        var rpc = Substitute.For<IEthereumRpcClient>();
+        rpc.CallAsync(default!, default!, default)
+           .ReturnsForAnyArgs("0x" + block.ToString("x64"));
+        rpc.GetLogsAsync(default!, default)
+           .ReturnsForAnyArgs(call => Task.FromResult<IReadOnlyList<EthereumLogEntry>>(
+               call.Arg<EthereumLogFilter>().FromBlock == block
+                   ? [OwnerChangedLog(Identity, Identity, block, prev: 0)]
+                   : []));
+        rpc.GetBlockTimestampAsync(default, default).ReturnsForAnyArgs(_ =>
+        {
+            Thread.Sleep(300);
+            return Task.FromResult(100UL);
+        });
+        var factory = Substitute.For<IEthereumRpcClientFactory>();
+        factory.GetOrCreate(Arg.Any<EthereumNetworkConfig>()).Returns(rpc);
+        var method = new DidEthrMethod(factory, [Sepolia], new DefaultKeyGenerator())
+        {
+            ResolutionDeadline = TimeSpan.FromMilliseconds(50),
+        };
+
+        var result = await method.ResolveAsync(
+            $"did:ethr:sepolia:{Identity}", new DidEthrResolveOptions { VersionId = "10" });
+
+        result.ResolutionMetadata.Error.Should().Be("internalError");
+        result.DidDocument.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task Issue116_FinalVersionTimeTimestamp_CallerCancelled_Propagates()
+    {
+        // The last iteration of the versionTime timestamp loop has no following
+        // loop-head check — cancellation during its await must still propagate.
+        const ulong block = 10;
+        using var cts = new CancellationTokenSource();
+        var rpc = Substitute.For<IEthereumRpcClient>();
+        rpc.CallAsync(default!, default!, default)
+           .ReturnsForAnyArgs("0x" + block.ToString("x64"));
+        rpc.GetLogsAsync(default!, default)
+           .ReturnsForAnyArgs(call => Task.FromResult<IReadOnlyList<EthereumLogEntry>>(
+               call.Arg<EthereumLogFilter>().FromBlock == block
+                   ? [OwnerChangedLog(Identity, Identity, block, prev: 0)]
+                   : []));
+        rpc.GetBlockTimestampAsync(default, default).ReturnsForAnyArgs(_ =>
+        {
+            cts.Cancel();
+            return Task.FromResult(100UL);
+        });
+
+        var act = () => MakeMethod(rpc).ResolveAsync(
+            $"did:ethr:sepolia:{Identity}",
+            new DidEthrResolveOptions { VersionTime = "2020-01-01T00:00:00Z" },
+            cts.Token);
+
+        await act.Should().ThrowAsync<OperationCanceledException>();
+    }
+
     /// <summary>
     /// Counts continuations on the BCL-internal slot (same pin as the Issue109 suite:
     /// .NET 10 field name, failing loudly if it moves).

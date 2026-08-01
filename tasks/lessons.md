@@ -423,3 +423,23 @@
   EthereumInteractionException. Any switch between serialize-style and dictionary-style
   access on untrusted JSON needs the boundary catch re-checked and a duplicate-member test
   (envelope AND nested object).
+- Guard placement must be SYMMETRIC around every dependency interaction, or the guard just
+  relocates the hole to the terminal element (the existing "epilogue unguarded" lesson, now
+  proven for loops): pre-call/loop-head token checks cannot observe cancellation that fires
+  during the LAST call — there is no next iteration — so resolution returned a stale SUCCESS
+  to a cancelled caller. The complete pattern per dependency await: check BEFORE the call,
+  check AFTER the await (before parsing), check PER ITEM when materializing a
+  dependency-owned collection (never bare .ToList() — a hostile enumerator is unbounded
+  synchronous work), and one final check BEFORE the success return. Test matrix must include
+  the terminal element of every loop and the single-call paths (changed()=0, final
+  timestamp), in BOTH cancellation modes — a test whose hostile hop forces a second
+  iteration validates only the loop-head check and hides the terminal bug.
+- State honestly what a token-based bound can never do: it cannot preempt synchronous
+  blocking inside an injected implementation (method body before returning its task, or a
+  collection's MoveNext). Don't paper over it with wrappers — scope the claim ("hard bound
+  against hostile NODES via the async default client; in-process hostile CLIENT
+  implementations need process isolation") in the knob's doc, and update it the moment a
+  reviewer shows the gap. Fail-first discipline applies to review-round fixes too: prove the
+  new tests red on the pre-fix source — and expect a pre-fix HANG (not a failure) when the
+  old bug is an unbounded loop; run that proof with a short timeout and without the hanging
+  test in the batch.
