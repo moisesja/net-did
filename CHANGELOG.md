@@ -25,6 +25,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (after `9999-12-31T23:59:59Z`) now fail closed as `internalError` at every conversion site —
   previously such values silently wrapped to pre-1970 instants on the historical paths, which
   could mass-expire delegates/attributes in a historical document.
+  From the PR review: the canonical form now holds at every externally consumed surface, not
+  just the in-memory model — `DidDocumentMetadata.Created`/`Updated`/`VersionTime` carry a
+  System.Text.Json converter emitting `yyyy-MM-dd'T'HH:mm:ss'Z'` (reading accepts any ISO 8601
+  offset form), and `ToPropertyDictionary()` (the dereferencing `ContentMetadata` map) exposes
+  those timestamps as canonical strings instead of `DateTimeOffset` objects. **Behavior
+  change:** dereferencing-metadata consumers that cast `created`/`updated`/`versionTime` map
+  values to `DateTimeOffset` must now parse the string; default JSON serialization of document
+  metadata switches from `+00:00` to `Z` form (spec-normalized, and what the reference
+  resolver emits). Genesis-shape clarification: an unregistered DID (no events) omits all four
+  version fields, while a `versionId=0` query on a DID with later history omits
+  `versionId`/`updated` but reports `nextVersionId`/`nextUpdate` — both shapes are
+  regression-pinned.
 
 ### Fixed
 
