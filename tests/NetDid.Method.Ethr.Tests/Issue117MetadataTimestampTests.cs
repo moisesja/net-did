@@ -155,6 +155,53 @@ public class Issue117MetadataTimestampTests
     }
 
     [Fact]
+    public async Task Issue117_VersionIdZeroWithHistory_OmitsUpdatedButReportsNextUpdate()
+    {
+        // Genesis VIEW of a registered DID (versionId=0 with later events) is not the
+        // no-history genesis case: versionId/updated are omitted (no change applied yet)
+        // while nextVersionId/nextUpdate point at the first change — matching the
+        // reference resolver, which skips versionMeta only when versionId === 0 and
+        // still emits versionMetaNext for a finite next change.
+        var rpc = TwoChangeHistory();
+        rpc.GetBlockTimestampAsync(0, Arg.Any<CancellationToken>()).Returns(50UL);
+        var opts = new DidEthrResolveOptions { VersionId = "0" };
+
+        var result = await MakeMethod(rpc)
+            .ResolveAsync($"did:ethr:sepolia:{Identity}", opts);
+
+        result.ResolutionMetadata.Error.Should().BeNull();
+        result.DocumentMetadata!.VersionId.Should().BeNull();
+        result.DocumentMetadata.Updated.Should().BeNull();
+        result.DocumentMetadata.NextVersionId.Should().Be("10");
+        // ts(10) = 100 → 1970-01-01T00:01:40Z
+        result.DocumentMetadata.NextUpdate.Should().Be("1970-01-01T00:01:40Z");
+    }
+
+    [Fact]
+    public async Task Issue117_SerializedMetadata_MatchesReferenceResolverShape()
+    {
+        // The externally consumed representation (PR #126 review): default
+        // System.Text.Json serialization of the resolved metadata must render `updated`
+        // in the same canonical Z form as `nextUpdate` and the reference resolver —
+        // not the DateTimeOffset default "+00:00" form.
+        var rpc = TwoChangeHistory();
+        var opts = new DidEthrResolveOptions { VersionId = "15" };
+
+        var result = await MakeMethod(rpc)
+            .ResolveAsync($"did:ethr:sepolia:{Identity}", opts);
+
+        var json = System.Text.Json.JsonSerializer.Serialize(result.DocumentMetadata,
+            new System.Text.Json.JsonSerializerOptions
+            {
+                PropertyNamingPolicy = System.Text.Json.JsonNamingPolicy.CamelCase,
+            });
+
+        json.Should().Contain("\"updated\":\"1970-01-01T00:01:40Z\"");
+        json.Should().Contain("\"nextUpdate\":\"1970-01-01T00:03:20Z\"");
+        json.Should().NotContain("+00:00");
+    }
+
+    [Fact]
     public async Task Issue117_NextUpdateFormat_IsIso8601UtcWholeSeconds()
     {
         var rpc = TwoChangeHistory(tsBlock20: 1_700_000_000);

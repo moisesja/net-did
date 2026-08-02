@@ -462,10 +462,10 @@ public sealed class DidEthrMethod : DidMethodBase
         return DateTimeOffset.FromUnixTimeSeconds((long)unixSeconds);
     }
 
-    // The reference resolver's metadata timestamp form: ISO 8601 UTC, whole seconds.
+    // The reference resolver's metadata timestamp form: ISO 8601 UTC, whole seconds —
+    // one definition, shared with Core's document-metadata serialization.
     private static string FormatIso8601Utc(DateTimeOffset value) =>
-        value.UtcDateTime.ToString(
-            "yyyy'-'MM'-'dd'T'HH':'mm':'ss'Z'", CultureInfo.InvariantCulture);
+        NetDid.Core.Serialization.CanonicalUtcDateTimeOffsetJsonConverter.Format(value);
 
     // ── Event chain walker ────────────────────────────────────────────────────
 
