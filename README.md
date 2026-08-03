@@ -596,7 +596,8 @@ To get working endpoints without hand-curating URLs, use the opt-in
 `EthrRpcAutoConfig` bootstrap (no extra package, no new dependencies). It probes candidate
 public endpoints the way the reference resolver maintainer recommends — an `eth_getLogs`
 query for hard-coded, on-chain-verified *known-old* registry events — and discards any
-endpoint that returns no logs for them, logging the reason:
+endpoint that returns no logs matching them (registry, identity, block window — so a
+provider that silently clamps the queried range cannot pass), logging the reason:
 
 ```csharp
 // Probe the built-in candidate endpoints (mainnet, sepolia, gnosis, polygon) …

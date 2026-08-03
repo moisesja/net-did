@@ -1685,7 +1685,7 @@ Client construction has two paths: `DefaultEthereumRpcClientFactory` (DI — res
    (`IncompleteEventHistoryException` → `resolutionMetadata.error = "internalError"` with the
    pruned-node message), never to return a silently truncated document. This requirement is
    documented at every point a user supplies an `RpcUrl` (`EthereumNetworkConfig.RpcUrl`,
-   `KnownNetworks`, README did:ethr section, README DI section).
+   `KnownNetworks`, both `AddDidEthr` overloads, README did:ethr section, README DI section).
 2. `EthrRpcAutoConfig.ConfigureAsync(candidateEndpoints?, logger?, perEndpointTimeout?, ct)`
    is the opt-in batteries-included bootstrap. It lives in `NetDid.Method.Ethr` (no separate
    package, no added dependencies) and returns ready-to-use `EthereumNetworkConfig`s in
@@ -1699,21 +1699,33 @@ Client construction has two paths: `DefaultEthereumRpcClientFactory` (DI — res
    - Per network, candidates are probed sequentially and the first passing endpoint wins.
      A candidate passes when its `eth_chainId` equals the catalogue chain ID AND an
      `eth_getLogs` query for that network's hard-coded known-old registry events (identity-
-     filtered, window ≤ 40 blocks to stay under public providers' range caps) returns at
-     least one log. Probe entries are on-chain-verified facts, never fabricated, and are to
-     be aligned with the reference resolver maintainer's companion list when published.
-   - An endpoint failing any check — wrong chain, empty probe logs, transport failure,
-     malformed response, or per-endpoint timeout (default 10 s; each underlying request is
-     additionally capped at 30 s by `DefaultEthereumRpcClient`) — is discarded with a logged,
-     actionable reason, and probing continues with the next candidate. A network with no
-     passing candidate is omitted from the result and logged. Caller cancellation (`ct`)
-     aborts the whole run; a per-endpoint timeout never does.
+     filtered, windows spanning ≤ 41 blocks inclusive to stay under public providers' range
+     caps) returns at least one log **matching the probe itself** — registry address, probed
+     identity topic, and a block inside the window, compared case-insensitively. A bare
+     count is not evidence: a provider that silently clamps `fromBlock` to its retained
+     range, or a hostile endpoint fabricating an arbitrary log, must not pass. Probe
+     entries are on-chain-verified facts, never fabricated, and are to be aligned with the
+     reference resolver maintainer's companion list when published.
+   - An endpoint failing any check — wrong chain, empty/non-matching probe logs, transport
+     failure, malformed response, or per-endpoint timeout (default 10 s, upper-bounded at
+     `CancelAfter`'s ~49.7-day maximum; each underlying request is additionally capped at
+     30 s by `DefaultEthereumRpcClient`) — is discarded with a logged, actionable reason,
+     and probing continues with the next candidate; a failure during the historical-logs
+     step (the real-world "archive requests refused" shape) names the archive cause, not
+     just a generic failure. A network with no passing candidate is omitted from the result
+     and logged. Caller cancellation (`ct`) aborts the whole run; a per-endpoint timeout
+     never does. The deadline bounds asynchronous waits (hard bound against hostile nodes
+     via the default client); an in-process client implementation that blocks synchronously
+     before returning its task cannot be preempted.
    - Networks without hard-coded probe data are configured after the chain-ID check alone
      and logged as UNVERIFIED for archive depth (fail-open on depth is explicit and logged,
      never silent).
    - Logging is best-effort (a throwing provider cannot break configuration) and uses fixed
-     library-owned message text; nothing from an endpoint's response body is ever logged
-     except bounded numeric values.
+     library-owned message text plus bounded values (candidate URL, network name, block
+     numbers, numeric chain IDs, exception **type names** only). Exception objects are never
+     handed to the sink — a remote endpoint controls inner-exception text (e.g. a
+     duplicate-JSON-key `ArgumentException` quotes the attacker's key) — so endpoint
+     response content can never reach logs.
 3. Trust scope: probing verifies availability and historical depth only. A passing endpoint
    remains a single untrusted RPC node that can forge a self-consistent event history — the
    method's existing documented integrity property is unchanged by auto-configuration.

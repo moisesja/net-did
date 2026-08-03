@@ -27,11 +27,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   message; networks with no passing candidate are omitted from the result; networks without
   probe data pass on chain-ID alone and are logged as unverified for archive depth. Probing
   reuses the existing hardened RPC client (response caps, bounded error extraction, 30 s
-  per-request bound), snapshots caller-supplied collections at entry, propagates caller
-  cancellation while containing per-endpoint failures, and logs only fixed library-owned
-  text. Probing verifies availability/depth only — a passing endpoint remains a single
-  untrusted RPC node; the documented integrity model is unchanged. Probe data is structured
-  for later alignment with the maintainer's companion auto-config list once published.
+  per-request bound), snapshots caller-supplied collections at entry (by enumeration, so a
+  hostile `ICollection` fast path cannot substitute contents), propagates caller
+  cancellation while containing per-endpoint failures (including a throwing client factory
+  or `Dispose` on the injectable seam), and logs only fixed library-owned text. From the
+  adversarial review: a probe pass requires a returned log **matching** the probe (registry
+  address, identity topic, block inside the window, case-insensitive) — a bare non-empty
+  count would have accepted providers that clamp `fromBlock` to their retained range;
+  failure logs carry exception **type names** only, never the exception object, because a
+  remote endpoint controls inner-exception text (duplicate-JSON-key `ArgumentException`
+  quotes the attacker's key); a refusal-shape failure during the historical step names the
+  archive cause; `perEndpointTimeout` is validated against `CancelAfter`'s ~49.7-day
+  ceiling; the shipped default-endpoint map is deep-immutable. Probing verifies
+  availability/depth only — a passing endpoint remains a single untrusted RPC node; the
+  documented integrity model is unchanged. Probe data is structured for later alignment
+  with the maintainer's companion auto-config list once published.
 
 - **`did:ethr`: opt-in finalized ERC-1056 event-history cache** (issue #118). Long-lived
   `DidEthrMethod` instances can now reuse the immutable part of an identity's event history instead

@@ -38,6 +38,11 @@ public static class EthrRpcAutoConfig
 {
     private static readonly TimeSpan DefaultPerEndpointTimeout = TimeSpan.FromSeconds(10);
 
+    // CancellationTokenSource.CancelAfter rejects delays above ~49.7 days with its
+    // own parameter name; validate here so the public API fails with OURS.
+    internal static readonly TimeSpan MaxPerEndpointTimeout =
+        TimeSpan.FromMilliseconds(uint.MaxValue - 2);
+
     /// <summary>
     /// Built-in candidate public endpoints for the major official deployments,
     /// keyed by <see cref="KnownNetworks"/> name. Each network's list is ordered:
@@ -49,21 +54,24 @@ public static class EthrRpcAutoConfig
     /// instead.
     /// </summary>
     public static IReadOnlyDictionary<string, IReadOnlyList<string>> DefaultCandidateEndpoints { get; } =
-        new Dictionary<string, IReadOnlyList<string>>(StringComparer.OrdinalIgnoreCase)
-        {
-            ["mainnet"] = ["https://eth.drpc.org", "https://ethereum-rpc.publicnode.com"],
-            ["sepolia"] = ["https://sepolia.drpc.org", "https://ethereum-sepolia-rpc.publicnode.com"],
-            ["gno"]     = ["https://rpc.gnosischain.com", "https://gnosis.drpc.org"],
-            ["polygon"] = ["https://polygon.drpc.org", "https://1rpc.io/matic"],
-        };
+        // ReadOnlyDictionary: a bare Dictionary here is process-wide mutable via
+        // downcast, silently redirecting every later ConfigureAsync(null).
+        new System.Collections.ObjectModel.ReadOnlyDictionary<string, IReadOnlyList<string>>(
+            new Dictionary<string, IReadOnlyList<string>>(StringComparer.OrdinalIgnoreCase)
+            {
+                ["mainnet"] = ["https://eth.drpc.org", "https://ethereum-rpc.publicnode.com"],
+                ["sepolia"] = ["https://sepolia.drpc.org", "https://ethereum-sepolia-rpc.publicnode.com"],
+                ["gno"]     = ["https://rpc.gnosischain.com", "https://gnosis.drpc.org"],
+                ["polygon"] = ["https://polygon.drpc.org", "https://1rpc.io/matic"],
+            });
 
     // ── Historical probes ─────────────────────────────────────────────────────
     // One entry per network, each an on-chain fact verified live via eth_getLogs
     // against archive-serving endpoints on 2026-08-02/03 (never fabricated — a
     // wrong probe would manufacture false verdicts in BOTH directions). Windows
-    // are kept ≤ 40 blocks: several public providers cap eth_getLogs ranges
-    // (1rpc.io: 50 blocks), and a probe must never be discarded for its range
-    // when the endpoint would have served the data.
+    // span at most 41 blocks inclusive: several public providers cap eth_getLogs
+    // ranges (1rpc.io: 50 blocks), and a probe must never be discarded for its
+    // range when the endpoint would have served the data.
     //
     // Networks without an entry cannot have their historical depth verified;
     // ConfigureAsync then performs chain-ID validation only and logs a warning.
@@ -72,8 +80,8 @@ public static class EthrRpcAutoConfig
     // it so both ecosystems agree on what "serves historical data" means.
     internal static readonly IReadOnlyList<HistoricalLogProbe> HistoricalProbes =
     [
-        // Mainnet, legacy registry: DIDAttributeChanged events for this identity
-        // at blocks 10,001,725 and 10,001,739 (2020-05-04).
+        // Mainnet, legacy registry: events for this identity at blocks 10,001,725
+        // (DIDOwnerChanged) and 10,001,739 (DIDAttributeChanged), 2020-05-04.
         new HistoricalLogProbe
         {
             Network   = "mainnet",
@@ -101,7 +109,7 @@ public static class EthrRpcAutoConfig
             ToBlock   = 45_566_260,
         },
         // Polygon, legacy registry: earliest registry event on the network, a
-        // DIDAttributeChanged for this identity at block 32,524,522 (2022-08-31).
+        // DIDDelegateChanged for this identity at block 32,524,522 (2022-08-31).
         new HistoricalLogProbe
         {
             Network   = "polygon",
@@ -119,7 +127,10 @@ public static class EthrRpcAutoConfig
     /// <para>Per network, candidates are tried sequentially and the first passing
     /// endpoint wins. A candidate passes when (a) its <c>eth_chainId</c> matches the
     /// catalogue entry and (b) an <c>eth_getLogs</c> query for that network's
-    /// hard-coded known-old registry events returns at least one log. A candidate
+    /// hard-coded known-old registry events returns at least one log that matches
+    /// the probe itself — registry address, probed identity topic, and a block
+    /// inside the probe window (a bare count would accept a provider that clamps
+    /// <c>fromBlock</c> to its retained range). A candidate
     /// failing either check — or failing transport, timing out, or answering
     /// malformed data — is discarded with a logged reason and the next candidate is
     /// tried. Networks with no historical probe data are configured after the
@@ -144,7 +155,10 @@ public static class EthrRpcAutoConfig
     /// default 10 seconds. On expiry the candidate is discarded and the next one is
     /// tried. Each underlying request is additionally capped at 30 seconds by the
     /// hardened RPC client, so values above ~60 seconds cannot lengthen the probe
-    /// further.
+    /// further. The deadline bounds asynchronous waits: it is a hard bound against
+    /// hostile/hung nodes via the default async client, but cannot preempt an
+    /// injected client implementation that blocks synchronously before returning
+    /// its task.
     /// </param>
     /// <param name="ct">
     /// Caller cancellation; propagates as <see cref="OperationCanceledException"/>
@@ -169,34 +183,46 @@ public static class EthrRpcAutoConfig
     {
         ArgumentNullException.ThrowIfNull(clientFactory);
         var timeout = perEndpointTimeout ?? DefaultPerEndpointTimeout;
-        if (timeout <= TimeSpan.Zero)
+        if (timeout <= TimeSpan.Zero || timeout > MaxPerEndpointTimeout)
             throw new ArgumentOutOfRangeException(nameof(perEndpointTimeout),
-                "Per-endpoint timeout must be positive.");
+                $"Per-endpoint timeout must be positive and at most {MaxPerEndpointTimeout}.");
         var log = logger ?? NullLogger.Instance;
 
         // Snapshot the caller-supplied interface-typed input ONCE at entry: a hostile
         // implementation can return different contents per enumeration, and every
         // later decision (and log line) must describe the same data that was probed.
-        var snapshot = new List<(string Key, string?[] Urls)>();
+        // Snapshot lists via their ENUMERATOR explicitly — a collection-expression
+        // spread takes the ICollection Count/CopyTo fast path, which a hostile list
+        // can answer differently from its enumerator (and a lying huge Count would
+        // allocate unbounded).
+        var snapshot = new List<(string Key, List<string?> Urls)>();
         foreach (var pair in candidateEndpoints ?? DefaultCandidateEndpoints)
-            snapshot.Add((pair.Key, pair.Value is null ? [] : [.. pair.Value]));
+        {
+            var urls = new List<string?>();
+            if (pair.Value is { } candidateList)
+            {
+                foreach (var url in candidateList)
+                    urls.Add(url);
+            }
+            snapshot.Add((pair.Key, urls));
+        }
 
         // Resolve keys against the deployment catalogue; dedupe aliases of the same
         // network ("mainnet" and "0x1"); order deterministically by catalogue order.
-        var resolved = new List<(int Order, EthereumNetworkConfig Network, string?[] Urls)>();
+        var resolved = new List<(int Order, EthereumNetworkConfig Network, List<string?> Urls)>();
         var seenNetworks = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (var (key, urls) in snapshot)
         {
             if (key is null || KnownNetworks.Find(key) is not { } network)
             {
-                LogSafe(log, LogLevel.Warning, null,
+                LogSafe(log, LogLevel.Warning,
                     "did:ethr auto-config: candidate key '{Key}' matches no known " +
                     "ERC-1056 deployment; skipped.", key);
                 continue;
             }
             if (!seenNetworks.Add(network.Name))
             {
-                LogSafe(log, LogLevel.Warning, null,
+                LogSafe(log, LogLevel.Warning,
                     "did:ethr auto-config: candidate key '{Key}' resolves to network " +
                     "'{Network}' which is already listed; skipped.", key, network.Name);
                 continue;
@@ -225,29 +251,20 @@ public static class EthrRpcAutoConfig
                     || !Uri.TryCreate(url, UriKind.Absolute, out var uri)
                     || (uri.Scheme != Uri.UriSchemeHttps && uri.Scheme != Uri.UriSchemeHttp))
                 {
-                    LogSafe(log, LogLevel.Warning, null,
+                    LogSafe(log, LogLevel.Warning,
                         "did:ethr auto-config: candidate '{Url}' for network '{Network}' " +
                         "discarded: not an absolute http(s) URL.", url, network.Name);
                     continue;
                 }
 
                 var candidate = network with { RpcUrl = url };
-                ProbeOutcome outcome;
-                var (client, owned) = clientFactory(candidate);
-                try
-                {
-                    outcome = await ProbeEndpointAsync(client, candidate, probe, timeout, ct);
-                }
-                finally
-                {
-                    owned?.Dispose();
-                }
+                var outcome = await ProbeCandidateAsync(clientFactory, candidate, probe, timeout, ct);
                 ct.ThrowIfCancellationRequested();
 
                 switch (outcome.Kind)
                 {
                     case ProbeOutcomeKind.Passed:
-                        LogSafe(log, LogLevel.Information, null,
+                        LogSafe(log, LogLevel.Information,
                             "did:ethr auto-config: endpoint '{Url}' selected for network " +
                             "'{Network}': chain ID matches and the known-historical probe " +
                             "(blocks {FromBlock}-{ToBlock}) returned logs.",
@@ -256,7 +273,7 @@ public static class EthrRpcAutoConfig
                         break;
 
                     case ProbeOutcomeKind.PassedUnverified:
-                        LogSafe(log, LogLevel.Warning, null,
+                        LogSafe(log, LogLevel.Warning,
                             "did:ethr auto-config: endpoint '{Url}' selected for network " +
                             "'{Network}' after chain-ID validation only — no historical " +
                             "probe data exists for this network, so archive-grade " +
@@ -267,7 +284,7 @@ public static class EthrRpcAutoConfig
                         break;
 
                     case ProbeOutcomeKind.WrongChainId:
-                        LogSafe(log, LogLevel.Warning, null,
+                        LogSafe(log, LogLevel.Warning,
                             "did:ethr auto-config: endpoint '{Url}' for network '{Network}' " +
                             "discarded: eth_chainId returned {ActualChainId}, expected " +
                             "{ExpectedChainId}.",
@@ -275,28 +292,49 @@ public static class EthrRpcAutoConfig
                         break;
 
                     case ProbeOutcomeKind.NoHistoricalLogs:
-                        LogSafe(log, LogLevel.Warning, null,
+                        LogSafe(log, LogLevel.Warning,
                             "did:ethr auto-config: endpoint '{Url}' for network '{Network}' " +
-                            "discarded: eth_getLogs returned no logs for known-old registry " +
-                            "events (blocks {FromBlock}-{ToBlock}) — the endpoint does not " +
-                            "serve archive/historical data. did:ethr resolution requires an " +
-                            "archive-grade endpoint; supply one with historical eth_getLogs " +
-                            "support.",
+                            "discarded: eth_getLogs returned no logs matching the known-old " +
+                            "registry events (blocks {FromBlock}-{ToBlock}) — the endpoint " +
+                            "does not serve archive/historical data. did:ethr resolution " +
+                            "requires an archive-grade endpoint; supply one with historical " +
+                            "eth_getLogs support.",
                             url, network.Name, probe!.FromBlock, probe.ToBlock);
                         break;
 
                     case ProbeOutcomeKind.TimedOut:
-                        LogSafe(log, LogLevel.Warning, null,
+                        LogSafe(log, LogLevel.Warning,
                             "did:ethr auto-config: endpoint '{Url}' for network '{Network}' " +
-                            "discarded: probe did not complete within {Timeout}.",
+                            "discarded: the probe was cancelled by the per-endpoint deadline " +
+                            "({Timeout}) or the RPC client's per-request bound.",
                             url, network.Name, timeout);
                         break;
 
-                    default:
-                        LogSafe(log, LogLevel.Warning, outcome.Failure,
+                    // Failure text is bounded TYPE NAMES only: the exception object is
+                    // never handed to the sink because a remote endpoint controls
+                    // inner-exception text (e.g. a duplicate-JSON-key ArgumentException
+                    // quotes the attacker's key, CR/LF and multi-MiB included) and
+                    // standard providers render the full chain.
+                    case ProbeOutcomeKind.Failed when outcome.HistoricalStage:
+                        LogSafe(log, LogLevel.Warning,
                             "did:ethr auto-config: endpoint '{Url}' for network '{Network}' " +
-                            "discarded: the probe request failed.",
-                            url, network.Name);
+                            "discarded: the historical-logs probe for known-old registry " +
+                            "events (blocks {FromBlock}-{ToBlock}) failed ({FailureType}; " +
+                            "innermost {RootFailureType}) — the endpoint likely does not " +
+                            "serve archive/historical eth_getLogs (some providers refuse " +
+                            "archive queries outside a paid tier); supply an archive-grade " +
+                            "endpoint.",
+                            url, network.Name, probe!.FromBlock, probe.ToBlock,
+                            FailureTypeName(outcome.Failure), RootFailureTypeName(outcome.Failure));
+                        break;
+
+                    default:
+                        LogSafe(log, LogLevel.Warning,
+                            "did:ethr auto-config: endpoint '{Url}' for network '{Network}' " +
+                            "discarded: the probe request failed ({FailureType}; innermost " +
+                            "{RootFailureType}).",
+                            url, network.Name,
+                            FailureTypeName(outcome.Failure), RootFailureTypeName(outcome.Failure));
                         break;
                 }
 
@@ -310,7 +348,7 @@ public static class EthrRpcAutoConfig
             }
             else
             {
-                LogSafe(log, LogLevel.Warning, null,
+                LogSafe(log, LogLevel.Warning,
                     "did:ethr auto-config: no candidate endpoint for network '{Network}' " +
                     "passed probing; the network is omitted from the configuration.",
                     network.Name);
@@ -338,7 +376,50 @@ public static class EthrRpcAutoConfig
     }
 
     private readonly record struct ProbeOutcome(
-        ProbeOutcomeKind Kind, ulong ActualChainId = 0, Exception? Failure = null);
+        ProbeOutcomeKind Kind, ulong ActualChainId = 0, Exception? Failure = null,
+        bool HistoricalStage = false);
+
+    /// <summary>
+    /// Full per-candidate containment: the client-factory call, the probe, and the
+    /// owned-client disposal. A throwing factory or Dispose (injectable seam) is that
+    /// candidate's failure, never a reason to abort the remaining networks or mask
+    /// the probe outcome; only caller cancellation escapes.
+    /// </summary>
+    private static async Task<ProbeOutcome> ProbeCandidateAsync(
+        Func<EthereumNetworkConfig, (IEthereumRpcClient Client, IDisposable? Owned)> clientFactory,
+        EthereumNetworkConfig candidate,
+        HistoricalLogProbe? probe,
+        TimeSpan timeout,
+        CancellationToken ct)
+    {
+        IEthereumRpcClient client;
+        IDisposable? owned;
+        try
+        {
+            (client, owned) = clientFactory(candidate);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException
+            || !ct.IsCancellationRequested)
+        {
+            return new ProbeOutcome(ProbeOutcomeKind.Failed, Failure: ex);
+        }
+
+        try
+        {
+            return await ProbeEndpointAsync(client, candidate, probe, timeout, ct);
+        }
+        finally
+        {
+            try
+            {
+                owned?.Dispose();
+            }
+            catch
+            {
+                // A hostile Dispose must not mask the probe outcome.
+            }
+        }
+    }
 
     private static async Task<ProbeOutcome> ProbeEndpointAsync(
         IEthereumRpcClient rpc,
@@ -354,6 +435,7 @@ public static class EthrRpcAutoConfig
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(ct);
         deadline.CancelAfter(timeout);
         var token = deadline.Token;
+        var historicalStage = false;
 
         try
         {
@@ -374,18 +456,20 @@ public static class EthrRpcAutoConfig
             if (probe is null)
                 return new ProbeOutcome(ProbeOutcomeKind.PassedUnverified);
 
+            var paddedIdentity = PadIdentityTopic(probe.Identity);
             var filter = new EthereumLogFilter
             {
                 Address   = candidate.RegistryAddress,
                 FromBlock = probe.FromBlock,
                 ToBlock   = probe.ToBlock,
-                Topics    = [null, [PadIdentityTopic(probe.Identity)]],
+                Topics    = [null, [paddedIdentity]],
             };
+            historicalStage = true;
             token.ThrowIfCancellationRequested();
             var logs = await rpc.GetLogsAsync(filter, token).WaitAsyncObserved(token);
             token.ThrowIfCancellationRequested();
 
-            return logs.Count > 0
+            return AnyLogMatchesProbe(logs, candidate, probe, paddedIdentity)
                 ? new ProbeOutcome(ProbeOutcomeKind.Passed)
                 : new ProbeOutcome(ProbeOutcomeKind.NoHistoricalLogs);
         }
@@ -397,25 +481,63 @@ public static class EthrRpcAutoConfig
         }
         catch (OperationCanceledException)
         {
-            return new ProbeOutcome(ProbeOutcomeKind.TimedOut);
+            return new ProbeOutcome(ProbeOutcomeKind.TimedOut, HistoricalStage: historicalStage);
         }
         catch (Exception ex)
         {
             // Probing is a quality filter over unreliable public endpoints: ANY
             // failure (transport, malformed response, hostile shape) means "this
             // candidate is unusable", never "abort configuring the other networks".
-            return new ProbeOutcome(ProbeOutcomeKind.Failed, Failure: ex);
+            return new ProbeOutcome(ProbeOutcomeKind.Failed, Failure: ex,
+                HistoricalStage: historicalStage);
         }
     }
 
+    /// <summary>
+    /// A probe pass requires at least one returned log that actually matches what
+    /// was asked for: the registry address, the probed identity topic, and a block
+    /// inside the probe window. Counting alone is not evidence — a provider that
+    /// silently clamps <c>fromBlock</c> to its earliest retained block (observed
+    /// real-world behavior), or a hostile endpoint fabricating an arbitrary log,
+    /// would otherwise pass while serving no historical data at all. Matching is
+    /// case-insensitive (nodes may emit checksummed/uppercase hex).
+    /// </summary>
+    private static bool AnyLogMatchesProbe(
+        IReadOnlyList<EthereumLogEntry> logs,
+        EthereumNetworkConfig candidate,
+        HistoricalLogProbe probe,
+        string paddedIdentity)
+    {
+        for (var i = 0; i < logs.Count; i++)
+        {
+            var entry = logs[i];
+            if (entry is null)
+                continue;
+            if (!string.Equals(entry.Address, candidate.RegistryAddress,
+                    StringComparison.OrdinalIgnoreCase))
+                continue;
+            if (entry.Topics is not { Count: >= 2 } topics
+                || !string.Equals(topics[1], paddedIdentity, StringComparison.OrdinalIgnoreCase))
+                continue;
+            if (!TryParseHexQuantity(entry.BlockNumber, out var block)
+                || block < probe.FromBlock || block > probe.ToBlock)
+                continue;
+            return true;
+        }
+        return false;
+    }
+
     private static bool TryParseChainId(string? chainId, out ulong value)
+        => TryParseHexQuantity(chainId, out value);
+
+    private static bool TryParseHexQuantity(string? quantity, out ulong value)
     {
         value = 0;
-        if (chainId is null
-            || !chainId.StartsWith("0x", StringComparison.OrdinalIgnoreCase)
-            || chainId.Length <= 2)
+        if (quantity is null
+            || !quantity.StartsWith("0x", StringComparison.OrdinalIgnoreCase)
+            || quantity.Length <= 2)
             return false;
-        return ulong.TryParse(chainId.AsSpan(2),
+        return ulong.TryParse(quantity.AsSpan(2),
             System.Globalization.NumberStyles.HexNumber,
             System.Globalization.CultureInfo.InvariantCulture, out value);
     }
@@ -440,20 +562,36 @@ public static class EthrRpcAutoConfig
     /// <summary>
     /// Best-effort logging: a hostile or broken provider that throws from
     /// <c>Log</c> must never break auto-configuration (same never-throw stance as
-    /// resolution's failure logging).
+    /// resolution's failure logging). Deliberately takes no <see cref="Exception"/>:
+    /// endpoint-controlled exception text must never reach the sink — failures are
+    /// described by bounded type names in the template arguments instead.
     /// </summary>
     private static void LogSafe(
-        ILogger logger, LogLevel level, Exception? exception,
-        string messageTemplate, params object?[] args)
+        ILogger logger, LogLevel level, string messageTemplate, params object?[] args)
     {
         try
         {
-            logger.Log(level, exception, messageTemplate, args);
+            logger.Log(level, messageTemplate, args);
         }
         catch
         {
             // Swallow: logging is diagnostics, not behavior.
         }
+    }
+
+    private static string FailureTypeName(Exception? failure)
+        => failure?.GetType().Name ?? "unknown";
+
+    /// <summary>Innermost exception type name (bounded walk — a hostile exception
+    /// graph must not turn diagnostics into an unbounded traversal).</summary>
+    private static string RootFailureTypeName(Exception? failure)
+    {
+        if (failure is null)
+            return "unknown";
+        var current = failure;
+        for (var depth = 0; depth < 8 && current.InnerException is { } inner; depth++)
+            current = inner;
+        return current.GetType().Name;
     }
 }
 

@@ -42,22 +42,33 @@ public class Issue119AutoConfigTests
             => throw new InvalidOperationException("logger failed");
     }
 
-    private static EthereumLogEntry SomeLog(string registry) => new()
+    /// <summary>A log entry that genuinely satisfies the network's historical probe:
+    /// registry address, padded identity topic, and an in-window block number.</summary>
+    private static EthereumLogEntry MatchingProbeLog(EthereumNetworkConfig network)
     {
-        Address = registry,
-        Topics = ["0x" + new string('a', 64), "0x" + new string('b', 64)],
-        Data = "0x",
-        BlockNumber = "0x989680",
-        LogIndex = 0,
-    };
+        var probe = EthrRpcAutoConfig.FindProbe(network.Name)!;
+        return new EthereumLogEntry
+        {
+            Address = network.RegistryAddress,
+            Topics =
+            [
+                "0x" + new string('a', 64),
+                "0x000000000000000000000000" + probe.Identity[2..],
+            ],
+            Data = "0x",
+            BlockNumber = "0x" + (probe.FromBlock + 1).ToString("x"),
+            LogIndex = 0,
+        };
+    }
 
-    /// <summary>An rpc whose chainId matches and whose probe query returns one log.</summary>
-    private static IEthereumRpcClient HealthyRpc(ulong chainId, string registry)
+    /// <summary>An rpc whose chainId matches and whose probe query returns one log
+    /// genuinely matching the network's probe (address, identity topic, window).</summary>
+    private static IEthereumRpcClient HealthyRpc(ulong chainId, EthereumNetworkConfig network)
     {
         var rpc = Substitute.For<IEthereumRpcClient>();
         rpc.GetChainIdAsync(Arg.Any<CancellationToken>()).Returns(chainId);
         rpc.GetLogsAsync(Arg.Any<EthereumLogFilter>(), Arg.Any<CancellationToken>())
-           .Returns(Task.FromResult<IReadOnlyList<EthereumLogEntry>>([SomeLog(registry)]));
+           .Returns(Task.FromResult<IReadOnlyList<EthereumLogEntry>>([MatchingProbeLog(network)]));
         return rpc;
     }
 
@@ -113,7 +124,7 @@ public class Issue119AutoConfigTests
             FactoryFor(new()
             {
                 [MainnetUrl]  = PrunedRpc(1),
-                [FallbackUrl] = HealthyRpc(1, KnownNetworks.Mainnet.RegistryAddress),
+                [FallbackUrl] = HealthyRpc(1, KnownNetworks.Mainnet),
             }), logger);
 
         result.Should().ContainSingle().Which.RpcUrl.Should().Be(FallbackUrl);
@@ -129,7 +140,7 @@ public class Issue119AutoConfigTests
         var logger = new RecordingLogger();
         var result = await RunAsync(
             new Dictionary<string, IReadOnlyList<string>> { ["mainnet"] = [MainnetUrl] },
-            FactoryFor(new() { [MainnetUrl] = HealthyRpc(chainId: 137, KnownNetworks.Mainnet.RegistryAddress) }),
+            FactoryFor(new() { [MainnetUrl] = HealthyRpc(chainId: 137, KnownNetworks.Mainnet) }),
             logger);
 
         result.Should().BeEmpty();
@@ -147,7 +158,7 @@ public class Issue119AutoConfigTests
         rpc.GetChainIdAsync(Arg.Any<CancellationToken>()).Returns(1UL);
         rpc.GetLogsAsync(Arg.Do<EthereumLogFilter>(f => seen = f), Arg.Any<CancellationToken>())
            .Returns(Task.FromResult<IReadOnlyList<EthereumLogEntry>>(
-               [SomeLog(KnownNetworks.Mainnet.RegistryAddress)]));
+               [MatchingProbeLog(KnownNetworks.Mainnet)]));
 
         await RunAsync(
             new Dictionary<string, IReadOnlyList<string>> { ["mainnet"] = [MainnetUrl] },
@@ -179,12 +190,18 @@ public class Issue119AutoConfigTests
             FactoryFor(new()
             {
                 [MainnetUrl]  = broken,
-                [FallbackUrl] = HealthyRpc(1, KnownNetworks.Mainnet.RegistryAddress),
+                [FallbackUrl] = HealthyRpc(1, KnownNetworks.Mainnet),
             }), logger);
 
         result.Should().ContainSingle().Which.RpcUrl.Should().Be(FallbackUrl);
+        // Adversarial round 1: the exception OBJECT must not reach the sink — a
+        // remote endpoint controls inner-exception text (duplicate-JSON-key
+        // ArgumentException quotes the attacker's key), so only bounded type names
+        // are logged.
         logger.Entries.Should().Contain(e =>
-            e.Message.Contains("failed") && e.Exception is HttpRequestException);
+            e.Message.Contains("failed") && e.Message.Contains("HttpRequestException"));
+        logger.Entries.Should().OnlyContain(e => e.Exception == null,
+            "endpoint-controlled exception text must never reach the log sink");
     }
 
     [Fact]
@@ -203,7 +220,7 @@ public class Issue119AutoConfigTests
             FactoryFor(new()
             {
                 [MainnetUrl] = broken,
-                ["https://sepolia.example"] = HealthyRpc(11155111, KnownNetworks.Sepolia.RegistryAddress),
+                ["https://sepolia.example"] = HealthyRpc(11155111, KnownNetworks.Sepolia),
             }));
 
         result.Should().ContainSingle().Which.Name.Should().Be("sepolia");
@@ -220,7 +237,7 @@ public class Issue119AutoConfigTests
             candidate =>
             {
                 contacted.Add(candidate.RpcUrl);
-                return (HealthyRpc(1, candidate.RegistryAddress), null);
+                return (HealthyRpc(1, candidate), null);
             });
 
         result.Should().ContainSingle().Which.RpcUrl.Should().Be(MainnetUrl);
@@ -278,7 +295,7 @@ public class Issue119AutoConfigTests
             candidate =>
             {
                 contacted++;
-                return (HealthyRpc(1, candidate.RegistryAddress), null);
+                return (HealthyRpc(1, candidate), null);
             });
 
         result.Should().ContainSingle();
@@ -328,7 +345,7 @@ public class Issue119AutoConfigTests
             candidate =>
             {
                 contacted.Add(candidate.RpcUrl);
-                return (HealthyRpc(1, candidate.RegistryAddress), null);
+                return (HealthyRpc(1, candidate), null);
             });
 
         contacted.Should().Equal([MainnetUrl], "the entry-time snapshot is the probed set");
@@ -342,8 +359,8 @@ public class Issue119AutoConfigTests
     {
         var rpcs = new Dictionary<string, IEthereumRpcClient>
         {
-            ["https://polygon.example"] = HealthyRpc(137, KnownNetworks.Polygon.RegistryAddress),
-            ["https://mainnet.example"] = HealthyRpc(1, KnownNetworks.Mainnet.RegistryAddress),
+            ["https://polygon.example"] = HealthyRpc(137, KnownNetworks.Polygon),
+            ["https://mainnet.example"] = HealthyRpc(1, KnownNetworks.Mainnet),
         };
         var result = await RunAsync(
             new Dictionary<string, IReadOnlyList<string>>
@@ -367,7 +384,7 @@ public class Issue119AutoConfigTests
 
         var act = () => RunAsync(
             new Dictionary<string, IReadOnlyList<string>> { ["mainnet"] = [MainnetUrl] },
-            FactoryFor(new() { [MainnetUrl] = HealthyRpc(1, KnownNetworks.Mainnet.RegistryAddress) }),
+            FactoryFor(new() { [MainnetUrl] = HealthyRpc(1, KnownNetworks.Mainnet) }),
             ct: cts.Token);
 
         await act.Should().ThrowAsync<OperationCanceledException>();
@@ -411,12 +428,12 @@ public class Issue119AutoConfigTests
             FactoryFor(new()
             {
                 [MainnetUrl]  = hung,
-                [FallbackUrl] = HealthyRpc(1, KnownNetworks.Mainnet.RegistryAddress),
+                [FallbackUrl] = HealthyRpc(1, KnownNetworks.Mainnet),
             }),
             logger, perEndpointTimeout: TimeSpan.FromMilliseconds(200));
 
         result.Should().ContainSingle().Which.RpcUrl.Should().Be(FallbackUrl);
-        logger.Entries.Should().Contain(e => e.Message.Contains("did not complete"));
+        logger.Entries.Should().Contain(e => e.Message.Contains("deadline"));
     }
 
     [Fact]
@@ -451,7 +468,7 @@ public class Issue119AutoConfigTests
             new Dictionary<string, IReadOnlyList<string>> { ["mainnet"] = [MainnetUrl, FallbackUrl] },
             candidate => candidate.RpcUrl == MainnetUrl
                 ? (broken, brokenOwned)
-                : (HealthyRpc(1, candidate.RegistryAddress), healthyOwned));
+                : (HealthyRpc(1, candidate), healthyOwned));
 
         brokenOwned.Disposed.Should().BeTrue();
         healthyOwned.Disposed.Should().BeTrue();
@@ -462,7 +479,7 @@ public class Issue119AutoConfigTests
     {
         var result = await RunAsync(
             new Dictionary<string, IReadOnlyList<string>> { ["mainnet"] = [MainnetUrl] },
-            FactoryFor(new() { [MainnetUrl] = HealthyRpc(1, KnownNetworks.Mainnet.RegistryAddress) }),
+            FactoryFor(new() { [MainnetUrl] = HealthyRpc(1, KnownNetworks.Mainnet) }),
             new AlwaysThrowingLogger());
 
         result.Should().ContainSingle().Which.RpcUrl.Should().Be(MainnetUrl);
@@ -479,6 +496,193 @@ public class Issue119AutoConfigTests
             new Dictionary<string, IReadOnlyList<string>> { ["mainnet"] = ["not a url"] });
 
         result.Should().BeEmpty();
+    }
+
+    // ── Adversarial round 1: a probe pass requires filter-matching logs ──────
+
+    [Fact]
+    public async Task Issue119_FabricatedLogs_NotMatchingProbe_AreRejected()
+    {
+        // Both red-team agents demonstrated that Count > 0 alone let a provider that
+        // clamps fromBlock (or any hostile endpoint) pass with a recent/foreign log.
+        // A pass now requires ≥1 log matching registry address, identity topic, and
+        // the probe window.
+        var probe = EthrRpcAutoConfig.FindProbe("mainnet")!;
+        var matching = MatchingProbeLog(KnownNetworks.Mainnet);
+        var shapes = new Dictionary<string, EthereumLogEntry>
+        {
+            ["below window"] = matching with { BlockNumber = "0x" + (probe.FromBlock - 1).ToString("x") },
+            ["above window"] = matching with { BlockNumber = "0x" + (probe.ToBlock + 1).ToString("x") },
+            ["foreign address"] = matching with { Address = "0x" + new string('d', 40) },
+            ["foreign identity topic"] = matching with
+            {
+                Topics = [matching.Topics[0], "0x" + new string('c', 64)],
+            },
+            ["missing identity topic"] = matching with { Topics = [matching.Topics[0]] },
+            ["malformed block number"] = matching with { BlockNumber = "bogus" },
+        };
+
+        foreach (var (label, entry) in shapes)
+        {
+            var rpc = Substitute.For<IEthereumRpcClient>();
+            rpc.GetChainIdAsync(Arg.Any<CancellationToken>()).Returns(1UL);
+            rpc.GetLogsAsync(Arg.Any<EthereumLogFilter>(), Arg.Any<CancellationToken>())
+               .Returns(Task.FromResult<IReadOnlyList<EthereumLogEntry>>([entry]));
+            var logger = new RecordingLogger();
+
+            var result = await RunAsync(
+                new Dictionary<string, IReadOnlyList<string>> { ["mainnet"] = [MainnetUrl] },
+                _ => (rpc, null), logger);
+
+            result.Should().BeEmpty($"a fabricated log ({label}) must not prove archive depth");
+            logger.Entries.Should().Contain(e => e.Message.Contains("archive"),
+                $"the ({label}) discard must stay actionable");
+        }
+    }
+
+    [Fact]
+    public async Task Issue119_MixedLogs_OneGenuineMatch_StillPasses()
+    {
+        // Positive pairing so the hardening cannot become honest-endpoint denial:
+        // decoys beside one genuine match — including uppercase hex from the node,
+        // which must match case-insensitively — still pass.
+        var matching = MatchingProbeLog(KnownNetworks.Mainnet);
+        var decoy = matching with { BlockNumber = "0x1" };
+        var genuineUppercase = matching with
+        {
+            Address = "0x" + matching.Address[2..].ToUpperInvariant(),
+            Topics = [matching.Topics[0], "0x" + matching.Topics[1][2..].ToUpperInvariant()],
+        };
+        var rpc = Substitute.For<IEthereumRpcClient>();
+        rpc.GetChainIdAsync(Arg.Any<CancellationToken>()).Returns(1UL);
+        rpc.GetLogsAsync(Arg.Any<EthereumLogFilter>(), Arg.Any<CancellationToken>())
+           .Returns(Task.FromResult<IReadOnlyList<EthereumLogEntry>>([decoy, genuineUppercase]));
+
+        var result = await RunAsync(
+            new Dictionary<string, IReadOnlyList<string>> { ["mainnet"] = [MainnetUrl] },
+            _ => (rpc, null));
+
+        result.Should().ContainSingle().Which.RpcUrl.Should().Be(MainnetUrl);
+    }
+
+    // ── Adversarial round 1: refusal-shape failures stay actionable ──────────
+
+    [Fact]
+    public async Task Issue119_HistoricalProbeRefused_LogsArchiveHintAndTypeName()
+    {
+        // The real-world publicnode shape: chainId answers fine, the historical
+        // eth_getLogs is REFUSED (RPC error → client throws), not empty-answered.
+        // The discard must still name the archive cause, via bounded type names
+        // only — never the exception object.
+        var rpc = Substitute.For<IEthereumRpcClient>();
+        rpc.GetChainIdAsync(Arg.Any<CancellationToken>()).Returns(1UL);
+        rpc.GetLogsAsync(Arg.Any<EthereumLogFilter>(), Arg.Any<CancellationToken>())
+           .Returns<IReadOnlyList<EthereumLogEntry>>(_ => throw new NetDid.Core.Exceptions.EthereumInteractionException(
+               "RPC error for 'eth_getLogs': code -32602"));
+        var logger = new RecordingLogger();
+
+        var result = await RunAsync(
+            new Dictionary<string, IReadOnlyList<string>> { ["mainnet"] = [MainnetUrl] },
+            _ => (rpc, null), logger);
+
+        result.Should().BeEmpty();
+        logger.Entries.Should().Contain(e =>
+            e.Message.Contains("archive")
+            && e.Message.Contains("EthereumInteractionException")
+            && e.Exception == null);
+    }
+
+    // ── Adversarial round 1: seam robustness and parameter validation ────────
+
+    [Fact]
+    public async Task Issue119_TimeoutBeyondCancelAfterRange_ThrowsOwnParameterName()
+    {
+        // CancelAfter caps at ~49.7 days; beyond it the public API must fail with
+        // ITS parameter name, not an internal 'delay'.
+        var act = () => RunAsync(
+            new Dictionary<string, IReadOnlyList<string>> { ["mainnet"] = [MainnetUrl] },
+            _ => (Substitute.For<IEthereumRpcClient>(), null),
+            perEndpointTimeout: TimeSpan.MaxValue);
+
+        (await act.Should().ThrowAsync<ArgumentOutOfRangeException>())
+            .Which.ParamName.Should().Be("perEndpointTimeout");
+    }
+
+    [Fact]
+    public async Task Issue119_ThrowingClientFactory_DiscardsCandidate_RunContinues()
+    {
+        var logger = new RecordingLogger();
+        var result = await RunAsync(
+            new Dictionary<string, IReadOnlyList<string>> { ["mainnet"] = [MainnetUrl, FallbackUrl] },
+            candidate => candidate.RpcUrl == MainnetUrl
+                ? throw new InvalidOperationException("hostile factory")
+                : (HealthyRpc(1, KnownNetworks.Mainnet), null),
+            logger);
+
+        result.Should().ContainSingle().Which.RpcUrl.Should().Be(FallbackUrl);
+        logger.Entries.Should().Contain(e => e.Message.Contains("failed"));
+    }
+
+    private sealed class ThrowingDisposable : IDisposable
+    {
+        public void Dispose() => throw new InvalidOperationException("hostile dispose");
+    }
+
+    [Fact]
+    public async Task Issue119_ThrowingOwnedDispose_DoesNotAbortOrMaskOutcome()
+    {
+        var result = await RunAsync(
+            new Dictionary<string, IReadOnlyList<string>> { ["mainnet"] = [MainnetUrl] },
+            _ => (HealthyRpc(1, KnownNetworks.Mainnet), new ThrowingDisposable()));
+
+        result.Should().ContainSingle().Which.RpcUrl.Should().Be(MainnetUrl);
+    }
+
+    /// <summary>Implements ICollection so a Count/CopyTo-based snapshot would see
+    /// attacker URLs and a lying Count, while the enumerator yields the honest list —
+    /// the snapshot must be built from enumeration, not the ICollection fast path.</summary>
+    private sealed class LyingCollectionList : IReadOnlyList<string>, ICollection<string>
+    {
+        public int Count => 3;
+        public bool IsReadOnly => true;
+        public string this[int index] => "https://attacker.example";
+        public void CopyTo(string[] array, int arrayIndex)
+        {
+            for (var i = arrayIndex; i < array.Length; i++)
+                array[i] = "https://attacker.example";
+        }
+        public IEnumerator<string> GetEnumerator()
+            => ((IEnumerable<string>)new[] { MainnetUrl }).GetEnumerator();
+        System.Collections.IEnumerator System.Collections.IEnumerable.GetEnumerator()
+            => GetEnumerator();
+        public void Add(string item) => throw new NotSupportedException();
+        public void Clear() => throw new NotSupportedException();
+        public bool Contains(string item) => false;
+        public bool Remove(string item) => throw new NotSupportedException();
+    }
+
+    [Fact]
+    public async Task Issue119_HostileICollectionCandidateList_EnumeratedSnapshotWins()
+    {
+        var contacted = new List<string>();
+        var result = await RunAsync(
+            new Dictionary<string, IReadOnlyList<string>> { ["mainnet"] = new LyingCollectionList() },
+            candidate =>
+            {
+                contacted.Add(candidate.RpcUrl);
+                return (HealthyRpc(1, KnownNetworks.Mainnet), null);
+            });
+
+        contacted.Should().Equal([MainnetUrl],
+            "the snapshot must come from enumeration, not a lying ICollection Count/CopyTo");
+        result.Should().ContainSingle().Which.RpcUrl.Should().Be(MainnetUrl);
+    }
+
+    [Fact]
+    public void Issue119_DefaultCandidateEndpoints_NotDowncastMutable()
+    {
+        (EthrRpcAutoConfig.DefaultCandidateEndpoints as Dictionary<string, IReadOnlyList<string>>)
+            .Should().BeNull("the shipped defaults must not be mutable via downcast");
     }
 
     // ── Shipped data invariants ──────────────────────────────────────────────
