@@ -1691,21 +1691,34 @@ Client construction has two paths: `DefaultEthereumRpcClientFactory` (DI — res
    package, no added dependencies) and returns ready-to-use `EthereumNetworkConfig`s in
    `KnownNetworks.All` catalogue order, suitable for `DidEthrMethod` or `AddDidEthr`.
    - Candidate input is a map of `KnownNetworks` name or hex chain ID → ordered candidate
-     URLs; `null` uses the built-in `DefaultCandidateEndpoints` (mainnet, sepolia, gnosis,
-     polygon — each list's head verified against the network's historical probe at
-     implementation time). The caller-supplied map and its lists are snapshotted once at
-     entry. Keys matching no known deployment, keys duplicating an already-listed network,
-     and candidates that are not absolute http(s) URLs are skipped with a logged reason.
+     URLs; `null` uses the built-in `DefaultCandidateEndpoints`. Defaults and probe data
+     cover the six official deployments that are live with verifiable probe data —
+     mainnet, Sepolia, Gnosis, Polygon, Aurora, Energy Web Chain — each list's head
+     verified against the network's historical probe at implementation time. The remaining
+     catalogue entries (ARTIS ×2, Polygon Mumbai, Linea Goerli — deprecated/defunct — and
+     Holesky/Volta, no verifiable probe data) ship no default and take caller-supplied
+     candidates under the UNVERIFIED handling below; issue #119's "without manual RPC
+     curation" criterion is deliberately scoped to the six probeable networks. The
+     caller-supplied map and its lists are snapshotted once at entry inside a cancellable,
+     bounded loop (the token is honored before and during materialization; at most 64
+     network entries and 16 candidates per network — excess is truncated with a logged
+     count, never silently). Keys matching no known deployment, keys duplicating an
+     already-listed network, and candidates that are not absolute http(s) URLs are skipped
+     with a logged reason.
    - Per network, candidates are probed sequentially and the first passing endpoint wins.
      A candidate passes when its `eth_chainId` equals the catalogue chain ID AND an
-     `eth_getLogs` query for that network's hard-coded known-old registry events (identity-
-     filtered, windows spanning ≤ 41 blocks inclusive to stay under public providers' range
-     caps) returns at least one log **matching the probe itself** — registry address, probed
-     identity topic, and a block inside the window, compared case-insensitively. A bare
-     count is not evidence: a provider that silently clamps `fromBlock` to its retained
-     range, or a hostile endpoint fabricating an arbitrary log, must not pass. Probe
-     entries are on-chain-verified facts, never fabricated, and are to be aligned with the
-     reference resolver maintainer's companion list when published.
+     exact-block `eth_getLogs` query (`fromBlock == toBlock` — the same query shape
+     resolution itself issues per history block, so a provider range cap cannot fail the
+     probe where resolution would work) for that network's **earliest verifiable registry
+     event** (mainnet: block 7,049,729, 2019-01-11) returns at least one log **matching
+     the probe itself** — registry address, probed identity topic, and the probed block,
+     compared case-insensitively. Probing the earliest event matters: a younger probe
+     approves endpoints pruned between the probe and the network's real oldest events,
+     which then fail on legitimately old DIDs. A bare count is not evidence: a provider
+     that silently clamps `fromBlock` to its retained range, or a hostile endpoint
+     fabricating an arbitrary log, must not pass. Probe entries are on-chain-verified
+     facts, never fabricated, and are to be aligned with the reference resolver
+     maintainer's companion list when published.
    - An endpoint failing any check — wrong chain, empty/non-matching probe logs, transport
      failure, malformed response, or per-endpoint timeout (default 10 s, upper-bounded at
      `CancelAfter`'s ~49.7-day maximum; each underlying request is additionally capped at
@@ -1721,9 +1734,13 @@ Client construction has two paths: `DefaultEthereumRpcClientFactory` (DI — res
      and logged as UNVERIFIED for archive depth (fail-open on depth is explicit and logged,
      never silent).
    - Logging is best-effort (a throwing provider cannot break configuration) and uses fixed
-     library-owned message text plus bounded values (candidate URL, network name, block
-     numbers, numeric chain IDs, exception **type names** only). Exception objects are never
-     handed to the sink — a remote endpoint controls inner-exception text (e.g. a
+     library-owned message text plus bounded values (network name, block numbers, numeric
+     chain IDs, exception **type names** only). Endpoints are identified by a sanitized
+     label — scheme + host (+ non-default port) — never the raw URL: RPC URLs routinely
+     embed credentials in userinfo, path (provider project keys), or query, and none of
+     those parts may reach a log sink on any outcome, including success; an unparseable
+     candidate is identified only by its list position. Exception objects are never handed
+     to the sink — a remote endpoint controls inner-exception text (e.g. a
      duplicate-JSON-key `ArgumentException` quotes the attacker's key) — so endpoint
      response content can never reach logs.
 3. Trust scope: probing verifies availability and historical depth only. A passing endpoint

@@ -17,10 +17,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `RpcUrl` (`EthereumNetworkConfig.RpcUrl` and `KnownNetworks` XML docs, README did:ethr and
   DI sections, PRD §8.9). New static `EthrRpcAutoConfig.ConfigureAsync` (in
   `NetDid.Method.Ethr`; no new package, no added dependencies) turns candidate public
-  endpoints — the built-in `DefaultCandidateEndpoints` for mainnet/sepolia/gnosis/polygon, or
+  endpoints — the built-in `DefaultCandidateEndpoints` for mainnet/Sepolia/Gnosis/Polygon/
+  Aurora/Energy Web Chain (the official deployments that are live with verifiable probe
+  data; the deprecated/defunct or unverifiable rest take caller-supplied candidates), or
   a caller-supplied map — into ready-to-use `EthereumNetworkConfig`s: per network, candidates
   are probed sequentially (first pass wins) with an `eth_chainId` identity check plus an
-  `eth_getLogs` query for hard-coded, on-chain-verified known-old registry events, mirroring
+  exact-block `eth_getLogs` query (the same query shape resolution itself issues, so
+  provider range caps cannot false-reject) for the earliest on-chain-verified registry
+  event on each network (mainnet: block 7,049,729, 2019-01-11), mirroring
   the reference-resolver maintainer's probing approach. Endpoints returning empty logs for
   the known-old probe (pruned/non-archive), reporting the wrong chain, failing transport, or
   exceeding the per-endpoint timeout (default 10 s) are discarded with an actionable log
@@ -38,7 +42,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   remote endpoint controls inner-exception text (duplicate-JSON-key `ArgumentException`
   quotes the attacker's key); a refusal-shape failure during the historical step names the
   archive cause; `perEndpointTimeout` is validated against `CancelAfter`'s ~49.7-day
-  ceiling; the shipped default-endpoint map is deep-immutable. Probing verifies
+  ceiling; the shipped default-endpoint map is deep-immutable. From the maintainer's PR
+  review (round 2): probes target each network's **earliest** verifiable event as a single
+  exact block — the original 2020-era mainnet window approved endpoints pruned before
+  block 10M that cannot resolve real 2019 DIDs, and the 41-block range could false-reject
+  providers with tight range caps that resolution never needs; log lines identify
+  endpoints by **scheme + host only** (RPC URLs routinely carry credentials in userinfo,
+  path, or query — none of it reaches logs on any outcome, pinned by sentinel-secret
+  tests); and input snapshotting is cancellable and bounded (64 network entries, 16
+  candidates per network, truncation logged). Probing verifies
   availability/depth only — a passing endpoint remains a single untrusted RPC node; the
   documented integrity model is unchanged. Probe data is structured for later alignment
   with the maintainer's companion auto-config list once published.

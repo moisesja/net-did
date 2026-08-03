@@ -43,15 +43,29 @@ public static class EthrRpcAutoConfig
     internal static readonly TimeSpan MaxPerEndpointTimeout =
         TimeSpan.FromMilliseconds(uint.MaxValue - 2);
 
+    // Snapshot bounds (PR #129 review round 2): caller-supplied IReadOnly*
+    // implementations are hostile — without a ceiling, materializing them is
+    // unbounded synchronous work before the first probe. The catalogue holds 12
+    // deployments and probing is sequential, so these are generous; excess is
+    // truncated with a logged count, never silently.
+    internal const int MaxCandidateNetworks = 64;
+    internal const int MaxCandidatesPerNetwork = 16;
+
     /// <summary>
-    /// Built-in candidate public endpoints for the major official deployments,
-    /// keyed by <see cref="KnownNetworks"/> name. Each network's list is ordered:
-    /// the first candidate that passes probing wins. Every first entry was verified
-    /// to serve the network's historical probe at implementation time (2026-08),
-    /// but public endpoints change policy without notice — that is exactly why
-    /// <see cref="ConfigureAsync"/> probes at startup instead of trusting this
-    /// list. Callers can pass their own dictionary (own keys, or extended lists)
-    /// instead.
+    /// Built-in candidate public endpoints for the official deployments that are
+    /// live and have verifiable historical probe data: mainnet, Sepolia, Gnosis,
+    /// Polygon, Aurora, and Energy Web Chain, keyed by <see cref="KnownNetworks"/>
+    /// name. The remaining catalogue entries ship no default — their networks are
+    /// deprecated/defunct (ARTIS, Polygon Mumbai, Linea Goerli) or expose no
+    /// verifiable probe data today (Holesky, Volta); configure those with
+    /// caller-supplied candidates, which pass on chain-ID validation and are
+    /// logged as UNVERIFIED for archive depth.
+    /// Each network's list is ordered: the first candidate that passes probing
+    /// wins. Every first entry was verified to serve the network's historical
+    /// probe at implementation time (2026-08), but public endpoints change policy
+    /// without notice — that is exactly why <see cref="ConfigureAsync"/> probes at
+    /// startup instead of trusting this list. Callers can pass their own
+    /// dictionary (own keys, or extended lists) instead.
     /// </summary>
     public static IReadOnlyDictionary<string, IReadOnlyList<string>> DefaultCandidateEndpoints { get; } =
         // ReadOnlyDictionary: a bare Dictionary here is process-wide mutable via
@@ -63,15 +77,22 @@ public static class EthrRpcAutoConfig
                 ["sepolia"] = ["https://sepolia.drpc.org", "https://ethereum-sepolia-rpc.publicnode.com"],
                 ["gno"]     = ["https://rpc.gnosischain.com", "https://gnosis.drpc.org"],
                 ["polygon"] = ["https://polygon.drpc.org", "https://1rpc.io/matic"],
+                ["aurora"]  = ["https://mainnet.aurora.dev"],
+                ["ewc"]     = ["https://rpc.energyweb.org"],
             });
 
     // ── Historical probes ─────────────────────────────────────────────────────
     // One entry per network, each an on-chain fact verified live via eth_getLogs
-    // against archive-serving endpoints on 2026-08-02/03 (never fabricated — a
-    // wrong probe would manufacture false verdicts in BOTH directions). Windows
-    // span at most 41 blocks inclusive: several public providers cap eth_getLogs
-    // ranges (1rpc.io: 50 blocks), and a probe must never be discarded for its
-    // range when the endpoint would have served the data.
+    // against archive-serving endpoints on 2026-08-02/04 (never fabricated — a
+    // wrong probe would manufacture false verdicts in BOTH directions).
+    //
+    // Each probe targets the EARLIEST registry event verifiable on its network
+    // (PR #129 review round 1 of this data used a 2020 mainnet event; the review
+    // showed real events at block 7,049,729 — a probe younger than the oldest
+    // real event approves endpoints that cannot resolve the oldest real DIDs).
+    // Each probe queries a SINGLE block (fromBlock == toBlock), matching the
+    // exact-block query shape resolution itself issues, so no provider range cap
+    // can fail the probe where resolution would have worked.
     //
     // Networks without an entry cannot have their historical depth verified;
     // ConfigureAsync then performs chain-ID validation only and logs a warning.
@@ -80,42 +101,55 @@ public static class EthrRpcAutoConfig
     // it so both ecosystems agree on what "serves historical data" means.
     internal static readonly IReadOnlyList<HistoricalLogProbe> HistoricalProbes =
     [
-        // Mainnet, legacy registry: events for this identity at blocks 10,001,725
-        // (DIDOwnerChanged) and 10,001,739 (DIDAttributeChanged), 2020-05-04.
+        // Mainnet, legacy registry: the earliest registry events on the network,
+        // block 7,049,729 (2019-01-11); this identity's DIDOwnerChanged there has
+        // previousChange = 0 (tx 0xfdc502228aff080dc84d1431e4ace65c94608d3c0d4de06b92b8d2eec5b4a571).
         new HistoricalLogProbe
         {
-            Network   = "mainnet",
-            Identity  = "0xf87e64e1fd8098fde28fb0852459dc839f35de94",
-            FromBlock = 10_001_700,
-            ToBlock   = 10_001_740,
+            Network  = "mainnet",
+            Identity = "0xee9bddd4cdd24174f91949293f415bfad57cfa22",
+            Block    = 7_049_729,
         },
         // Sepolia, current registry: earliest registry event on the network, a
         // DIDAttributeChanged for this identity at block 4,907,882 (2023-12-18).
         new HistoricalLogProbe
         {
-            Network   = "sepolia",
-            Identity  = "0x2ff0987ce5739e7ee45a9efd3b571c02c0a6db69",
-            FromBlock = 4_907_860,
-            ToBlock   = 4_907_900,
+            Network  = "sepolia",
+            Identity = "0x2ff0987ce5739e7ee45a9efd3b571c02c0a6db69",
+            Block    = 4_907_882,
         },
         // Gnosis, current registry: earliest registry events on the network, for
         // this identity at block 45,566,242 (2026-04). The registry saw no earlier
         // use on Gnosis, so this probe can only prove ~months of historical depth.
         new HistoricalLogProbe
         {
-            Network   = "gno",
-            Identity  = "0xed4abf0bba69c63e2657cf94693cc4a9070896a2",
-            FromBlock = 45_566_220,
-            ToBlock   = 45_566_260,
+            Network  = "gno",
+            Identity = "0xed4abf0bba69c63e2657cf94693cc4a9070896a2",
+            Block    = 45_566_242,
         },
         // Polygon, legacy registry: earliest registry event on the network, a
         // DIDDelegateChanged for this identity at block 32,524,522 (2022-08-31).
         new HistoricalLogProbe
         {
-            Network   = "polygon",
-            Identity  = "0x6bad09aacca8ce0add18056b52a578cc9ad86979",
-            FromBlock = 32_524_500,
-            ToBlock   = 32_524_540,
+            Network  = "polygon",
+            Identity = "0x6bad09aacca8ce0add18056b52a578cc9ad86979",
+            Block    = 32_524_522,
+        },
+        // Aurora: earliest registry event on the network, a DIDAttributeChanged
+        // for this identity at block 57,701,343 (2022-01-19).
+        new HistoricalLogProbe
+        {
+            Network  = "aurora",
+            Identity = "0x7a988202a04f00436f73972df4defd80c3a6bd13",
+            Block    = 57_701_343,
+        },
+        // Energy Web Chain: earliest registry event on the network, a
+        // DIDAttributeChanged for this identity at block 15,358,884 (2021-12-16).
+        new HistoricalLogProbe
+        {
+            Network  = "ewc",
+            Identity = "0x8af539d40fba097f2a306aa71b9386215927a183",
+            Block    = 15_358_884,
         },
     ];
 
@@ -126,11 +160,11 @@ public static class EthrRpcAutoConfig
     ///
     /// <para>Per network, candidates are tried sequentially and the first passing
     /// endpoint wins. A candidate passes when (a) its <c>eth_chainId</c> matches the
-    /// catalogue entry and (b) an <c>eth_getLogs</c> query for that network's
-    /// hard-coded known-old registry events returns at least one log that matches
-    /// the probe itself — registry address, probed identity topic, and a block
-    /// inside the probe window (a bare count would accept a provider that clamps
-    /// <c>fromBlock</c> to its retained range). A candidate
+    /// catalogue entry and (b) an exact-block <c>eth_getLogs</c> query (the same
+    /// query shape resolution itself issues) for that network's earliest verifiable
+    /// registry event returns a log matching the probe itself — registry address,
+    /// probed identity topic, and the probed block (a bare count would accept a
+    /// provider that clamps <c>fromBlock</c> to its retained range). A candidate
     /// failing either check — or failing transport, timing out, or answering
     /// malformed data — is discarded with a logged reason and the next candidate is
     /// tried. Networks with no historical probe data are configured after the
@@ -143,12 +177,16 @@ public static class EthrRpcAutoConfig
     /// Candidate endpoint URLs per network, keyed by <see cref="KnownNetworks"/>
     /// name or hex chain ID; <c>null</c> uses <see cref="DefaultCandidateEndpoints"/>.
     /// Keys that match no known deployment, and candidates that are not absolute
-    /// http/https URLs, are skipped with a logged reason.
+    /// http/https URLs, are skipped with a logged reason. Input is snapshotted once
+    /// at entry under documented bounds (64 network entries, 16 candidates per
+    /// network; excess is truncated with a logged count).
     /// </param>
     /// <param name="logger">
     /// Sink for per-endpoint decisions (each discarded endpoint is logged with its
-    /// reason). Logging is best-effort: a throwing provider never breaks
-    /// configuration.
+    /// reason). Log lines identify endpoints by scheme + host (+ non-default port)
+    /// only — RPC URLs routinely embed credentials in userinfo, path, or query, and
+    /// none of those parts (nor endpoint response content) ever reaches the sink.
+    /// Logging is best-effort: a throwing provider never breaks configuration.
     /// </param>
     /// <param name="perEndpointTimeout">
     /// Deadline for probing one candidate endpoint (both probe requests together);
@@ -194,17 +232,53 @@ public static class EthrRpcAutoConfig
         // Snapshot lists via their ENUMERATOR explicitly — a collection-expression
         // spread takes the ICollection Count/CopyTo fast path, which a hostile list
         // can answer differently from its enumerator (and a lying huge Count would
-        // allocate unbounded).
+        // allocate unbounded). The snapshot itself is a cancellable, bounded loop:
+        // the token is checked before and during materialization, and entries/
+        // candidates beyond the documented caps are truncated with a logged count —
+        // a nonterminating hostile enumerable must not run before the first probe.
+        ct.ThrowIfCancellationRequested();
         var snapshot = new List<(string Key, List<string?> Urls)>();
+        var networksTruncated = 0;
         foreach (var pair in candidateEndpoints ?? DefaultCandidateEndpoints)
         {
+            ct.ThrowIfCancellationRequested();
+            if (snapshot.Count >= MaxCandidateNetworks)
+            {
+                networksTruncated++;
+                if (networksTruncated > MaxCandidateNetworks)
+                    break; // hostile dictionary enumerator: stop counting, stop reading
+                continue;
+            }
+
             var urls = new List<string?>();
+            var candidatesTruncated = false;
             if (pair.Value is { } candidateList)
             {
                 foreach (var url in candidateList)
+                {
+                    ct.ThrowIfCancellationRequested();
+                    if (urls.Count >= MaxCandidatesPerNetwork)
+                    {
+                        candidatesTruncated = true;
+                        break;
+                    }
                     urls.Add(url);
+                }
+            }
+            if (candidatesTruncated)
+            {
+                LogSafe(log, LogLevel.Warning,
+                    "did:ethr auto-config: candidate list for key '{Key}' truncated to " +
+                    "the first {Cap} entries.", pair.Key, MaxCandidatesPerNetwork);
             }
             snapshot.Add((pair.Key, urls));
+        }
+        if (networksTruncated > 0)
+        {
+            LogSafe(log, LogLevel.Warning,
+                "did:ethr auto-config: candidate map truncated to the first {Cap} " +
+                "network entries ({Dropped}+ dropped).",
+                MaxCandidateNetworks, networksTruncated);
         }
 
         // Resolve keys against the deployment catalogue; dedupe aliases of the same
@@ -244,18 +318,27 @@ public static class EthrRpcAutoConfig
             var probe = FindProbe(network.Name);
             string? healthyUrl = null;
 
-            foreach (var url in urls)
+            for (var candidateIndex = 0; candidateIndex < urls.Count; candidateIndex++)
             {
+                var url = urls[candidateIndex];
                 ct.ThrowIfCancellationRequested();
+
+                // RPC URLs routinely carry credentials (userinfo, Infura/Alchemy
+                // project keys in the path, query tokens). Log lines therefore use a
+                // sanitized endpoint label — scheme + host (+ non-default port) —
+                // never the raw URL. An unparseable candidate cannot be sanitized,
+                // so only its position is logged.
                 if (url is null
                     || !Uri.TryCreate(url, UriKind.Absolute, out var uri)
                     || (uri.Scheme != Uri.UriSchemeHttps && uri.Scheme != Uri.UriSchemeHttp))
                 {
                     LogSafe(log, LogLevel.Warning,
-                        "did:ethr auto-config: candidate '{Url}' for network '{Network}' " +
-                        "discarded: not an absolute http(s) URL.", url, network.Name);
+                        "did:ethr auto-config: candidate {Endpoint} for network '{Network}' " +
+                        "discarded: not an absolute http(s) URL.",
+                        SanitizeEndpoint(url, candidateIndex), network.Name);
                     continue;
                 }
+                var endpoint = SanitizeEndpoint(uri);
 
                 var candidate = network with { RpcUrl = url };
                 var outcome = await ProbeCandidateAsync(clientFactory, candidate, probe, timeout, ct);
@@ -265,49 +348,49 @@ public static class EthrRpcAutoConfig
                 {
                     case ProbeOutcomeKind.Passed:
                         LogSafe(log, LogLevel.Information,
-                            "did:ethr auto-config: endpoint '{Url}' selected for network " +
+                            "did:ethr auto-config: endpoint {Endpoint} selected for network " +
                             "'{Network}': chain ID matches and the known-historical probe " +
-                            "(blocks {FromBlock}-{ToBlock}) returned logs.",
-                            url, network.Name, probe!.FromBlock, probe.ToBlock);
+                            "(block {ProbeBlock}) returned a matching log.",
+                            endpoint, network.Name, probe!.Block);
                         healthyUrl = url;
                         break;
 
                     case ProbeOutcomeKind.PassedUnverified:
                         LogSafe(log, LogLevel.Warning,
-                            "did:ethr auto-config: endpoint '{Url}' selected for network " +
+                            "did:ethr auto-config: endpoint {Endpoint} selected for network " +
                             "'{Network}' after chain-ID validation only — no historical " +
                             "probe data exists for this network, so archive-grade " +
                             "eth_getLogs serving is UNVERIFIED; resolution of DIDs with " +
                             "old events may still fail against this endpoint.",
-                            url, network.Name);
+                            endpoint, network.Name);
                         healthyUrl = url;
                         break;
 
                     case ProbeOutcomeKind.WrongChainId:
                         LogSafe(log, LogLevel.Warning,
-                            "did:ethr auto-config: endpoint '{Url}' for network '{Network}' " +
+                            "did:ethr auto-config: endpoint {Endpoint} for network '{Network}' " +
                             "discarded: eth_chainId returned {ActualChainId}, expected " +
                             "{ExpectedChainId}.",
-                            url, network.Name, outcome.ActualChainId, network.ChainId);
+                            endpoint, network.Name, outcome.ActualChainId, network.ChainId);
                         break;
 
                     case ProbeOutcomeKind.NoHistoricalLogs:
                         LogSafe(log, LogLevel.Warning,
-                            "did:ethr auto-config: endpoint '{Url}' for network '{Network}' " +
-                            "discarded: eth_getLogs returned no logs matching the known-old " +
-                            "registry events (blocks {FromBlock}-{ToBlock}) — the endpoint " +
-                            "does not serve archive/historical data. did:ethr resolution " +
-                            "requires an archive-grade endpoint; supply one with historical " +
-                            "eth_getLogs support.",
-                            url, network.Name, probe!.FromBlock, probe.ToBlock);
+                            "did:ethr auto-config: endpoint {Endpoint} for network '{Network}' " +
+                            "discarded: eth_getLogs returned no log matching the known-old " +
+                            "registry event at block {ProbeBlock} — the endpoint does not " +
+                            "serve archive/historical data. did:ethr resolution requires an " +
+                            "archive-grade endpoint; supply one with historical eth_getLogs " +
+                            "support.",
+                            endpoint, network.Name, probe!.Block);
                         break;
 
                     case ProbeOutcomeKind.TimedOut:
                         LogSafe(log, LogLevel.Warning,
-                            "did:ethr auto-config: endpoint '{Url}' for network '{Network}' " +
+                            "did:ethr auto-config: endpoint {Endpoint} for network '{Network}' " +
                             "discarded: the probe was cancelled by the per-endpoint deadline " +
                             "({Timeout}) or the RPC client's per-request bound.",
-                            url, network.Name, timeout);
+                            endpoint, network.Name, timeout);
                         break;
 
                     // Failure text is bounded TYPE NAMES only: the exception object is
@@ -317,23 +400,23 @@ public static class EthrRpcAutoConfig
                     // standard providers render the full chain.
                     case ProbeOutcomeKind.Failed when outcome.HistoricalStage:
                         LogSafe(log, LogLevel.Warning,
-                            "did:ethr auto-config: endpoint '{Url}' for network '{Network}' " +
-                            "discarded: the historical-logs probe for known-old registry " +
-                            "events (blocks {FromBlock}-{ToBlock}) failed ({FailureType}; " +
+                            "did:ethr auto-config: endpoint {Endpoint} for network '{Network}' " +
+                            "discarded: the historical-logs probe for the known-old registry " +
+                            "event at block {ProbeBlock} failed ({FailureType}; " +
                             "innermost {RootFailureType}) — the endpoint likely does not " +
                             "serve archive/historical eth_getLogs (some providers refuse " +
                             "archive queries outside a paid tier); supply an archive-grade " +
                             "endpoint.",
-                            url, network.Name, probe!.FromBlock, probe.ToBlock,
+                            endpoint, network.Name, probe!.Block,
                             FailureTypeName(outcome.Failure), RootFailureTypeName(outcome.Failure));
                         break;
 
                     default:
                         LogSafe(log, LogLevel.Warning,
-                            "did:ethr auto-config: endpoint '{Url}' for network '{Network}' " +
+                            "did:ethr auto-config: endpoint {Endpoint} for network '{Network}' " +
                             "discarded: the probe request failed ({FailureType}; innermost " +
                             "{RootFailureType}).",
-                            url, network.Name,
+                            endpoint, network.Name,
                             FailureTypeName(outcome.Failure), RootFailureTypeName(outcome.Failure));
                         break;
                 }
@@ -456,12 +539,15 @@ public static class EthrRpcAutoConfig
             if (probe is null)
                 return new ProbeOutcome(ProbeOutcomeKind.PassedUnverified);
 
+            // Exact-block query (fromBlock == toBlock): the same shape resolution
+            // itself issues per history block, so a provider range cap that would
+            // not affect resolution cannot fail the probe either.
             var paddedIdentity = PadIdentityTopic(probe.Identity);
             var filter = new EthereumLogFilter
             {
                 Address   = candidate.RegistryAddress,
-                FromBlock = probe.FromBlock,
-                ToBlock   = probe.ToBlock,
+                FromBlock = probe.Block,
+                ToBlock   = probe.Block,
                 Topics    = [null, [paddedIdentity]],
             };
             historicalStage = true;
@@ -495,11 +581,11 @@ public static class EthrRpcAutoConfig
 
     /// <summary>
     /// A probe pass requires at least one returned log that actually matches what
-    /// was asked for: the registry address, the probed identity topic, and a block
-    /// inside the probe window. Counting alone is not evidence — a provider that
-    /// silently clamps <c>fromBlock</c> to its earliest retained block (observed
-    /// real-world behavior), or a hostile endpoint fabricating an arbitrary log,
-    /// would otherwise pass while serving no historical data at all. Matching is
+    /// was asked for: the registry address, the probed identity topic, and the
+    /// probed block. Counting alone is not evidence — a provider that silently
+    /// clamps <c>fromBlock</c> to its earliest retained block (observed real-world
+    /// behavior), or a hostile endpoint fabricating an arbitrary log, would
+    /// otherwise pass while serving no historical data at all. Matching is
     /// case-insensitive (nodes may emit checksummed/uppercase hex).
     /// </summary>
     private static bool AnyLogMatchesProbe(
@@ -520,12 +606,30 @@ public static class EthrRpcAutoConfig
                 || !string.Equals(topics[1], paddedIdentity, StringComparison.OrdinalIgnoreCase))
                 continue;
             if (!TryParseHexQuantity(entry.BlockNumber, out var block)
-                || block < probe.FromBlock || block > probe.ToBlock)
+                || block != probe.Block)
                 continue;
             return true;
         }
         return false;
     }
+
+    /// <summary>
+    /// Endpoint label safe for logs: scheme + host (+ non-default port). RPC URLs
+    /// routinely embed credentials — userinfo, provider project keys in the path,
+    /// query tokens — so the raw URL must never reach a log sink, on any outcome.
+    /// </summary>
+    private static string SanitizeEndpoint(Uri uri)
+        => uri.IsDefaultPort
+            ? $"{uri.Scheme}://{uri.Host}"
+            : $"{uri.Scheme}://{uri.Host}:{uri.Port}";
+
+    /// <summary>Sanitized label for a candidate that failed URL validation: a
+    /// parseable-but-wrong-scheme candidate yields its scheme + host; anything
+    /// unparseable yields only its position (its text cannot be sanitized).</summary>
+    private static string SanitizeEndpoint(string? url, int candidateIndex)
+        => url is not null && Uri.TryCreate(url, UriKind.Absolute, out var uri)
+            ? $"'{SanitizeEndpoint(uri)}'"
+            : $"#{candidateIndex}";
 
     private static bool TryParseChainId(string? chainId, out ulong value)
         => TryParseHexQuantity(chainId, out value);
@@ -599,21 +703,20 @@ public static class EthrRpcAutoConfig
 /// A known-old, on-chain-verified ERC-1056 event query used to test whether an
 /// endpoint serves historical <c>eth_getLogs</c>: at least one event for
 /// <see cref="Identity"/> is known to exist on <see cref="Network"/>'s registry
-/// within [<see cref="FromBlock"/>, <see cref="ToBlock"/>], so an empty answer
-/// means the endpoint does not serve data that old.
+/// at exactly <see cref="Block"/> — the earliest verifiable registry event on
+/// that network — so an empty answer means the endpoint does not serve the
+/// oldest data resolution can legitimately need. The probe queries the single
+/// block (<c>fromBlock == toBlock</c>), the same query shape resolution itself
+/// issues, so provider range caps cannot fail a probe where resolution works.
 /// </summary>
 internal sealed record HistoricalLogProbe
 {
     /// <summary>The <see cref="KnownNetworks"/> name this probe belongs to.</summary>
     public required string Network { get; init; }
 
-    /// <summary>Identity address (0x-prefixed) with known events in the window.</summary>
+    /// <summary>Identity address (0x-prefixed) with a known event at <see cref="Block"/>.</summary>
     public required string Identity { get; init; }
 
-    /// <summary>Inclusive start of the probe block window.</summary>
-    public required ulong FromBlock { get; init; }
-
-    /// <summary>Inclusive end of the probe block window (kept ≤ 40 blocks after
-    /// <see cref="FromBlock"/> to stay under public providers' range caps).</summary>
-    public required ulong ToBlock { get; init; }
+    /// <summary>The single block probed (earliest verifiable registry event).</summary>
+    public required ulong Block { get; init; }
 }

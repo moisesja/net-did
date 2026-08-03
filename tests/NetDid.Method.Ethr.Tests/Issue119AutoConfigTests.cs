@@ -43,7 +43,7 @@ public class Issue119AutoConfigTests
     }
 
     /// <summary>A log entry that genuinely satisfies the network's historical probe:
-    /// registry address, padded identity topic, and an in-window block number.</summary>
+    /// registry address, padded identity topic, and the exact probed block.</summary>
     private static EthereumLogEntry MatchingProbeLog(EthereumNetworkConfig network)
     {
         var probe = EthrRpcAutoConfig.FindProbe(network.Name)!;
@@ -56,7 +56,7 @@ public class Issue119AutoConfigTests
                 "0x000000000000000000000000" + probe.Identity[2..],
             ],
             Data = "0x",
-            BlockNumber = "0x" + (probe.FromBlock + 1).ToString("x"),
+            BlockNumber = "0x" + probe.Block.ToString("x"),
             LogIndex = 0,
         };
     }
@@ -167,8 +167,10 @@ public class Issue119AutoConfigTests
         var probe = EthrRpcAutoConfig.FindProbe("mainnet")!;
         seen.Should().NotBeNull();
         seen!.Address.Should().Be(KnownNetworks.Mainnet.RegistryAddress);
-        seen.FromBlock.Should().Be(probe.FromBlock);
-        seen.ToBlock.Should().Be(probe.ToBlock);
+        // Round 2: exact-block probing — the same query shape resolution issues,
+        // so provider range caps below 41 blocks cannot cause a false reject.
+        seen.FromBlock.Should().Be(probe.Block);
+        seen.ToBlock.Should().Be(probe.Block);
         seen.Topics.Should().HaveCount(2);
         seen.Topics![0].Should().BeNull("topic0 (event signature) must match any event kind");
         seen.Topics[1].Should().ContainSingle().Which.Should().Be(
@@ -511,8 +513,8 @@ public class Issue119AutoConfigTests
         var matching = MatchingProbeLog(KnownNetworks.Mainnet);
         var shapes = new Dictionary<string, EthereumLogEntry>
         {
-            ["below window"] = matching with { BlockNumber = "0x" + (probe.FromBlock - 1).ToString("x") },
-            ["above window"] = matching with { BlockNumber = "0x" + (probe.ToBlock + 1).ToString("x") },
+            ["below probed block"] = matching with { BlockNumber = "0x" + (probe.Block - 1).ToString("x") },
+            ["above probed block"] = matching with { BlockNumber = "0x" + (probe.Block + 1).ToString("x") },
             ["foreign address"] = matching with { Address = "0x" + new string('d', 40) },
             ["foreign identity topic"] = matching with
             {
@@ -685,6 +687,215 @@ public class Issue119AutoConfigTests
             .Should().BeNull("the shipped defaults must not be mutable via downcast");
     }
 
+    // ── Review round 2 (PR #129): probe depth, credential-safe logs, boundary ─
+
+    /// <summary>An endpoint that serves (and fabricates perfectly matching answers
+    /// for) any eth_getLogs query at or above <c>minServedBlock</c>, and returns
+    /// empty below it — the shape of a provider pruned before that block.</summary>
+    private static IEthereumRpcClient PrunedBelowRpc(ulong chainId, ulong minServedBlock)
+    {
+        var rpc = Substitute.For<IEthereumRpcClient>();
+        rpc.GetChainIdAsync(Arg.Any<CancellationToken>()).Returns(chainId);
+        rpc.GetLogsAsync(Arg.Any<EthereumLogFilter>(), Arg.Any<CancellationToken>())
+           .Returns(call =>
+           {
+               var filter = call.Arg<EthereumLogFilter>();
+               if (filter.FromBlock < minServedBlock)
+                   return Task.FromResult<IReadOnlyList<EthereumLogEntry>>([]);
+               return Task.FromResult<IReadOnlyList<EthereumLogEntry>>(
+               [
+                   new EthereumLogEntry
+                   {
+                       Address = filter.Address,
+                       Topics =
+                       [
+                           "0x" + new string('a', 64),
+                           filter.Topics?[1]?[0] ?? "0x" + new string('b', 64),
+                       ],
+                       Data = "0x",
+                       BlockNumber = "0x" + filter.FromBlock.ToString("x"),
+                       LogIndex = 0,
+                   },
+               ]);
+           });
+        return rpc;
+    }
+
+    [Fact]
+    public async Task Issue119_EndpointPrunedBefore10M_MainnetProbe_Rejected()
+    {
+        // Review round 2, finding 1 (HIGH): real mainnet registry events exist at
+        // block 7,049,729 (2019-01-11; identity 0xee9b…cfa22, previousChange = 0,
+        // verified live). An endpoint pruned before block 10M can resolve NO 2019
+        // DID, yet the original 10,001,700-window probe approved it. The mainnet
+        // probe must use the oldest verifiable event, so such an endpoint fails.
+        var logger = new RecordingLogger();
+        var result = await RunAsync(
+            new Dictionary<string, IReadOnlyList<string>> { ["mainnet"] = [MainnetUrl] },
+            _ => (PrunedBelowRpc(1, minServedBlock: 10_000_000), null), logger);
+
+        result.Should().BeEmpty(
+            "an endpoint that cannot serve the oldest real mainnet registry events must not pass");
+        logger.Entries.Should().Contain(e => e.Message.Contains("archive"));
+    }
+
+    // ── Round 2, finding 3 (HIGH): no credential material may reach logs ─────
+
+    private const string SecretUrl =
+        "https://user:SECRETPASS@rpc.example/v3/SECRETKEY?token=SECRETQUERY";
+    private static readonly string[] Sentinels = ["SECRETPASS", "SECRETKEY", "SECRETQUERY"];
+
+    private static void AssertNoSentinel(RecordingLogger logger)
+        => logger.Entries.Should().OnlyContain(
+            e => !Sentinels.Any(s => e.Message.Contains(s)),
+            "credentials embedded in RPC URLs (userinfo, path, query) must never reach logs");
+
+    [Fact]
+    public async Task Issue119_SecretUrl_SelectedEndpoint_LogsSanitizedHostOnly()
+    {
+        var logger = new RecordingLogger();
+        var result = await RunAsync(
+            new Dictionary<string, IReadOnlyList<string>> { ["mainnet"] = [SecretUrl] },
+            _ => (HealthyRpc(1, KnownNetworks.Mainnet), null), logger);
+
+        // The returned config must keep the full URL (it is the working endpoint) …
+        result.Should().ContainSingle().Which.RpcUrl.Should().Be(SecretUrl);
+        // … while every log line carries at most scheme + host.
+        AssertNoSentinel(logger);
+        logger.Entries.Should().Contain(e => e.Message.Contains("rpc.example"));
+    }
+
+    [Fact]
+    public async Task Issue119_SecretUrl_EveryDiscardShape_NeverLogsSecrets()
+    {
+        var shapes = new Dictionary<string, IEthereumRpcClient>
+        {
+            ["pruned"] = PrunedRpc(1),
+            ["wrong chain"] = HealthyRpc(chainId: 137, KnownNetworks.Mainnet),
+            ["transport failure"] = MakeThrowingRpc(new HttpRequestException("refused")),
+            ["hung"] = MakeHungRpc(),
+        };
+        foreach (var (label, rpc) in shapes)
+        {
+            var logger = new RecordingLogger();
+            var result = await RunAsync(
+                new Dictionary<string, IReadOnlyList<string>> { ["mainnet"] = [SecretUrl] },
+                _ => (rpc, null), logger,
+                perEndpointTimeout: TimeSpan.FromMilliseconds(200));
+
+            result.Should().BeEmpty($"({label}) endpoint must be discarded");
+            AssertNoSentinel(logger);
+        }
+    }
+
+    private static IEthereumRpcClient MakeThrowingRpc(Exception ex)
+    {
+        var rpc = Substitute.For<IEthereumRpcClient>();
+        rpc.GetChainIdAsync(Arg.Any<CancellationToken>()).Returns<ulong>(_ => throw ex);
+        return rpc;
+    }
+
+    private static IEthereumRpcClient MakeHungRpc()
+    {
+        var rpc = Substitute.For<IEthereumRpcClient>();
+        rpc.GetChainIdAsync(Arg.Any<CancellationToken>())
+           .Returns(new TaskCompletionSource<ulong>().Task);
+        return rpc;
+    }
+
+    [Fact]
+    public async Task Issue119_SecretInUnparseableCandidate_NeverLogged()
+    {
+        // An unparseable candidate cannot be sanitized by Uri parsing, so nothing
+        // of it may be logged — only its position.
+        var logger = new RecordingLogger();
+        var result = await RunAsync(
+            new Dictionary<string, IReadOnlyList<string>>
+            {
+                ["mainnet"] = ["https://user:SECRETPASS@bad url with spaces"],
+            },
+            _ => throw new InvalidOperationException("must not construct a client"), logger);
+
+        result.Should().BeEmpty();
+        AssertNoSentinel(logger);
+        logger.Entries.Should().Contain(e => e.Message.Contains("not an absolute http(s) URL"));
+    }
+
+    // ── Round 2, finding 5: snapshot boundary — cancellation and caps ────────
+
+    /// <summary>An enumerable whose enumeration never terminates; counts MoveNext
+    /// calls so tests can prove enumeration was aborted (or never started).</summary>
+    private sealed class NonTerminatingList : IReadOnlyList<string>
+    {
+        public int MoveNextCalls;
+        public string this[int index] => MainnetUrl;
+        public int Count => int.MaxValue;
+        public IEnumerator<string> GetEnumerator()
+        {
+            while (true)
+            {
+                MoveNextCalls++;
+                yield return MainnetUrl;
+            }
+        }
+        System.Collections.IEnumerator System.Collections.IEnumerable.GetEnumerator()
+            => GetEnumerator();
+    }
+
+    [Fact]
+    public async Task Issue119_PreCancelledToken_DoesNotEnumerateCallerInput()
+    {
+        using var cts = new CancellationTokenSource();
+        cts.Cancel();
+        var hostile = new NonTerminatingList();
+
+        var act = () => RunAsync(
+            new Dictionary<string, IReadOnlyList<string>> { ["mainnet"] = hostile },
+            _ => (HealthyRpc(1, KnownNetworks.Mainnet), null), ct: cts.Token);
+
+        await act.Should().ThrowAsync<OperationCanceledException>();
+        hostile.MoveNextCalls.Should().Be(0,
+            "a pre-cancelled call must not enumerate hostile caller input at all");
+    }
+
+    [Fact]
+    public async Task Issue119_CandidatesPerNetwork_CappedWithLoggedTruncation()
+    {
+        // A non-terminating candidate list must be bounded by the per-network cap
+        // rather than enumerated forever.
+        var hostile = new NonTerminatingList();
+        var probed = 0;
+        var logger = new RecordingLogger();
+
+        var result = await RunAsync(
+            new Dictionary<string, IReadOnlyList<string>> { ["mainnet"] = hostile },
+            candidate =>
+            {
+                probed++;
+                return (PrunedRpc(1), null);
+            }, logger);
+
+        result.Should().BeEmpty();
+        probed.Should().Be(EthrRpcAutoConfig.MaxCandidatesPerNetwork);
+        logger.Entries.Should().Contain(e => e.Message.Contains("truncated"),
+            "silent truncation would read as full coverage");
+    }
+
+    [Fact]
+    public async Task Issue119_NetworkEntries_CappedWithLoggedTruncation()
+    {
+        var candidates = new Dictionary<string, IReadOnlyList<string>>();
+        for (var i = 0; i < EthrRpcAutoConfig.MaxCandidateNetworks + 5; i++)
+            candidates[$"bogus-network-{i}"] = [MainnetUrl];
+        var logger = new RecordingLogger();
+
+        var result = await RunAsync(candidates,
+            _ => throw new InvalidOperationException("unknown keys are never probed"), logger);
+
+        result.Should().BeEmpty();
+        logger.Entries.Should().Contain(e => e.Message.Contains("truncated"));
+    }
+
     // ── Shipped data invariants ──────────────────────────────────────────────
 
     [Fact]
@@ -710,10 +921,16 @@ public class Issue119AutoConfigTests
                 $"probe network '{probe.Network}' must be a known deployment");
             probe.Identity.Should().MatchRegex("^0x[0-9a-f]{40}$",
                 "identity must be a canonical lowercase address");
-            probe.ToBlock.Should().BeGreaterThan(probe.FromBlock);
-            (probe.ToBlock - probe.FromBlock).Should().BeLessOrEqualTo(40,
-                "windows must stay under public providers' eth_getLogs range caps");
+            probe.Block.Should().BeGreaterThan(0);
         }
+
+        // Round 2, finding 1: the mainnet probe is pinned to the EARLIEST known
+        // registry event (block 7,049,729, 2019-01-11, previousChange = 0). A
+        // younger probe approves endpoints that cannot resolve the oldest real
+        // DIDs — exactly the false assurance this feature exists to prevent.
+        var mainnet = EthrRpcAutoConfig.FindProbe("mainnet")!;
+        mainnet.Block.Should().Be(7_049_729);
+        mainnet.Identity.Should().Be("0xee9bddd4cdd24174f91949293f415bfad57cfa22");
     }
 
     [Fact]

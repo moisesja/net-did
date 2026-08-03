@@ -594,13 +594,18 @@ cause — never a silently truncated document — but only at resolve time, per 
 
 To get working endpoints without hand-curating URLs, use the opt-in
 `EthrRpcAutoConfig` bootstrap (no extra package, no new dependencies). It probes candidate
-public endpoints the way the reference resolver maintainer recommends — an `eth_getLogs`
-query for hard-coded, on-chain-verified *known-old* registry events — and discards any
-endpoint that returns no logs matching them (registry, identity, block window — so a
-provider that silently clamps the queried range cannot pass), logging the reason:
+public endpoints the way the reference resolver maintainer recommends — an exact-block
+`eth_getLogs` query (the same query shape resolution itself issues, so provider range caps
+cannot cause a false reject) for the **earliest on-chain-verified registry event** on each
+network — and discards any endpoint that returns no log matching the probe (registry,
+identity, exact block — so a provider that silently clamps the queried range cannot pass),
+logging the reason. Probing to the earliest event matters: mainnet has real registry events
+back to block 7,049,729 (January 2019), and an endpoint pruned anywhere above that would
+pass a shallower probe yet fail those DIDs.
 
 ```csharp
-// Probe the built-in candidate endpoints (mainnet, sepolia, gnosis, polygon) …
+// Probe the built-in candidate endpoints
+// (mainnet, sepolia, gnosis, polygon, aurora, ewc) …
 IReadOnlyList<EthereumNetworkConfig> networks =
     await EthrRpcAutoConfig.ConfigureAsync(logger: logger);
 
@@ -615,12 +620,24 @@ var method = new DidEthrMethod(factory, networks, keyGenerator);   // or builder
 ```
 
 Per network, candidates are tried in order and the first one passing both checks wins:
-`eth_chainId` must match the catalogue entry, and the known-old probe must return logs.
-Endpoints that fail transport, time out (default 10 s per endpoint, tune with
+`eth_chainId` must match the catalogue entry, and the earliest-event probe must return a
+matching log. Endpoints that fail transport, time out (default 10 s per endpoint, tune with
 `perEndpointTimeout`), or answer with an empty log set are discarded with an actionable
 log message; a network with no passing candidate is omitted from the result. Networks
 without hard-coded probe data pass on the chain-ID check alone and are logged as
 unverified for archive depth.
+
+Built-in defaults and probe data cover the six official deployments that are live and
+verifiable today: mainnet, Sepolia, Gnosis, Polygon, Aurora, and Energy Web Chain. The
+remaining catalogue entries (ARTIS, Polygon Mumbai, Linea Goerli — deprecated or defunct —
+plus Holesky and Volta, which expose no verifiable probe data) take caller-supplied
+candidates and the unverified-depth handling above.
+
+Log output identifies endpoints by scheme + host only — RPC URLs routinely embed
+credentials (userinfo, provider keys in the path, query tokens), and none of that, nor any
+endpoint response content, ever reaches the log sink. Caller input is snapshotted once at
+entry under documented bounds (64 network entries, 16 candidates per network; excess is
+truncated with a logged count).
 
 Probing is a **quality filter, not an integrity guarantee**: a passing endpoint is still a
 single untrusted RPC node that could forge a self-consistent event history. The probe data
