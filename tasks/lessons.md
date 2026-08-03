@@ -490,3 +490,26 @@
   port); for unparseable input log only its position (unparseable means unsanitizable);
   pin with sentinel-secret tests across every outcome shape. "The caller supplied it" does
   not make it safe to persist in logs. (PR #129 review round 2, finding 3.)
+- Fail-first evidence must FAIL ON AN ASSERTION, quickly and deterministically. A test that
+  wedges/OOMs against pre-fix code (a NonTerminatingList enumerated by unbounded pre-fix
+  snapshotting "failed" only via ~45 s memory-pressure death) is not reproducible evidence
+  and can hang the suite on bigger machines. Design the hostile double so the pre-fix
+  outcome is a fast, clean failure (throw-on-first-access to prove "never touched"; a
+  finite Max+N sequence to prove cap semantics); keep genuinely infinite adversaries out
+  of in-process test runs. (PR #129 round 3, finding 5.)
+- Before claiming "same request/query shape as <component>", diff against that component's
+  ACTUAL request field-by-field — block range AND every topic position AND address. The
+  probe claimed resolution's shape after matching only the block range; resolution also
+  sends a topic0 signature OR-list, and a wildcard topic0 is a DIFFERENT request class
+  providers may limit independently. Pin shape parity with a test that asserts the full
+  filter, not the one field that motivated the claim. (PR #129 round 3, finding 4.)
+- Caller-controlled map KEYS are the same log-injection/credential surface as values:
+  CR/LF keys forge log lines, huge keys flood, URL-shaped keys carry secrets. Identify
+  invalid entries by ordinal and valid ones by their canonical catalogue name; never echo
+  the raw key. "It's just a dictionary key" is not a sanitization exemption. (PR #129
+  round 3, finding 2.)
+- An issue's acceptance criterion is the ISSUE OWNER's to amend: implement the honest
+  subset, make the gap STRUCTURAL (a documented exclusion set + a partition invariant
+  test that fails when an entry is silently in neither set), and propose the narrowing on
+  the issue itself for sign-off with a follow-up issue — do not declare it narrowed in
+  the PRD/README from the PR side. (PR #129 round 3, finding 3.)
