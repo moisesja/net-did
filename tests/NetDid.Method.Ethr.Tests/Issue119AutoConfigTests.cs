@@ -52,7 +52,7 @@ public class Issue119AutoConfigTests
             Address = network.RegistryAddress,
             Topics =
             [
-                "0x" + new string('a', 64),
+                NetDid.Method.Ethr.Erc1056.Erc1056Topics.DIDOwnerChanged,
                 "0x000000000000000000000000" + probe.Identity[2..],
             ],
             Data = "0x",
@@ -172,7 +172,13 @@ public class Issue119AutoConfigTests
         seen.FromBlock.Should().Be(probe.Block);
         seen.ToBlock.Should().Be(probe.Block);
         seen.Topics.Should().HaveCount(2);
-        seen.Topics![0].Should().BeNull("topic0 (event signature) must match any event kind");
+        // Round 3, finding 4: topic0 must be the resolver's own signature OR-list —
+        // a wildcard contract scan is a DIFFERENT request class that some providers
+        // limit even when they serve the resolver's selective filter.
+        seen.Topics![0].Should().Equal(
+            NetDid.Method.Ethr.Erc1056.Erc1056Topics.DIDOwnerChanged,
+            NetDid.Method.Ethr.Erc1056.Erc1056Topics.DIDDelegateChanged,
+            NetDid.Method.Ethr.Erc1056.Erc1056Topics.DIDAttributeChanged);
         seen.Topics[1].Should().ContainSingle().Which.Should().Be(
             "0x000000000000000000000000" + probe.Identity[2..].ToLowerInvariant());
     }
@@ -271,15 +277,18 @@ public class Issue119AutoConfigTests
     // ── Input hygiene: keys, aliases, URLs, snapshot ─────────────────────────
 
     [Fact]
-    public async Task Issue119_UnknownNetworkKey_SkippedWithLog()
+    public async Task Issue119_UnknownNetworkKey_SkippedWithOrdinalLog()
     {
+        // Round 3, finding 2: the key itself is caller-controlled text and must not
+        // be logged raw — the skipped entry is identified by its map position.
         var logger = new RecordingLogger();
         var result = await RunAsync(
             new Dictionary<string, IReadOnlyList<string>> { ["not-a-network"] = [MainnetUrl] },
             _ => throw new InvalidOperationException("must not construct a client"), logger);
 
         result.Should().BeEmpty();
-        logger.Entries.Should().Contain(e => e.Message.Contains("not-a-network"));
+        logger.Entries.Should().Contain(e =>
+            e.Message.Contains("entry #0") && !e.Message.Contains("not-a-network"));
     }
 
     [Fact]
@@ -522,6 +531,12 @@ public class Issue119AutoConfigTests
             },
             ["missing identity topic"] = matching with { Topics = [matching.Topics[0]] },
             ["malformed block number"] = matching with { BlockNumber = "bogus" },
+            // Round 3, finding 4: topic0 outside the resolver's signature OR-list is
+            // not an ERC-1056 registry event and must not prove archive depth.
+            ["foreign event signature"] = matching with
+            {
+                Topics = ["0x" + new string('e', 64), matching.Topics[1]],
+            },
         };
 
         foreach (var (label, entry) in shapes)
@@ -822,21 +837,21 @@ public class Issue119AutoConfigTests
     }
 
     // ── Round 2, finding 5: snapshot boundary — cancellation and caps ────────
+    // (Reworked in round 3, finding 5: the earlier NonTerminatingList versions did
+    // not FAIL against pre-fix code, they wedged the test process — finite hostile
+    // enumerables give clean, reproducible fail-first evidence.)
 
-    /// <summary>An enumerable whose enumeration never terminates; counts MoveNext
-    /// calls so tests can prove enumeration was aborted (or never started).</summary>
-    private sealed class NonTerminatingList : IReadOnlyList<string>
+    /// <summary>Throws on the first enumeration step; proves enumeration never
+    /// started without any risk of wedging the test process.</summary>
+    private sealed class ThrowOnEnumerationList : IReadOnlyList<string>
     {
         public int MoveNextCalls;
         public string this[int index] => MainnetUrl;
-        public int Count => int.MaxValue;
+        public int Count => 1;
         public IEnumerator<string> GetEnumerator()
         {
-            while (true)
-            {
-                MoveNextCalls++;
-                yield return MainnetUrl;
-            }
+            MoveNextCalls++;
+            throw new InvalidOperationException("caller input was enumerated");
         }
         System.Collections.IEnumerator System.Collections.IEnumerable.GetEnumerator()
             => GetEnumerator();
@@ -847,12 +862,14 @@ public class Issue119AutoConfigTests
     {
         using var cts = new CancellationTokenSource();
         cts.Cancel();
-        var hostile = new NonTerminatingList();
+        var hostile = new ThrowOnEnumerationList();
 
         var act = () => RunAsync(
             new Dictionary<string, IReadOnlyList<string>> { ["mainnet"] = hostile },
             _ => (HealthyRpc(1, KnownNetworks.Mainnet), null), ct: cts.Token);
 
+        // Pre-fix this fails FAST with the list's own InvalidOperationException
+        // (enumeration happened); post-fix the token check precedes any enumeration.
         await act.Should().ThrowAsync<OperationCanceledException>();
         hostile.MoveNextCalls.Should().Be(0,
             "a pre-cancelled call must not enumerate hostile caller input at all");
@@ -861,14 +878,15 @@ public class Issue119AutoConfigTests
     [Fact]
     public async Task Issue119_CandidatesPerNetwork_CappedWithLoggedTruncation()
     {
-        // A non-terminating candidate list must be bounded by the per-network cap
-        // rather than enumerated forever.
-        var hostile = new NonTerminatingList();
+        // Finite Max + 2 candidate list: only the first Max may be materialized and
+        // probed, and the truncation must be logged, never silent.
+        var urls = Enumerable.Range(0, EthrRpcAutoConfig.MaxCandidatesPerNetwork + 2)
+            .Select(i => $"https://candidate-{i}.example").ToArray();
         var probed = 0;
         var logger = new RecordingLogger();
 
         var result = await RunAsync(
-            new Dictionary<string, IReadOnlyList<string>> { ["mainnet"] = hostile },
+            new Dictionary<string, IReadOnlyList<string>> { ["mainnet"] = urls },
             candidate =>
             {
                 probed++;
@@ -879,6 +897,107 @@ public class Issue119AutoConfigTests
         probed.Should().Be(EthrRpcAutoConfig.MaxCandidatesPerNetwork);
         logger.Entries.Should().Contain(e => e.Message.Contains("truncated"),
             "silent truncation would read as full coverage");
+    }
+
+    // ── Round 3, finding 1: cancel-then-throw during snapshot enumeration ────
+
+    /// <summary>A candidate list whose enumeration cancels the caller's token and
+    /// then throws a different exception — the cancel-then-throw shape from
+    /// tasks/lessons.md. The public contract says caller cancellation propagates
+    /// as OperationCanceledException, so OCE must win over the decoy.</summary>
+    private sealed class CancelThenThrowList(CancellationTokenSource cts) : IReadOnlyList<string>
+    {
+        public string this[int index] => MainnetUrl;
+        public int Count => 1;
+        public IEnumerator<string> GetEnumerator()
+        {
+            cts.Cancel();
+            throw new InvalidOperationException("decoy after cancelling the caller");
+        }
+        System.Collections.IEnumerator System.Collections.IEnumerable.GetEnumerator()
+            => GetEnumerator();
+    }
+
+    [Fact]
+    public async Task Issue119_InnerListCancelsThenThrows_PropagatesAsCancellation()
+    {
+        using var cts = new CancellationTokenSource();
+
+        var act = () => RunAsync(
+            new Dictionary<string, IReadOnlyList<string>>
+            {
+                ["mainnet"] = new CancelThenThrowList(cts),
+            },
+            _ => (HealthyRpc(1, KnownNetworks.Mainnet), null), ct: cts.Token);
+
+        await act.Should().ThrowAsync<OperationCanceledException>();
+    }
+
+    private sealed class CancelThenThrowDictionary(CancellationTokenSource cts)
+        : IReadOnlyDictionary<string, IReadOnlyList<string>>
+    {
+        public IReadOnlyList<string> this[string key] => [MainnetUrl];
+        public IEnumerable<string> Keys => ["mainnet"];
+        public IEnumerable<IReadOnlyList<string>> Values => [[MainnetUrl]];
+        public int Count => 1;
+        public bool ContainsKey(string key) => true;
+        public bool TryGetValue(string key, out IReadOnlyList<string> value)
+        {
+            value = [MainnetUrl];
+            return true;
+        }
+        public IEnumerator<KeyValuePair<string, IReadOnlyList<string>>> GetEnumerator()
+        {
+            cts.Cancel();
+            throw new InvalidOperationException("decoy after cancelling the caller");
+        }
+        System.Collections.IEnumerator System.Collections.IEnumerable.GetEnumerator()
+            => GetEnumerator();
+    }
+
+    [Fact]
+    public async Task Issue119_OuterMapCancelsThenThrows_PropagatesAsCancellation()
+    {
+        using var cts = new CancellationTokenSource();
+
+        var act = () => RunAsync(
+            new CancelThenThrowDictionary(cts),
+            _ => (HealthyRpc(1, KnownNetworks.Mainnet), null), ct: cts.Token);
+
+        await act.Should().ThrowAsync<OperationCanceledException>();
+    }
+
+    // ── Round 3, finding 2: caller-controlled map keys never reach logs raw ──
+
+    [Fact]
+    public async Task Issue119_HostileMapKeys_NeverLoggedRaw()
+    {
+        // Keys are caller-controlled text: a CR/LF key forges log lines, a huge key
+        // floods, and a mistakenly URL-shaped key carries credentials. Invalid
+        // entries are identified by ordinal only; resolved networks by their
+        // canonical catalogue name.
+        var crlfKey = "evil\r\n[CRITICAL] forged-entry";
+        var secretKey = "https://user:SECRETPASS@rpc.example/v3/SECRETKEY?token=SECRETQUERY";
+        var hugeKey = new string('k', 1_000_000);
+        var logger = new RecordingLogger();
+
+        var result = await RunAsync(
+            new Dictionary<string, IReadOnlyList<string>>
+            {
+                [crlfKey] = [MainnetUrl],
+                [secretKey] = [MainnetUrl],
+                [hugeKey] = [MainnetUrl],
+            },
+            _ => throw new InvalidOperationException("unknown keys are never probed"), logger);
+
+        result.Should().BeEmpty();
+        logger.Entries.Should().OnlyContain(e =>
+            !e.Message.Contains("SECRETPASS") && !e.Message.Contains("SECRETKEY")
+            && !e.Message.Contains("SECRETQUERY") && !e.Message.Contains("forged-entry")
+            && !e.Message.Contains('\r') && !e.Message.Contains('\n')
+            && e.Message.Length < 1_000);
+        logger.Entries.Should().HaveCountGreaterThanOrEqualTo(3,
+            "each skipped entry is still reported, by ordinal");
     }
 
     [Fact]
@@ -943,6 +1062,27 @@ public class Issue119AutoConfigTests
         {
             EthrRpcAutoConfig.FindProbe(key).Should().NotBeNull(
                 $"default-endpoint network '{key}' must have historical probe data");
+        }
+    }
+
+    [Fact]
+    public void Issue119_EveryCatalogueNetwork_IsCoveredOrExplicitlyExcluded()
+    {
+        // Round 3, finding 3: the acceptance gap must be structurally visible.
+        // Every KnownNetworks.All entry either has batteries-included coverage
+        // (defaults + probe) or a documented exclusion with a stated reason —
+        // a catalogue entry silently in neither set is the gap the reviewer
+        // flagged. Scope narrowing is recorded on issue #119 itself.
+        foreach (var network in KnownNetworks.All)
+        {
+            var hasDefaults = EthrRpcAutoConfig.DefaultCandidateEndpoints.ContainsKey(network.Name);
+            var isExcluded = EthrRpcAutoConfig.NetworksWithoutDefaults.ContainsKey(network.Name);
+
+            (hasDefaults ^ isExcluded).Should().BeTrue(
+                $"network '{network.Name}' must have shipped defaults or a documented exclusion, not neither/both");
+            if (isExcluded)
+                EthrRpcAutoConfig.NetworksWithoutDefaults[network.Name].Should().NotBeNullOrWhiteSpace(
+                    "each exclusion must state its reason");
         }
     }
 }

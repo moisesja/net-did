@@ -81,6 +81,28 @@ public static class EthrRpcAutoConfig
                 ["ewc"]     = ["https://rpc.energyweb.org"],
             });
 
+    /// <summary>
+    /// Catalogue networks deliberately shipped WITHOUT defaults/probe data, each
+    /// with its reason. Together with <see cref="DefaultCandidateEndpoints"/> this
+    /// partitions <see cref="KnownNetworks.All"/> exactly (pinned by test), so a
+    /// catalogue entry can never silently fall outside the auto-config story: it
+    /// either has batteries-included coverage or a documented exclusion. The scope
+    /// narrowing relative to issue #119's original "official deployments" wording
+    /// is recorded on the issue itself. Excluded networks remain fully usable via
+    /// caller-supplied candidates (chain-ID validation + UNVERIFIED-depth warning).
+    /// </summary>
+    internal static readonly IReadOnlyDictionary<string, string> NetworksWithoutDefaults =
+        new System.Collections.ObjectModel.ReadOnlyDictionary<string, string>(
+            new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+            {
+                ["holesky"]      = "no verifiable historical probe data (no registry events found via explorers, 2026-08)",
+                ["volta"]        = "no verifiable historical probe data (explorer API unavailable, 2026-08)",
+                ["artis:sigma1"] = "ARTIS network defunct",
+                ["artis:tau1"]   = "ARTIS network defunct",
+                ["polygon:test"] = "Polygon Mumbai testnet shut down (April 2024)",
+                ["linea:goerli"] = "Linea Goerli deprecated (Goerli sunset)",
+            });
+
     // ── Historical probes ─────────────────────────────────────────────────────
     // One entry per network, each an on-chain fact verified live via eth_getLogs
     // against archive-serving endpoints on 2026-08-02/04 (never fabricated — a
@@ -237,41 +259,57 @@ public static class EthrRpcAutoConfig
         // candidates beyond the documented caps are truncated with a logged count —
         // a nonterminating hostile enumerable must not run before the first probe.
         ct.ThrowIfCancellationRequested();
-        var snapshot = new List<(string Key, List<string?> Urls)>();
+        var snapshot = new List<(int Ordinal, string? Key, List<string?> Urls)>();
         var networksTruncated = 0;
-        foreach (var pair in candidateEndpoints ?? DefaultCandidateEndpoints)
+        try
         {
-            ct.ThrowIfCancellationRequested();
-            if (snapshot.Count >= MaxCandidateNetworks)
+            var ordinal = -1;
+            foreach (var pair in candidateEndpoints ?? DefaultCandidateEndpoints)
             {
-                networksTruncated++;
-                if (networksTruncated > MaxCandidateNetworks)
-                    break; // hostile dictionary enumerator: stop counting, stop reading
-                continue;
-            }
-
-            var urls = new List<string?>();
-            var candidatesTruncated = false;
-            if (pair.Value is { } candidateList)
-            {
-                foreach (var url in candidateList)
+                ordinal++;
+                ct.ThrowIfCancellationRequested();
+                if (snapshot.Count >= MaxCandidateNetworks)
                 {
-                    ct.ThrowIfCancellationRequested();
-                    if (urls.Count >= MaxCandidatesPerNetwork)
-                    {
-                        candidatesTruncated = true;
-                        break;
-                    }
-                    urls.Add(url);
+                    networksTruncated++;
+                    if (networksTruncated > MaxCandidateNetworks)
+                        break; // hostile dictionary enumerator: stop counting, stop reading
+                    continue;
                 }
+
+                var urls = new List<string?>();
+                var candidatesTruncated = false;
+                if (pair.Value is { } candidateList)
+                {
+                    foreach (var url in candidateList)
+                    {
+                        ct.ThrowIfCancellationRequested();
+                        if (urls.Count >= MaxCandidatesPerNetwork)
+                        {
+                            candidatesTruncated = true;
+                            break;
+                        }
+                        urls.Add(url);
+                    }
+                }
+                if (candidatesTruncated)
+                {
+                    LogSafe(log, LogLevel.Warning,
+                        "did:ethr auto-config: candidate list for map entry #{EntryOrdinal} " +
+                        "truncated to the first {Cap} entries.", ordinal, MaxCandidatesPerNetwork);
+                }
+                snapshot.Add((ordinal, pair.Key, urls));
             }
-            if (candidatesTruncated)
-            {
-                LogSafe(log, LogLevel.Warning,
-                    "did:ethr auto-config: candidate list for key '{Key}' truncated to " +
-                    "the first {Cap} entries.", pair.Key, MaxCandidatesPerNetwork);
-            }
-            snapshot.Add((pair.Key, urls));
+        }
+        catch (Exception) when (ct.IsCancellationRequested)
+        {
+            // Cancel-then-throw from a hostile enumerator (GetEnumerator/MoveNext/
+            // Current/Dispose cancels the caller's token, then throws a decoy): the
+            // public contract says caller cancellation propagates as
+            // OperationCanceledException, so the caller token takes priority over
+            // whatever the enumerator threw. A throw WITHOUT cancellation stays
+            // fail-loud with the enumerator's own exception.
+            ct.ThrowIfCancellationRequested();
+            throw; // unreachable: the filter guaranteed IsCancellationRequested
         }
         if (networksTruncated > 0)
         {
@@ -283,22 +321,27 @@ public static class EthrRpcAutoConfig
 
         // Resolve keys against the deployment catalogue; dedupe aliases of the same
         // network ("mainnet" and "0x1"); order deterministically by catalogue order.
+        // Map KEYS are caller-controlled text and are never logged raw (CR/LF keys
+        // forge log lines, huge keys flood, URL-shaped keys carry credentials):
+        // skipped entries are identified by map ordinal, resolved ones by their
+        // canonical catalogue name.
         var resolved = new List<(int Order, EthereumNetworkConfig Network, List<string?> Urls)>();
         var seenNetworks = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        foreach (var (key, urls) in snapshot)
+        foreach (var (ordinal, key, urls) in snapshot)
         {
             if (key is null || KnownNetworks.Find(key) is not { } network)
             {
                 LogSafe(log, LogLevel.Warning,
-                    "did:ethr auto-config: candidate key '{Key}' matches no known " +
-                    "ERC-1056 deployment; skipped.", key);
+                    "did:ethr auto-config: candidate map entry #{EntryOrdinal} matches " +
+                    "no known ERC-1056 deployment; skipped.", ordinal);
                 continue;
             }
             if (!seenNetworks.Add(network.Name))
             {
                 LogSafe(log, LogLevel.Warning,
-                    "did:ethr auto-config: candidate key '{Key}' resolves to network " +
-                    "'{Network}' which is already listed; skipped.", key, network.Name);
+                    "did:ethr auto-config: candidate map entry #{EntryOrdinal} resolves " +
+                    "to network '{Network}' which is already listed; skipped.",
+                    ordinal, network.Name);
                 continue;
             }
             var order = 0;
@@ -539,16 +582,28 @@ public static class EthrRpcAutoConfig
             if (probe is null)
                 return new ProbeOutcome(ProbeOutcomeKind.PassedUnverified);
 
-            // Exact-block query (fromBlock == toBlock): the same shape resolution
-            // itself issues per history block, so a provider range cap that would
-            // not affect resolution cannot fail the probe either.
+            // The probe issues the SAME request shape resolution itself issues per
+            // history block (DidEthrMethod's walker): exact block (fromBlock ==
+            // toBlock) AND topic0 = the ERC-1056 signature OR-list AND topic1 =
+            // the identity. A wildcard topic0 would be a DIFFERENT request class —
+            // a contract-wide scan some providers limit even while serving the
+            // resolver's selective filter — and could false-reject an endpoint
+            // resolution would accept.
             var paddedIdentity = PadIdentityTopic(probe.Identity);
             var filter = new EthereumLogFilter
             {
                 Address   = candidate.RegistryAddress,
                 FromBlock = probe.Block,
                 ToBlock   = probe.Block,
-                Topics    = [null, [paddedIdentity]],
+                Topics    =
+                [
+                    [
+                        Erc1056.Erc1056Topics.DIDOwnerChanged,
+                        Erc1056.Erc1056Topics.DIDDelegateChanged,
+                        Erc1056.Erc1056Topics.DIDAttributeChanged,
+                    ],
+                    [paddedIdentity],
+                ],
             };
             historicalStage = true;
             token.ThrowIfCancellationRequested();
@@ -605,6 +660,8 @@ public static class EthrRpcAutoConfig
             if (entry.Topics is not { Count: >= 2 } topics
                 || !string.Equals(topics[1], paddedIdentity, StringComparison.OrdinalIgnoreCase))
                 continue;
+            if (!IsErc1056EventSignature(topics[0]))
+                continue;
             if (!TryParseHexQuantity(entry.BlockNumber, out var block)
                 || block != probe.Block)
                 continue;
@@ -612,6 +669,11 @@ public static class EthrRpcAutoConfig
         }
         return false;
     }
+
+    private static bool IsErc1056EventSignature(string? topic0)
+        => string.Equals(topic0, Erc1056.Erc1056Topics.DIDOwnerChanged, StringComparison.OrdinalIgnoreCase)
+        || string.Equals(topic0, Erc1056.Erc1056Topics.DIDDelegateChanged, StringComparison.OrdinalIgnoreCase)
+        || string.Equals(topic0, Erc1056.Erc1056Topics.DIDAttributeChanged, StringComparison.OrdinalIgnoreCase);
 
     /// <summary>
     /// Endpoint label safe for logs: scheme + host (+ non-default port). RPC URLs

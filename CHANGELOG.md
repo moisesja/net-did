@@ -36,7 +36,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   cancellation while containing per-endpoint failures (including a throwing client factory
   or `Dispose` on the injectable seam), and logs only fixed library-owned text. From the
   adversarial review: a probe pass requires a returned log **matching** the probe (registry
-  address, identity topic, block inside the window, case-insensitive) — a bare non-empty
+  address, ERC-1056 event signature, identity topic, exact probed block, case-insensitive) — a bare non-empty
   count would have accepted providers that clamp `fromBlock` to their retained range;
   failure logs carry exception **type names** only, never the exception object, because a
   remote endpoint controls inner-exception text (duplicate-JSON-key `ArgumentException`
@@ -50,7 +50,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   endpoints by **scheme + host only** (RPC URLs routinely carry credentials in userinfo,
   path, or query — none of it reaches logs on any outcome, pinned by sentinel-secret
   tests); and input snapshotting is cancellable and bounded (64 network entries, 16
-  candidates per network, truncation logged). Probing verifies
+  candidates per network, truncation logged). Round 3: the probe request now uses the
+  resolver's own topic0 signature OR-list (a wildcard scan is a different request class
+  some providers limit) and validates the returned topic0; caller-controlled map KEYS
+  are never logged raw either — skipped entries are identified by map ordinal, resolved
+  ones by canonical catalogue name; cancel-then-throw from a hostile candidate
+  enumerator propagates as `OperationCanceledException` (caller-token-priority catch);
+  and `KnownNetworks.All` is partitioned exactly between shipped defaults and the
+  documented `NetworksWithoutDefaults` exclusion map (test-pinned), with the issue-#119
+  scope narrowing to the six live probeable deployments recorded on the issue itself.
+  Probing verifies
   availability/depth only — a passing endpoint remains a single untrusted RPC node; the
   documented integrity model is unchanged. Probe data is structured for later alignment
   with the maintainer's companion auto-config list once published.

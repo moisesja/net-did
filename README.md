@@ -594,12 +594,13 @@ cause — never a silently truncated document — but only at resolve time, per 
 
 To get working endpoints without hand-curating URLs, use the opt-in
 `EthrRpcAutoConfig` bootstrap (no extra package, no new dependencies). It probes candidate
-public endpoints the way the reference resolver maintainer recommends — an exact-block
-`eth_getLogs` query (the same query shape resolution itself issues, so provider range caps
-cannot cause a false reject) for the **earliest on-chain-verified registry event** on each
+public endpoints the way the reference resolver maintainer recommends — an `eth_getLogs`
+query with the resolver's own request shape (exact block, ERC-1056 event-signature topic
+filter, identity topic; so neither provider range caps nor wildcard-scan restrictions can
+cause a false reject) for the **earliest on-chain-verified registry event** on each
 network — and discards any endpoint that returns no log matching the probe (registry,
-identity, exact block — so a provider that silently clamps the queried range cannot pass),
-logging the reason. Probing to the earliest event matters: mainnet has real registry events
+event signature, identity, exact block — so a provider that silently clamps the queried
+range cannot pass), logging the reason. Probing to the earliest event matters: mainnet has real registry events
 back to block 7,049,729 (January 2019), and an endpoint pruned anywhere above that would
 pass a shallower probe yet fail those DIDs.
 
@@ -631,7 +632,10 @@ Built-in defaults and probe data cover the six official deployments that are liv
 verifiable today: mainnet, Sepolia, Gnosis, Polygon, Aurora, and Energy Web Chain. The
 remaining catalogue entries (ARTIS, Polygon Mumbai, Linea Goerli — deprecated or defunct —
 plus Holesky and Volta, which expose no verifiable probe data) take caller-supplied
-candidates and the unverified-depth handling above.
+candidates and the unverified-depth handling above; this scoping of issue #119's
+batteries-included criterion is recorded on the issue, each exclusion carries a documented
+reason in code, and a test pins that every catalogue entry is in exactly one of the two
+sets.
 
 Log output identifies endpoints by scheme + host only — RPC URLs routinely embed
 credentials (userinfo, provider keys in the path, query tokens), and none of that, nor any
