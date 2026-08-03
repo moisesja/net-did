@@ -9,6 +9,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`did:ethr`: archive-node requirement documented; `EthrRpcAutoConfig` opt-in endpoint
+  auto-configuration with historical-logs probing** (issue #119). did:ethr resolution replays
+  the full ERC-1056 event history, so the configured `RpcUrl` must serve historical
+  `eth_getLogs` (archive-grade) — a requirement that free public endpoints often fail while
+  still answering liveness calls. This is now documented at every point a user supplies an
+  `RpcUrl` (`EthereumNetworkConfig.RpcUrl` and `KnownNetworks` XML docs, README did:ethr and
+  DI sections, PRD §8.9). New static `EthrRpcAutoConfig.ConfigureAsync` (in
+  `NetDid.Method.Ethr`; no new package, no added dependencies) turns candidate public
+  endpoints — the built-in `DefaultCandidateEndpoints` for mainnet/sepolia/gnosis/polygon, or
+  a caller-supplied map — into ready-to-use `EthereumNetworkConfig`s: per network, candidates
+  are probed sequentially (first pass wins) with an `eth_chainId` identity check plus an
+  `eth_getLogs` query for hard-coded, on-chain-verified known-old registry events, mirroring
+  the reference-resolver maintainer's probing approach. Endpoints returning empty logs for
+  the known-old probe (pruned/non-archive), reporting the wrong chain, failing transport, or
+  exceeding the per-endpoint timeout (default 10 s) are discarded with an actionable log
+  message; networks with no passing candidate are omitted from the result; networks without
+  probe data pass on chain-ID alone and are logged as unverified for archive depth. Probing
+  reuses the existing hardened RPC client (response caps, bounded error extraction, 30 s
+  per-request bound), snapshots caller-supplied collections at entry, propagates caller
+  cancellation while containing per-endpoint failures, and logs only fixed library-owned
+  text. Probing verifies availability/depth only — a passing endpoint remains a single
+  untrusted RPC node; the documented integrity model is unchanged. Probe data is structured
+  for later alignment with the maintainer's companion auto-config list once published.
+
 - **`did:ethr`: opt-in finalized ERC-1056 event-history cache** (issue #118). Long-lived
   `DidEthrMethod` instances can now reuse the immutable part of an identity's event history instead
   of issuing one sequential `eth_getLogs` call per historical change block on every resolution.

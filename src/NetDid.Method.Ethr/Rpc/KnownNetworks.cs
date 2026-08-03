@@ -12,6 +12,11 @@ namespace NetDid.Method.Ethr.Rpc;
 /// var config = KnownNetworks.Sepolia with { RpcUrl = "https://sepolia.drpc.org" };
 /// </code>
 ///
+/// The endpoint must serve historical <c>eth_getLogs</c> (archive-grade) — resolution
+/// replays the full ERC-1056 event history and fails closed against pruned nodes. To
+/// obtain probed, ready-to-use configs without curating URLs by hand, use
+/// <see cref="EthrRpcAutoConfig.ConfigureAsync"/>.
+///
 /// <see cref="All"/> contains every active (non-deprecated) network.
 /// Deprecated networks (Ropsten, Rinkeby, Goerli, Kovan) are omitted, matching
 /// the commented-out entries in the JS source.
@@ -152,7 +157,9 @@ public static class KnownNetworks
     /// <summary>
     /// All active (non-deprecated) known network configurations, in the same order
     /// as <c>deployments.ts</c>. RpcUrl is empty in every entry — use
-    /// <c>with { RpcUrl = "..." }</c> to produce a ready-to-use config.
+    /// <c>with { RpcUrl = "..." }</c> (an archive-grade endpoint; see
+    /// <see cref="EthereumNetworkConfig.RpcUrl"/>) or
+    /// <see cref="EthrRpcAutoConfig.ConfigureAsync"/> to produce ready-to-use configs.
     /// </summary>
     public static readonly IReadOnlyList<EthereumNetworkConfig> All =
     [

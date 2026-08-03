@@ -372,6 +372,8 @@ ordered blocks; a decrease is rejected. Missing, malformed, removed, duplicated,
 history metadata returns `internalError` rather than a partial DID Document — these are
 resolver-infrastructure failures (pruned/non-archive or hostile node, transport error, timeout),
 never a statement that the DID does not exist, so `notFound` is not used on the RPC path. The
+pruned/non-archive case is avoidable up front: resolution needs an endpoint serving historical
+`eth_getLogs` — see [Archive nodes and endpoint auto-configuration](#archive-nodes-and-endpoint-auto-configuration). The
 resolution metadata carries a fixed, library-owned `message` beside `error` (a pruned/incomplete
 history is distinguished from a generic RPC failure; exception text from injectable seams is
 never exposed); a genuinely unregistered identity resolves to the ERC-1056 genesis document with
@@ -565,7 +567,9 @@ so callers can query a possibly accepted deployment before retrying at a differe
 | `KnownNetworks.Aurora` | aurora | 1313161554 | `0x63eD58B6…` |
 | + 6 more | … | … | … |
 
-All entries have `RpcUrl = ""`. Supply the endpoint with a `with` expression:
+All entries have `RpcUrl = ""`. Supply the endpoint with a `with` expression — the endpoint
+must serve historical `eth_getLogs` (see the next section), or let `EthrRpcAutoConfig`
+pick one for you:
 
 ```csharp
 var cfg = KnownNetworks.Mainnet with { RpcUrl = "https://mainnet.gateway.tenderly.co" };
@@ -576,6 +580,51 @@ metadata has one source of truth. The deprecated `goerli` identifier alias still
 chain ID 5 without being advertised in `KnownNetworks.All`. Consumers can supply arbitrary
 networks with `EthereumNetworkConfig`; the library does not attempt to enumerate every
 EVM-compatible chain.
+
+### Archive nodes and endpoint auto-configuration
+
+**did:ethr resolution requires an RPC endpoint that serves historical `eth_getLogs`
+(archive-grade).** Resolution replays the identity's full ERC-1056 event history, and those
+events can be years old. Many free public endpoints answer `eth_chainId` and current-state
+calls fine but refuse or empty-answer old-range `eth_getLogs` — for example,
+`ethereum-rpc.publicnode.com` rejects them with *"Archive requests require a personal
+token"*. Against such an endpoint, resolution fails closed with
+`resolutionMetadata.error = "internalError"` and a message naming the pruned/non-archive
+cause — never a silently truncated document — but only at resolve time, per DID.
+
+To get working endpoints without hand-curating URLs, use the opt-in
+`EthrRpcAutoConfig` bootstrap (no extra package, no new dependencies). It probes candidate
+public endpoints the way the reference resolver maintainer recommends — an `eth_getLogs`
+query for hard-coded, on-chain-verified *known-old* registry events — and discards any
+endpoint that returns no logs for them, logging the reason:
+
+```csharp
+// Probe the built-in candidate endpoints (mainnet, sepolia, gnosis, polygon) …
+IReadOnlyList<EthereumNetworkConfig> networks =
+    await EthrRpcAutoConfig.ConfigureAsync(logger: logger);
+
+// … or your own candidates, keyed by KnownNetworks name or hex chain ID:
+networks = await EthrRpcAutoConfig.ConfigureAsync(new Dictionary<string, IReadOnlyList<string>>
+{
+    ["mainnet"] = ["https://eth.drpc.org", "https://my-fallback.example"],
+    ["sepolia"] = ["https://sepolia.drpc.org"],
+});
+
+var method = new DidEthrMethod(factory, networks, keyGenerator);   // or builder.AddDidEthr(networks)
+```
+
+Per network, candidates are tried in order and the first one passing both checks wins:
+`eth_chainId` must match the catalogue entry, and the known-old probe must return logs.
+Endpoints that fail transport, time out (default 10 s per endpoint, tune with
+`perEndpointTimeout`), or answer with an empty log set are discarded with an actionable
+log message; a network with no passing candidate is omitted from the result. Networks
+without hard-coded probe data pass on the chain-ID check alone and are logged as
+unverified for archive depth.
+
+Probing is a **quality filter, not an integrity guarantee**: a passing endpoint is still a
+single untrusted RPC node that could forge a self-consistent event history. The probe data
+lives in the library and will be aligned with the reference resolver's companion
+auto-configuration list when it is published (issue #119).
 
 ### Runnable examples and tests
 
@@ -804,6 +853,10 @@ services.AddNetDid(builder =>
     builder.AddDidWebVh();
     builder.AddDidEthr(new Dictionary<string, string>
     {
+        // Endpoints must serve historical eth_getLogs (archive-grade) — see the
+        // did:ethr "Archive nodes and endpoint auto-configuration" section. To skip
+        // hand-curation, await EthrRpcAutoConfig.ConfigureAsync() before building the
+        // container and pass its result to AddDidEthr(IEnumerable<EthereumNetworkConfig>).
         ["mainnet"] = "https://mainnet.gateway.tenderly.co",
         ["sepolia"] = "https://sepolia.drpc.org",
     });

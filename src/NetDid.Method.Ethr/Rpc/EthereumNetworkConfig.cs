@@ -4,7 +4,16 @@ namespace NetDid.Method.Ethr.Rpc;
 public sealed record EthereumNetworkConfig
 {
     public required string Name { get; init; }
-    /// <summary>JSON-RPC endpoint URL. Supply via <c>with { RpcUrl = "..." }</c> when starting from a <see cref="KnownNetworks"/> entry.</summary>
+    /// <summary>
+    /// JSON-RPC endpoint URL. Supply via <c>with { RpcUrl = "..." }</c> when starting from a
+    /// <see cref="KnownNetworks"/> entry, or let <see cref="EthrRpcAutoConfig.ConfigureAsync"/>
+    /// pick a probed endpoint.
+    /// <para><b>The endpoint must serve historical <c>eth_getLogs</c> (archive-grade).</b>
+    /// Resolution replays the identity's full ERC-1056 event history, which can reach years
+    /// back; a pruned/non-archive endpoint makes resolution fail closed at resolve time
+    /// (resolution metadata <c>error = "internalError"</c> naming the pruned-node cause) even
+    /// though liveness calls like <c>eth_chainId</c> succeed against it.</para>
+    /// </summary>
     public required string RpcUrl { get; init; }
     /// <summary>Hex chain ID (e.g. "0x1"). Auto-detected via eth_chainId if null.</summary>
     public string? ChainId { get; init; }

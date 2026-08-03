@@ -1677,6 +1677,47 @@ Client construction has two paths: `DefaultEthereumRpcClientFactory` (DI — res
 `HttpClient` `"ethr-{network}"` registered by `AddDidEthr`) and
 `DefaultEthereumRpcClientFactory.CreateDirect(networks)` for samples, CLI tools, and tests.
 
+### 8.9 Endpoint Requirements and Auto-Configuration (issue #119)
+
+1. The configured `RpcUrl` MUST serve historical `eth_getLogs` (archive-grade). Resolution
+   replays the identity's complete ERC-1056 event history, which can reach arbitrarily far
+   back; a pruned/non-archive endpoint causes resolution to fail closed
+   (`IncompleteEventHistoryException` → `resolutionMetadata.error = "internalError"` with the
+   pruned-node message), never to return a silently truncated document. This requirement is
+   documented at every point a user supplies an `RpcUrl` (`EthereumNetworkConfig.RpcUrl`,
+   `KnownNetworks`, README did:ethr section, README DI section).
+2. `EthrRpcAutoConfig.ConfigureAsync(candidateEndpoints?, logger?, perEndpointTimeout?, ct)`
+   is the opt-in batteries-included bootstrap. It lives in `NetDid.Method.Ethr` (no separate
+   package, no added dependencies) and returns ready-to-use `EthereumNetworkConfig`s in
+   `KnownNetworks.All` catalogue order, suitable for `DidEthrMethod` or `AddDidEthr`.
+   - Candidate input is a map of `KnownNetworks` name or hex chain ID → ordered candidate
+     URLs; `null` uses the built-in `DefaultCandidateEndpoints` (mainnet, sepolia, gnosis,
+     polygon — each list's head verified against the network's historical probe at
+     implementation time). The caller-supplied map and its lists are snapshotted once at
+     entry. Keys matching no known deployment, keys duplicating an already-listed network,
+     and candidates that are not absolute http(s) URLs are skipped with a logged reason.
+   - Per network, candidates are probed sequentially and the first passing endpoint wins.
+     A candidate passes when its `eth_chainId` equals the catalogue chain ID AND an
+     `eth_getLogs` query for that network's hard-coded known-old registry events (identity-
+     filtered, window ≤ 40 blocks to stay under public providers' range caps) returns at
+     least one log. Probe entries are on-chain-verified facts, never fabricated, and are to
+     be aligned with the reference resolver maintainer's companion list when published.
+   - An endpoint failing any check — wrong chain, empty probe logs, transport failure,
+     malformed response, or per-endpoint timeout (default 10 s; each underlying request is
+     additionally capped at 30 s by `DefaultEthereumRpcClient`) — is discarded with a logged,
+     actionable reason, and probing continues with the next candidate. A network with no
+     passing candidate is omitted from the result and logged. Caller cancellation (`ct`)
+     aborts the whole run; a per-endpoint timeout never does.
+   - Networks without hard-coded probe data are configured after the chain-ID check alone
+     and logged as UNVERIFIED for archive depth (fail-open on depth is explicit and logged,
+     never silent).
+   - Logging is best-effort (a throwing provider cannot break configuration) and uses fixed
+     library-owned message text; nothing from an endpoint's response body is ever logged
+     except bounded numeric values.
+3. Trust scope: probing verifies availability and historical depth only. A passing endpoint
+   remains a single untrusted RPC node that can forge a self-consistent event history — the
+   method's existing documented integrity property is unchanged by auto-configuration.
+
 ---
 
 ## 9. DID Document Model
