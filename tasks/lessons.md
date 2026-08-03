@@ -475,3 +475,18 @@
   Also, instant equality does not prove UTC normalization for `DateTimeOffset`: assert the
   resulting `Offset` explicitly, and reject zone-less input before the runtime can interpret it
   using the resolver host's local timezone. (PR #126 review round 2.)
+- A depth probe must target the OLDEST real data its consumer can legitimately need, and
+  must issue the SAME query shape the consumer issues. The #119 endpoint probe used a
+  2020-era mainnet event found by sampling 10k-block windows — which skipped the registry's
+  actual first events at block 7,049,729 (2019) — so it approved endpoints that could not
+  resolve real 2019 DIDs; and it queried a 41-block range while resolution queries exactly
+  one block, so providers with tight range caps were rejected that resolution would have
+  served fine. Establish "earliest" from an indexed source (explorer ascending scan), not
+  window sampling, verify it via the consumer's own call shape, and pin both the datum and
+  the shape with invariant tests. (PR #129 review round 2, findings 1-2.)
+- RPC/service URLs are credentials: userinfo, provider project keys in the path, query
+  tokens. Any log line that includes a caller-supplied URL — including SUCCESS paths —
+  is a credential-disclosure channel. Log a sanitized label (scheme + host + non-default
+  port); for unparseable input log only its position (unparseable means unsanitizable);
+  pin with sentinel-secret tests across every outcome shape. "The caller supplied it" does
+  not make it safe to persist in logs. (PR #129 review round 2, finding 3.)
