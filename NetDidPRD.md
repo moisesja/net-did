@@ -1139,23 +1139,26 @@ after genesis must have a `versionTime` later than its predecessor. Equal or dec
 invalidate the chain even when their hashes and proofs are otherwise authentic. The comparison
 does not normalize, replace, or reserialize the authenticated wire token.
 
-NetDid *authors* whole-second `versionTime`s (issue #127). Create truncates the current UTC
-instant to a whole second; Update and Deactivate choose the current whole second when it is
-strictly later than the supplied log's latest entry, and otherwise advance one whole second past
-that entry (including when it is future-dated relative to the local clock, or fractional in an
-imported log). A same-second write therefore authors an entry that can lead the wall clock by
-up to one second. Because DID Core §7.3 mandates whole-second `created`/`updated` in resolution
-metadata, whole-second authoring makes `created`/`updated`/`versionTime` coincide exactly for
-NetDid-authored logs — the serialized `updated` value identifies the version it came from. The
-did:webvh spec's own guidance assumes one-second monotonicity granularity and bounds future-dated
-entries (resolvers apply an at-most-5-minute future tolerance and MUST reject beyond it).
-Update fails closed (`ArgumentException`) when the next `versionTime` would exceed the current
-time by more than a 1-minute authoring budget: a same-second burst is bounded at ~60 writes
-(then ~1 write/second sustained), and the worst-case authored lead keeps a ≥4-minute clock-skew
-margin under every conforming resolver's tolerance. Deactivate is exempt from the budget (while
-staying strictly monotonic): a compromised update key can plant a legitimately signed far-future
-entry through another implementation, and emergency revocation — a terminal, strictly
-safety-increasing operation — must not be blockable by it.
+NetDid *authors* whole-second `versionTime`s (issue #127) and never authors a `versionTime`
+later than the current time — the did:webvh update rules require the entry timestamp to be
+"the time the DID will be retrieved by a witness or resolver, or before", and resolver-side
+future-skew tolerance is leniency for reading, not permission to write future time. Create
+truncates the current UTC instant to a whole second. Update and Deactivate use the current
+whole second when it is strictly later than the supplied log's latest entry; otherwise they
+*wait* (bounded, at most 2 seconds) for the next whole second after that entry to actually
+arrive before stamping it, throttling a same-second burst to ~1 write per second. Because DID
+Core §7.3 mandates whole-second `created`/`updated` in resolution metadata, whole-second
+authoring makes `created`/`updated`/`versionTime` coincide exactly for NetDid-authored logs —
+the serialized `updated` value identifies the version it came from. When the supplied log's
+latest `versionTime` is ahead of the local clock by more than the bounded wait (producible
+only by a non-NetDid author or severe clock skew), Update **and** Deactivate fail closed with
+`ArgumentException` and an explicit retry-after-the-clock-catches-up contract: under strict
+monotonicity and the no-future-authoring rule, appending — including an immediate
+deactivation — past such a head is impossible, and an honest failure is the only truthful
+result (a "successful" future-dated entry would be rejected by resolvers that enforce the
+spec's read-side skew rule; NetDid's own read-side enforcement of that rule is tracked as a
+separate defect). A log whose head is at the maximum representable timestamp is permanently
+un-appendable for the same reason.
 
 For *imported* logs authored with fractional `versionTime`s, reading is unchanged: fractional
 precision is preserved, selected, and re-serialized exactly. For such logs the whole-second

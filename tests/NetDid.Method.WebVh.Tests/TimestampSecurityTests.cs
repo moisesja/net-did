@@ -331,6 +331,8 @@ public sealed class TimestampSecurityTests
         var entry = LogEntrySerializer.ParseJsonLines(Encoding.UTF8.GetBytes(logContent))[0];
         (entry.VersionTime.Ticks % TimeSpan.TicksPerSecond).Should().Be(0,
             "authored versionTimes must survive the DID Core whole-second created/updated projection");
+        entry.VersionTime.Should().BeOnOrBefore(DateTimeOffset.UtcNow,
+            "an authored versionTime must never be later than the current time");
 
         var json = JsonSerializer.Serialize(createResult.Metadata,
             new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase });
@@ -343,18 +345,22 @@ public sealed class TimestampSecurityTests
     [Fact]
     public async Task Issue127_UpdateBurst_EmitsStrictlyIncreasingWholeSecondVersionTimes()
     {
-        var (_, _, entries) = await CreateBurstLogAsync(updates: 3);
+        var (_, _, entries, clock) = await CreateBurstLogAsync(updates: 3);
 
         entries.Should().HaveCount(4);
         foreach (var entry in entries)
+        {
             (entry.VersionTime.Ticks % TimeSpan.TicksPerSecond).Should().Be(0,
                 "same-second bursts must advance by whole seconds, not fractional ticks");
+            entry.VersionTime.Should().BeOnOrBefore(clock.GetUtcNow(),
+                "no authored versionTime may be later than the authoring clock — the " +
+                "did:webvh update rules require the retrieval time or before, so a " +
+                "same-second write waits for the next whole second instead of " +
+                "manufacturing it");
+        }
+
         for (var i = 1; i < entries.Count; i++)
             entries[i].VersionTime.Should().BeAfter(entries[i - 1].VersionTime);
-        entries[^1].VersionTime.Should().BeOnOrBefore(
-            DateTimeOffset.UtcNow.AddMinutes(1),
-            "an authored head must stay within the 1-minute skew budget so conforming " +
-            "resolvers with lagging clocks still accept the log");
 
         await new LogChainValidator().ValidateChainAsync(entries);
     }
@@ -362,7 +368,7 @@ public sealed class TimestampSecurityTests
     [Fact]
     public async Task Issue127_SerializedUpdated_RoundTripsAsVersionTimeSelector()
     {
-        var (did, httpClient, entries) = await CreateBurstLogAsync(updates: 2);
+        var (did, httpClient, entries, _) = await CreateBurstLogAsync(updates: 2);
         httpClient.SetLogResponse(
             DidUrlMapper.MapToLogUrl(did), LogEntrySerializer.ToJsonLines(entries));
         var method = new DidWebVhMethod(httpClient);
@@ -437,11 +443,16 @@ public sealed class TimestampSecurityTests
             "the silent-downgrade hazard the metadata contract warns consumers about");
     }
 
-    private static async Task<(string Did, MockWebVhHttpClient HttpClient, IReadOnlyList<LogEntry> Entries)>
+    private static async Task<(string Did, MockWebVhHttpClient HttpClient,
+            IReadOnlyList<LogEntry> Entries, AutoAdvanceTimeProvider Clock)>
         CreateBurstLogAsync(int updates)
     {
+        // Deterministic clock: every write in the burst lands in the "same second" as the
+        // previous head, so each update exercises the bounded wait for the next whole second.
+        var clock = new AutoAdvanceTimeProvider(
+            new DateTimeOffset(2026, 7, 10, 12, 0, 0, TimeSpan.Zero));
         var httpClient = new MockWebVhHttpClient();
-        var method = new DidWebVhMethod(httpClient);
+        var method = new DidWebVhMethod(httpClient) { Clock = clock };
         var signer = CreateEd25519Signer();
         var createResult = await method.CreateAsync(new DidWebVhCreateOptions
         {
@@ -462,7 +473,7 @@ public sealed class TimestampSecurityTests
         }
 
         var entries = LogEntrySerializer.ParseJsonLines(Encoding.UTF8.GetBytes(logContent));
-        return (did, httpClient, entries);
+        return (did, httpClient, entries, clock);
     }
 
     /// <summary>

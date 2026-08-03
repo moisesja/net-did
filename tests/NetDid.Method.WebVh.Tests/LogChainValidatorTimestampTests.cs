@@ -177,14 +177,18 @@ public sealed class LogChainValidatorTimestampTests
     }
 
     [Fact]
-    public async Task Update_FutureDatedCurrentLog_StillEmitsStrictlyIncreasingVersionTime()
+    public async Task Issue127_Update_WaitsForNextWholeSecond_NeverAuthorsFutureTime()
     {
-        // 30 seconds keeps the appended entry inside the 1-minute authoring skew budget that
-        // update fails closed on (issue #127); the beyond-budget case is pinned by
-        // Issue127_Update_FailsClosed_BeyondAuthoredFutureSkewBudget.
+        // Exact boundary, deterministic clock: with the clock at T and the head at T+1s,
+        // the next authorable whole second is T+2s — a wait of exactly the 2-second bound.
+        // Update must WAIT for that instant to arrive (did:webvh: the entry timestamp must
+        // be the retrieval time or before; resolver skew tolerance is not authoring
+        // permission), then stamp a versionTime that is not later than the clock.
+        var clock = new AutoAdvanceTimeProvider(
+            new DateTimeOffset(2026, 7, 10, 12, 0, 0, TimeSpan.Zero));
         var (did, signer, entries) = await CreateAuthenticatedChainAsync(
-            time => time.AddSeconds(30));
-        var method = new DidWebVhMethod(new MockWebVhHttpClient());
+            time => time.AddSeconds(1), clock: clock);
+        var method = new DidWebVhMethod(new MockWebVhHttpClient()) { Clock = clock };
 
         var result = await method.UpdateAsync(did, new DidWebVhUpdateOptions
         {
@@ -195,19 +199,64 @@ public sealed class LogChainValidatorTimestampTests
             Encoding.UTF8.GetBytes((string)result.Artifacts![DidWebVhArtifacts.DidJsonl]));
 
         updatedEntries[2].VersionTime.Should().BeAfter(updatedEntries[1].VersionTime);
+        updatedEntries[2].VersionTime.Should().BeOnOrBefore(clock.GetUtcNow(),
+            "an authored versionTime must never be later than the authoring clock");
+        updatedEntries[2].VersionTime.Should().Be(
+            new DateTimeOffset(2026, 7, 10, 12, 0, 2, TimeSpan.Zero),
+            "the writer waits for the next whole second after the head instead of " +
+            "manufacturing future time");
         await new LogChainValidator().ValidateChainAsync(updatedEntries);
     }
 
-    [Fact]
-    public async Task Issue127_Update_FailsClosed_BeyondAuthoredFutureSkewBudget()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Issue127_WriteOperations_FailHonestly_WhenHeadIsAheadOfClock(
+        bool deactivate)
     {
-        // The next authored versionTime (previous truncated + 1s) would exceed the current
-        // time by more than the 1-minute authoring budget NetDid keeps as clock-skew margin
-        // under the 5-minute tolerance conforming resolvers apply to future-dated entries,
-        // so update fails closed instead of emitting an entry resolvers reject.
+        // A head 2 minutes ahead of the clock (only producible by a non-NetDid author or
+        // severe clock skew) cannot be appended past without authoring future time, which
+        // did:webvh forbids. Both Update and Deactivate must fail honestly with a
+        // retry-after-the-clock-catches-up contract — returning success for an entry
+        // conforming resolvers reject would be false assurance. (+2 minutes also pins the
+        // no-future-authoring design against regressing to any minutes-scale budget: it sat
+        // inside the earlier 5-minute budget this replaced.)
+        var clock = new AutoAdvanceTimeProvider(
+            new DateTimeOffset(2026, 7, 10, 12, 0, 0, TimeSpan.Zero));
         var (did, signer, entries) = await CreateAuthenticatedChainAsync(
-            time => time.AddMinutes(6));
-        var method = new DidWebVhMethod(new MockWebVhHttpClient());
+            time => time.AddMinutes(2), clock: clock);
+        var method = new DidWebVhMethod(new MockWebVhHttpClient()) { Clock = clock };
+        var currentLog = LogEntrySerializer.ToJsonLines(entries);
+
+        Func<Task> act = deactivate
+            ? () => method.DeactivateAsync(did, new DidWebVhDeactivateOptions
+            {
+                CurrentLogContent = currentLog,
+                SigningKey = signer
+            })
+            : () => method.UpdateAsync(did, new DidWebVhUpdateOptions
+            {
+                CurrentLogContent = currentLog,
+                SigningKey = signer
+            });
+
+        await act.Should().ThrowAsync<ArgumentException>()
+            .WithMessage("*ahead of the local clock*");
+        clock.GetUtcNow().Should().Be(
+            new DateTimeOffset(2026, 7, 10, 12, 0, 0, TimeSpan.Zero),
+            "failing closed must not wait toward a far-future head");
+    }
+
+    [Fact]
+    public async Task Issue127_Update_FailsHonestly_JustBeyondBoundedWait()
+    {
+        // Exact boundary complement: head at T+2s needs a 3-second wait — one second past
+        // the 2-second bound — so authoring refuses rather than waits or stamps future time.
+        var clock = new AutoAdvanceTimeProvider(
+            new DateTimeOffset(2026, 7, 10, 12, 0, 0, TimeSpan.Zero));
+        var (did, signer, entries) = await CreateAuthenticatedChainAsync(
+            time => time.AddSeconds(2), clock: clock);
+        var method = new DidWebVhMethod(new MockWebVhHttpClient()) { Clock = clock };
 
         var act = () => method.UpdateAsync(did, new DidWebVhUpdateOptions
         {
@@ -216,42 +265,20 @@ public sealed class LogChainValidatorTimestampTests
         });
 
         await act.Should().ThrowAsync<ArgumentException>()
-            .WithMessage("*too far in the future*");
-    }
-
-    [Fact]
-    public async Task Issue127_Deactivate_SucceedsOnFarFutureLog_RevocationNotBlockable()
-    {
-        // Emergency revocation is exempt from the future-skew budget: an attacker holding a
-        // compromised key can plant a legitimately signed far-future entry via another
-        // implementation, and that entry must not be able to deny the controller the one
-        // safety operation that matters afterwards. The deactivation entry stays strictly
-        // monotonic past the poisoned head.
-        var (did, signer, entries) = await CreateAuthenticatedChainAsync(
-            time => time.AddMinutes(6));
-        var method = new DidWebVhMethod(new MockWebVhHttpClient());
-
-        var result = await method.DeactivateAsync(did, new DidWebVhDeactivateOptions
-        {
-            CurrentLogContent = LogEntrySerializer.ToJsonLines(entries),
-            SigningKey = signer
-        });
-
-        result.Success.Should().BeTrue();
-        var deactivatedEntries = LogEntrySerializer.ParseJsonLines(
-            Encoding.UTF8.GetBytes((string)result.Artifacts![DidWebVhArtifacts.DidJsonl]));
-        deactivatedEntries[2].VersionTime.Should().BeAfter(deactivatedEntries[1].VersionTime);
-        deactivatedEntries[2].Parameters.Deactivated.Should().BeTrue();
-        await new LogChainValidator().ValidateChainAsync(deactivatedEntries);
+            .WithMessage("*ahead of the local clock*");
     }
 
     private async Task<(string Did, ISigner Signer, IReadOnlyList<LogEntry> Entries)>
         CreateAuthenticatedChainAsync(
             Func<DateTimeOffset, DateTimeOffset> selectSecondTime,
-            LogEntryParameters? secondParameters = null)
+            LogEntryParameters? secondParameters = null,
+            TimeProvider? clock = null)
     {
         var signer = CreateSigner();
-        var method = new DidWebVhMethod(new MockWebVhHttpClient());
+        var method = new DidWebVhMethod(new MockWebVhHttpClient())
+        {
+            Clock = clock ?? TimeProvider.System
+        };
         var created = await method.CreateAsync(new DidWebVhCreateOptions
         {
             Domain = "example.com",

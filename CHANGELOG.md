@@ -114,27 +114,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- **`did:webvh`: NetDid now authors whole-second `versionTime`s; Update fails closed beyond
-  a 1-minute future-skew budget (Deactivate exempt)** (issue #127, follow-up to PR #126's
-  residual). DID Core §7.3 mandates whole-second `created`/`updated` in resolution metadata,
-  so versions distinct only sub-second could not be identified by those fields — a serialized
-  `updated` fed back as `?versionTime=` mis-selected or returned `notFound`. Create now
-  truncates the current UTC instant to a whole second, and Update/Deactivate advance one
-  whole second past the previous entry when the current whole second is not strictly later
-  (replacing the old one-tick advance). For NetDid-authored logs,
-  `created`/`updated`/`versionTime` now coincide exactly and `updated` round-trips as a
-  version selector (regression-pinned). Behavior changes: authored `versionTime`s no longer
-  carry fractional seconds (the wire format is unchanged — whole-second values always
-  serialized without a fraction); a same-second write authors an entry leading the wall
-  clock by up to one second; and Update now throws `ArgumentException` when the next
-  `versionTime` would exceed the current time by more than a 1-minute authoring budget —
-  bounding a same-second burst at ~60 writes (then ~1 write/second) while keeping a
-  ≥4-minute clock-skew margin under the at-most-5-minute future tolerance the did:webvh
-  spec lets conforming resolvers reject beyond (previously future-dated logs were appended
-  to without bound). Deactivate remains strictly monotonic but is deliberately exempt from
-  the budget (adversarial-review finding): a compromised key can plant a legitimately
-  signed far-future entry via another implementation, and emergency revocation must not be
-  blockable by it. Reading logs authored by other implementations is unchanged: fractional
+- **`did:webvh`: NetDid now authors whole-second `versionTime`s and never authors future
+  time; write operations on a future-dated log fail honestly** (issue #127, follow-up to
+  PR #126's residual). DID Core §7.3 mandates whole-second `created`/`updated` in resolution
+  metadata, so versions distinct only sub-second could not be identified by those fields — a
+  serialized `updated` fed back as `?versionTime=` mis-selected or returned `notFound`.
+  Create now truncates the current UTC instant to a whole second. Update/Deactivate use the
+  current whole second when it is strictly later than the supplied log's latest entry, and
+  otherwise *wait* (bounded at 2 seconds) for the next whole second to actually arrive
+  before stamping it — the did:webvh update rules require the entry timestamp to be the
+  retrieval time or before, so the old one-tick advance (which manufactured future time) is
+  gone and no authored `versionTime` is ever later than the authoring clock. For
+  NetDid-authored logs, `created`/`updated`/`versionTime` now coincide exactly and `updated`
+  round-trips as a version selector (regression-pinned, including the authored-not-later-
+  than-observation invariant on a deterministic injected clock). Behavior changes: authored
+  `versionTime`s no longer carry fractional seconds (wire format unchanged — whole-second
+  values always serialized without a fraction); a same-second burst throttles to ~1 write
+  per second (each write may block up to 2 s); and Update **and** Deactivate now throw
+  `ArgumentException` when the supplied log's latest `versionTime` is ahead of the local
+  clock by more than the bounded wait (previously such logs were appended to by stamping
+  future time) — retry once the clock passes the head; appending past a future-dated head
+  without authoring future time is impossible, so an honest failure replaces a false
+  success (a log whose head is the maximum representable timestamp is permanently
+  un-appendable). Read-side enforcement of the spec's future-skew rejection rule is tracked
+  separately (#131). Reading logs authored by other implementations is unchanged: fractional
   `versionTime`s are still preserved, selected, and re-serialized at full precision; for
   those logs `created`/`updated` remain informational only — `versionTime`/`versionId` are
   the only version selectors, now documented on `DidDocumentMetadata` (and the

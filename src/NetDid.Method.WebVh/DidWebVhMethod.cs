@@ -32,6 +32,10 @@ public sealed class DidWebVhMethod : DidMethodBase
     private readonly WitnessValidator _witnessValidator;
     private readonly ILogger<DidWebVhMethod> _logger;
 
+    // Authoring clock seam: versionTime stamping and the bounded same-second wait read time
+    // from here so tests can pin exact whole-second boundaries deterministically.
+    internal TimeProvider Clock { get; init; } = TimeProvider.System;
+
     internal const string MethodVersion = "did:webvh:1.0";
 
     /// <summary>
@@ -145,7 +149,7 @@ public sealed class DidWebVhMethod : DidMethodBase
         var genesisEntry = new LogEntry
         {
             VersionId = ScidGenerator.SafePlaceholder,
-            VersionTime = WebVhTimestamp.TruncateToWholeSecond(DateTimeOffset.UtcNow),
+            VersionTime = WebVhTimestamp.TruncateToWholeSecond(Clock.GetUtcNow()),
             Parameters = genesisParams,
             State = docTemplate
         };
@@ -578,10 +582,11 @@ public sealed class DidWebVhMethod : DidMethodBase
         // Build new entry — hash includes previous versionId per spec
         var versionNumber = entries.Count + 1;
         var versionNumberText = versionNumber.ToString(CultureInfo.InvariantCulture);
+        var nextVersionTime = await GetNextVersionTimeAsync(previousEntry.VersionTime, ct);
         var newEntry = new LogEntry
         {
             VersionId = previousEntry.VersionId,
-            VersionTime = GetNextVersionTime(previousEntry.VersionTime, enforceFutureSkewBound: true),
+            VersionTime = nextVersionTime,
             Parameters = newParams,
             State = newDocument
         };
@@ -681,13 +686,11 @@ public sealed class DidWebVhMethod : DidMethodBase
         var versionNumberText = versionNumber.ToString(CultureInfo.InvariantCulture);
         var minimalDoc = new DidDocument { Id = new Did(did) };
 
+        var deactivationVersionTime = await GetNextVersionTimeAsync(previousEntry.VersionTime, ct);
         var deactivationEntry = new LogEntry
         {
             VersionId = previousEntry.VersionId,
-            // Deactivation is exempt from the future-skew bound: a compromised key can plant a
-            // legitimately signed far-future entry (NetDid's bound only constrains NetDid
-            // authors), and revocation must not be blockable by it. See GetNextVersionTime.
-            VersionTime = GetNextVersionTime(previousEntry.VersionTime, enforceFutureSkewBound: false),
+            VersionTime = deactivationVersionTime,
             Parameters = deactivationParams,
             State = minimalDoc
         };
@@ -733,43 +736,50 @@ public sealed class DidWebVhMethod : DidMethodBase
 
     // --- Private helpers ---
 
-    // did:webvh v1.0 lets resolvers reject entries more than "a small, implementation-defined
-    // tolerance" in the future and caps that tolerance at 5 minutes ("Resolvers SHOULD use a
-    // tolerance of no more than 5 minutes"). NetDid authors against a 1-minute budget so the
-    // worst-case authored lead keeps a >=4-minute clock-skew margin under every conforming
-    // resolver; a same-second burst therefore fails closed after ~60 writes (then ~1 write/s).
-    private static readonly TimeSpan MaxAuthoredFutureSkew = TimeSpan.FromMinutes(1);
+    // Maximum time an Update/Deactivate call will block waiting for the wall clock to reach
+    // the next authorable whole second. Covers same-second writes (which need < 1 s) with
+    // scheduling margin; anything longer implies a log head ahead of the local clock, which
+    // NetDid refuses to author past (see GetNextVersionTimeAsync).
+    private static readonly TimeSpan MaxVersionTimeWait = TimeSpan.FromSeconds(2);
 
     // NetDid authors whole-second versionTimes so the DID Core §7.3 whole-second
     // created/updated projection of the same instant still identifies the entry (issue #127).
-    // Same-second bursts advance one second past the previous entry, which keeps strict
-    // monotonicity for any previous value, including fractional ones from imported logs.
-    // enforceFutureSkewBound is false for deactivation: emergency revocation is terminal and
-    // strictly safety-increasing, so a future-dated head (which only a non-NetDid author can
-    // produce) must not be able to block it — the entry stays monotonic and overflow-guarded.
-    private static DateTimeOffset GetNextVersionTime(
-        DateTimeOffset previous, bool enforceFutureSkewBound)
+    // The did:webvh Update algorithm requires the entry timestamp to be "the time the DID
+    // will be retrieved by a witness or resolver, or before" — resolver-side skew tolerance
+    // is leniency for READING, not permission to WRITE future time — so a same-second write
+    // WAITS for the next whole second to actually arrive rather than manufacturing it
+    // (sustained rate: ~1 write/second). When the supplied log's head is ahead of the local
+    // clock by more than the bounded wait (only producible by a non-NetDid author or severe
+    // clock skew), authoring fails closed with a retry-after-the-clock-catches-up contract.
+    // That applies to Deactivate too: under strict monotonicity and no-future-authoring,
+    // immediately revoking past an arbitrarily future head is impossible, and an honest
+    // failure beats returning Success for an entry conforming resolvers reject (see #131
+    // for the read-side enforcement of the same rule).
+    private async Task<DateTimeOffset> GetNextVersionTimeAsync(
+        DateTimeOffset previous, CancellationToken ct)
     {
-        var now = DateTimeOffset.UtcNow;
-        var nowSecond = WebVhTimestamp.TruncateToWholeSecond(now);
-        if (nowSecond > previous)
-            return nowSecond;
+        while (true)
+        {
+            var now = Clock.GetUtcNow();
+            var nowSecond = WebVhTimestamp.TruncateToWholeSecond(now);
+            if (nowSecond > previous)
+                return nowSecond;
 
-        var previousSecond = WebVhTimestamp.TruncateToWholeSecond(previous);
-        if (DateTimeOffset.MaxValue - previousSecond < TimeSpan.FromSeconds(1))
-            throw new ArgumentException(
-                "The supplied DID log's latest versionTime cannot be advanced.");
+            var previousSecond = WebVhTimestamp.TruncateToWholeSecond(previous);
+            if (DateTimeOffset.MaxValue - previousSecond < TimeSpan.FromSeconds(1))
+                throw new ArgumentException(
+                    "The supplied DID log's latest versionTime cannot be advanced.");
 
-        var next = previousSecond.AddSeconds(1);
-        if (enforceFutureSkewBound && next - now > MaxAuthoredFutureSkew)
-            throw new ArgumentException(
-                "The supplied DID log's latest versionTime is too far in the future to " +
-                "append a spec-conformant entry: the next versionTime would exceed the " +
-                "current time by more than NetDid's 1-minute authoring budget, which " +
-                "preserves a clock-skew margin under the 5-minute tolerance conforming " +
-                "resolvers apply to future-dated entries.");
+            var wait = previousSecond.AddSeconds(1) - now;
+            if (wait > MaxVersionTimeWait)
+                throw new ArgumentException(
+                    "The supplied DID log's latest versionTime is ahead of the local " +
+                    "clock. did:webvh forbids authoring an entry timestamp later than " +
+                    "the current time, so this entry cannot be appended yet; retry after " +
+                    "the local clock passes the log's latest versionTime.");
 
-        return next;
+            await Task.Delay(wait, Clock, ct);
+        }
     }
 
     private static void RequireValidWitnessPolicy(WitnessConfig? config, string parameterName)
