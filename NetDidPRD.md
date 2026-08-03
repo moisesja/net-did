@@ -1137,9 +1137,27 @@ entry whose `versionTime` is non-UTC or otherwise invalid MUST be reported as `i
 as `notFound`. Adjacent entries MUST also be strictly increasing by parsed instant: every entry
 after genesis must have a `versionTime` later than its predecessor. Equal or decreasing values
 invalidate the chain even when their hashes and proofs are otherwise authentic. The comparison
-does not normalize, replace, or reserialize the authenticated wire token. Create emits the current
-UTC instant; Update and Deactivate choose an instant strictly later than the supplied log's latest
-entry, including when that entry is future-dated relative to the local clock.
+does not normalize, replace, or reserialize the authenticated wire token.
+
+NetDid *authors* whole-second `versionTime`s (issue #127). Create truncates the current UTC
+instant to a whole second; Update and Deactivate choose the current whole second when it is
+strictly later than the supplied log's latest entry, and otherwise advance one whole second past
+that entry (including when it is future-dated relative to the local clock, or fractional in an
+imported log). Because DID Core §7.3 mandates whole-second `created`/`updated` in resolution
+metadata, whole-second authoring makes `created`/`updated`/`versionTime` coincide exactly for
+NetDid-authored logs — the serialized `updated` value identifies the version it came from. The
+did:webvh spec's own guidance assumes one-second monotonicity granularity and bounds future-dated
+entries. Appending fails closed (`ArgumentException`) when the next `versionTime` would exceed the
+current time by more than 5 minutes — the tolerance conforming resolvers apply to future-dated
+entries — so a same-second update burst is bounded rather than drifting arbitrarily ahead of the
+wall clock.
+
+For *imported* logs authored with fractional `versionTime`s, reading is unchanged: fractional
+precision is preserved, selected, and re-serialized exactly. For such logs the whole-second
+`created`/`updated` projection is inherently lossy and MUST NOT be used as a version selector —
+`versionTime`/`versionId` are the only selectors. Consumers must never feed a serialized
+`updated` value back as a `versionTime` resolution query for logs that may carry sub-second
+versions.
 
 ### 7.5 Create
 
