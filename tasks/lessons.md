@@ -513,3 +513,26 @@
   test that fails when an entry is silently in neither set), and propose the narrowing on
   the issue itself for sign-off with a follow-up issue — do not declare it narrowed in
   the PRD/README from the PR side. (PR #129 round 3, finding 3.)
+- Resolver-side skew tolerance is leniency for READING, never permission to WRITE future
+  time. did:webvh's Update algorithm requires the entry timestamp to be "the time the DID
+  will be retrieved by a witness or resolver, or before" — so a writer needing whole-second
+  identity must WAIT (bounded) for the next whole second to actually arrive, or fail
+  honestly; it must not manufacture time ahead of the clock and justify it with the
+  resolver's read-side tolerance. Corollary: a SHOULD-maximum ("no more than 5 minutes")
+  is a ceiling on others' leniency, not a floor you may consume — a conforming resolver
+  with a 30-second tolerance breaks every "margin under every conforming resolver" claim.
+  (PR #132 review round 1, findings 1+3.)
+- An operation that cannot take effect under the spec's invariants must fail with an honest
+  retry contract, not return Success. Exempting Deactivate from the future-skew bound
+  "fixed" a denial-of-revocation by emitting an entry conforming resolvers reject — false
+  assurance, worse than the failure. When strict monotonicity + no-future-authoring make
+  immediate append past a future head impossible, the truthful contract is: throw, tell the
+  caller when retrying can work, and document the impossibility. (PR #132 round 1, finding 2.)
+- Pin a changed numeric security constant with a case BETWEEN the old and new values; a
+  rejection test beyond both (e.g. +6min against both a 5-min and 1-min budget) is green
+  under a revert and pins nothing. And when the invariant is "authored X never exceeds
+  observation time", assert exactly that against an injected deterministic clock — my
+  adversarial agents and tests validated NetDid against NetDid's own resolver (which lacks
+  the read-side MUST, #131), so a spec-violating writer passed its own suite. The oracle
+  for a writer-conformance property is the spec's writer rule, not the library's reader.
+  (PR #132 round 1, finding 4.)
