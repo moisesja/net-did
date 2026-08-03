@@ -974,6 +974,8 @@ public sealed class DidEthrMethod : DidMethodBase
             {
                 // A cache entry is optional. Stop retaining raw payloads once its
                 // independent memory budget is exhausted; resolution still succeeds.
+                // Discard the whole candidate because cache reads require one contiguous
+                // previousChange chain through genesis, so a partial prefix is not reusable.
                 cacheEligibleBlocks.Clear();
                 collectedRawCacheBytes = MaxCollectedBytes;
             }
