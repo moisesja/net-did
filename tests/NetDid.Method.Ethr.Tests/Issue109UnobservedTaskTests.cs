@@ -621,6 +621,10 @@ public class Issue109UnobservedTaskTests
             ["src/NetDid.Method.Ethr/DidEthrMethod.cs"] = 16,
             ["src/NetDid.Method.Ethr/Transactions/TransactionPipeline.cs"] = 6,
             ["src/NetDid.Method.Ethr/Deployment/Erc1056Registry.cs"] = 1,
+            // Sites added by issue #119: the endpoint probe's two dependency awaits
+            // (GetChainIdAsync, GetLogsAsync), each bounded by the per-endpoint
+            // deadline so a token-ignoring hung endpoint cannot stall bootstrap.
+            ["src/NetDid.Method.Ethr/Rpc/EthrRpcAutoConfig.cs"] = 2,
         }, "removing a WaitAsyncObserved wrapper un-bounds a dependency await; update " +
            "this inventory only for a deliberate call-site change");
     }

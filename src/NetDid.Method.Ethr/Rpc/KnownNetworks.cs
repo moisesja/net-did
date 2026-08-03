@@ -12,9 +12,15 @@ namespace NetDid.Method.Ethr.Rpc;
 /// var config = KnownNetworks.Sepolia with { RpcUrl = "https://sepolia.drpc.org" };
 /// </code>
 ///
-/// <see cref="All"/> contains every active (non-deprecated) network.
-/// Deprecated networks (Ropsten, Rinkeby, Goerli, Kovan) are omitted, matching
-/// the commented-out entries in the JS source.
+/// The endpoint must serve historical <c>eth_getLogs</c> (archive-grade) — resolution
+/// replays the full ERC-1056 event history and fails closed against pruned nodes. To
+/// obtain probed, ready-to-use configs without curating URLs by hand, use
+/// <see cref="EthrRpcAutoConfig.ConfigureAsync"/>.
+///
+/// <see cref="All"/> contains every network published in the JS source; entries
+/// commented out there (Ropsten, Rinkeby, Goerli, Kovan) are omitted. Note that
+/// some published entries are nonetheless defunct/deprecated in practice — see
+/// <see cref="EthrRpcAutoConfig.NetworksWithoutDefaults"/>.
 /// </summary>
 public static class KnownNetworks
 {
@@ -150,9 +156,17 @@ public static class KnownNetworks
     // ── Catalogue ─────────────────────────────────────────────────────────────
 
     /// <summary>
-    /// All active (non-deprecated) known network configurations, in the same order
-    /// as <c>deployments.ts</c>. RpcUrl is empty in every entry — use
-    /// <c>with { RpcUrl = "..." }</c> to produce a ready-to-use config.
+    /// Every known network configuration published (not commented out) in the JS
+    /// reference resolver's <c>deployments.ts</c>, in the same order. "Published
+    /// there" does not mean "operational today": several listed networks are
+    /// defunct or deprecated in practice (ARTIS, Polygon Mumbai, Linea Goerli).
+    /// <see cref="EthrRpcAutoConfig.DefaultCandidateEndpoints"/> and
+    /// <see cref="EthrRpcAutoConfig.NetworksWithoutDefaults"/> partition this list
+    /// into networks with batteries-included auto-configuration and networks whose
+    /// endpoints must be caller-supplied (with the reason documented per entry).
+    /// RpcUrl is empty in every entry — use <c>with { RpcUrl = "..." }</c> (an
+    /// archive-grade endpoint; see <see cref="EthereumNetworkConfig.RpcUrl"/>) or
+    /// <see cref="EthrRpcAutoConfig.ConfigureAsync"/> to produce ready-to-use configs.
     /// </summary>
     public static readonly IReadOnlyList<EthereumNetworkConfig> All =
     [

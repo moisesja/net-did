@@ -475,3 +475,41 @@
   Also, instant equality does not prove UTC normalization for `DateTimeOffset`: assert the
   resulting `Offset` explicitly, and reject zone-less input before the runtime can interpret it
   using the resolver host's local timezone. (PR #126 review round 2.)
+- A depth probe must target the OLDEST real data its consumer can legitimately need, and
+  must issue the SAME query shape the consumer issues. The #119 endpoint probe used a
+  2020-era mainnet event found by sampling 10k-block windows — which skipped the registry's
+  actual first events at block 7,049,729 (2019) — so it approved endpoints that could not
+  resolve real 2019 DIDs; and it queried a 41-block range while resolution queries exactly
+  one block, so providers with tight range caps were rejected that resolution would have
+  served fine. Establish "earliest" from an indexed source (explorer ascending scan), not
+  window sampling, verify it via the consumer's own call shape, and pin both the datum and
+  the shape with invariant tests. (PR #129 review round 2, findings 1-2.)
+- RPC/service URLs are credentials: userinfo, provider project keys in the path, query
+  tokens. Any log line that includes a caller-supplied URL — including SUCCESS paths —
+  is a credential-disclosure channel. Log a sanitized label (scheme + host + non-default
+  port); for unparseable input log only its position (unparseable means unsanitizable);
+  pin with sentinel-secret tests across every outcome shape. "The caller supplied it" does
+  not make it safe to persist in logs. (PR #129 review round 2, finding 3.)
+- Fail-first evidence must FAIL ON AN ASSERTION, quickly and deterministically. A test that
+  wedges/OOMs against pre-fix code (a NonTerminatingList enumerated by unbounded pre-fix
+  snapshotting "failed" only via ~45 s memory-pressure death) is not reproducible evidence
+  and can hang the suite on bigger machines. Design the hostile double so the pre-fix
+  outcome is a fast, clean failure (throw-on-first-access to prove "never touched"; a
+  finite Max+N sequence to prove cap semantics); keep genuinely infinite adversaries out
+  of in-process test runs. (PR #129 round 3, finding 5.)
+- Before claiming "same request/query shape as <component>", diff against that component's
+  ACTUAL request field-by-field — block range AND every topic position AND address. The
+  probe claimed resolution's shape after matching only the block range; resolution also
+  sends a topic0 signature OR-list, and a wildcard topic0 is a DIFFERENT request class
+  providers may limit independently. Pin shape parity with a test that asserts the full
+  filter, not the one field that motivated the claim. (PR #129 round 3, finding 4.)
+- Caller-controlled map KEYS are the same log-injection/credential surface as values:
+  CR/LF keys forge log lines, huge keys flood, URL-shaped keys carry secrets. Identify
+  invalid entries by ordinal and valid ones by their canonical catalogue name; never echo
+  the raw key. "It's just a dictionary key" is not a sanitization exemption. (PR #129
+  round 3, finding 2.)
+- An issue's acceptance criterion is the ISSUE OWNER's to amend: implement the honest
+  subset, make the gap STRUCTURAL (a documented exclusion set + a partition invariant
+  test that fails when an entry is silently in neither set), and propose the narrowing on
+  the issue itself for sign-off with a follow-up issue — do not declare it narrowed in
+  the PRD/README from the PR side. (PR #129 round 3, finding 3.)

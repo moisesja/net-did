@@ -9,6 +9,61 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`did:ethr`: archive-node requirement documented; `EthrRpcAutoConfig` opt-in endpoint
+  auto-configuration with historical-logs probing** (issue #119). did:ethr resolution replays
+  the full ERC-1056 event history, so the configured `RpcUrl` must serve historical
+  `eth_getLogs` (archive-grade) — a requirement that free public endpoints often fail while
+  still answering liveness calls. This is now documented at every point a user supplies an
+  `RpcUrl` (`EthereumNetworkConfig.RpcUrl` and `KnownNetworks` XML docs, README did:ethr and
+  DI sections, PRD §8.9). New static `EthrRpcAutoConfig.ConfigureAsync` (in
+  `NetDid.Method.Ethr`; no new package, no added dependencies) turns candidate public
+  endpoints — the built-in `DefaultCandidateEndpoints` for mainnet/Sepolia/Gnosis/Polygon/
+  Aurora/Energy Web Chain (the official deployments that are live with verifiable probe
+  data; the deprecated/defunct or unverifiable rest take caller-supplied candidates), or
+  a caller-supplied map — into ready-to-use `EthereumNetworkConfig`s: per network, candidates
+  are probed sequentially (first pass wins) with an `eth_chainId` identity check plus an
+  exact-block `eth_getLogs` query (the same query shape resolution itself issues, so
+  provider range caps cannot false-reject) for the earliest on-chain-verified registry
+  event on each network (mainnet: block 7,049,729, 2019-01-11), mirroring
+  the reference-resolver maintainer's probing approach. Endpoints returning empty logs for
+  the known-old probe (pruned/non-archive), reporting the wrong chain, failing transport, or
+  exceeding the per-endpoint timeout (default 10 s) are discarded with an actionable log
+  message; networks with no passing candidate are omitted from the result; networks without
+  probe data pass on chain-ID alone and are logged as unverified for archive depth. Probing
+  reuses the existing hardened RPC client (response caps, bounded error extraction, 30 s
+  per-request bound), snapshots caller-supplied collections at entry (by enumeration, so a
+  hostile `ICollection` fast path cannot substitute contents), propagates caller
+  cancellation while containing per-endpoint failures (including a throwing client factory
+  or `Dispose` on the injectable seam), and logs only fixed library-owned text. From the
+  adversarial review: a probe pass requires a returned log **matching** the probe (registry
+  address, ERC-1056 event signature, identity topic, exact probed block, case-insensitive) — a bare non-empty
+  count would have accepted providers that clamp `fromBlock` to their retained range;
+  failure logs carry exception **type names** only, never the exception object, because a
+  remote endpoint controls inner-exception text (duplicate-JSON-key `ArgumentException`
+  quotes the attacker's key); a refusal-shape failure during the historical step names the
+  archive cause; `perEndpointTimeout` is validated against `CancelAfter`'s ~49.7-day
+  ceiling; the shipped default-endpoint map is deep-immutable. From the maintainer's PR
+  review (round 2): probes target each network's **earliest** verifiable event as a single
+  exact block — the original 2020-era mainnet window approved endpoints pruned before
+  block 10M that cannot resolve real 2019 DIDs, and the 41-block range could false-reject
+  providers with tight range caps that resolution never needs; log lines identify
+  endpoints by **scheme + host only** (RPC URLs routinely carry credentials in userinfo,
+  path, or query — none of it reaches logs on any outcome, pinned by sentinel-secret
+  tests); and input snapshotting is cancellable and bounded (64 network entries, 16
+  candidates per network, truncation logged). Round 3: the probe request now uses the
+  resolver's own topic0 signature OR-list (a wildcard scan is a different request class
+  some providers limit) and validates the returned topic0; caller-controlled map KEYS
+  are never logged raw either — skipped entries are identified by map ordinal, resolved
+  ones by canonical catalogue name; cancel-then-throw from a hostile candidate
+  enumerator propagates as `OperationCanceledException` (caller-token-priority catch);
+  and `KnownNetworks.All` is partitioned exactly between shipped defaults and the
+  documented `NetworksWithoutDefaults` exclusion map (test-pinned), with the issue-#119
+  scope narrowing to the six live probeable deployments recorded on the issue itself.
+  Probing verifies
+  availability/depth only — a passing endpoint remains a single untrusted RPC node; the
+  documented integrity model is unchanged. Probe data is structured for later alignment
+  with the maintainer's companion auto-config list once published.
+
 - **`did:ethr`: opt-in finalized ERC-1056 event-history cache** (issue #118). Long-lived
   `DidEthrMethod` instances can now reuse the immutable part of an identity's event history instead
   of issuing one sequential `eth_getLogs` call per historical change block on every resolution.
