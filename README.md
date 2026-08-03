@@ -296,6 +296,28 @@ Console.WriteLine(doc.VerificationMethod![0].BlockchainAccountId);
 
 Resolve walks the on-chain ERC-1056 event chain (owner changes, delegate keys, attribute keys, services) and builds a W3C DID Document. Key types supported: `EcdsaSecp256k1RecoveryMethod2020` (delegates), `EcdsaSecp256k1VerificationKey2019`, `Ed25519VerificationKey2020`, `X25519KeyAgreementKey2020`, `Multikey`, and unknown types via `publicKeyHex`.
 
+For identities with long histories, finalized-event caching can avoid replaying the immutable
+prefix on every resolution. It is explicitly opt-in and disabled by default:
+
+```csharp
+services.AddNetDid(builder => builder.AddDidEthr(
+    networks,
+    cacheFinalizedEventHistory: true));
+```
+
+When enabled, the resolver asks `eth_getBlockByNumber("finalized")`, then caches validated raw
+ERC-1056 logs at or below that watermark under `(chainId, registryAddress, identityAddress)`.
+The next resolution still calls `changed(identity)` and fetches every newer block, but it performs
+no `eth_getLogs` calls for the cached finalized prefix. Non-finalized events are never stored in
+the indefinite cache. Cached logs are parsed and checked again on every read through the same
+registry, identity, block, `logIndex`, and `previousChange` validator as fresh RPC data, so a
+corrupt cache entry fails closed as `internalError`. The cache is resolver-owned rather than shared
+with application components, is hard-limited to 64 MiB in aggregate, skips empty histories, and
+keeps only the greatest finalized watermark when resolutions race. Each entry is additionally
+bounded by the resolver's existing 5,000-event and 32 MiB limits. If a chain, custom
+RPC client, or endpoint does not support the optional finalized-block capability, resolution
+silently retains the full uncached walk.
+
 Delegates and attribute keys carry a `validTo` timestamp, and ERC-1056 revocation re-emits
 the same entry with an elapsed `validTo` — so both expiry and revocation drop the entry from
 the resolved document, while a historical resolution before that point still shows it.

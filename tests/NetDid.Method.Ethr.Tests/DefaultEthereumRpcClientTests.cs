@@ -198,6 +198,68 @@ public class DefaultEthereumRpcClientTests
         chainId.Should().Be(0xaa36a7UL);
     }
 
+    [Fact]
+    public async Task Issue118_GetFinalizedBlockNumber_UsesFinalizedTagAndReturnsNumber()
+    {
+        string? requestBody = null;
+        var handler = new StubHandler(request =>
+        {
+            requestBody = request.Content!.ReadAsStringAsync().GetAwaiter().GetResult();
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent(
+                    "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"number\":\"0x64\"}}")
+            };
+        });
+        var client = new DefaultEthereumRpcClient(new HttpClient(handler)
+        {
+            BaseAddress = new Uri("http://rpc.local")
+        });
+
+        var finalized = await client.GetFinalizedBlockNumberAsync();
+
+        finalized.Should().Be(100);
+        requestBody.Should().Contain("\"method\":\"eth_getBlockByNumber\"");
+        requestBody.Should().Contain("\"params\":[\"finalized\",false]");
+    }
+
+    [Fact]
+    public async Task Issue118_GetFinalizedBlockNumber_ConcurrentCallerCancellationWinsOverFallback()
+    {
+        using var cts = new CancellationTokenSource();
+        var handler = new StubHandler(_ =>
+        {
+            cts.Cancel();
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent(
+                    "{\"jsonrpc\":\"2.0\",\"id\":1,\"error\":{\"code\":-39001}}")
+            };
+        });
+        var client = new DefaultEthereumRpcClient(new HttpClient(handler)
+        {
+            BaseAddress = new Uri("http://rpc.local")
+        });
+
+        var act = () => client.GetFinalizedBlockNumberAsync(cts.Token);
+
+        await act.Should().ThrowAsync<OperationCanceledException>();
+    }
+
+    [Theory]
+    [InlineData("{\"jsonrpc\":\"2.0\",\"id\":1,\"error\":{\"code\":-39001,\"message\":\"unknown block\"}}")]
+    [InlineData("{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":null}")]
+    [InlineData("{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"number\":\"0x01\"}}")]
+    public async Task Issue118_GetFinalizedBlockNumber_UnsupportedOrMalformedResponse_ReturnsNull(
+        string response)
+    {
+        var client = ClientReturning(HttpStatusCode.OK, new StringContent(response));
+
+        var finalized = await client.GetFinalizedBlockNumberAsync();
+
+        finalized.Should().BeNull();
+    }
+
     [Theory]
     [InlineData("[]")]
     [InlineData("42")]

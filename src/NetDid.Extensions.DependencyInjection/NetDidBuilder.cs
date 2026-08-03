@@ -1,4 +1,5 @@
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Logging;
 using NetDid.Core;
 using NetCrypto;
@@ -100,9 +101,28 @@ public sealed class NetDidBuilder
     /// Register the did:ethr method.
     /// Uses IHttpClientFactory for RPC HTTP requests.
     /// </summary>
-    public NetDidBuilder AddDidEthr(IEnumerable<EthereumNetworkConfig> networks)
+    /// <param name="networks">Ethereum networks and ERC-1056 registries to register.</param>
+    public NetDidBuilder AddDidEthr(IEnumerable<EthereumNetworkConfig> networks) =>
+        AddDidEthr(networks, cacheFinalizedEventHistory: false);
+
+    /// <summary>
+    /// Register the did:ethr method with explicit finalized event-history cache control.
+    /// Uses IHttpClientFactory for RPC HTTP requests.
+    /// </summary>
+    /// <param name="networks">Ethereum networks and ERC-1056 registries to register.</param>
+    /// <param name="cacheFinalizedEventHistory">
+    /// Opt in to indefinite caching of validated ERC-1056 logs at or below the endpoint's
+    /// finalized block. Defaults to false. Endpoints without finalized-tag support fall
+    /// back to a full history walk.
+    /// </param>
+    public NetDidBuilder AddDidEthr(
+        IEnumerable<EthereumNetworkConfig> networks,
+        bool cacheFinalizedEventHistory)
     {
         var networkList = networks.ToList();
+
+        if (cacheFinalizedEventHistory)
+            Services.TryAddSingleton<IEthrEventHistoryCache, BoundedEthrEventHistoryCache>();
 
         // Register a named HttpClient for each network, pre-configured with its RPC URL.
         // DefaultEthereumRpcClientFactory resolves "ethr-{name}" to get the right endpoint.
@@ -112,11 +132,18 @@ public sealed class NetDidBuilder
 
         Services.AddSingleton<IEthereumRpcClientFactory, DefaultEthereumRpcClientFactory>();
         Services.AddSingleton<IDidMethod>(sp =>
-            new DidEthrMethod(
-                sp.GetRequiredService<IEthereumRpcClientFactory>(),
-                networkList,
-                sp.GetRequiredService<IKeyGenerator>(),
-                sp.GetService<ILogger<DidEthrMethod>>()));
+            cacheFinalizedEventHistory
+                ? new DidEthrMethod(
+                    sp.GetRequiredService<IEthereumRpcClientFactory>(),
+                    networkList,
+                    sp.GetRequiredService<IKeyGenerator>(),
+                    sp.GetService<ILogger<DidEthrMethod>>(),
+                    sp.GetRequiredService<IEthrEventHistoryCache>())
+                : new DidEthrMethod(
+                    sp.GetRequiredService<IEthereumRpcClientFactory>(),
+                    networkList,
+                    sp.GetRequiredService<IKeyGenerator>(),
+                    sp.GetService<ILogger<DidEthrMethod>>()));
         return this;
     }
 
@@ -132,7 +159,22 @@ public sealed class NetDidBuilder
     /// </code>
     /// Throws <see cref="InvalidOperationException"/> if a name is not found in <see cref="KnownNetworks.All"/>.
     /// </summary>
-    public NetDidBuilder AddDidEthr(IReadOnlyDictionary<string, string> networkRpcUrls)
+    /// <param name="networkRpcUrls">Known network names mapped to their RPC URLs.</param>
+    public NetDidBuilder AddDidEthr(IReadOnlyDictionary<string, string> networkRpcUrls) =>
+        AddDidEthr(networkRpcUrls, cacheFinalizedEventHistory: false);
+
+    /// <summary>
+    /// Register the did:ethr method using well-known network metadata with explicit
+    /// finalized event-history cache control.
+    /// </summary>
+    /// <param name="networkRpcUrls">Known network names mapped to their RPC URLs.</param>
+    /// <param name="cacheFinalizedEventHistory">
+    /// Opt in to indefinite caching of validated ERC-1056 logs at or below the endpoint's
+    /// finalized block. Defaults to false.
+    /// </param>
+    public NetDidBuilder AddDidEthr(
+        IReadOnlyDictionary<string, string> networkRpcUrls,
+        bool cacheFinalizedEventHistory)
     {
         var configs = networkRpcUrls.Select(kv =>
         {
@@ -142,6 +184,6 @@ public sealed class NetDidBuilder
                     $"Use AddDidEthr(IEnumerable<EthereumNetworkConfig>) to supply a custom config.");
             return known with { RpcUrl = kv.Value };
         });
-        return AddDidEthr(configs);
+        return AddDidEthr(configs, cacheFinalizedEventHistory);
     }
 }

@@ -29,6 +29,7 @@ public sealed class DidEthrMethod : DidMethodBase
     private readonly IReadOnlyList<EthereumNetworkConfig> _networks;
     private readonly IKeyGenerator _keyGenerator;
     private readonly ILogger<DidEthrMethod> _logger;
+    private readonly IEthrEventHistoryCache? _eventHistoryCache;
 
     public DidEthrMethod(
         IEthereumRpcClientFactory rpcFactory,
@@ -40,6 +41,19 @@ public sealed class DidEthrMethod : DidMethodBase
         _networks     = networks?.ToList() ?? throw new ArgumentNullException(nameof(networks));
         _keyGenerator = keyGenerator ?? throw new ArgumentNullException(nameof(keyGenerator));
         _logger       = logger ?? NullLogger<DidEthrMethod>.Instance;
+        _eventHistoryCache = null;
+    }
+
+    internal DidEthrMethod(
+        IEthereumRpcClientFactory rpcFactory,
+        IEnumerable<EthereumNetworkConfig> networks,
+        IKeyGenerator keyGenerator,
+        ILogger<DidEthrMethod>? logger,
+        IEthrEventHistoryCache eventHistoryCache)
+        : this(rpcFactory, networks, keyGenerator, logger)
+    {
+        _eventHistoryCache = eventHistoryCache
+            ?? throw new ArgumentNullException(nameof(eventHistoryCache));
     }
 
     public override string MethodName => "ethr";
@@ -286,6 +300,23 @@ public sealed class DidEthrMethod : DidMethodBase
         var chainId = await ResolveChainId(network, rpc, ct);
         ct.ThrowIfCancellationRequested();
 
+        ulong? finalizedBlock = null;
+        EthrEventHistoryCacheKey? cacheKey = null;
+        CachedEthrEventHistory? cachedHistory = null;
+        if (_eventHistoryCache is not null && rpc is IEthereumFinalityRpcClient finalityRpc)
+        {
+            ct.ThrowIfCancellationRequested();
+            finalizedBlock = await finalityRpc.GetFinalizedBlockNumberAsync(ct)
+                .WaitAsyncObserved(ct);
+            ct.ThrowIfCancellationRequested();
+            if (finalizedBlock is { } finalized)
+            {
+                cacheKey = new EthrEventHistoryCacheKey(
+                    chainId, network.RegistryAddress, identifier.IdentityAddress);
+                cachedHistory = ReadCachedHistory(cacheKey.Value, finalized, ct);
+            }
+        }
+
         // changed(identity) → first block that has a relevant event
         var changedHex    = Erc1056Calls.Changed(identifier.IdentityAddress);
         ct.ThrowIfCancellationRequested();
@@ -299,10 +330,23 @@ public sealed class DidEthrMethod : DidMethodBase
         // start the walk at a requested version, or a version between two changes would
         // miss the earlier change and collapse to a genesis document.
         var collectedEvents = new List<Erc1056Event>();
+        // Retain raw RPC payloads only when a finalized cache entry can actually be
+        // written.  Default-off and endpoints without finalized-tag support keep the
+        // pre-cache memory profile, while head blocks above finality are decoded and
+        // immediately released rather than held until resolution completes.
+        List<CachedEthrEventBlock>? cacheEligibleBlocks = cacheKey is not null
+            ? []
+            : null;
         if (latestChange > 0)
             await WalkEventChainAsync(
                 rpc, network.RegistryAddress, identifier.IdentityAddress,
-                latestChange, collectedEvents, ct);
+                latestChange, collectedEvents, cacheEligibleBlocks, finalizedBlock,
+                cachedHistory, ct);
+
+        if (cacheKey is { } key
+            && finalizedBlock is { } finalizedThrough
+            && cacheEligibleBlocks is not null)
+            WriteCachedHistory(key, finalizedThrough, cacheEligibleBlocks, ct);
 
         // Order oldest-first BY BLOCK. OrderBy is stable and each block's events were
         // appended in ascending log order during the walk, so this reorders blocks
@@ -469,16 +513,148 @@ public sealed class DidEthrMethod : DidMethodBase
 
     // ── Event chain walker ────────────────────────────────────────────────────
 
+    private CachedEthrEventHistory? ReadCachedHistory(
+        EthrEventHistoryCacheKey key,
+        ulong currentFinalizedBlock,
+        CancellationToken ct)
+    {
+        if (_eventHistoryCache is null)
+            return null;
+
+        CachedEthrEventHistory? history;
+        try
+        {
+            ct.ThrowIfCancellationRequested();
+            var found = _eventHistoryCache.TryGet(key, out history);
+            ct.ThrowIfCancellationRequested();
+            if (!found || history is null)
+                return null;
+        }
+        catch (Exception ex) when (ex is not OutOfMemoryException)
+        {
+            // A disposed/failed cache is an optimization miss, not a resolution error.
+            return null;
+        }
+
+        // A cache created from a later finalized view is never needed to make this
+        // resolution correct. Ignore it rather than trusting a watermark the current
+        // endpoint cannot corroborate; the full walk remains available.
+        return history.FinalizedThroughBlock <= currentFinalizedBlock ? history : null;
+    }
+
+    private void WriteCachedHistory(
+        EthrEventHistoryCacheKey key,
+        ulong finalizedThroughBlock,
+        IReadOnlyList<CachedEthrEventBlock> historyBlocks,
+        CancellationToken ct)
+    {
+        if (_eventHistoryCache is null)
+            return;
+
+        var frozenBlocks = new List<CachedEthrEventBlock>();
+        long cacheBytes = 0;
+        foreach (var block in historyBlocks)
+        {
+            ct.ThrowIfCancellationRequested();
+            if (block.BlockNumber > finalizedThroughBlock)
+                continue;
+
+            if (!TryAddCacheBytes(ref cacheBytes, 64))
+                return;
+
+            var frozenLogs = new EthereumLogEntry[block.Logs.Count];
+            for (var i = 0; i < block.Logs.Count; i++)
+            {
+                ct.ThrowIfCancellationRequested();
+                var log = block.Logs[i];
+                var topics = log.Topics.ToArray();
+                if (!TryAddCacheBytes(ref cacheBytes, 128)
+                    || !TryAddCacheStringBytes(ref cacheBytes, log.Address)
+                    || !TryAddCacheStringBytes(ref cacheBytes, log.Data)
+                    || !TryAddCacheStringBytes(ref cacheBytes, log.BlockNumber)
+                    || !TryAddCacheStringBytes(ref cacheBytes, log.TransactionHash))
+                    return;
+                foreach (var topic in topics)
+                {
+                    ct.ThrowIfCancellationRequested();
+                    if (!TryAddCacheStringBytes(ref cacheBytes, topic))
+                        return;
+                }
+
+                frozenLogs[i] = log with { Topics = topics };
+            }
+
+            frozenBlocks.Add(new CachedEthrEventBlock(block.BlockNumber, frozenLogs));
+        }
+        ct.ThrowIfCancellationRequested();
+
+        // Unregistered identities and histories whose entire chain is still above
+        // finality have no reusable prefix. Skipping them prevents cheap permanent
+        // key amplification from arbitrary DID addresses.
+        if (frozenBlocks.Count == 0)
+            return;
+
+        var entry = new CachedEthrEventHistory(
+            finalizedThroughBlock,
+            frozenBlocks.ToArray());
+        try
+        {
+            _eventHistoryCache.SetIfNewer(key, entry, Math.Max(1, cacheBytes));
+        }
+        catch (Exception ex) when (ex is not OutOfMemoryException)
+        {
+            // The cache is an optional performance optimization. A disposed cache,
+            // capacity policy, or custom implementation must not turn a successfully
+            // validated on-chain resolution into an error.
+        }
+        ct.ThrowIfCancellationRequested();
+    }
+
+    private static bool TryAddCacheStringBytes(ref long total, string? value) =>
+        value is null || TryAddCacheBytes(ref total, value.Length * 2L);
+
+    private static bool TryAddCacheBytes(ref long total, long added)
+    {
+        if (added < 0 || total > MaxCollectedBytes - added)
+            return false;
+        total += added;
+        return true;
+    }
+
     private async Task WalkEventChainAsync(
         IEthereumRpcClient rpc,
         string registryAddress, string identityAddress,
-        ulong fromBlock, List<Erc1056Event> accumulator, CancellationToken ct)
+        ulong fromBlock,
+        List<Erc1056Event> accumulator,
+        List<CachedEthrEventBlock>? cacheEligibleBlocks,
+        ulong? finalizedThroughBlock,
+        CachedEthrEventHistory? cachedHistory,
+        CancellationToken ct)
     {
         var currentBlock = fromBlock;
         var hops = 0;
         long collectedBytes = 0;
+        long collectedRawCacheBytes = 0;
         while (currentBlock > 0)
         {
+            if (cachedHistory is not null
+                && currentBlock <= cachedHistory.FinalizedThroughBlock)
+            {
+                AppendCachedHistory(
+                    cachedHistory,
+                    currentBlock,
+                    registryAddress,
+                    identityAddress,
+                    accumulator,
+                    cacheEligibleBlocks,
+                    finalizedThroughBlock,
+                    ref hops,
+                    ref collectedBytes,
+                    ref collectedRawCacheBytes,
+                    ct);
+                return;
+            }
+
             // Bound the number of block hops: a hostile node can point every
             // previousChange one block lower, turning the walk into an arbitrarily
             // long chain of sequential eth_getLogs calls (DoS). The "strictly less
@@ -520,130 +696,322 @@ public sealed class DidEthrMethod : DidMethodBase
             // deadline that fired during the call — check before processing the result.
             ct.ThrowIfCancellationRequested();
 
-            // The returned collection is dependency-owned: enumerate it ourselves with
-            // a count bound and per-item token checks, so a hostile IReadOnlyList whose
-            // enumerator never terminates (or outlives the deadline) cannot run
-            // unbounded — a bare .ToList() would.
-            var logs = new List<EthereumLogEntry>();
-            foreach (var log in rawLogs)
-            {
-                ct.ThrowIfCancellationRequested();
-                if (logs.Count >= MaxCollectedEvents)
-                    throw new EthereumInteractionException(
-                        $"did:ethr history for identity {identityAddress} returned more " +
-                        $"than {MaxCollectedEvents} logs for block {currentBlock}; " +
-                        "aborting to bound work.");
-                if (log is null)
-                    throw new EthereumInteractionException(
-                        $"did:ethr history for identity {identityAddress} contains a null log " +
-                        $"at block {currentBlock}.");
-                logs.Add(log);
-            }
-            // MoveNext(false) and enumerator Dispose run outside the foreach body. They
-            // can be the operation that observes/cancels the caller, so check once more
-            // before empty-history classification or any further processing.
-            ct.ThrowIfCancellationRequested();
-
-            // nextBlock = the highest previousChange value that is STRICTLY less than
-            // currentBlock.  Later transactions in the same block emit
-            // previousChange == currentBlock (because changed[identity] was already
-            // updated by an earlier tx in the block); following those values would
-            // revisit the same block and loop forever.  Only values < currentBlock
-            // represent a genuinely earlier block in the chain.
-            ulong nextBlock = 0;
-            var blockEvents = new List<Erc1056Event>(logs.Count);
-            var seenLogIndices = new HashSet<ulong>();
-
-            // Canonical intra-block order: sort by logIndex rather than trusting the node's
-            // response array order, so a same-block add→revoke of one key always applies in
-            // chain order (the block-level OrderBy in ResolveFromChainAsync is stable and
-            // preserves this). Sorting is bounded by MaxCollectedEvents; observe the
-            // token on both sides and during parsing.
-            ct.ThrowIfCancellationRequested();
-            logs.Sort(static (left, right) => left.LogIndex.CompareTo(right.LogIndex));
-            ct.ThrowIfCancellationRequested();
-            foreach (var log in logs)
-            {
-                ct.ThrowIfCancellationRequested();
-                if (!string.Equals(log.Address, registryAddress,
-                        StringComparison.OrdinalIgnoreCase))
-                    throw new EthereumInteractionException(
-                        $"did:ethr history for identity {identityAddress} contains a log from " +
-                        $"registry '{log.Address}' instead of '{registryAddress}'.");
-                if (!seenLogIndices.Add(log.LogIndex))
-                    throw new EthereumInteractionException(
-                        $"did:ethr history for identity {identityAddress} contains duplicate " +
-                        $"logIndex {log.LogIndex} at block {currentBlock}.");
-
-                var ev = Erc1056EventParser.Parse(log);
-                if (!string.Equals(ev.Identity, identityAddress,
-                        StringComparison.OrdinalIgnoreCase))
-                    throw new EthereumInteractionException(
-                        $"did:ethr history block {currentBlock} contains an event for foreign " +
-                        $"identity {ev.Identity}; expected {identityAddress}.");
-                if (ev.BlockNumber != currentBlock)
-                    throw new EthereumInteractionException(
-                        $"did:ethr history event reports block {ev.BlockNumber}; expected " +
-                        $"{currentBlock}.");
-                if (ev.PreviousChange > currentBlock)
-                    throw new EthereumInteractionException(
-                        $"did:ethr history event at block {currentBlock} points forward to " +
-                        $"previousChange {ev.PreviousChange}.");
-
-                blockEvents.Add(ev);
-            }
-            ct.ThrowIfCancellationRequested();
-
-            // changed()/previousChange asserts a real event exists at this block. If the
-            // node returned no matching event, the authorization history is incomplete or corrupt —
-            // fail CLOSED to a resolution error rather than silently returning a partial
-            // document that could re-authorize a revoked key or hide a deactivation.
-            if (blockEvents.Count == 0)
-                throw new IncompleteEventHistoryException(
-                    $"did:ethr history for identity {identityAddress} is incomplete: block " +
-                    $"{currentBlock} has no valid matching ERC-1056 event (pruned/non-archive " +
-                    "or hostile RPC node).");
-
-            // ERC-1056 updates changed[identity] to block.number after every mutation.
-            // Therefore the earliest event for this identity in a block must point to
-            // a genuinely earlier block (or zero), and every later same-block event
-            // must point back to this block. Any other sequence proves the filtered
-            // history is truncated or internally inconsistent.
-            if (blockEvents[0].PreviousChange >= currentBlock)
-                throw new EthereumInteractionException(
-                    $"did:ethr history block {currentBlock} starts with previousChange " +
-                    $"{blockEvents[0].PreviousChange}; the first event must point to an earlier block.");
-            for (var eventIndex = 1; eventIndex < blockEvents.Count; eventIndex++)
-            {
-                if (blockEvents[eventIndex].PreviousChange != currentBlock)
-                    throw new EthereumInteractionException(
-                        $"did:ethr history block {currentBlock} event {eventIndex} has " +
-                        $"previousChange {blockEvents[eventIndex].PreviousChange}; every event " +
-                        "after the first must point to the current block.");
-            }
-
-            nextBlock = blockEvents[0].PreviousChange;
-
-            // Commit a block only after every log in it has passed validation. This avoids
-            // retaining a valid authorization while silently dropping a malformed revoke.
-            if (accumulator.Count + blockEvents.Count > MaxCollectedEvents)
-                throw new EthereumInteractionException(
-                    $"did:ethr event chain for identity {identityAddress} exceeded " +
-                    $"{MaxCollectedEvents} events; aborting to bound memory use.");
-
-            foreach (var ev in blockEvents)
-            {
-                collectedBytes += (ev as AttributeChangedEvent)?.Value.Length ?? 0;
-                if (collectedBytes > MaxCollectedBytes)
-                    throw new EthereumInteractionException(
-                        $"did:ethr event chain for identity {identityAddress} exceeded " +
-                        $"{MaxCollectedBytes} retained bytes; aborting to bound memory use.");
-            }
-
-            accumulator.AddRange(blockEvents);
-            currentBlock = nextBlock;
+            var validated = ValidateEventBlock(
+                rawLogs, registryAddress, identityAddress, currentBlock, ct);
+            CommitValidatedBlock(
+                validated,
+                identityAddress,
+                accumulator,
+                cacheEligibleBlocks,
+                finalizedThroughBlock,
+                ref collectedBytes,
+                ref collectedRawCacheBytes,
+                ct);
+            currentBlock = validated.PreviousBlock;
         }
     }
+
+    private void AppendCachedHistory(
+        CachedEthrEventHistory history,
+        ulong expectedFirstBlock,
+        string registryAddress,
+        string identityAddress,
+        List<Erc1056Event> accumulator,
+        List<CachedEthrEventBlock>? cacheEligibleBlocks,
+        ulong? finalizedThroughBlock,
+        ref int hops,
+        ref long collectedBytes,
+        ref long collectedRawCacheBytes,
+        CancellationToken ct)
+    {
+        if (history.Blocks is null)
+            throw new EthereumInteractionException(
+                "The did:ethr finalized event-history cache returned a null block collection.");
+
+        var expectedBlock = expectedFirstBlock;
+        long cachedRawBytes = 0;
+        foreach (var cachedBlock in history.Blocks)
+        {
+            ct.ThrowIfCancellationRequested();
+            if (++hops > MaxEventChainHops)
+                throw new EthereumInteractionException(
+                    $"did:ethr cached event chain for identity {identityAddress} exceeded " +
+                    $"{MaxEventChainHops} block hops.");
+            if (cachedBlock is null || cachedBlock.Logs is null)
+                throw new EthereumInteractionException(
+                    "The did:ethr finalized event-history cache contains a null block or log collection.");
+            if (cachedBlock.BlockNumber > history.FinalizedThroughBlock)
+                throw new EthereumInteractionException(
+                    $"did:ethr cached event block {cachedBlock.BlockNumber} is above finalized " +
+                    $"watermark {history.FinalizedThroughBlock}.");
+            if (cachedBlock.BlockNumber != expectedBlock)
+                throw new EthereumInteractionException(
+                    $"did:ethr cached event chain expected block {expectedBlock} but found " +
+                    $"{cachedBlock.BlockNumber}.");
+
+            var frozenCachedLogs = SnapshotCachedBlockLogs(
+                cachedBlock.Logs,
+                identityAddress,
+                cachedBlock.BlockNumber,
+                ref cachedRawBytes,
+                ct);
+            var validated = ValidateEventBlock(
+                frozenCachedLogs,
+                registryAddress,
+                identityAddress,
+                cachedBlock.BlockNumber,
+                ct);
+            CommitValidatedBlock(
+                validated,
+                identityAddress,
+                accumulator,
+                cacheEligibleBlocks,
+                finalizedThroughBlock,
+                ref collectedBytes,
+                ref collectedRawCacheBytes,
+                ct);
+            expectedBlock = validated.PreviousBlock;
+        }
+        ct.ThrowIfCancellationRequested();
+
+        if (expectedBlock != 0)
+            throw new IncompleteEventHistoryException(
+                $"did:ethr cached history for identity {identityAddress} ends before asserted " +
+                $"block {expectedBlock}; the finalized prefix is incomplete.");
+    }
+
+    private static IReadOnlyList<EthereumLogEntry> SnapshotCachedBlockLogs(
+        IReadOnlyList<EthereumLogEntry> rawLogs,
+        string identityAddress,
+        ulong currentBlock,
+        ref long cachedRawBytes,
+        CancellationToken ct)
+    {
+        if (!TryAddCacheBytes(ref cachedRawBytes, 64))
+            throw new EthereumInteractionException(
+                $"did:ethr cached history for identity {identityAddress} exceeded " +
+                $"{MaxCollectedBytes} raw bytes before decoding.");
+
+        var logs = new List<EthereumLogEntry>();
+        foreach (var log in rawLogs)
+        {
+            ct.ThrowIfCancellationRequested();
+            if (logs.Count >= MaxCollectedEvents || log is null || log.Topics is null)
+                throw new EthereumInteractionException(
+                    $"did:ethr cached history for identity {identityAddress} contains an " +
+                    $"invalid log collection at block {currentBlock}.");
+
+            var topics = new List<string>(2);
+            foreach (var topic in log.Topics)
+            {
+                ct.ThrowIfCancellationRequested();
+                if (topics.Count >= 3 || topic is null)
+                    throw new EthereumInteractionException(
+                        $"did:ethr cached history for identity {identityAddress} contains " +
+                        $"invalid topics at block {currentBlock}.");
+                topics.Add(topic);
+            }
+            ct.ThrowIfCancellationRequested();
+
+            if (!TryAddCacheBytes(ref cachedRawBytes, 128)
+                || !TryAddCacheStringBytes(ref cachedRawBytes, log.Address)
+                || !TryAddCacheStringBytes(ref cachedRawBytes, log.Data)
+                || !TryAddCacheStringBytes(ref cachedRawBytes, log.BlockNumber)
+                || !TryAddCacheStringBytes(ref cachedRawBytes, log.TransactionHash))
+                throw new EthereumInteractionException(
+                    $"did:ethr cached history for identity {identityAddress} exceeded " +
+                    $"{MaxCollectedBytes} raw bytes before decoding.");
+            foreach (var topic in topics)
+            {
+                if (!TryAddCacheStringBytes(ref cachedRawBytes, topic))
+                    throw new EthereumInteractionException(
+                        $"did:ethr cached history for identity {identityAddress} exceeded " +
+                        $"{MaxCollectedBytes} raw bytes before decoding.");
+            }
+
+            logs.Add(log with { Topics = topics.ToArray() });
+        }
+        ct.ThrowIfCancellationRequested();
+        return logs;
+    }
+
+    private static ValidatedEthrEventBlock ValidateEventBlock(
+        IReadOnlyList<EthereumLogEntry> rawLogs,
+        string registryAddress,
+        string identityAddress,
+        ulong currentBlock,
+        CancellationToken ct)
+    {
+        // Fresh RPC collections and cached collections are equally untrusted. Snapshot
+        // each log and its interface-typed Topics collection once, with the same count
+        // and cancellation bounds, then validate only the frozen copy.
+        var logs = new List<EthereumLogEntry>();
+        foreach (var log in rawLogs)
+        {
+            ct.ThrowIfCancellationRequested();
+            if (logs.Count >= MaxCollectedEvents)
+                throw new EthereumInteractionException(
+                    $"did:ethr history for identity {identityAddress} returned more " +
+                    $"than {MaxCollectedEvents} logs for block {currentBlock}; aborting to bound work.");
+            if (log is null || log.Topics is null)
+                throw new EthereumInteractionException(
+                    $"did:ethr history for identity {identityAddress} contains a null log or " +
+                    $"topic collection at block {currentBlock}.");
+
+            var topics = new List<string>(2);
+            foreach (var topic in log.Topics)
+            {
+                ct.ThrowIfCancellationRequested();
+                if (topics.Count >= 3 || topic is null)
+                    throw new EthereumInteractionException(
+                        $"did:ethr history for identity {identityAddress} contains invalid topics " +
+                        $"at block {currentBlock}.");
+                topics.Add(topic);
+            }
+            ct.ThrowIfCancellationRequested();
+            logs.Add(log with { Topics = topics.ToArray() });
+        }
+        ct.ThrowIfCancellationRequested();
+
+        var blockEvents = new List<Erc1056Event>(logs.Count);
+        var seenLogIndices = new HashSet<ulong>();
+        ct.ThrowIfCancellationRequested();
+        logs.Sort(static (left, right) => left.LogIndex.CompareTo(right.LogIndex));
+        ct.ThrowIfCancellationRequested();
+        foreach (var log in logs)
+        {
+            ct.ThrowIfCancellationRequested();
+            if (!string.Equals(log.Address, registryAddress, StringComparison.OrdinalIgnoreCase))
+                throw new EthereumInteractionException(
+                    $"did:ethr history for identity {identityAddress} contains a log from " +
+                    $"registry '{log.Address}' instead of '{registryAddress}'.");
+            if (!seenLogIndices.Add(log.LogIndex))
+                throw new EthereumInteractionException(
+                    $"did:ethr history for identity {identityAddress} contains duplicate " +
+                    $"logIndex {log.LogIndex} at block {currentBlock}.");
+
+            var ev = Erc1056EventParser.Parse(log);
+            if (!string.Equals(ev.Identity, identityAddress, StringComparison.OrdinalIgnoreCase))
+                throw new EthereumInteractionException(
+                    $"did:ethr history block {currentBlock} contains an event for foreign " +
+                    $"identity {ev.Identity}; expected {identityAddress}.");
+            if (ev.BlockNumber != currentBlock)
+                throw new EthereumInteractionException(
+                    $"did:ethr history event reports block {ev.BlockNumber}; expected {currentBlock}.");
+            if (ev.PreviousChange > currentBlock)
+                throw new EthereumInteractionException(
+                    $"did:ethr history event at block {currentBlock} points forward to " +
+                    $"previousChange {ev.PreviousChange}.");
+
+            blockEvents.Add(ev);
+        }
+        ct.ThrowIfCancellationRequested();
+
+        if (blockEvents.Count == 0)
+            throw new IncompleteEventHistoryException(
+                $"did:ethr history for identity {identityAddress} is incomplete: block " +
+                $"{currentBlock} has no valid matching ERC-1056 event (pruned/non-archive, " +
+                "corrupt cache, or hostile RPC node).");
+
+        if (blockEvents[0].PreviousChange >= currentBlock)
+            throw new EthereumInteractionException(
+                $"did:ethr history block {currentBlock} starts with previousChange " +
+                $"{blockEvents[0].PreviousChange}; the first event must point to an earlier block.");
+        for (var eventIndex = 1; eventIndex < blockEvents.Count; eventIndex++)
+        {
+            if (blockEvents[eventIndex].PreviousChange != currentBlock)
+                throw new EthereumInteractionException(
+                    $"did:ethr history block {currentBlock} event {eventIndex} has " +
+                    $"previousChange {blockEvents[eventIndex].PreviousChange}; every event " +
+                    "after the first must point to the current block.");
+        }
+
+        long retainedBytes = 0;
+        foreach (var ev in blockEvents)
+            retainedBytes += (ev as AttributeChangedEvent)?.Value.Length ?? 0;
+
+        return new ValidatedEthrEventBlock(
+            new CachedEthrEventBlock(currentBlock, logs.ToArray()),
+            blockEvents,
+            blockEvents[0].PreviousChange,
+            retainedBytes);
+    }
+
+    private static void CommitValidatedBlock(
+        ValidatedEthrEventBlock block,
+        string identityAddress,
+        List<Erc1056Event> accumulator,
+        List<CachedEthrEventBlock>? cacheEligibleBlocks,
+        ulong? finalizedThroughBlock,
+        ref long collectedBytes,
+        ref long collectedRawCacheBytes,
+        CancellationToken ct)
+    {
+        if (accumulator.Count + block.Events.Count > MaxCollectedEvents)
+            throw new EthereumInteractionException(
+                $"did:ethr event chain for identity {identityAddress} exceeded " +
+                $"{MaxCollectedEvents} events; aborting to bound memory use.");
+
+        if (block.RetainedBytes > MaxCollectedBytes - collectedBytes)
+            throw new EthereumInteractionException(
+                $"did:ethr event chain for identity {identityAddress} exceeded " +
+                $"{MaxCollectedBytes} retained bytes; aborting to bound memory use.");
+
+        collectedBytes += block.RetainedBytes;
+        accumulator.AddRange(block.Events);
+        if (cacheEligibleBlocks is not null
+            && finalizedThroughBlock is { } finalized
+            && block.RawBlock.BlockNumber <= finalized)
+        {
+            ct.ThrowIfCancellationRequested();
+            var rawBlockBytes = GetRawCacheBlockBytes(block.RawBlock, ct);
+            if (rawBlockBytes <= MaxCollectedBytes - collectedRawCacheBytes)
+            {
+                collectedRawCacheBytes += rawBlockBytes;
+                cacheEligibleBlocks.Add(block.RawBlock);
+            }
+            else
+            {
+                // A cache entry is optional. Stop retaining raw payloads once its
+                // independent memory budget is exhausted; resolution still succeeds.
+                // Discard the whole candidate because cache reads require one contiguous
+                // previousChange chain through genesis, so a partial prefix is not reusable.
+                cacheEligibleBlocks.Clear();
+                collectedRawCacheBytes = MaxCollectedBytes;
+            }
+        }
+    }
+
+    private static long GetRawCacheBlockBytes(
+        CachedEthrEventBlock block,
+        CancellationToken ct)
+    {
+        long total = 64;
+        foreach (var log in block.Logs)
+        {
+            ct.ThrowIfCancellationRequested();
+            if (!TryAddCacheBytes(ref total, 128)
+                || !TryAddCacheStringBytes(ref total, log.Address)
+                || !TryAddCacheStringBytes(ref total, log.Data)
+                || !TryAddCacheStringBytes(ref total, log.BlockNumber)
+                || !TryAddCacheStringBytes(ref total, log.TransactionHash))
+                return MaxCollectedBytes + 1;
+            foreach (var topic in log.Topics)
+            {
+                ct.ThrowIfCancellationRequested();
+                if (!TryAddCacheStringBytes(ref total, topic))
+                    return MaxCollectedBytes + 1;
+            }
+        }
+
+        return total;
+    }
+
+    private sealed record ValidatedEthrEventBlock(
+        CachedEthrEventBlock RawBlock,
+        IReadOnlyList<Erc1056Event> Events,
+        ulong PreviousBlock,
+        long RetainedBytes);
 
     // ── Update / Deactivate ───────────────────────────────────────────────────
 
