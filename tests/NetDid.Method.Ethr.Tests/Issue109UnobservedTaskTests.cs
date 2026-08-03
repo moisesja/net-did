@@ -616,7 +616,9 @@ public class Issue109UnobservedTaskTests
             // work on late completion.
             // Site 15 added by issue #117: the cache-miss GetBlockTimestampAsync in
             // GetBlockTimestampCachedAsync serving the updated/nextUpdate metadata.
-            ["src/NetDid.Method.Ethr/DidEthrMethod.cs"] = 15,
+            // Site 16 added by issue #118: the optional finalized-head lookup that
+            // establishes the immutable event-history cache watermark.
+            ["src/NetDid.Method.Ethr/DidEthrMethod.cs"] = 16,
             ["src/NetDid.Method.Ethr/Transactions/TransactionPipeline.cs"] = 6,
             ["src/NetDid.Method.Ethr/Deployment/Erc1056Registry.cs"] = 1,
         }, "removing a WaitAsyncObserved wrapper un-bounds a dependency await; update " +

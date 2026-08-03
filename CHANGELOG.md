@@ -9,6 +9,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`did:ethr`: opt-in finalized ERC-1056 event-history cache** (issue #118). Long-lived
+  `DidEthrMethod` instances can now reuse the immutable part of an identity's event history instead
+  of issuing one sequential `eth_getLogs` call per historical change block on every resolution.
+  `NetDidBuilder.AddDidEthr(..., cacheFinalizedEventHistory: true)` enables the feature; the default
+  remains off. The default RPC client queries `eth_getBlockByNumber("finalized")` through the new
+  optional `IEthereumFinalityRpcClient` capability and gracefully retains the full uncached walk on
+  chains/endpoints that reject or omit the tag. Cache keys bind chain ID, registry, and identity;
+  only blocks at or below the finalized watermark are stored, while every later head block is
+  fetched again and newly observed changes apply immediately. The cache stores frozen raw logs and
+  re-runs the existing registry, identity, block, canonical `logIndex`, parser, and `previousChange`
+  fail-closed validations on every read, including full cached-chain linkage through genesis. A
+  corrupt cached prefix resolves as `internalError`, never as a partial DID Document. The cache is
+  resolver-owned so unrelated application cache writers cannot forge a structurally valid history;
+  it skips empty histories, refuses stale concurrent watermark regressions, enforces the existing
+  5,000-event / 32 MiB per-entry bounds before cached ABI decoding, and has a hard 64 MiB aggregate
+  size limit with correctness-safe eviction.
+
 - **`did:ethr`: `didDocumentMetadata.updated` and `nextUpdate`** (issue #117). Resolution
   metadata now matches the reference `ethr-did-resolver`: `updated` carries the ISO 8601 UTC
   block time (whole seconds, e.g. `2021-03-22T18:14:29Z`) of the last applied change whenever

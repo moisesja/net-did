@@ -8,6 +8,8 @@ using NetCrypto;
 using NetDid.Core.Model;
 using NetDid.Core.Resolution;
 using NetDid.Extensions.DependencyInjection;
+using NetDid.Method.Ethr;
+using NetDid.Method.Ethr.Rpc;
 using NetDid.Method.Key;
 using NetDid.Method.WebVh;
 
@@ -196,6 +198,14 @@ public class ServiceRegistrationTests
             => Task.FromResult<byte[]?>(null);
     }
 
+    private static EthereumNetworkConfig EthrNetwork() => new()
+    {
+        Name = "sepolia",
+        RpcUrl = "https://rpc.sepolia.example",
+        ChainId = "0xaa36a7",
+        RegistryAddress = "0xdCa7EF03e98e0DC2B855bE647C39ABe984fcF21B",
+    };
+
     [Fact]
     public void AddNetDid_RegistersSharedInfrastructure()
     {
@@ -252,6 +262,35 @@ public class ServiceRegistrationTests
 
         var manager = provider.GetRequiredService<IDidManager>();
         manager.GetMethod("peer").Should().NotBeNull();
+    }
+
+    [Fact]
+    public void Issue118_AddDidEthr_FinalizedHistoryCacheIsExplicitlyOptIn()
+    {
+        var services = new ServiceCollection();
+        services.AddNetDid(builder => builder.AddDidEthr(
+            [EthrNetwork()],
+            cacheFinalizedEventHistory: true));
+
+        using var provider = services.BuildServiceProvider();
+
+        provider.GetService<IEthrEventHistoryCache>()
+            .Should().BeOfType<BoundedEthrEventHistoryCache>();
+        provider.GetServices<IDidMethod>()
+            .Should().ContainSingle(method => method is DidEthrMethod);
+    }
+
+    [Fact]
+    public void Issue118_AddDidEthr_DefaultDoesNotRegisterEventHistoryCache()
+    {
+        var services = new ServiceCollection();
+        services.AddNetDid(builder => builder.AddDidEthr([EthrNetwork()]));
+
+        using var provider = services.BuildServiceProvider();
+
+        provider.GetService<IEthrEventHistoryCache>().Should().BeNull();
+        provider.GetServices<IDidMethod>()
+            .Should().ContainSingle(method => method is DidEthrMethod);
     }
 
     [Fact]

@@ -1382,6 +1382,18 @@ public sealed record DidEthrCreateOptions : DidCreateOptions
    closed.
 3. Walk the ERC-1056 `previousChange` chain. For each asserted block, query `eth_getLogs` with
    the registry address, the three supported event signatures, and the indexed identity topic.
+   Finalized-event caching is an explicit opt-in performance optimization and is disabled by
+   default. When enabled and the RPC client supports the optional finalized-block capability,
+   first query `eth_getBlockByNumber("finalized")`. Cache validated raw log blocks at or below
+   that watermark under `(chainId, registryAddress, identityAddress)`. On later resolution, still
+   call `changed(identity)` and walk every block above the cached watermark, then splice the
+   cached prefix only when its first block exactly matches the live `previousChange` pointer.
+   Never place a block above the finalized watermark in the indefinite cache. If the chain or
+   endpoint does not support the finalized tag, perform the complete uncached walk. Cache entries
+   MUST remain within the existing 5,000-event and 32 MiB per-resolution bounds. The cache MUST be
+   resolver-owned (not a caller-writable shared cache), MUST have a 64 MiB aggregate size limit,
+   MUST skip identities with no reusable finalized event prefix, and MUST NOT replace an entry with
+   one carrying a lower finalized watermark during concurrent resolutions.
 4. Treat every fetched block as one atomic, untrusted input set:
    - reject an empty block or any null/unparseable log;
    - require every log to come from the configured registry and every parsed event to match the
@@ -1397,6 +1409,13 @@ public sealed record DidEthrCreateOptions : DidCreateOptions
    - validate full 256-bit ABI words before narrowing dynamic byte offsets or lengths.
    Any violation fails closed as `notFound`; a valid authorization event MUST NOT survive beside
    a malformed revocation or deactivation event.
+   Cached blocks are untrusted input too: store frozen raw `EthereumLogEntry` values rather than
+   pre-trusted typed events, and run every cache read through this exact validation choke point.
+   A cached block sequence MUST match the asserted `previousChange` chain through genesis, and
+   every cached block MUST be at or below its recorded finalized watermark. Corrupt cached data
+   fails closed as `internalError` under the current RPC-infrastructure error mapping.
+   Before decoding cached ABI data, enforce the aggregate raw cache-byte bound so a malformed entry
+   cannot allocate an oversized decoded buffer before the limit is checked.
 5. For historical resolution, select events at or before the canonical `versionId`, or compare
    event-block timestamps against the canonical `versionTime`. Timestamps for ascending event
    blocks MUST be canonical quantities and MUST NOT decrease. Equal whole-second timestamps are

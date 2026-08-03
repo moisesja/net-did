@@ -10,7 +10,7 @@ namespace NetDid.Method.Ethr.Rpc;
 /// Default Ethereum JSON-RPC 2.0 client backed by HttpClient.
 /// Phase 2 methods throw <see cref="NotImplementedException"/>.
 /// </summary>
-public sealed class DefaultEthereumRpcClient : IEthereumRpcClient
+public sealed class DefaultEthereumRpcClient : IEthereumRpcClient, IEthereumFinalityRpcClient
 {
     // Defensive bounds on an UNTRUSTED RPC endpoint. The response of a single
     // identity-filtered eth_getLogs for one block is small; these caps exist so a
@@ -149,6 +149,35 @@ public sealed class DefaultEthereumRpcClient : IEthereumRpcClient
         return ParseCanonicalHexQuantity(
             GetRpcString(timestampNode, "eth_getBlockByNumber timestamp"),
             "eth_getBlockByNumber timestamp");
+    }
+
+    public async Task<ulong?> GetFinalizedBlockNumberAsync(CancellationToken ct = default)
+    {
+        try
+        {
+            var result = await SendAllowingNullResultAsync(
+                "eth_getBlockByNumber", ["finalized", false], ct);
+            if (result is null)
+                return null;
+
+            var block = GetRpcObject(result, "eth_getBlockByNumber finalized result");
+            var numberNode = block["number"];
+            if (numberNode is null)
+                return null;
+
+            return ParseCanonicalHexQuantity(
+                GetRpcString(numberNode, "eth_getBlockByNumber finalized number"),
+                "eth_getBlockByNumber finalized number");
+        }
+        catch (EthereumInteractionException)
+        {
+            ct.ThrowIfCancellationRequested();
+            // Finality is an optional performance capability. Pre-merge chains,
+            // EVM-compatible chains without consensus finality, and older endpoints
+            // commonly reject the tag. Any malformed/unsupported response disables
+            // caching for this resolution without weakening the full-history path.
+            return null;
+        }
     }
 
     // ── Write (Update / Deactivate) ───────────────────────────────────────────
