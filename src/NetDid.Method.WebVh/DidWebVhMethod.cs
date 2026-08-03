@@ -581,7 +581,7 @@ public sealed class DidWebVhMethod : DidMethodBase
         var newEntry = new LogEntry
         {
             VersionId = previousEntry.VersionId,
-            VersionTime = GetNextVersionTime(previousEntry.VersionTime),
+            VersionTime = GetNextVersionTime(previousEntry.VersionTime, enforceFutureSkewBound: true),
             Parameters = newParams,
             State = newDocument
         };
@@ -684,7 +684,10 @@ public sealed class DidWebVhMethod : DidMethodBase
         var deactivationEntry = new LogEntry
         {
             VersionId = previousEntry.VersionId,
-            VersionTime = GetNextVersionTime(previousEntry.VersionTime),
+            // Deactivation is exempt from the future-skew bound: a compromised key can plant a
+            // legitimately signed far-future entry (NetDid's bound only constrains NetDid
+            // authors), and revocation must not be blockable by it. See GetNextVersionTime.
+            VersionTime = GetNextVersionTime(previousEntry.VersionTime, enforceFutureSkewBound: false),
             Parameters = deactivationParams,
             State = minimalDoc
         };
@@ -730,16 +733,22 @@ public sealed class DidWebVhMethod : DidMethodBase
 
     // --- Private helpers ---
 
-    // Matches the did:webvh v1.0 resolver guidance "Resolvers SHOULD use a tolerance of no
-    // more than 5 minutes" for future-dated versionTimes. Authoring beyond it would emit
-    // entries that conforming resolvers MUST reject, so appending fails closed instead.
-    private static readonly TimeSpan FutureVersionTimeTolerance = TimeSpan.FromMinutes(5);
+    // did:webvh v1.0 lets resolvers reject entries more than "a small, implementation-defined
+    // tolerance" in the future and caps that tolerance at 5 minutes ("Resolvers SHOULD use a
+    // tolerance of no more than 5 minutes"). NetDid authors against a 1-minute budget so the
+    // worst-case authored lead keeps a >=4-minute clock-skew margin under every conforming
+    // resolver; a same-second burst therefore fails closed after ~60 writes (then ~1 write/s).
+    private static readonly TimeSpan MaxAuthoredFutureSkew = TimeSpan.FromMinutes(1);
 
     // NetDid authors whole-second versionTimes so the DID Core §7.3 whole-second
     // created/updated projection of the same instant still identifies the entry (issue #127).
     // Same-second bursts advance one second past the previous entry, which keeps strict
     // monotonicity for any previous value, including fractional ones from imported logs.
-    private static DateTimeOffset GetNextVersionTime(DateTimeOffset previous)
+    // enforceFutureSkewBound is false for deactivation: emergency revocation is terminal and
+    // strictly safety-increasing, so a future-dated head (which only a non-NetDid author can
+    // produce) must not be able to block it — the entry stays monotonic and overflow-guarded.
+    private static DateTimeOffset GetNextVersionTime(
+        DateTimeOffset previous, bool enforceFutureSkewBound)
     {
         var now = DateTimeOffset.UtcNow;
         var nowSecond = WebVhTimestamp.TruncateToWholeSecond(now);
@@ -752,12 +761,13 @@ public sealed class DidWebVhMethod : DidMethodBase
                 "The supplied DID log's latest versionTime cannot be advanced.");
 
         var next = previousSecond.AddSeconds(1);
-        if (next - now > FutureVersionTimeTolerance)
+        if (enforceFutureSkewBound && next - now > MaxAuthoredFutureSkew)
             throw new ArgumentException(
                 "The supplied DID log's latest versionTime is too far in the future to " +
                 "append a spec-conformant entry: the next versionTime would exceed the " +
-                "current time by more than the 5-minute tolerance conforming resolvers " +
-                "apply to future-dated entries.");
+                "current time by more than NetDid's 1-minute authoring budget, which " +
+                "preserves a clock-skew margin under the 5-minute tolerance conforming " +
+                "resolvers apply to future-dated entries.");
 
         return next;
     }

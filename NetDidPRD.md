@@ -1143,14 +1143,19 @@ NetDid *authors* whole-second `versionTime`s (issue #127). Create truncates the 
 instant to a whole second; Update and Deactivate choose the current whole second when it is
 strictly later than the supplied log's latest entry, and otherwise advance one whole second past
 that entry (including when it is future-dated relative to the local clock, or fractional in an
-imported log). Because DID Core §7.3 mandates whole-second `created`/`updated` in resolution
+imported log). A same-second write therefore authors an entry that can lead the wall clock by
+up to one second. Because DID Core §7.3 mandates whole-second `created`/`updated` in resolution
 metadata, whole-second authoring makes `created`/`updated`/`versionTime` coincide exactly for
 NetDid-authored logs — the serialized `updated` value identifies the version it came from. The
 did:webvh spec's own guidance assumes one-second monotonicity granularity and bounds future-dated
-entries. Appending fails closed (`ArgumentException`) when the next `versionTime` would exceed the
-current time by more than 5 minutes — the tolerance conforming resolvers apply to future-dated
-entries — so a same-second update burst is bounded rather than drifting arbitrarily ahead of the
-wall clock.
+entries (resolvers apply an at-most-5-minute future tolerance and MUST reject beyond it).
+Update fails closed (`ArgumentException`) when the next `versionTime` would exceed the current
+time by more than a 1-minute authoring budget: a same-second burst is bounded at ~60 writes
+(then ~1 write/second sustained), and the worst-case authored lead keeps a ≥4-minute clock-skew
+margin under every conforming resolver's tolerance. Deactivate is exempt from the budget (while
+staying strictly monotonic): a compromised update key can plant a legitimately signed far-future
+entry through another implementation, and emergency revocation — a terminal, strictly
+safety-increasing operation — must not be blockable by it.
 
 For *imported* logs authored with fractional `versionTime`s, reading is unchanged: fractional
 precision is preserved, selected, and re-serialized exactly. For such logs the whole-second

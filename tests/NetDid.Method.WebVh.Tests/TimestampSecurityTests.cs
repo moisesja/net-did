@@ -351,6 +351,10 @@ public sealed class TimestampSecurityTests
                 "same-second bursts must advance by whole seconds, not fractional ticks");
         for (var i = 1; i < entries.Count; i++)
             entries[i].VersionTime.Should().BeAfter(entries[i - 1].VersionTime);
+        entries[^1].VersionTime.Should().BeOnOrBefore(
+            DateTimeOffset.UtcNow.AddMinutes(1),
+            "an authored head must stay within the 1-minute skew budget so conforming " +
+            "resolvers with lagging clocks still accept the log");
 
         await new LogChainValidator().ValidateChainAsync(entries);
     }
@@ -418,6 +422,19 @@ public sealed class TimestampSecurityTests
         reselected.ResolutionMetadata.Error.Should().BeNull();
         reselected.DocumentMetadata!.VersionId.Should().Be(latest.DocumentMetadata.VersionId,
             "fractional imported logs must keep full-precision selection");
+
+        // Pin the CONSEQUENCE of the documented residual, not just the lossy string: feeding
+        // the whole-second 'updated' back as a selector silently returns the EARLIER version
+        // (a stale document with error == null). This is exactly why created/updated are
+        // documented as informational and must never be used as version selectors.
+        var misSelected = await method.ResolveAsync(did, new DidResolutionOptions
+        {
+            VersionTime = expectedLossyUpdated
+        });
+        misSelected.ResolutionMetadata.Error.Should().BeNull();
+        misSelected.DocumentMetadata!.VersionId.Should().Be(entries[0].VersionId,
+            "the lossy whole-second projection selects the earlier same-second version — " +
+            "the silent-downgrade hazard the metadata contract warns consumers about");
     }
 
     private static async Task<(string Did, MockWebVhHttpClient HttpClient, IReadOnlyList<LogEntry> Entries)>

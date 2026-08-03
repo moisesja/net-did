@@ -114,25 +114,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- **`did:webvh`: NetDid now authors whole-second `versionTime`s; appending fails closed
-  beyond a 5-minute future tolerance** (issue #127, follow-up to PR #126's residual). DID
-  Core §7.3 mandates whole-second `created`/`updated` in resolution metadata, so versions
-  distinct only sub-second could not be identified by those fields — a serialized `updated`
-  fed back as `?versionTime=` mis-selected or returned `notFound`. Create now truncates the
-  current UTC instant to a whole second, and Update/Deactivate advance one whole second past
-  the previous entry when the current whole second is not strictly later (replacing the old
-  one-tick advance). For NetDid-authored logs, `created`/`updated`/`versionTime` now coincide
-  exactly and `updated` round-trips as a version selector (regression-pinned). Behavior
-  changes: authored `versionTime`s no longer carry fractional seconds (the wire format is
-  unchanged — whole-second values always serialized without a fraction); a same-second update
-  burst advances one second per write; and Update/Deactivate now throw `ArgumentException`
-  when the next `versionTime` would exceed the current time by more than 5 minutes — the
-  future-dating tolerance the did:webvh spec tells conforming resolvers to reject beyond
-  (previously such logs were appended to without bound). Reading logs authored by other
-  implementations is unchanged: fractional `versionTime`s are still preserved, selected, and
-  re-serialized at full precision; for those logs `created`/`updated` remain informational
-  only — `versionTime`/`versionId` are the only version selectors, now documented on
-  `DidDocumentMetadata`.
+- **`did:webvh`: NetDid now authors whole-second `versionTime`s; Update fails closed beyond
+  a 1-minute future-skew budget (Deactivate exempt)** (issue #127, follow-up to PR #126's
+  residual). DID Core §7.3 mandates whole-second `created`/`updated` in resolution metadata,
+  so versions distinct only sub-second could not be identified by those fields — a serialized
+  `updated` fed back as `?versionTime=` mis-selected or returned `notFound`. Create now
+  truncates the current UTC instant to a whole second, and Update/Deactivate advance one
+  whole second past the previous entry when the current whole second is not strictly later
+  (replacing the old one-tick advance). For NetDid-authored logs,
+  `created`/`updated`/`versionTime` now coincide exactly and `updated` round-trips as a
+  version selector (regression-pinned). Behavior changes: authored `versionTime`s no longer
+  carry fractional seconds (the wire format is unchanged — whole-second values always
+  serialized without a fraction); a same-second write authors an entry leading the wall
+  clock by up to one second; and Update now throws `ArgumentException` when the next
+  `versionTime` would exceed the current time by more than a 1-minute authoring budget —
+  bounding a same-second burst at ~60 writes (then ~1 write/second) while keeping a
+  ≥4-minute clock-skew margin under the at-most-5-minute future tolerance the did:webvh
+  spec lets conforming resolvers reject beyond (previously future-dated logs were appended
+  to without bound). Deactivate remains strictly monotonic but is deliberately exempt from
+  the budget (adversarial-review finding): a compromised key can plant a legitimately
+  signed far-future entry via another implementation, and emergency revocation must not be
+  blockable by it. Reading logs authored by other implementations is unchanged: fractional
+  `versionTime`s are still preserved, selected, and re-serialized at full precision; for
+  those logs `created`/`updated` remain informational only — `versionTime`/`versionId` are
+  the only version selectors, now documented on `DidDocumentMetadata` (and the
+  silent-earlier-version mis-selection from feeding `updated` back is regression-pinned).
 
 ### Fixed
 

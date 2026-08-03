@@ -179,11 +179,11 @@ public sealed class LogChainValidatorTimestampTests
     [Fact]
     public async Task Update_FutureDatedCurrentLog_StillEmitsStrictlyIncreasingVersionTime()
     {
-        // 4 minutes keeps the appended entry inside the 5-minute future tolerance that
-        // authoring fails closed on (issue #127); the beyond-tolerance case is pinned by
-        // Issue127_WriteOperations_FailClosed_BeyondFutureVersionTimeTolerance.
+        // 30 seconds keeps the appended entry inside the 1-minute authoring skew budget that
+        // update fails closed on (issue #127); the beyond-budget case is pinned by
+        // Issue127_Update_FailsClosed_BeyondAuthoredFutureSkewBudget.
         var (did, signer, entries) = await CreateAuthenticatedChainAsync(
-            time => time.AddMinutes(4));
+            time => time.AddSeconds(30));
         var method = new DidWebVhMethod(new MockWebVhHttpClient());
 
         var result = await method.UpdateAsync(did, new DidWebVhUpdateOptions
@@ -198,35 +198,51 @@ public sealed class LogChainValidatorTimestampTests
         await new LogChainValidator().ValidateChainAsync(updatedEntries);
     }
 
-    [Theory]
-    [InlineData(false)]
-    [InlineData(true)]
-    public async Task Issue127_WriteOperations_FailClosed_BeyondFutureVersionTimeTolerance(
-        bool deactivate)
+    [Fact]
+    public async Task Issue127_Update_FailsClosed_BeyondAuthoredFutureSkewBudget()
     {
         // The next authored versionTime (previous truncated + 1s) would exceed the current
-        // time by more than the 5-minute tolerance conforming resolvers apply to
-        // future-dated entries, so appending must fail closed instead of emitting an entry
-        // resolvers reject.
+        // time by more than the 1-minute authoring budget NetDid keeps as clock-skew margin
+        // under the 5-minute tolerance conforming resolvers apply to future-dated entries,
+        // so update fails closed instead of emitting an entry resolvers reject.
         var (did, signer, entries) = await CreateAuthenticatedChainAsync(
             time => time.AddMinutes(6));
         var method = new DidWebVhMethod(new MockWebVhHttpClient());
-        var currentLog = LogEntrySerializer.ToJsonLines(entries);
 
-        Func<Task> act = deactivate
-            ? () => method.DeactivateAsync(did, new DidWebVhDeactivateOptions
-            {
-                CurrentLogContent = currentLog,
-                SigningKey = signer
-            })
-            : () => method.UpdateAsync(did, new DidWebVhUpdateOptions
-            {
-                CurrentLogContent = currentLog,
-                SigningKey = signer
-            });
+        var act = () => method.UpdateAsync(did, new DidWebVhUpdateOptions
+        {
+            CurrentLogContent = LogEntrySerializer.ToJsonLines(entries),
+            SigningKey = signer
+        });
 
         await act.Should().ThrowAsync<ArgumentException>()
             .WithMessage("*too far in the future*");
+    }
+
+    [Fact]
+    public async Task Issue127_Deactivate_SucceedsOnFarFutureLog_RevocationNotBlockable()
+    {
+        // Emergency revocation is exempt from the future-skew budget: an attacker holding a
+        // compromised key can plant a legitimately signed far-future entry via another
+        // implementation, and that entry must not be able to deny the controller the one
+        // safety operation that matters afterwards. The deactivation entry stays strictly
+        // monotonic past the poisoned head.
+        var (did, signer, entries) = await CreateAuthenticatedChainAsync(
+            time => time.AddMinutes(6));
+        var method = new DidWebVhMethod(new MockWebVhHttpClient());
+
+        var result = await method.DeactivateAsync(did, new DidWebVhDeactivateOptions
+        {
+            CurrentLogContent = LogEntrySerializer.ToJsonLines(entries),
+            SigningKey = signer
+        });
+
+        result.Success.Should().BeTrue();
+        var deactivatedEntries = LogEntrySerializer.ParseJsonLines(
+            Encoding.UTF8.GetBytes((string)result.Artifacts![DidWebVhArtifacts.DidJsonl]));
+        deactivatedEntries[2].VersionTime.Should().BeAfter(deactivatedEntries[1].VersionTime);
+        deactivatedEntries[2].Parameters.Deactivated.Should().BeTrue();
+        await new LogChainValidator().ValidateChainAsync(deactivatedEntries);
     }
 
     private async Task<(string Did, ISigner Signer, IReadOnlyList<LogEntry> Entries)>
