@@ -114,6 +114,9 @@ public sealed class NetDidBuilder
     /// <summary>
     /// Register the did:ethr method with explicit finalized event-history cache control.
     /// Uses IHttpClientFactory for RPC HTTP requests.
+    /// <para>Each network's <see cref="EthereumNetworkConfig.RpcUrl"/> must serve
+    /// historical <c>eth_getLogs</c> (archive-grade); see
+    /// <see cref="EthrRpcAutoConfig.ConfigureAsync"/> for probed configs.</para>
     /// </summary>
     /// <param name="networks">Ethereum networks and ERC-1056 registries to register.</param>
     /// <param name="cacheFinalizedEventHistory">
@@ -177,6 +180,9 @@ public sealed class NetDidBuilder
     /// <summary>
     /// Register the did:ethr method using well-known network metadata with explicit
     /// finalized event-history cache control.
+    /// <para>The supplied endpoints must serve historical <c>eth_getLogs</c>
+    /// (archive-grade); see <see cref="EthrRpcAutoConfig.ConfigureAsync"/> for
+    /// probed configs.</para>
     /// </summary>
     /// <param name="networkRpcUrls">Known network names mapped to their RPC URLs.</param>
     /// <param name="cacheFinalizedEventHistory">
