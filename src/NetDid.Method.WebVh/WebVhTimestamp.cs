@@ -34,6 +34,15 @@ internal static class WebVhTimestamp
         => value.ToUniversalTime().ToString(WireFormat, CultureInfo.InvariantCulture);
 
     /// <summary>
+    /// Floor the instant to a whole UTC second. NetDid authors whole-second
+    /// <c>versionTime</c>s (issue #127) so a log entry's instant survives the DID Core §7.3
+    /// whole-second <c>created</c>/<c>updated</c> projection without losing version identity;
+    /// fractional values remain accepted on read for logs authored by other implementations.
+    /// </summary>
+    public static DateTimeOffset TruncateToWholeSecond(DateTimeOffset value)
+        => new(value.UtcTicks - value.UtcTicks % TimeSpan.TicksPerSecond, TimeSpan.Zero);
+
+    /// <summary>
     /// Return the exact parsed wire representation when it still denotes the entry's timestamp.
     /// Hash/proof verification must preserve the authenticated JSON string instead of normalizing
     /// an attacker-supplied, semantically equivalent replacement before recomputing the hash.

@@ -179,8 +179,11 @@ public sealed class LogChainValidatorTimestampTests
     [Fact]
     public async Task Update_FutureDatedCurrentLog_StillEmitsStrictlyIncreasingVersionTime()
     {
+        // 4 minutes keeps the appended entry inside the 5-minute future tolerance that
+        // authoring fails closed on (issue #127); the beyond-tolerance case is pinned by
+        // Issue127_WriteOperations_FailClosed_BeyondFutureVersionTimeTolerance.
         var (did, signer, entries) = await CreateAuthenticatedChainAsync(
-            time => time.AddMinutes(5));
+            time => time.AddMinutes(4));
         var method = new DidWebVhMethod(new MockWebVhHttpClient());
 
         var result = await method.UpdateAsync(did, new DidWebVhUpdateOptions
@@ -193,6 +196,37 @@ public sealed class LogChainValidatorTimestampTests
 
         updatedEntries[2].VersionTime.Should().BeAfter(updatedEntries[1].VersionTime);
         await new LogChainValidator().ValidateChainAsync(updatedEntries);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Issue127_WriteOperations_FailClosed_BeyondFutureVersionTimeTolerance(
+        bool deactivate)
+    {
+        // The next authored versionTime (previous truncated + 1s) would exceed the current
+        // time by more than the 5-minute tolerance conforming resolvers apply to
+        // future-dated entries, so appending must fail closed instead of emitting an entry
+        // resolvers reject.
+        var (did, signer, entries) = await CreateAuthenticatedChainAsync(
+            time => time.AddMinutes(6));
+        var method = new DidWebVhMethod(new MockWebVhHttpClient());
+        var currentLog = LogEntrySerializer.ToJsonLines(entries);
+
+        Func<Task> act = deactivate
+            ? () => method.DeactivateAsync(did, new DidWebVhDeactivateOptions
+            {
+                CurrentLogContent = currentLog,
+                SigningKey = signer
+            })
+            : () => method.UpdateAsync(did, new DidWebVhUpdateOptions
+            {
+                CurrentLogContent = currentLog,
+                SigningKey = signer
+            });
+
+        await act.Should().ThrowAsync<ArgumentException>()
+            .WithMessage("*too far in the future*");
     }
 
     private async Task<(string Did, ISigner Signer, IReadOnlyList<LogEntry> Entries)>

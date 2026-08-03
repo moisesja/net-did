@@ -145,7 +145,7 @@ public sealed class DidWebVhMethod : DidMethodBase
         var genesisEntry = new LogEntry
         {
             VersionId = ScidGenerator.SafePlaceholder,
-            VersionTime = DateTimeOffset.UtcNow,
+            VersionTime = WebVhTimestamp.TruncateToWholeSecond(DateTimeOffset.UtcNow),
             Parameters = genesisParams,
             State = docTemplate
         };
@@ -730,17 +730,36 @@ public sealed class DidWebVhMethod : DidMethodBase
 
     // --- Private helpers ---
 
+    // Matches the did:webvh v1.0 resolver guidance "Resolvers SHOULD use a tolerance of no
+    // more than 5 minutes" for future-dated versionTimes. Authoring beyond it would emit
+    // entries that conforming resolvers MUST reject, so appending fails closed instead.
+    private static readonly TimeSpan FutureVersionTimeTolerance = TimeSpan.FromMinutes(5);
+
+    // NetDid authors whole-second versionTimes so the DID Core §7.3 whole-second
+    // created/updated projection of the same instant still identifies the entry (issue #127).
+    // Same-second bursts advance one second past the previous entry, which keeps strict
+    // monotonicity for any previous value, including fractional ones from imported logs.
     private static DateTimeOffset GetNextVersionTime(DateTimeOffset previous)
     {
         var now = DateTimeOffset.UtcNow;
-        if (now > previous)
-            return now;
+        var nowSecond = WebVhTimestamp.TruncateToWholeSecond(now);
+        if (nowSecond > previous)
+            return nowSecond;
 
-        if (previous.UtcTicks == DateTimeOffset.MaxValue.UtcTicks)
+        var previousSecond = WebVhTimestamp.TruncateToWholeSecond(previous);
+        if (DateTimeOffset.MaxValue - previousSecond < TimeSpan.FromSeconds(1))
             throw new ArgumentException(
                 "The supplied DID log's latest versionTime cannot be advanced.");
 
-        return previous.AddTicks(1);
+        var next = previousSecond.AddSeconds(1);
+        if (next - now > FutureVersionTimeTolerance)
+            throw new ArgumentException(
+                "The supplied DID log's latest versionTime is too far in the future to " +
+                "append a spec-conformant entry: the next versionTime would exceed the " +
+                "current time by more than the 5-minute tolerance conforming resolvers " +
+                "apply to future-dated entries.");
+
+        return next;
     }
 
     private static void RequireValidWitnessPolicy(WitnessConfig? config, string parameterName)
