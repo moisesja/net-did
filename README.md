@@ -319,7 +319,16 @@ var genesis = await dereferencer.DereferenceAsync(
 var doc = (DidDocument)genesis.ContentStream!;
 Console.WriteLine(doc.VerificationMethod!.Count); // 1 — only #controller
 Console.WriteLine(genesis.ContentMetadata!["nextVersionId"]); // first event block
+Console.WriteLine(genesis.ContentMetadata!["nextUpdate"]);    // its block time, e.g. 2024-01-15T01:42:24Z
 ```
+
+Document metadata matches the reference `ethr-did-resolver`: `updated` carries the block
+time of the last applied change whenever `versionId` is present, and historical queries
+report `nextUpdate` beside `nextVersionId` (ISO 8601 UTC, whole seconds — the canonical
+form used by the Ethereum block-time metadata). Which fields appear depends on the history
+in view: an **unregistered** DID (no events at all) omits all four; a `versionId=0` query on
+a DID **with** later history — the example above — omits `versionId`/`updated` (no change
+applied yet) but still reports `nextVersionId`/`nextUpdate` for the first change.
 
 `versionTime` is also supported in normalized UTC form, for example
 `2026-07-24T12:34:56Z`. Subsecond values and numeric UTC offsets are rejected. `versionId`

@@ -1403,6 +1403,22 @@ public sealed record DidEthrCreateOptions : DidCreateOptions
    valid for distinct block numbers, including on EVM-compatible chains that truncate a
    higher-resolution host timestamp; resolution returns only a valid chronological prefix. Report
    adjacent version metadata from the selected history.
+   `didDocumentMetadata` mirrors the reference resolver (issue #117): `versionId` is the block
+   number of the last applied change and `updated` its block time whenever at least one change
+   applies (current and historical resolution alike); on historical queries with a later change,
+   `nextVersionId` carries the adjacent next change block and `nextUpdate` its block time.
+   Ethereum block timestamps are ISO 8601 UTC without sub-second resolution (e.g.
+   `2021-03-22T18:14:29Z`); `nextUpdate`, `Created`, and `Updated` are emitted in exactly that
+   string form. The Core model preserves optional fractional precision when serializing
+   `VersionTime`, because other DID methods can use it to identify a distinct version. Timestamp
+   deserialization requires an explicit UTC or numeric offset and normalizes the value to UTC;
+   `ToPropertyDictionary` exposes the same UTC strings. An unregistered DID (no events) omits all
+   four fields; a `versionId=0` query on a DID with later history omits `versionId`/`updated`
+   but reports `nextVersionId`/`nextUpdate`. Block timestamps already fetched during resolution (the `versionTime` walk, the
+   requested `versionId` block) are reused; otherwise at most two additional
+   `eth_getBlockByNumber` calls run under the same overall resolution deadline. A node-supplied
+   timestamp beyond the representable range (after 9999-12-31T23:59:59Z) fails closed as
+   `internalError` instead of silently wrapping to a pre-1970 instant.
 6. Replay selected events chronologically to build the DID Document:
    - Each `DIDOwnerChanged` updates the controller.
    - Each `DIDDelegateChanged` adds/removes delegate verification methods (checking `validity` expiration against current block).

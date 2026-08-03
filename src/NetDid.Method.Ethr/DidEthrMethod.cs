@@ -207,7 +207,8 @@ public sealed class DidEthrMethod : DidMethodBase
             LogResolveFailure(ex, did);
             return DidResolutionResult.InternalError(did,
                 "did:ethr resolution timed out against the RPC endpoint before the " +
-                "event history could be retrieved; the DID's existence was not determined.");
+                "event history and block metadata could be retrieved; the DID's " +
+                "existence was not determined.");
         }
         catch (EthereumInteractionException ex)
         {
@@ -309,9 +310,13 @@ public sealed class DidEthrMethod : DidMethodBase
         // would invert a same-block add→revoke into revoke→add and leave a revoked key live.
         collectedEvents = collectedEvents.OrderBy(e => e.BlockNumber).ToList();
 
-        // Reference time & optional block-timestamp fetching for VersionTime
+        // Reference time & optional block-timestamp fetching for VersionTime.
+        // Every timestamp fetched anywhere in this resolution is cached so the
+        // updated/nextUpdate metadata below (issue #117) reuses it instead of
+        // re-querying — on the VersionTime path both fields come for free.
         DateTimeOffset referenceTime;
         ulong?         nextVersionId = null;
+        var blockTimestamps = new Dictionary<ulong, ulong>();
 
         if (versionBlockNumber.HasValue)
         {
@@ -332,7 +337,8 @@ public sealed class DidEthrMethod : DidMethodBase
             ct.ThrowIfCancellationRequested();
             var ts = await rpc.GetBlockTimestampAsync(version, ct).WaitAsyncObserved(ct);
             ct.ThrowIfCancellationRequested();
-            referenceTime = DateTimeOffset.FromUnixTimeSeconds((long)ts);
+            blockTimestamps[version] = ts;
+            referenceTime = ToUtcTimestamp(ts, version);
         }
         else if (versionTime is { } vt)
         {
@@ -349,13 +355,14 @@ public sealed class DidEthrMethod : DidMethodBase
                 var bts = await rpc.GetBlockTimestampAsync(blockEvents.Key, ct)
                     .WaitAsyncObserved(ct);
                 ct.ThrowIfCancellationRequested();
+                blockTimestamps[blockEvents.Key] = bts;
                 if (previousTimestamp is { } prior && bts < prior)
                     throw new EthereumInteractionException(
                         $"did:ethr block timestamps decrease: block " +
                         $"{blockEvents.Key} has {bts} after {prior}.");
                 previousTimestamp = bts;
 
-                if (DateTimeOffset.FromUnixTimeSeconds((long)bts) <= referenceTime)
+                if (ToUtcTimestamp(bts, blockEvents.Key) <= referenceTime)
                     trimmed.AddRange(blockEvents);
                 else if (nextVersionId is null)
                     nextVersionId = blockEvents.Key;
@@ -379,13 +386,33 @@ public sealed class DidEthrMethod : DidMethodBase
         var lastChangeBlock = collectedEvents.Count > 0
             ? collectedEvents[^1].BlockNumber : 0UL;
 
+        // updated / nextUpdate (issue #117): mirror the reference resolver — `updated`
+        // is the block time of the last APPLIED change whenever versionId is reported
+        // (current AND historical resolution), `nextUpdate` accompanies nextVersionId on
+        // historical queries; a genesis document (no events) omits all four. Timestamps
+        // already fetched above are reused; at most two extra eth_getBlockByNumber calls,
+        // each bounded like every other dependency await in this method.
+        DateTimeOffset? updated = null;
+        if (lastChangeBlock > 0)
+            updated = ToUtcTimestamp(
+                await GetBlockTimestampCachedAsync(rpc, blockTimestamps, lastChangeBlock, ct),
+                lastChangeBlock);
+
+        string? nextUpdate = null;
+        if (nextVersionId is { } nextChangeBlock)
+            nextUpdate = FormatIso8601Utc(ToUtcTimestamp(
+                await GetBlockTimestampCachedAsync(rpc, blockTimestamps, nextChangeBlock, ct),
+                nextChangeBlock));
+
         var meta = new DidDocumentMetadata
         {
             // The version is the block of the last APPLIED change (post-partition), not the
             // requested block — metadata must report the state actually returned.
             VersionId   = lastChangeBlock > 0 ? lastChangeBlock.ToString() : null,
+            Updated     = updated,
             Deactivated = isDeactivated ? true : null,
             NextVersionId = nextVersionId?.ToString(),
+            NextUpdate  = nextUpdate,
         };
 
         // Final gate before SUCCESS: a caller that cancelled (or a deadline that
@@ -399,6 +426,46 @@ public sealed class DidEthrMethod : DidMethodBase
             DocumentMetadata   = meta,
         };
     }
+
+    /// <summary>
+    /// Block-timestamp lookup that reuses any timestamp this resolution already fetched;
+    /// a miss issues one bounded eth_getBlockByNumber with the same cancellation
+    /// discipline as every other dependency await (pre-call check, WaitAsyncObserved,
+    /// post-await check).
+    /// </summary>
+    private static async Task<ulong> GetBlockTimestampCachedAsync(
+        IEthereumRpcClient rpc, Dictionary<ulong, ulong> cache, ulong blockNumber,
+        CancellationToken ct)
+    {
+        if (cache.TryGetValue(blockNumber, out var cached))
+            return cached;
+        ct.ThrowIfCancellationRequested();
+        var ts = await rpc.GetBlockTimestampAsync(blockNumber, ct).WaitAsyncObserved(ct);
+        ct.ThrowIfCancellationRequested();
+        cache[blockNumber] = ts;
+        return ts;
+    }
+
+    // DateTimeOffset.MaxValue.ToUnixTimeSeconds(): 9999-12-31T23:59:59Z.
+    private const long MaxUnixTimestampSeconds = 253_402_300_799;
+
+    /// <summary>
+    /// Convert a node-supplied block timestamp to UTC, rejecting values a
+    /// <see cref="DateTimeOffset"/> cannot represent — an unchecked (long) cast would
+    /// wrap a hostile huge value negative and silently produce a pre-1970 instant.
+    /// </summary>
+    private static DateTimeOffset ToUtcTimestamp(ulong unixSeconds, ulong blockNumber)
+    {
+        if (unixSeconds > MaxUnixTimestampSeconds)
+            throw new EthereumInteractionException(
+                $"did:ethr block {blockNumber} timestamp is out of representable range.");
+        return DateTimeOffset.FromUnixTimeSeconds((long)unixSeconds);
+    }
+
+    // The reference resolver's metadata timestamp form: ISO 8601 UTC, whole seconds —
+    // one definition, shared with Core's document-metadata serialization.
+    private static string FormatIso8601Utc(DateTimeOffset value) =>
+        NetDid.Core.Serialization.CanonicalUtcDateTimeOffsetJsonConverter.Format(value);
 
     // ── Event chain walker ────────────────────────────────────────────────────
 

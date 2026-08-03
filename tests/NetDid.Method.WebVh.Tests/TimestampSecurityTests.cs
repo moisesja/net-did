@@ -277,6 +277,46 @@ public sealed class TimestampSecurityTests
     }
 
     [Fact]
+    public async Task Issue117_ResolvedVersionTime_ReSelectsSameFractionalWebVhVersion()
+    {
+        var httpClient = new MockWebVhHttpClient();
+        var method = new DidWebVhMethod(httpClient);
+        var createResult = await method.CreateAsync(new DidWebVhCreateOptions
+        {
+            Domain = "example.com",
+            UpdateKey = CreateEd25519Signer()
+        });
+        var did = createResult.Did.Value;
+        var logContent = (string)createResult.Artifacts![DidWebVhArtifacts.DidJsonl];
+        var entry = LogEntrySerializer.ParseJsonLines(Encoding.UTF8.GetBytes(logContent))[0];
+        entry.VersionTime.Ticks.Should().NotBe(0);
+        (entry.VersionTime.Ticks % TimeSpan.TicksPerSecond).Should().NotBe(0,
+            "the regression requires a version that whole-second serialization would lose");
+        httpClient.SetLogResponse(
+            DidUrlMapper.MapToLogUrl(did), Encoding.UTF8.GetBytes(logContent));
+
+        var latest = await method.ResolveAsync(did);
+        var json = JsonSerializer.Serialize(latest.DocumentMetadata,
+            new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase });
+        using var parsed = JsonDocument.Parse(json);
+        var serializedVersionTime = parsed.RootElement.GetProperty("versionTime").GetString();
+        var mappedVersionTime = latest.DocumentMetadata!.ToPropertyDictionary()["versionTime"]
+            .Should().BeOfType<string>().Subject;
+
+        serializedVersionTime.Should().Be(WebVhTimestamp.Format(entry.VersionTime));
+        mappedVersionTime.Should().Be(serializedVersionTime);
+
+        var selected = await method.ResolveAsync(did, new DidResolutionOptions
+        {
+            VersionTime = mappedVersionTime
+        });
+
+        selected.ResolutionMetadata.Error.Should().BeNull();
+        selected.DocumentMetadata!.VersionId.Should().Be(latest.DocumentMetadata.VersionId,
+            "reusing serialized resolution metadata must select the same authenticated version");
+    }
+
+    [Fact]
     public void FindTargetIndex_StopsBeforeNonMonotonicTailBeyondRequestedTime()
     {
         var first = new DateTimeOffset(2026, 7, 10, 10, 0, 0, TimeSpan.Zero);

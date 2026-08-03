@@ -7,6 +7,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`did:ethr`: `didDocumentMetadata.updated` and `nextUpdate`** (issue #117). Resolution
+  metadata now matches the reference `ethr-did-resolver`: `updated` carries the ISO 8601 UTC
+  block time (whole seconds, e.g. `2021-03-22T18:14:29Z`) of the last applied change whenever
+  `versionId` is reported — on current and historical resolution alike — and historical
+  (`versionId`/`versionTime`) queries report `nextUpdate` beside the existing `nextVersionId`.
+  Genesis documents (no events) omit all four fields; `deactivated` merges alongside them.
+  Block timestamps already fetched during resolution (the `versionTime` walk, the requested
+  `versionId` block) are reused; otherwise at most two additional `eth_getBlockByNumber` calls
+  run under the existing overall resolution deadline with the same bounded-await cancellation
+  discipline. Verified live against the maintainer's 14 comparison DIDs across mainnet,
+  Sepolia, Gnosis, Polygon, and Aurora: 14/14 `updated` values match the reference resolver's
+  recorded output, with historical `nextVersionId`/`nextUpdate` consistency on every DID.
+  Hardening: node-supplied block timestamps beyond `DateTimeOffset`'s representable range
+  (after `9999-12-31T23:59:59Z`) now fail closed as `internalError` at every conversion site —
+  previously such values silently wrapped to pre-1970 instants on the historical paths, which
+  could mass-expire delegates/attributes in a historical document.
+  From the PR review: the canonical form now holds at every externally consumed surface, not
+  just the in-memory model — `DidDocumentMetadata.Created`/`Updated` use whole-second UTC
+  serialization, while `VersionTime` preserves meaningful fractional precision so methods such
+  as `did:webvh` do not lose version identity. Parsing requires an explicit UTC or numeric offset
+  and normalizes the resulting value to offset zero. `ToPropertyDictionary()` (the dereferencing
+  `ContentMetadata` map) exposes those timestamps as UTC strings instead of `DateTimeOffset`
+  objects. **Behavior
+  change:** dereferencing-metadata consumers that cast `created`/`updated`/`versionTime` map
+  values to `DateTimeOffset` must now parse the string; default JSON serialization of document
+  metadata switches from `+00:00` to `Z` form (spec-normalized, and what the reference
+  resolver emits). Genesis-shape clarification: an unregistered DID (no events) omits all four
+  version fields, while a `versionId=0` query on a DID with later history omits
+  `versionId`/`updated` but reports `nextVersionId`/`nextUpdate` — both shapes are
+  regression-pinned.
+
 ### Fixed
 
 - **`did:ethr`: RPC infrastructure failures now resolve as `internalError`, not `notFound`**
