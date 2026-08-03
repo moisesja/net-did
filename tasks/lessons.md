@@ -461,3 +461,10 @@
   task completes; PR #122 CI saw 2 while stress iteration 60 reproduced it locally. Poll
   for bounded cleanup before asserting the permanent count, with a short timeout that
   still fails a real retained-continuation leak. Never weaken the final ≤1 invariant.
+- A shared metadata type does not imply one timestamp precision policy. `created` and `updated`
+  can require canonical whole seconds while a method-specific `versionTime` uses authenticated
+  fractional precision as part of version identity. Applying one lossy converter to all three
+  can make serialized resolution metadata select a different historical version when reused.
+  Also, instant equality does not prove UTC normalization for `DateTimeOffset`: assert the
+  resulting `Offset` explicitly, and reject zone-less input before the runtime can interpret it
+  using the resolver host's local timezone. (PR #126 review round 2.)

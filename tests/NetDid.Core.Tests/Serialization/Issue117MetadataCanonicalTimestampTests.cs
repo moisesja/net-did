@@ -7,12 +7,10 @@ using Xunit;
 namespace NetDid.Core.Tests.Serialization;
 
 /// <summary>
-/// Issue #117 (PR #126 review): the externally consumed representations of
-/// DidDocumentMetadata timestamps must be the canonical DID Resolution form — ISO 8601
-/// normalized UTC without sub-second precision (e.g. <c>2021-03-22T18:14:29Z</c>) —
-/// matching the reference ethr-did-resolver. Default System.Text.Json serialization of
-/// a bare <see cref="DateTimeOffset"/> renders <c>+00:00</c> instead, so both the JSON
-/// serialization and the dereferencing property map need the canonical converter.
+/// Issue #117 (PR #126 review): <c>created</c> and <c>updated</c> use the canonical
+/// whole-second UTC representation matching the reference ethr-did-resolver, while
+/// <c>versionTime</c> retains fractional precision that can identify a method-specific
+/// version. Both JSON and dereferencing-map representations must follow the same policy.
 /// </summary>
 public class Issue117MetadataCanonicalTimestampTests
 {
@@ -61,7 +59,23 @@ public class Issue117MetadataCanonicalTimestampTests
         var back = JsonSerializer.Deserialize<DidDocumentMetadata>(json,
             new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase })!;
 
+        back.Updated.Should().NotBeNull();
         back.Updated.Should().Be(DateTimeOffset.FromUnixTimeSeconds(200));
+        back.Updated!.Value.Offset.Should().Be(TimeSpan.Zero,
+            "the converter promises to normalize accepted numeric offsets to UTC");
+    }
+
+    [Fact]
+    public void Issue117_CanonicalConverter_RejectsTimestampWithoutExplicitZone()
+    {
+        // Utf8JsonReader.GetDateTimeOffset treats a zone-less timestamp as local time,
+        // making the represented instant depend on the resolver host's timezone.
+        var json = "{\"updated\":\"1970-01-01T00:03:20\"}";
+
+        var act = () => JsonSerializer.Deserialize<DidDocumentMetadata>(json,
+            new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase });
+
+        act.Should().Throw<JsonException>();
     }
 
     [Fact]
@@ -85,5 +99,21 @@ public class Issue117MetadataCanonicalTimestampTests
 
         CanonicalUtcDateTimeOffsetJsonConverter.Format(value)
             .Should().Be("1970-01-01T00:03:20Z");
+    }
+
+    [Fact]
+    public void Issue117_VersionTimeRepresentation_PreservesFractionalPrecision()
+    {
+        var metadata = new DidDocumentMetadata
+        {
+            VersionTime = new DateTimeOffset(2026, 7, 10, 12, 0, 0, 900, TimeSpan.Zero),
+        };
+
+        var json = JsonSerializer.Serialize(metadata,
+            new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase });
+        var dict = metadata.ToPropertyDictionary();
+
+        json.Should().Contain("\"versionTime\":\"2026-07-10T12:00:00.9Z\"");
+        dict["versionTime"].Should().Be("2026-07-10T12:00:00.9Z");
     }
 }

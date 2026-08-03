@@ -26,10 +26,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   previously such values silently wrapped to pre-1970 instants on the historical paths, which
   could mass-expire delegates/attributes in a historical document.
   From the PR review: the canonical form now holds at every externally consumed surface, not
-  just the in-memory model — `DidDocumentMetadata.Created`/`Updated`/`VersionTime` carry a
-  System.Text.Json converter emitting `yyyy-MM-dd'T'HH:mm:ss'Z'` (reading accepts any ISO 8601
-  offset form), and `ToPropertyDictionary()` (the dereferencing `ContentMetadata` map) exposes
-  those timestamps as canonical strings instead of `DateTimeOffset` objects. **Behavior
+  just the in-memory model — `DidDocumentMetadata.Created`/`Updated` use whole-second UTC
+  serialization, while `VersionTime` preserves meaningful fractional precision so methods such
+  as `did:webvh` do not lose version identity. Parsing requires an explicit UTC or numeric offset
+  and normalizes the resulting value to offset zero. `ToPropertyDictionary()` (the dereferencing
+  `ContentMetadata` map) exposes those timestamps as UTC strings instead of `DateTimeOffset`
+  objects. **Behavior
   change:** dereferencing-metadata consumers that cast `created`/`updated`/`versionTime` map
   values to `DateTimeOffset` must now parse the string; default JSON serialization of document
   metadata switches from `+00:00` to `Z` form (spec-normalized, and what the reference
