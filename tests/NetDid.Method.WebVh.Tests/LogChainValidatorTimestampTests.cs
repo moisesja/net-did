@@ -177,11 +177,18 @@ public sealed class LogChainValidatorTimestampTests
     }
 
     [Fact]
-    public async Task Update_FutureDatedCurrentLog_StillEmitsStrictlyIncreasingVersionTime()
+    public async Task Issue127_Update_WaitsForNextWholeSecond_NeverAuthorsFutureTime()
     {
+        // Exact boundary, deterministic clock: with the clock at T and the head at T+1s,
+        // the next authorable whole second is T+2s — a wait of exactly the 2-second bound.
+        // Update must WAIT for that instant to arrive (did:webvh: the entry timestamp must
+        // be the retrieval time or before; resolver skew tolerance is not authoring
+        // permission), then stamp a versionTime that is not later than the clock.
+        var clock = new AutoAdvanceTimeProvider(
+            new DateTimeOffset(2026, 7, 10, 12, 0, 0, TimeSpan.Zero));
         var (did, signer, entries) = await CreateAuthenticatedChainAsync(
-            time => time.AddMinutes(5));
-        var method = new DidWebVhMethod(new MockWebVhHttpClient());
+            time => time.AddSeconds(1), clock: clock);
+        var method = new DidWebVhMethod(new MockWebVhHttpClient()) { Clock = clock };
 
         var result = await method.UpdateAsync(did, new DidWebVhUpdateOptions
         {
@@ -192,16 +199,203 @@ public sealed class LogChainValidatorTimestampTests
             Encoding.UTF8.GetBytes((string)result.Artifacts![DidWebVhArtifacts.DidJsonl]));
 
         updatedEntries[2].VersionTime.Should().BeAfter(updatedEntries[1].VersionTime);
+        updatedEntries[2].VersionTime.Should().BeOnOrBefore(clock.GetUtcNow(),
+            "an authored versionTime must never be later than the authoring clock");
+        updatedEntries[2].VersionTime.Should().Be(
+            new DateTimeOffset(2026, 7, 10, 12, 0, 2, TimeSpan.Zero),
+            "the writer waits for the next whole second after the head instead of " +
+            "manufacturing future time");
         await new LogChainValidator().ValidateChainAsync(updatedEntries);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Issue127_WriteOperations_FailHonestly_WhenNextTimestampExceedsWait(
+        bool deactivate)
+    {
+        // A head 2 minutes ahead of the clock (only producible by a non-NetDid author or
+        // severe clock skew) cannot be appended past without authoring future time, which
+        // did:webvh forbids. Both Update and Deactivate must fail honestly with a
+        // retry-after-the-clock-catches-up contract — returning success for an entry
+        // conforming resolvers reject would be false assurance. (+2 minutes also pins the
+        // no-future-authoring design against regressing to any minutes-scale budget: it sat
+        // inside the earlier 5-minute budget this replaced.)
+        var clock = new AutoAdvanceTimeProvider(
+            new DateTimeOffset(2026, 7, 10, 12, 0, 0, TimeSpan.Zero));
+        var (did, signer, entries) = await CreateAuthenticatedChainAsync(
+            time => time.AddMinutes(2), clock: clock);
+        var method = new DidWebVhMethod(new MockWebVhHttpClient()) { Clock = clock };
+        var currentLog = LogEntrySerializer.ToJsonLines(entries);
+
+        Func<Task> act = deactivate
+            ? () => method.DeactivateAsync(did, new DidWebVhDeactivateOptions
+            {
+                CurrentLogContent = currentLog,
+                SigningKey = signer
+            })
+            : () => method.UpdateAsync(did, new DidWebVhUpdateOptions
+            {
+                CurrentLogContent = currentLog,
+                SigningKey = signer
+            });
+
+        await act.Should().ThrowAsync<ArgumentException>()
+            .WithMessage("*aggregate authoring wait*");
+        clock.GetUtcNow().Should().Be(
+            new DateTimeOffset(2026, 7, 10, 12, 0, 0, TimeSpan.Zero),
+            "failing closed must not wait toward a far-future head");
+    }
+
+    [Fact]
+    public async Task Issue127_Update_FailsHonestly_JustBeyondBoundedWait()
+    {
+        // Exact boundary complement: head at T+2s needs a 3-second wait — one second past
+        // the 2-second bound — so authoring refuses rather than waits or stamps future time.
+        var clock = new AutoAdvanceTimeProvider(
+            new DateTimeOffset(2026, 7, 10, 12, 0, 0, TimeSpan.Zero));
+        var (did, signer, entries) = await CreateAuthenticatedChainAsync(
+            time => time.AddSeconds(2), clock: clock);
+        var method = new DidWebVhMethod(new MockWebVhHttpClient()) { Clock = clock };
+
+        var act = () => method.UpdateAsync(did, new DidWebVhUpdateOptions
+        {
+            CurrentLogContent = LogEntrySerializer.ToJsonLines(entries),
+            SigningKey = signer
+        });
+
+        await act.Should().ThrowAsync<ArgumentException>()
+            .WithMessage("*aggregate authoring wait*");
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Issue127_FrozenUtcClock_EnforcesAggregateWaitBudget(bool deactivate)
+    {
+        var start = new DateTimeOffset(2026, 7, 10, 12, 0, 0, TimeSpan.Zero);
+        var clock = new FrozenUtcTimeProvider(start);
+        var (method, did, signer, currentLog) = await CreateGenesisAsync(clock);
+
+        Func<Task> act = deactivate
+            ? () => method.DeactivateAsync(did, new DidWebVhDeactivateOptions
+            {
+                CurrentLogContent = currentLog,
+                SigningKey = signer
+            })
+            : () => method.UpdateAsync(did, new DidWebVhUpdateOptions
+            {
+                CurrentLogContent = currentLog,
+                SigningKey = signer
+            });
+
+        await act.Should().ThrowAsync<ArgumentException>()
+            .WithMessage("*aggregate authoring wait*");
+        clock.GetUtcNow().Should().Be(start);
+        clock.GetElapsedTime(0).Should().Be(TimeSpan.FromSeconds(2),
+            "the aggregate monotonic budget must not restart after each timer fires");
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Issue127_BackwardUtcStep_EnforcesAggregateWaitBudget(bool deactivate)
+    {
+        var start = new DateTimeOffset(2026, 7, 10, 12, 0, 0, TimeSpan.Zero);
+        var clock = new BackwardStepTimeProvider(start);
+        var (method, did, signer, currentLog) = await CreateGenesisAsync(clock);
+
+        Func<Task> act = deactivate
+            ? () => method.DeactivateAsync(did, new DidWebVhDeactivateOptions
+            {
+                CurrentLogContent = currentLog,
+                SigningKey = signer
+            })
+            : () => method.UpdateAsync(did, new DidWebVhUpdateOptions
+            {
+                CurrentLogContent = currentLog,
+                SigningKey = signer
+            });
+
+        await act.Should().ThrowAsync<ArgumentException>()
+            .WithMessage("*aggregate authoring wait*");
+        clock.GetElapsedTime(0).Should().Be(TimeSpan.FromSeconds(1),
+            "after UTC moves backward the remaining monotonic budget is only one second");
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Issue127_OversleptTimer_EnforcesAggregateWaitBudget(bool deactivate)
+    {
+        var start = new DateTimeOffset(2026, 7, 10, 12, 0, 0, TimeSpan.Zero);
+        var clock = new OversleptTimerTimeProvider(start);
+        var (method, did, signer, currentLog) = await CreateGenesisAsync(clock);
+
+        Func<Task> act = deactivate
+            ? () => method.DeactivateAsync(did, new DidWebVhDeactivateOptions
+            {
+                CurrentLogContent = currentLog,
+                SigningKey = signer
+            })
+            : () => method.UpdateAsync(did, new DidWebVhUpdateOptions
+            {
+                CurrentLogContent = currentLog,
+                SigningKey = signer
+            });
+
+        await act.Should().ThrowAsync<ArgumentException>()
+            .WithMessage("*aggregate authoring wait*");
+        clock.GetElapsedTime(0).Should().Be(TimeSpan.FromSeconds(3),
+            "timer oversleep must count against the aggregate monotonic budget");
+    }
+
+    [Fact]
+    public async Task Issue127_Wait_PropagatesCallerCancellation()
+    {
+        var start = new DateTimeOffset(2026, 7, 10, 12, 0, 0, TimeSpan.Zero);
+        var clock = new NonFiringTimeProvider(start);
+        var (method, did, signer, currentLog) = await CreateGenesisAsync(clock);
+        using var cts = new CancellationTokenSource();
+
+        var operation = method.UpdateAsync(did, new DidWebVhUpdateOptions
+        {
+            CurrentLogContent = currentLog,
+            SigningKey = signer
+        }, cts.Token);
+        await clock.TimerCreated;
+        cts.Cancel();
+
+        var act = async () => await operation;
+        await act.Should().ThrowAsync<OperationCanceledException>();
+    }
+
+    private async Task<(DidWebVhMethod Method, string Did, ISigner Signer, byte[] CurrentLog)>
+        CreateGenesisAsync(TimeProvider clock)
+    {
+        var signer = CreateSigner();
+        var method = new DidWebVhMethod(new MockWebVhHttpClient()) { Clock = clock };
+        var created = await method.CreateAsync(new DidWebVhCreateOptions
+        {
+            Domain = "example.com",
+            UpdateKey = signer
+        });
+        var currentLog = Encoding.UTF8.GetBytes(
+            (string)created.Artifacts![DidWebVhArtifacts.DidJsonl]);
+        return (method, created.Did.Value, signer, currentLog);
     }
 
     private async Task<(string Did, ISigner Signer, IReadOnlyList<LogEntry> Entries)>
         CreateAuthenticatedChainAsync(
             Func<DateTimeOffset, DateTimeOffset> selectSecondTime,
-            LogEntryParameters? secondParameters = null)
+            LogEntryParameters? secondParameters = null,
+            TimeProvider? clock = null)
     {
         var signer = CreateSigner();
-        var method = new DidWebVhMethod(new MockWebVhHttpClient());
+        var method = new DidWebVhMethod(new MockWebVhHttpClient())
+        {
+            Clock = clock ?? TimeProvider.System
+        };
         var created = await method.CreateAsync(new DidWebVhCreateOptions
         {
             Domain = "example.com",

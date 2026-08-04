@@ -5,15 +5,34 @@ namespace NetDid.Core.Model;
 
 public sealed record DidDocumentMetadata
 {
+    /// <summary>
+    /// When the DID was created, as asserted by the method. Informational only: DID Core §7.3
+    /// mandates that the serialized form is normalized to whole seconds, so for methods whose
+    /// versions can differ sub-second (e.g. did:webvh logs authored by other implementations)
+    /// this value cannot identify a version. Use <see cref="VersionId"/> or
+    /// <see cref="VersionTime"/> as version selectors — never feed the serialized
+    /// <c>created</c> back as a <c>versionTime</c> resolution query.
+    /// </summary>
     [JsonConverter(typeof(CanonicalUtcDateTimeOffsetJsonConverter))]
     public DateTimeOffset? Created { get; init; }
 
+    /// <summary>
+    /// When the DID was last updated, as asserted by the method. Informational only and
+    /// serialized whole-second per DID Core §7.3 — see <see cref="Created"/>; never feed the
+    /// serialized <c>updated</c> back as a <c>versionTime</c> resolution query.
+    /// </summary>
     [JsonConverter(typeof(CanonicalUtcDateTimeOffsetJsonConverter))]
     public DateTimeOffset? Updated { get; init; }
 
     public bool? Deactivated { get; init; }
     public string? VersionId { get; init; }
 
+    /// <summary>
+    /// The instant of the resolved version. Together with <see cref="VersionId"/> this is a
+    /// version <em>selector</em>: it serializes with full fractional precision because
+    /// method-specific versions (did:webvh log entries) can be distinct only sub-second, and
+    /// the serialized value must re-select the same version when used as a resolution query.
+    /// </summary>
     [JsonConverter(typeof(FractionalUtcDateTimeOffsetJsonConverter))]
     public DateTimeOffset? VersionTime { get; init; }
 

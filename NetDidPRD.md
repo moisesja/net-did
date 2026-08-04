@@ -1137,9 +1137,37 @@ entry whose `versionTime` is non-UTC or otherwise invalid MUST be reported as `i
 as `notFound`. Adjacent entries MUST also be strictly increasing by parsed instant: every entry
 after genesis must have a `versionTime` later than its predecessor. Equal or decreasing values
 invalidate the chain even when their hashes and proofs are otherwise authentic. The comparison
-does not normalize, replace, or reserialize the authenticated wire token. Create emits the current
-UTC instant; Update and Deactivate choose an instant strictly later than the supplied log's latest
-entry, including when that entry is future-dated relative to the local clock.
+does not normalize, replace, or reserialize the authenticated wire token.
+
+NetDid *authors* whole-second `versionTime`s (issue #127) and never authors a `versionTime`
+later than the authoring clock. This conservative writer policy guarantees the did:webvh update
+rule that the entry timestamp be "the time the DID will be retrieved by a witness or resolver,
+or before"; resolver-side future-skew tolerance is leniency for reading, not permission to write
+future time. Create truncates the current UTC instant to a whole second. Update and Deactivate use
+the current whole second when it is strictly later than the supplied log's latest entry; otherwise
+they *wait* for the next whole second after that entry to actually arrive before stamping it,
+throttling a same-second burst to ~1 write per second. A single monotonic deadline bounds the
+aggregate wait at 2 seconds across every retry, including when UTC stalls or moves backward.
+Because DID Core §7.3 mandates whole-second `created`/`updated` in resolution metadata, whole-second
+authoring makes `created`/`updated`/`versionTime` coincide exactly for NetDid-authored logs —
+the serialized `updated` value identifies the version it came from. When the supplied log's
+next strictly increasing whole-second timestamp cannot be reached within the 2-second aggregate
+budget (because of a future-dated head, stalled/backward UTC clock, or severe clock skew), Update
+**and** Deactivate fail closed with `ArgumentException` and an explicit
+retry-after-the-clock-advances contract:
+under strict monotonicity and the no-future-authoring rule, appending — including an immediate
+deactivation — past such a head is impossible, and an honest failure is the only truthful
+result (a "successful" future-dated entry would be rejected by resolvers that enforce the
+spec's read-side skew rule; NetDid's own read-side enforcement of that rule is tracked as a
+separate defect). A log whose head is at the maximum representable timestamp is permanently
+un-appendable for the same reason.
+
+For *imported* logs authored with fractional `versionTime`s, reading is unchanged: fractional
+precision is preserved, selected, and re-serialized exactly. For such logs the whole-second
+`created`/`updated` projection is inherently lossy and MUST NOT be used as a version selector —
+`versionTime`/`versionId` are the only selectors. Consumers must never feed a serialized
+`updated` value back as a `versionTime` resolution query for logs that may carry sub-second
+versions.
 
 ### 7.5 Create
 
