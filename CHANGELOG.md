@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.1.0] - 2026-08-03
+
 ### Added
 
 - **`did:ethr`: archive-node requirement documented; `EthrRpcAutoConfig` opt-in endpoint
