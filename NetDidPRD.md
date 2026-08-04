@@ -1140,20 +1140,22 @@ invalidate the chain even when their hashes and proofs are otherwise authentic. 
 does not normalize, replace, or reserialize the authenticated wire token.
 
 NetDid *authors* whole-second `versionTime`s (issue #127) and never authors a `versionTime`
-later than the current time — the did:webvh update rules require the entry timestamp to be
-"the time the DID will be retrieved by a witness or resolver, or before", and resolver-side
-future-skew tolerance is leniency for reading, not permission to write future time. Create
-truncates the current UTC instant to a whole second. Update and Deactivate use the current
-whole second when it is strictly later than the supplied log's latest entry; otherwise they
-*wait* (bounded, at most 2 seconds) for the next whole second after that entry to actually
-arrive before stamping it, throttling a same-second burst to ~1 write per second. Because DID
-Core §7.3 mandates whole-second `created`/`updated` in resolution metadata, whole-second
+later than the authoring clock. This conservative writer policy guarantees the did:webvh update
+rule that the entry timestamp be "the time the DID will be retrieved by a witness or resolver,
+or before"; resolver-side future-skew tolerance is leniency for reading, not permission to write
+future time. Create truncates the current UTC instant to a whole second. Update and Deactivate use
+the current whole second when it is strictly later than the supplied log's latest entry; otherwise
+they *wait* for the next whole second after that entry to actually arrive before stamping it,
+throttling a same-second burst to ~1 write per second. A single monotonic deadline bounds the
+aggregate wait at 2 seconds across every retry, including when UTC stalls or moves backward.
+Because DID Core §7.3 mandates whole-second `created`/`updated` in resolution metadata, whole-second
 authoring makes `created`/`updated`/`versionTime` coincide exactly for NetDid-authored logs —
 the serialized `updated` value identifies the version it came from. When the supplied log's
-latest `versionTime` is ahead of the local clock by more than the bounded wait (producible
-only by a non-NetDid author or severe clock skew), Update **and** Deactivate fail closed with
-`ArgumentException` and an explicit retry-after-the-clock-catches-up contract: under strict
-monotonicity and the no-future-authoring rule, appending — including an immediate
+next strictly increasing whole-second timestamp cannot be reached within the 2-second aggregate
+budget (because of a future-dated head, stalled/backward UTC clock, or severe clock skew), Update
+**and** Deactivate fail closed with `ArgumentException` and an explicit
+retry-after-the-clock-advances contract:
+under strict monotonicity and the no-future-authoring rule, appending — including an immediate
 deactivation — past such a head is impossible, and an honest failure is the only truthful
 result (a "successful" future-dated entry would be rejected by resolvers that enforce the
 spec's read-side skew rule; NetDid's own read-side enforcement of that rule is tracked as a

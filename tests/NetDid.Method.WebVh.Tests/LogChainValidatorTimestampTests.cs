@@ -211,7 +211,7 @@ public sealed class LogChainValidatorTimestampTests
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
-    public async Task Issue127_WriteOperations_FailHonestly_WhenHeadIsAheadOfClock(
+    public async Task Issue127_WriteOperations_FailHonestly_WhenNextTimestampExceedsWait(
         bool deactivate)
     {
         // A head 2 minutes ahead of the clock (only producible by a non-NetDid author or
@@ -241,7 +241,7 @@ public sealed class LogChainValidatorTimestampTests
             });
 
         await act.Should().ThrowAsync<ArgumentException>()
-            .WithMessage("*ahead of the local clock*");
+            .WithMessage("*aggregate authoring wait*");
         clock.GetUtcNow().Should().Be(
             new DateTimeOffset(2026, 7, 10, 12, 0, 0, TimeSpan.Zero),
             "failing closed must not wait toward a far-future head");
@@ -265,7 +265,124 @@ public sealed class LogChainValidatorTimestampTests
         });
 
         await act.Should().ThrowAsync<ArgumentException>()
-            .WithMessage("*ahead of the local clock*");
+            .WithMessage("*aggregate authoring wait*");
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Issue127_FrozenUtcClock_EnforcesAggregateWaitBudget(bool deactivate)
+    {
+        var start = new DateTimeOffset(2026, 7, 10, 12, 0, 0, TimeSpan.Zero);
+        var clock = new FrozenUtcTimeProvider(start);
+        var (method, did, signer, currentLog) = await CreateGenesisAsync(clock);
+
+        Func<Task> act = deactivate
+            ? () => method.DeactivateAsync(did, new DidWebVhDeactivateOptions
+            {
+                CurrentLogContent = currentLog,
+                SigningKey = signer
+            })
+            : () => method.UpdateAsync(did, new DidWebVhUpdateOptions
+            {
+                CurrentLogContent = currentLog,
+                SigningKey = signer
+            });
+
+        await act.Should().ThrowAsync<ArgumentException>()
+            .WithMessage("*aggregate authoring wait*");
+        clock.GetUtcNow().Should().Be(start);
+        clock.GetElapsedTime(0).Should().Be(TimeSpan.FromSeconds(2),
+            "the aggregate monotonic budget must not restart after each timer fires");
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Issue127_BackwardUtcStep_EnforcesAggregateWaitBudget(bool deactivate)
+    {
+        var start = new DateTimeOffset(2026, 7, 10, 12, 0, 0, TimeSpan.Zero);
+        var clock = new BackwardStepTimeProvider(start);
+        var (method, did, signer, currentLog) = await CreateGenesisAsync(clock);
+
+        Func<Task> act = deactivate
+            ? () => method.DeactivateAsync(did, new DidWebVhDeactivateOptions
+            {
+                CurrentLogContent = currentLog,
+                SigningKey = signer
+            })
+            : () => method.UpdateAsync(did, new DidWebVhUpdateOptions
+            {
+                CurrentLogContent = currentLog,
+                SigningKey = signer
+            });
+
+        await act.Should().ThrowAsync<ArgumentException>()
+            .WithMessage("*aggregate authoring wait*");
+        clock.GetElapsedTime(0).Should().Be(TimeSpan.FromSeconds(1),
+            "after UTC moves backward the remaining monotonic budget is only one second");
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Issue127_OversleptTimer_EnforcesAggregateWaitBudget(bool deactivate)
+    {
+        var start = new DateTimeOffset(2026, 7, 10, 12, 0, 0, TimeSpan.Zero);
+        var clock = new OversleptTimerTimeProvider(start);
+        var (method, did, signer, currentLog) = await CreateGenesisAsync(clock);
+
+        Func<Task> act = deactivate
+            ? () => method.DeactivateAsync(did, new DidWebVhDeactivateOptions
+            {
+                CurrentLogContent = currentLog,
+                SigningKey = signer
+            })
+            : () => method.UpdateAsync(did, new DidWebVhUpdateOptions
+            {
+                CurrentLogContent = currentLog,
+                SigningKey = signer
+            });
+
+        await act.Should().ThrowAsync<ArgumentException>()
+            .WithMessage("*aggregate authoring wait*");
+        clock.GetElapsedTime(0).Should().Be(TimeSpan.FromSeconds(3),
+            "timer oversleep must count against the aggregate monotonic budget");
+    }
+
+    [Fact]
+    public async Task Issue127_Wait_PropagatesCallerCancellation()
+    {
+        var start = new DateTimeOffset(2026, 7, 10, 12, 0, 0, TimeSpan.Zero);
+        var clock = new NonFiringTimeProvider(start);
+        var (method, did, signer, currentLog) = await CreateGenesisAsync(clock);
+        using var cts = new CancellationTokenSource();
+
+        var operation = method.UpdateAsync(did, new DidWebVhUpdateOptions
+        {
+            CurrentLogContent = currentLog,
+            SigningKey = signer
+        }, cts.Token);
+        await clock.TimerCreated;
+        cts.Cancel();
+
+        var act = async () => await operation;
+        await act.Should().ThrowAsync<OperationCanceledException>();
+    }
+
+    private async Task<(DidWebVhMethod Method, string Did, ISigner Signer, byte[] CurrentLog)>
+        CreateGenesisAsync(TimeProvider clock)
+    {
+        var signer = CreateSigner();
+        var method = new DidWebVhMethod(new MockWebVhHttpClient()) { Clock = clock };
+        var created = await method.CreateAsync(new DidWebVhCreateOptions
+        {
+            Domain = "example.com",
+            UpdateKey = signer
+        });
+        var currentLog = Encoding.UTF8.GetBytes(
+            (string)created.Artifacts![DidWebVhArtifacts.DidJsonl]);
+        return (method, created.Did.Value, signer, currentLog);
     }
 
     private async Task<(string Did, ISigner Signer, IReadOnlyList<LogEntry> Entries)>

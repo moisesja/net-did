@@ -17,11 +17,16 @@ public class DidWebVhMethodTests
 {
     private readonly DefaultKeyGenerator _keyGen = new();
     private readonly DefaultCryptoProvider _crypto = new();
+    private readonly AutoAdvanceTimeProvider _clock = new(
+        WebVhTimestamp.TruncateToWholeSecond(DateTimeOffset.UtcNow));
 
     private (DidWebVhMethod Method, MockWebVhHttpClient HttpClient) CreateMethod()
     {
         var httpClient = new MockWebVhHttpClient();
-        var method = new DidWebVhMethod(httpClient);
+        var method = new DidWebVhMethod(httpClient)
+        {
+            Clock = _clock
+        };
         return (method, httpClient);
     }
 

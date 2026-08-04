@@ -536,3 +536,10 @@
   the read-side MUST, #131), so a spec-violating writer passed its own suite. The oracle
   for a writer-conformance property is the spec's writer rule, not the library's reader.
   (PR #132 round 1, finding 4.)
+- A per-delay timeout is not an aggregate deadline when UTC can stall or move backward: capture
+  one monotonic start timestamp and spend one remaining budget across every retry. After any
+  awaited timer, check monotonic elapsed BEFORE returning an otherwise eligible result — process
+  suspension or thread starvation can make UTC reach the target only after the deadline. Define
+  the boundary explicitly: eligible at exactly the limit may succeed; over-limit success and
+  non-eligible-at-limit both fail. Tests must separate UTC from monotonic time and pin frozen,
+  backward, cancellation, exact-boundary, and overslept-timer shapes. (PR #132 round 2.)

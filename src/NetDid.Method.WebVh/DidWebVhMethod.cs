@@ -736,10 +736,10 @@ public sealed class DidWebVhMethod : DidMethodBase
 
     // --- Private helpers ---
 
-    // Maximum time an Update/Deactivate call will block waiting for the wall clock to reach
-    // the next authorable whole second. Covers same-second writes (which need < 1 s) with
-    // scheduling margin; anything longer implies a log head ahead of the local clock, which
-    // NetDid refuses to author past (see GetNextVersionTimeAsync).
+    // Maximum aggregate monotonic time an Update/Deactivate call will spend waiting for the
+    // wall clock to reach the next authorable whole second. Covers same-second writes (which
+    // normally need < 1 s) with scheduling margin. One deadline spans every retry so a stalled
+    // or backward-moving UTC clock cannot restart the budget indefinitely.
     private static readonly TimeSpan MaxVersionTimeWait = TimeSpan.FromSeconds(2);
 
     // NetDid authors whole-second versionTimes so the DID Core §7.3 whole-second
@@ -748,9 +748,10 @@ public sealed class DidWebVhMethod : DidMethodBase
     // will be retrieved by a witness or resolver, or before" — resolver-side skew tolerance
     // is leniency for READING, not permission to WRITE future time — so a same-second write
     // WAITS for the next whole second to actually arrive rather than manufacturing it
-    // (sustained rate: ~1 write/second). When the supplied log's head is ahead of the local
-    // clock by more than the bounded wait (only producible by a non-NetDid author or severe
-    // clock skew), authoring fails closed with a retry-after-the-clock-catches-up contract.
+    // (sustained rate: ~1 write/second). When the next strictly increasing whole-second
+    // timestamp cannot be reached within the aggregate wait budget (because of a future-dated
+    // head, stalled/backward UTC clock, or severe clock skew), authoring fails closed with a
+    // retry-after-the-clock-advances contract.
     // That applies to Deactivate too: under strict monotonicity and no-future-authoring,
     // immediately revoking past an arbitrarily future head is impossible, and an honest
     // failure beats returning Success for an entry conforming resolvers reject (see #131
@@ -758,25 +759,34 @@ public sealed class DidWebVhMethod : DidMethodBase
     private async Task<DateTimeOffset> GetNextVersionTimeAsync(
         DateTimeOffset previous, CancellationToken ct)
     {
+        var previousSecond = WebVhTimestamp.TruncateToWholeSecond(previous);
+        if (DateTimeOffset.MaxValue - previousSecond < TimeSpan.FromSeconds(1))
+            throw new ArgumentException(
+                "The supplied DID log's latest versionTime cannot be advanced.");
+
+        var target = previousSecond.AddSeconds(1);
+        var waitStarted = Clock.GetTimestamp();
+
         while (true)
         {
+            ct.ThrowIfCancellationRequested();
+            var elapsed = Clock.GetElapsedTime(waitStarted);
+            var deadlineExceeded =
+                elapsed < TimeSpan.Zero || elapsed > MaxVersionTimeWait;
             var now = Clock.GetUtcNow();
             var nowSecond = WebVhTimestamp.TruncateToWholeSecond(now);
-            if (nowSecond > previous)
+            if (!deadlineExceeded && nowSecond > previous)
                 return nowSecond;
 
-            var previousSecond = WebVhTimestamp.TruncateToWholeSecond(previous);
-            if (DateTimeOffset.MaxValue - previousSecond < TimeSpan.FromSeconds(1))
+            var wait = target - now;
+            if (deadlineExceeded
+                || elapsed >= MaxVersionTimeWait
+                || wait > MaxVersionTimeWait - elapsed)
                 throw new ArgumentException(
-                    "The supplied DID log's latest versionTime cannot be advanced.");
-
-            var wait = previousSecond.AddSeconds(1) - now;
-            if (wait > MaxVersionTimeWait)
-                throw new ArgumentException(
-                    "The supplied DID log's latest versionTime is ahead of the local " +
-                    "clock. did:webvh forbids authoring an entry timestamp later than " +
-                    "the current time, so this entry cannot be appended yet; retry after " +
-                    "the local clock passes the log's latest versionTime.");
+                    "The next strictly increasing whole-second versionTime cannot be " +
+                    "reached within NetDid's aggregate authoring wait of 2 seconds. " +
+                    "The entry cannot be appended without using a future timestamp; " +
+                    "retry after the local clock advances.");
 
             await Task.Delay(wait, Clock, ct);
         }

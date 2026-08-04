@@ -121,7 +121,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   serialized `updated` fed back as `?versionTime=` mis-selected or returned `notFound`.
   Create now truncates the current UTC instant to a whole second. Update/Deactivate use the
   current whole second when it is strictly later than the supplied log's latest entry, and
-  otherwise *wait* (bounded at 2 seconds) for the next whole second to actually arrive
+  otherwise *wait* for the next whole second to actually arrive
   before stamping it — the did:webvh update rules require the entry timestamp to be the
   retrieval time or before, so the old one-tick advance (which manufactured future time) is
   gone and no authored `versionTime` is ever later than the authoring clock. For
@@ -130,10 +130,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   than-observation invariant on a deterministic injected clock). Behavior changes: authored
   `versionTime`s no longer carry fractional seconds (wire format unchanged — whole-second
   values always serialized without a fraction); a same-second burst throttles to ~1 write
-  per second (each write may block up to 2 s); and Update **and** Deactivate now throw
-  `ArgumentException` when the supplied log's latest `versionTime` is ahead of the local
-  clock by more than the bounded wait (previously such logs were appended to by stamping
-  future time) — retry once the clock passes the head; appending past a future-dated head
+  per second. One monotonic deadline bounds the aggregate authoring wait at 2 seconds across
+  every retry, including when UTC stalls or moves backward. Update **and** Deactivate now throw
+  `ArgumentException` when the next strictly increasing whole-second timestamp cannot be reached
+  within that aggregate budget (previously such logs were appended to by stamping future time) —
+  retry once the clock advances; appending past a future-dated head
   without authoring future time is impossible, so an honest failure replaces a false
   success (a log whose head is the maximum representable timestamp is permanently
   un-appendable). Read-side enforcement of the spec's future-skew rejection rule is tracked
