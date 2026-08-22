@@ -552,3 +552,6 @@ temp/
 .claude/settings.json
 
 .idea/
+
+# did:webvh compliance test suite — cloned on demand by tools/NetDid.Tools.WebVhVectors (issue #134), never vendored
+tools/NetDid.Tools.WebVhVectors/suite/
