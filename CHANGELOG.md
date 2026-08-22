@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **did:webvh compliance-vector harness and divergence report** (issue #134). New
+  `tools/NetDid.Tools.WebVhVectors` replays the DIF
+  [`didwebvh-test-suite`](https://github.com/decentralized-identity/didwebvh-test-suite)
+  committed vectors through `DidWebVhMethod` offline, via a file-backed `IWebVhHttpClient`,
+  and writes `tasks/webvh-vector-divergence.md`. The suite is cloned on demand rather than
+  vendored (`--suite <path>`, default `tools/NetDid.Tools.WebVhVectors/suite`, gitignored),
+  pinned in the report by commit so runs are reproducible; the report carries no generation
+  timestamp, so re-running yields a byte-identical file. Library behaviour is unchanged —
+  this adds tooling and documentation only, no `src/` changes and no new tests.
+
+  The run covers 88 happy-path replays (13 scenarios × 6 implementations, including
+  historical versions) and 21 negative vectors. Two results are worth calling out.
+  **Positive:** 63 foreign logs authored by `ts`, `rust`, `java`, `java-eecc` and `dart` were
+  accepted with zero rejections attributable to a hash or signature mismatch. Because
+  resolution recomputes the SCID and every entry hash (`LogChainValidator.cs:136-145`, `:194`)
+  and verifies `eddsa-jcs-2022` proofs, this is the first independent confirmation that our
+  wire format interoperates — evidence the existing self-generated tests structurally cannot
+  produce (see issue #35). **Security:** all 21 negative vectors were rejected, including
+  path traversal, percent-encoded traversal, and percent-encoded IP-literal SSRF probes
+  against `127.0.0.1` and the `169.254.169.254` cloud metadata endpoint.
+
+  Divergences found and filed: #135 (`did-witness.json` read/written with `proofs` where the
+  spec and all six implementations use `proof` — no witnessed DID interoperates in either
+  direction), #136 (implicit `#files`/`#whois` services neither materialized nor resolvable),
+  #137 (`didDocumentMetadata` omits `scid`/`versionNumber`), #138 (`updated` omitted at
+  version 1), #139 (malformed identifiers reported as `notFound` rather than `invalidDid`).
+
 ## [3.1.0] - 2026-08-03
 
 ### Added

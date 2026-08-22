@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <!-- publish.yml runs `dotnet pack` over the whole solution and pushes ./nupkgs/*.nupkg.
+         This tool must never reach nuget.org. -->
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="../../src/NetDid.Core/NetDid.Core.csproj" />
+    <ProjectReference Include="../../src/NetDid.Method.WebVh/NetDid.Method.WebVh.csproj" />
+  </ItemGroup>
+
+</Project>
