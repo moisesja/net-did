@@ -319,9 +319,12 @@ public sealed class DidWebVhMethod : DidMethodBase
                     };
                 }
 
-                witnessFile = WitnessValidator.ParseWitnessFile(witnessContent);
+                witnessFile = WitnessValidator.ParseWitnessFile(witnessContent, out var witnessParseError);
                 if (witnessFile is null)
                 {
+                    _logger.LogWarning(
+                        "did-witness.json for {Did} could not be parsed: {Reason}",
+                        did, witnessParseError);
                     return new DidResolutionResult
                     {
                         DidDocument = null,
@@ -369,9 +372,17 @@ public sealed class DidWebVhMethod : DidMethodBase
                             {
                                 var witnessUrl = DidUrlMapper.MapToWitnessUrl(did);
                                 var witnessContent = await _httpClient.FetchWitnessFileAsync(witnessUrl, ct);
-                                witnessFile = witnessContent is null
-                                    ? null
-                                    : WitnessValidator.ParseWitnessFile(witnessContent);
+                                if (witnessContent is not null)
+                                {
+                                    witnessFile = WitnessValidator.ParseWitnessFile(
+                                        witnessContent, out var tailParseError);
+                                    if (witnessFile is null)
+                                    {
+                                        _logger.LogWarning(
+                                            "did-witness.json for {Did} could not be parsed: {Reason}",
+                                            did, tailParseError);
+                                    }
+                                }
                             }
 
                             fullChainWitnessesValid = witnessFile is not null &&
@@ -623,7 +634,16 @@ public sealed class DidWebVhMethod : DidMethodBase
         {
             WitnessFile? existing = null;
             if (updateOptions.CurrentWitnessContent is not null)
-                existing = WitnessValidator.ParseWitnessFile(updateOptions.CurrentWitnessContent);
+            {
+                existing = WitnessValidator.ParseWitnessFile(
+                    updateOptions.CurrentWitnessContent, out var witnessParseError);
+                if (existing is null)
+                {
+                    _logger.LogWarning(
+                        "CurrentWitnessContent for {Did} could not be parsed and is not merged: {Reason}",
+                        did, witnessParseError);
+                }
+            }
             var merged = WitnessValidator.MergeWitnessProofs(existing, updateOptions.WitnessProofs);
             updateArtifacts[DidWebVhArtifacts.DidWitnessJson] = Encoding.UTF8.GetString(WitnessValidator.SerializeWitnessFile(merged));
         }
@@ -726,7 +746,16 @@ public sealed class DidWebVhMethod : DidMethodBase
         {
             WitnessFile? existing = null;
             if (deactivateOptions.CurrentWitnessContent is not null)
-                existing = WitnessValidator.ParseWitnessFile(deactivateOptions.CurrentWitnessContent);
+            {
+                existing = WitnessValidator.ParseWitnessFile(
+                    deactivateOptions.CurrentWitnessContent, out var witnessParseError);
+                if (existing is null)
+                {
+                    _logger.LogWarning(
+                        "CurrentWitnessContent for {Did} could not be parsed and is not merged: {Reason}",
+                        did, witnessParseError);
+                }
+            }
             var merged = WitnessValidator.MergeWitnessProofs(existing, deactivateOptions.WitnessProofs);
             deactivateArtifacts[DidWebVhArtifacts.DidWitnessJson] = Encoding.UTF8.GetString(WitnessValidator.SerializeWitnessFile(merged));
         }

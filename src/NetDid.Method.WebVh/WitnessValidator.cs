@@ -1,3 +1,4 @@
+using System.Text;
 using System.Text.Json;
 using DataProofsDotnet.DataIntegrity;
 using NetDid.Method.WebVh.Model;
@@ -38,8 +39,8 @@ internal sealed class WitnessValidator
         if (proofEntry is null)
             return false; // No witness proofs for this version
 
-        // The data that witnesses signed is the log entry without proof
-        var entryJsonWithoutProof = LogEntrySerializer.SerializeWithoutProof(entry);
+        // The data that witnesses signed is the {"versionId": ...} document (issue #135)
+        var signedDocumentJson = SerializeWitnessSignedDocument(entry.VersionId);
 
         var approvalCount = 0;
         var countedSignerKeys = new HashSet<string>(StringComparer.Ordinal);
@@ -47,7 +48,7 @@ internal sealed class WitnessValidator
         foreach (var witnessProof in proofEntry.Proofs)
         {
             var signerKey = WebVhProofVerifier.VerifyAndExtractSigner(
-                _suite, entryJsonWithoutProof, witnessProof);
+                _suite, signedDocumentJson, witnessProof);
             if (signerKey is null)
                 continue;
 
@@ -131,15 +132,17 @@ internal sealed class WitnessValidator
             if (proofEntry is null)
                 continue;
 
-            // Verify proofs against the entry data they actually signed
-            var entryJson = LogEntrySerializer.SerializeWithoutProof(entries[j]);
+            // Verify proofs against the {"versionId": ...} document witnesses actually sign.
+            // The versionId is taken from the chain-validated entry, not the witness file's
+            // claimed key, so an approval only ever counts toward a version this log proves.
+            var signedDocumentJson = SerializeWitnessSignedDocument(entries[j].VersionId);
 
             foreach (var witnessProof in proofEntry.Proofs)
             {
                 // A malformed proof must not consume the witness's one counted vote. Derive the
                 // signer only from a successfully verified proof, then bind one approval to that
                 // exact configured did:key rather than to a verificationMethod string prefix.
-                var signerKey = WebVhProofVerifier.VerifyAndExtractSigner(_suite, entryJson, witnessProof);
+                var signerKey = WebVhProofVerifier.VerifyAndExtractSigner(_suite, signedDocumentJson, witnessProof);
                 if (signerKey is null)
                     continue;
 
@@ -171,6 +174,27 @@ internal sealed class WitnessValidator
             : perEntryParams[entryIndex].Witness;
     }
 
+    /// <summary>
+    /// The document a witness signs, per did:webvh v1.0 "DID Witnesses": a Data Integrity proof
+    /// that "use[s] the versionId as input data" — the JCS document <c>{"versionId": "..."}</c>.
+    /// The versionId embeds the entry hash that chain validation independently recomputes over
+    /// the full entry content before witness validation runs, so a witness approval transitively
+    /// binds the whole entry. (Issue #135: verifying against the entry serialized without proof
+    /// interoperated with no other implementation.)
+    /// </summary>
+    private static string SerializeWitnessSignedDocument(string versionId)
+    {
+        using var stream = new MemoryStream();
+        using (var writer = new Utf8JsonWriter(stream))
+        {
+            writer.WriteStartObject();
+            writer.WriteString("versionId", versionId);
+            writer.WriteEndObject();
+        }
+
+        return Encoding.UTF8.GetString(stream.ToArray());
+    }
+
     private static WitnessEntry? FindWitnessForSigner(WitnessConfig witnessConfig, string signerKey)
     {
         return witnessConfig.Witnesses?.FirstOrDefault(witness =>
@@ -193,7 +217,7 @@ internal sealed class WitnessValidator
         {
             writer.WriteStartObject();
             writer.WriteString("versionId", entry.VersionId);
-            writer.WritePropertyName("proofs");
+            writer.WritePropertyName("proof");
             writer.WriteStartArray();
             foreach (var proof in entry.Proofs)
             {
@@ -241,16 +265,34 @@ internal sealed class WitnessValidator
     /// The spec defines this as a JSON array of witness proof entries.
     /// </summary>
     public static WitnessFile? ParseWitnessFile(byte[] content)
+        => ParseWitnessFile(content, out _);
+
+    /// <summary>
+    /// Parse a did-witness.json file, reporting why parsing failed. A swallowed parse failure
+    /// surfaces to callers as a bare <c>witnessValidationFailed</c> with no diagnostic at all —
+    /// exactly how the #135 wire-format divergence went unnoticed — so the failure reason must
+    /// reach a log. <paramref name="parseError"/> carries only exception-type and library-owned
+    /// message text, never raw witness-file content.
+    /// </summary>
+    public static WitnessFile? ParseWitnessFile(byte[] content, out string? parseError)
     {
         try
         {
             var json = LogEntrySerializer.DecodeUtf8(content);
-            using var doc = JsonDocument.Parse(json);
+
+            // Untrusted remote JSON: reject duplicate members outright (recursive) — with
+            // last-one-wins parsing a decoy duplicate could smuggle an unvalidated member
+            // past validation (same trust-boundary rule as the log-entry parser, issue #101).
+            using var doc = JsonDocument.Parse(
+                json, new JsonDocumentOptions { AllowDuplicateProperties = false });
             var root = doc.RootElement;
 
             // Spec requires array format
             if (root.ValueKind != JsonValueKind.Array)
+            {
+                parseError = "did-witness.json root must be a JSON array.";
                 return null;
+            }
 
             var entries = new List<WitnessProofEntry>();
             foreach (var element in root.EnumerateArray())
@@ -258,10 +300,20 @@ internal sealed class WitnessValidator
                 entries.Add(ParseProofEntry(element));
             }
 
+            parseError = null;
             return new WitnessFile { Entries = entries };
         }
-        catch
+        catch (Exception ex) when (ex is JsonException
+            or FormatException
+            or InvalidOperationException
+            or KeyNotFoundException
+            or ArgumentException
+            or OverflowException)
         {
+            // The JSON-access set: Parse raises JsonException, DecodeUtf8 wraps invalid UTF-8
+            // in FormatException, and element accessors raise the remainder (e.g. GetString on
+            // a non-string, GetProperty on a missing member, unpaired-surrogate decode).
+            parseError = $"{ex.GetType().Name}: {ex.Message}";
             return null;
         }
     }
@@ -269,7 +321,7 @@ internal sealed class WitnessValidator
     private static WitnessProofEntry ParseProofEntry(JsonElement element)
     {
         var versionId = element.GetProperty("versionId").GetString()!;
-        var proofs = element.GetProperty("proofs").EnumerateArray().Select(e => new DataIntegrityProofValue
+        var proofs = element.GetProperty("proof").EnumerateArray().Select(e => new DataIntegrityProofValue
         {
             Type = e.GetProperty("type").GetString()!,
             Cryptosuite = e.GetProperty("cryptosuite").GetString()!,

@@ -289,7 +289,9 @@ public class WitnessValidatorSecurityTests
             Created = entry.VersionTime.ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ"),
             ProofPurpose = "assertionMethod"
         };
-        using var document = JsonDocument.Parse(LogEntrySerializer.SerializeWithoutProof(entry));
+        // Witnesses sign the {"versionId": ...} input document, not the entry (issue #135).
+        var signedDocumentJson = $$"""{"versionId":{{JsonSerializer.Serialize(entry.VersionId)}}}""";
+        using var document = JsonDocument.Parse(signedDocumentJson);
         var proof = await _suite.CreateProofAsync(document.RootElement, proofOptions, signer);
 
         return new DataIntegrityProofValue

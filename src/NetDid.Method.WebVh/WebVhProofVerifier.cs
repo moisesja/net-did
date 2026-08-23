@@ -18,14 +18,14 @@ namespace NetDid.Method.WebVh;
 internal static class WebVhProofVerifier
 {
     /// <summary>
-    /// Verifies a single witness proof's signature over the entry JSON (with the <c>proof</c>
-    /// removed). Returns the signer's multibase key when the signature is valid AND the
-    /// verificationMethod is a well-formed <c>did:key</c> (anti-spoof enforced); otherwise
-    /// <c>null</c>.
+    /// Verifies a single witness proof's signature over the signed document JSON — for did:webvh
+    /// v1.0 witness proofs, the <c>{"versionId": "..."}</c> document. Returns the signer's
+    /// multibase key when the signature is valid AND the verificationMethod is a well-formed
+    /// <c>did:key</c> (anti-spoof enforced); otherwise <c>null</c>.
     /// </summary>
     public static string? VerifyAndExtractSigner(
         EddsaJcs2022Cryptosuite suite,
-        string entryJsonWithoutProof,
+        string signedDocumentJson,
         DataIntegrityProofValue proofValue)
     {
         var multibaseKey = ExtractDidKeyMultibase(proofValue.VerificationMethod);
@@ -62,7 +62,7 @@ internal static class WebVhProofVerifier
         // cryptosuite might surface) — a verification path must never throw for hostile input.
         try
         {
-            using var document = JsonDocument.Parse(entryJsonWithoutProof);
+            using var document = JsonDocument.Parse(signedDocumentJson);
             var result = suite.VerifyProof(document.RootElement, proof, publicKey);
             return result.Verified ? multibaseKey : null;
         }

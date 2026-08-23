@@ -1009,7 +1009,7 @@ public class DidWebVhMethodTests
         [
             {
                 "versionId": "1-zTestScid",
-                "proofs": [
+                "proof": [
                     {
                         "type": "DataIntegrityProof",
                         "cryptosuite": "eddsa-jcs-2022",
@@ -1022,7 +1022,7 @@ public class DidWebVhMethodTests
             },
             {
                 "versionId": "2-zTestHash",
-                "proofs": []
+                "proof": []
             }
         ]
         """;
@@ -1045,7 +1045,7 @@ public class DidWebVhMethodTests
         var json = """
         {
             "versionId": "1-zTestScid",
-            "proofs": [
+            "proof": [
                 {
                     "type": "DataIntegrityProof",
                     "cryptosuite": "eddsa-jcs-2022",
@@ -1103,10 +1103,11 @@ public class DidWebVhMethodTests
             perEntryParams.Add(new LogEntryParameters { Witness = witnessConfig });
         }
 
-        // Create witness proofs ONLY for version 3
-        var entry3Json = LogEntrySerializer.SerializeWithoutProof(entries[2]);
+        // Create witness proofs ONLY for version 3, over the spec's {"versionId": ...}
+        // witness input document (issue #135)
+        var version3Json = $$"""{"versionId":{{JsonSerializer.Serialize(entries[2].VersionId)}}}""";
         var proof3Created = entries[2].VersionTime.ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ");
-        using var entry3Doc = JsonDocument.Parse(entry3Json);
+        using var entry3Doc = JsonDocument.Parse(version3Json);
         var proof3 = await suite.CreateProofAsync(
             entry3Doc.RootElement,
             new DataIntegrityProof
