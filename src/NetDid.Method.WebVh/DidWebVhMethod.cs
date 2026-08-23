@@ -411,9 +411,13 @@ public sealed class DidWebVhMethod : DidMethodBase
                     });
             }
 
+            var resolvedDocument = isDeactivated
+                ? null
+                : ImplicitWebVhServices.Materialize(did, targetEntry.State);
+
             return new DidResolutionResult
             {
-                DidDocument = isDeactivated ? null : targetEntry.State,
+                DidDocument = resolvedDocument,
                 ResolutionMetadata = new DidResolutionMetadata
                 {
                     ContentType = DidContentTypes.JsonLd

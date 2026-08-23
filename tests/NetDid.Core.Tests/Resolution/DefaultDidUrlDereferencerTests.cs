@@ -802,4 +802,281 @@ public class DefaultDidUrlDereferencerTests
         result.DereferencingMetadata.Error.Should().BeNull();
         result.ContentStream.Should().BeOfType<VerificationMethod>();
     }
+
+    // --- Issue #136: conventional path and whois service dispatch ---
+
+    private const string Issue136Did = "did:webvh:QmTest:example.com";
+
+    [Fact]
+    public async Task Issue136_DereferenceAsync_Path_UsesFilesServiceAndAppendsToDeploymentBase()
+    {
+        var doc = new DidDocument
+        {
+            Id = new Did(Issue136Did),
+            Service =
+            [
+                new Service
+                {
+                    Id = "#files",
+                    Type = "relativeRef",
+                    ServiceEndpoint = ServiceEndpointValue.FromUri("https://example.com/deployment/")
+                }
+            ]
+        };
+        SetupResolverSuccess(doc);
+
+        var result = await _dereferencer.DereferenceAsync(
+            $"{Issue136Did}/assets/logo.svg");
+
+        result.DereferencingMetadata.ContentType.Should().Be("text/uri-list");
+        result.ContentStream.Should().Be("https://example.com/deployment/assets/logo.svg");
+    }
+
+    [Fact]
+    public async Task Issue136_DereferenceAsync_Whois_UsesWhoisEndpointWithoutAppendingPath()
+    {
+        var doc = new DidDocument
+        {
+            Id = new Did(Issue136Did),
+            Service =
+            [
+                new Service
+                {
+                    Id = "#files",
+                    Type = "relativeRef",
+                    ServiceEndpoint = ServiceEndpointValue.FromUri("https://example.com/files/")
+                },
+                new Service
+                {
+                    Id = $"{Issue136Did}#whois",
+                    Type = "LinkedVerifiablePresentation",
+                    ServiceEndpoint = ServiceEndpointValue.FromUri("https://trust.example/profile.vp")
+                }
+            ]
+        };
+        SetupResolverSuccess(doc);
+
+        var result = await _dereferencer.DereferenceAsync($"{Issue136Did}/whois#credential");
+
+        result.DereferencingMetadata.ContentType.Should().Be("text/uri-list");
+        result.ContentStream.Should().Be("https://trust.example/profile.vp#credential");
+    }
+
+    [Fact]
+    public async Task Issue136_DereferenceAsync_Path_WithUnsupportedServiceScheme_ReturnsInvalidDid()
+    {
+        var doc = new DidDocument
+        {
+            Id = new Did(Issue136Did),
+            Service =
+            [
+                new Service
+                {
+                    Id = "#files",
+                    Type = "relativeRef",
+                    ServiceEndpoint = ServiceEndpointValue.FromUri("ftp://example.com/files/")
+                }
+            ]
+        };
+        SetupResolverSuccess(doc);
+
+        var result = await _dereferencer.DereferenceAsync($"{Issue136Did}/archive.zip");
+
+        result.DereferencingMetadata.Error.Should().Be("invalidDid");
+        result.ContentStream.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task Issue136_DereferenceAsync_NonWebVhFilesService_DoesNotGainPathSemantics()
+    {
+        var doc = new DidDocument
+        {
+            Id = new Did("did:example:123"),
+            Service =
+            [
+                new Service
+                {
+                    Id = "#files",
+                    Type = "relativeRef",
+                    ServiceEndpoint = ServiceEndpointValue.FromUri("https://example.com/files/")
+                }
+            ]
+        };
+        SetupResolverSuccess(doc);
+
+        var result = await _dereferencer.DereferenceAsync("did:example:123/archive.zip");
+
+        result.DereferencingMetadata.Error.Should().Be("notFound");
+        result.ContentStream.Should().BeNull();
+    }
+
+    [Theory]
+    [InlineData("did:webvh:QmTest:example.com/assets/logo.svg?relativeRef=%2F%2F169.254.169.254/latest",
+        "https://example.com/deployment/assets/logo.svg")]
+    [InlineData("did:webvh:QmTest:example.com/whois?relativeRef=%2F%2F169.254.169.254/latest",
+        "https://example.com/profile.vp")]
+    public async Task Issue136_DereferenceAsync_ConventionalPath_IgnoresRelativeRefQuery(
+        string didUrl, string expected)
+    {
+        var doc = new DidDocument
+        {
+            Id = new Did(Issue136Did),
+            Service =
+            [
+                new Service
+                {
+                    Id = "#files",
+                    Type = "relativeRef",
+                    ServiceEndpoint = ServiceEndpointValue.FromUri("https://example.com/deployment/")
+                },
+                new Service
+                {
+                    Id = "#whois",
+                    Type = "LinkedVerifiablePresentation",
+                    ServiceEndpoint = ServiceEndpointValue.FromUri("https://example.com/profile.vp")
+                }
+            ]
+        };
+        SetupResolverSuccess(doc);
+
+        var result = await _dereferencer.DereferenceAsync(didUrl);
+
+        result.DereferencingMetadata.Error.Should().BeNull();
+        result.ContentStream.Should().Be(expected);
+    }
+
+    [Theory]
+    [InlineData("did:webvh:QmTest:example.com///169.254.169.254/latest")]
+    [InlineData("did:webvh:QmTest:example.com/https://169.254.169.254/latest")]
+    [InlineData("did:webvh:QmTest:example.com/https://example.com/admin")]
+    public async Task Issue136_DereferenceAsync_SchemeLookingPathRemainsAtFilesServiceAuthority(
+        string didUrl)
+    {
+        var doc = new DidDocument
+        {
+            Id = new Did(Issue136Did),
+            Service =
+            [
+                new Service
+                {
+                    Id = "#files",
+                    Type = "relativeRef",
+                    ServiceEndpoint = ServiceEndpointValue.FromUri("https://example.com/deployment/")
+                }
+            ]
+        };
+        SetupResolverSuccess(doc);
+
+        var result = await _dereferencer.DereferenceAsync(didUrl);
+
+        result.DereferencingMetadata.Error.Should().BeNull();
+        var redirect = new Uri((string)result.ContentStream!);
+        redirect.Host.Should().Be("example.com");
+        redirect.AbsolutePath.Should().StartWith("/deployment/");
+    }
+
+    [Theory]
+    [InlineData("did:webvh:QmTest:example.com/docs/a%2Fb", "https://example.com/deployment/docs/a%2Fb")]
+    public async Task Issue136_DereferenceAsync_PathRetainsRfc3986ReferenceSemantics(
+        string didUrl, string expected)
+    {
+        var doc = new DidDocument
+        {
+            Id = new Did(Issue136Did),
+            Service =
+            [
+                new Service
+                {
+                    Id = "#files",
+                    Type = "relativeRef",
+                    ServiceEndpoint = ServiceEndpointValue.FromUri("https://example.com/deployment/")
+                }
+            ]
+        };
+        SetupResolverSuccess(doc);
+
+        var result = await _dereferencer.DereferenceAsync(didUrl);
+
+        result.DereferencingMetadata.Error.Should().BeNull();
+        result.ContentStream.Should().Be(expected);
+    }
+
+    [Theory]
+    [InlineData("did:webvh:QmTest:example.com/../admin")]
+    [InlineData("did:webvh:QmTest:example.com/%2e%2e/admin")]
+    public async Task Issue136_DereferenceAsync_PathCannotEscapeFilesServiceBase(string didUrl)
+    {
+        var doc = new DidDocument
+        {
+            Id = new Did(Issue136Did),
+            Service =
+            [
+                new Service
+                {
+                    Id = "#files",
+                    Type = "relativeRef",
+                    ServiceEndpoint = ServiceEndpointValue.FromUri("https://example.com/deployment/")
+                }
+            ]
+        };
+        SetupResolverSuccess(doc);
+
+        var result = await _dereferencer.DereferenceAsync(didUrl);
+
+        result.DereferencingMetadata.Error.Should().Be("invalidDidUrl");
+        result.ContentStream.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task Issue136_DereferenceAsync_Path_PreservesEndpointFragmentPrecedence()
+    {
+        var doc = new DidDocument
+        {
+            Id = new Did(Issue136Did),
+            Service =
+            [
+                new Service
+                {
+                    Id = "#files",
+                    Type = "relativeRef",
+                    ServiceEndpoint = ServiceEndpointValue.FromUri(
+                        "https://example.com/deployment/#endpoint-section")
+                }
+            ]
+        };
+        SetupResolverSuccess(doc);
+
+        var result = await _dereferencer.DereferenceAsync($"{Issue136Did}/asset#did-section");
+
+        result.DereferencingMetadata.Error.Should().BeNull();
+        result.ContentStream.Should().Be(
+            "https://example.com/deployment/asset#endpoint-section");
+    }
+
+    [Theory]
+    [InlineData("did:webvh:QmTest:example.com/file\r\nhttps://evil.example/second")]
+    [InlineData("did:webvh:QmTest:example.com/file%0d%0ahttps://evil.example/second")]
+    public async Task Issue136_DereferenceAsync_PathRejectsUriListControlCharacterInjection(
+        string didUrl)
+    {
+        var doc = new DidDocument
+        {
+            Id = new Did(Issue136Did),
+            Service =
+            [
+                new Service
+                {
+                    Id = "#files",
+                    Type = "relativeRef",
+                    ServiceEndpoint = ServiceEndpointValue.FromUri("https://example.com/deployment/")
+                }
+            ]
+        };
+        SetupResolverSuccess(doc);
+
+        var result = await _dereferencer.DereferenceAsync(didUrl);
+
+        result.DereferencingMetadata.Error.Should().Be("invalidDidUrl");
+        result.ContentStream.Should().BeNull();
+    }
 }
