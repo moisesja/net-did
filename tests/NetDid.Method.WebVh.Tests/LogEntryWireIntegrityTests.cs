@@ -176,7 +176,7 @@ public sealed class LogEntryWireIntegrityTests
     public void Issue101_WitnessFileWithInvalidUtf8_IsRejected()
     {
         var validJson = """
-            [{"versionId":"1-test","proofs":[{"type":"DataIntegrityProof","cryptosuite":"eddsa-jcs-2022","verificationMethod":"did:key:zTest#zTest","created":"2026-07-13T12:00:00Z","proofPurpose":"assertionMethod","proofValue":"\uFFFD"}]}]
+            [{"versionId":"1-test","proof":[{"type":"DataIntegrityProof","cryptosuite":"eddsa-jcs-2022","verificationMethod":"did:key:zTest#zTest","created":"2026-07-13T12:00:00Z","proofPurpose":"assertionMethod","proofValue":"\uFFFD"}]}]
             """;
         var invalidUtf8 = ReplaceOnce(
             Encoding.UTF8.GetBytes(validJson),

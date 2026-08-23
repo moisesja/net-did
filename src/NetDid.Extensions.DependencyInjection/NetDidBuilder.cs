@@ -48,13 +48,14 @@ public sealed class NetDidBuilder
     }
 
     /// <summary>
-    /// Register the did:webvh method with the default controller-proof verification budget.
-    /// Uses IHttpClientFactory for HTTP requests.
+    /// Register the did:webvh method with the default controller-proof and witness-proof
+    /// verification budgets. Uses IHttpClientFactory for HTTP requests.
     /// </summary>
     public NetDidBuilder AddDidWebVh(WebVhHttpClientOptions? httpClientOptions = null)
         => AddDidWebVh(
             httpClientOptions,
-            DidWebVhMethod.DefaultMaxControllerProofsPerEntry);
+            DidWebVhMethod.DefaultMaxControllerProofsPerEntry,
+            DidWebVhMethod.DefaultMaxWitnessProofVerifications);
 
     /// <summary>
     /// Register the did:webvh method with a caller-specified upper bound on controller proofs
@@ -68,8 +69,33 @@ public sealed class NetDidBuilder
     public NetDidBuilder AddDidWebVh(
         WebVhHttpClientOptions? httpClientOptions,
         int maxControllerProofsPerEntry)
+        => AddDidWebVh(
+            httpClientOptions,
+            maxControllerProofsPerEntry,
+            DidWebVhMethod.DefaultMaxWitnessProofVerifications);
+
+    /// <summary>
+    /// Register the did:webvh method with caller-specified upper bounds on controller proofs
+    /// verified per log entry and witness proofs verified per resolution. Uses IHttpClientFactory
+    /// for HTTP requests.
+    /// </summary>
+    /// <param name="httpClientOptions">Resource limits for fetching did:webvh artifacts.</param>
+    /// <param name="maxControllerProofsPerEntry">
+    /// Maximum controller proofs verified per entry. Must be at least one. Raising this limit
+    /// increases the canonicalization and signature-verification work an untrusted log can cause.
+    /// </param>
+    /// <param name="maxWitnessProofVerifications">
+    /// Maximum witness-proof signature verifications per resolution. Must be at least one.
+    /// Raising this limit increases the signature-verification work an untrusted witness file
+    /// can cause.
+    /// </param>
+    public NetDidBuilder AddDidWebVh(
+        WebVhHttpClientOptions? httpClientOptions,
+        int maxControllerProofsPerEntry,
+        int maxWitnessProofVerifications)
     {
         ArgumentOutOfRangeException.ThrowIfLessThan(maxControllerProofsPerEntry, 1);
+        ArgumentOutOfRangeException.ThrowIfLessThan(maxWitnessProofVerifications, 1);
 
         Services.AddSingleton(httpClientOptions ?? new WebVhHttpClientOptions());
         // WebVhHttpClientOptions.Timeout is the sole time authority for this
@@ -85,7 +111,8 @@ public sealed class NetDidBuilder
             new DidWebVhMethod(
                 sp.GetRequiredService<IWebVhHttpClient>(),
                 logger: null,
-                maxControllerProofsPerEntry: maxControllerProofsPerEntry));
+                maxControllerProofsPerEntry: maxControllerProofsPerEntry,
+                maxWitnessProofVerifications: maxWitnessProofVerifications));
         return this;
     }
 

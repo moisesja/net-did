@@ -10,8 +10,8 @@ Resolution recomputes the SCID and every entry hash (`LogChainValidator.cs:136-1
 
 | Check | Cases | Result |
 |---|---:|---|
-| Happy-path logs accepted | 88 | 63 accepted, 25 rejected |
-| Happy-path exact match | 63 | 0 match, 63 diverge |
+| Happy-path logs accepted | 88 | 73 accepted, 15 rejected |
+| Happy-path exact match | 73 | 0 match, 73 diverge |
 | Negative vectors rejected | 21 | 21 rejected, 0 **accepted** |
 | Negative error code matches | 21 | 1 match, 20 differ |
 
@@ -21,12 +21,12 @@ Whether our recomputation of each foreign log's SCID and entry-hash chain agrees
 
 | Implementation | Logs replayed | Accepted | Rejected |
 |---|---:|---:|---:|
-| `ts` | 15 | 13 | 2 |
+| `ts` | 15 | 15 | 0 |
 | `python` | 15 | 0 | 15 |
-| `rust` | 15 | 13 | 2 |
-| `java` | 14 | 12 | 2 |
-| `java-eecc` | 15 | 13 | 2 |
-| `dart` | 14 | 12 | 2 |
+| `rust` | 15 | 15 | 0 |
+| `java` | 14 | 14 | 0 |
+| `java-eecc` | 15 | 15 | 0 |
+| `dart` | 14 | 14 | 0 |
 
 Rejected logs:
 
@@ -45,18 +45,8 @@ Rejected logs:
 | `pre-rotation` | `python` | `invalidDidLog` | `DID log contains invalid did:webvh data for did:webvh:QmcKnGa3dur9W5JbQ3CC7D95Aqy5g4tbp81U3QG8DG1wtv:example.com :: FormatException: did:webvh log entry contains malformed content. :: JsonException: Verification method '…` |
 | `pre-rotation-consume` | `python` | `invalidDidLog` | `DID log contains invalid did:webvh data for did:webvh:QmcKnGa3dur9W5JbQ3CC7D95Aqy5g4tbp81U3QG8DG1wtv:example.com :: FormatException: did:webvh log entry contains malformed content. :: JsonException: Verification method '…` |
 | `services` | `python` | `invalidDidLog` | `DID log contains invalid did:webvh data for did:webvh:QmZMMkNS4sL91SHsuCfDi2imHr1tfDtDN8j4xBncmjjNjC:example.com :: FormatException: did:webvh log entry contains malformed content. :: JsonException: Verification method '…` |
-| `witness-threshold` | `ts` | `witnessValidationFailed` | `Resolving did:webvh:QmZTne7vT227kcwn27tt1rSPvPKy1iQs6SgJA8dhwJBnbS:example.com from https://example.com/.well-known/did.jsonl` |
 | `witness-threshold` | `python` | `invalidDidLog` | `DID log contains invalid did:webvh data for did:webvh:QmQvFgRe9yNYAT253FoGixHgRsZDCxeWQoU12varD5CDdJ:example.com :: FormatException: did:webvh log entry contains malformed content. :: JsonException: Verification method '…` |
-| `witness-threshold` | `rust` | `witnessValidationFailed` | `Resolving did:webvh:QmXxi5SJLod9kfjyLztg632vmSYK6Wi951PWQRCe7k32Fo:example.com from https://example.com/.well-known/did.jsonl` |
-| `witness-threshold` | `java` | `witnessValidationFailed` | `Resolving did:webvh:QmXrxMyJbSmkGuHcTdfUUJUSDSW93c1g9HadmQyx3VNWH5:example.com from https://example.com/.well-known/did.jsonl` |
-| `witness-threshold` | `java-eecc` | `witnessValidationFailed` | `Resolving did:webvh:QmciLJfxdzmUehrm7DBHLNzSELvV1PjFzXezXkpck4b7ga:example.com from https://example.com/.well-known/did.jsonl` |
-| `witness-threshold` | `dart` | `witnessValidationFailed` | `Resolving did:webvh:QmT9krez7SCJTdX97p9HtwXfRxSk2tkSppQzEmPwSJutF8:example.com from https://example.com/.well-known/did.jsonl` |
-| `witness-update` | `ts` | `witnessValidationFailed` | `Resolving did:webvh:QmR72NXg5DyrNL1PXwk4kiZEJxS1RJxvFEtSu9wPSZkp1u:example.com from https://example.com/.well-known/did.jsonl` |
 | `witness-update` | `python` | `invalidDidLog` | `DID log contains invalid did:webvh data for did:webvh:QmVPXTZAumzuRFXb7Squ63ah8h7Tdi9SuP58wQ65Y5Baje:example.com :: FormatException: did:webvh log entry contains malformed content. :: JsonException: Verification method '…` |
-| `witness-update` | `rust` | `witnessValidationFailed` | `Resolving did:webvh:QmUeSU5Vni9YSjxtVzpstHSjxJCXjMoNo7hJUAujG3Vksc:example.com from https://example.com/.well-known/did.jsonl` |
-| `witness-update` | `java` | `witnessValidationFailed` | `Resolving did:webvh:QmZLKHFFem2gfFYtHHCz7BXZAh4KDUK8Ahe1PyzfdEtU1y:example.com from https://example.com/.well-known/did.jsonl` |
-| `witness-update` | `java-eecc` | `witnessValidationFailed` | `Resolving did:webvh:QmTXP5wKkhBwHbibdNWGskwpeTk2CmvGVBXQRC4V4dvMeT:example.com from https://example.com/.well-known/did.jsonl` |
-| `witness-update` | `dart` | `witnessValidationFailed` | `Resolving did:webvh:QmQz6pkKgZoghy1yworakwYck2h9931jE4MYy61fMDj22q:example.com from https://example.com/.well-known/did.jsonl` |
 
 ## B. Resolution divergences, grouped by root cause
 
@@ -64,27 +54,28 @@ Each row is one root cause. `Cases` counts the (scenario × implementation) repl
 
 | Path | Kind | Cases | Ours | Reference implementations |
 |---|---|---:|---|---|
-| `didDocument.service[].id` | impls disagree | 98 | `"#files"` | `"did:webvh:{SCID}:example.com#files"` — dart, java, python, rust, ts<br>`"#files"` — java-eecc |
-| `didDocumentMetadata.scid` | missing from ours | 63 | *(absent)* | `"{SCID}"` — dart, java, java-eecc, python, rust, ts |
-| `didDocumentMetadata.versionNumber` | impls disagree | 50 | *(absent)* | `1` — dart, java, java-eecc, python, rust<br>`(absent)` — ts |
-| `didDocumentMetadata.portable` | impls disagree | 32 | *(absent)* | `false` — java, python, rust, ts<br>`(absent)` — dart, java-eecc |
-| `didDocument.assertionMethod` | impls disagree | 28 | *(absent)* | `[]` — java-eecc, python, rust<br>`["did:webvh:{SCID}:example.com#z6MkjchhfUsD6mmvni8mCdXHw216X…` — dart, java<br>`(absent)` — ts |
-| `didDocument.@context` | impls disagree | 26 | `["https://w3id.org/security/multikey/v1","https://www.w3.org…` | `["https://w3id.org/security/multikey/v1","https://www.w3.org…` — java-eecc, python, rust, ts<br>`"https://www.w3.org/ns/did/v1"` — dart, java |
-| `didDocument.capabilityDelegation` | impls disagree | 26 | *(absent)* | `(absent)` — dart, java, ts<br>`[]` — java-eecc, python, rust |
-| `didDocument.capabilityInvocation` | impls disagree | 26 | *(absent)* | `(absent)` — dart, java, ts<br>`[]` — java-eecc, python, rust |
-| `didDocument.keyAgreement` | impls disagree | 26 | *(absent)* | `(absent)` — dart, java, ts<br>`[]` — java-eecc, python, rust |
-| `didDocumentMetadata.watchers` | impls disagree | 26 | *(absent)* | `(absent)` — dart, java, java-eecc<br>`[]` — python, ts<br>`null` — rust |
+| `didDocument.service[].id` | impls disagree | 114 | `"#files"` | `"did:webvh:{SCID}:example.com#files"` — dart, java, python, rust, ts<br>`"#files"` — java-eecc |
+| `didDocumentMetadata.scid` | missing from ours | 73 | *(absent)* | `"{SCID}"` — dart, java, java-eecc, python, rust, ts |
+| `didDocumentMetadata.versionNumber` | impls disagree | 58 | *(absent)* | `1` — dart, java, java-eecc, python, rust<br>`(absent)` — ts |
+| `didDocumentMetadata.portable` | impls disagree | 38 | *(absent)* | `false` — java, python, rust, ts<br>`(absent)` — dart, java-eecc |
+| `didDocument.assertionMethod` | impls disagree | 32 | *(absent)* | `[]` — java-eecc, python, rust<br>`["did:webvh:{SCID}:example.com#z6MkjchhfUsD6mmvni8mCdXHw216X…` — dart, java<br>`(absent)` — ts |
+| `didDocument.@context` | impls disagree | 30 | `["https://w3id.org/security/multikey/v1","https://www.w3.org…` | `["https://w3id.org/security/multikey/v1","https://www.w3.org…` — java-eecc, python, rust, ts<br>`"https://www.w3.org/ns/did/v1"` — dart, java |
+| `didDocument.capabilityDelegation` | impls disagree | 30 | *(absent)* | `(absent)` — dart, java, ts<br>`[]` — java-eecc, python, rust |
+| `didDocument.capabilityInvocation` | impls disagree | 30 | *(absent)* | `(absent)` — dart, java, ts<br>`[]` — java-eecc, python, rust |
+| `didDocument.keyAgreement` | impls disagree | 30 | *(absent)* | `(absent)` — dart, java, ts<br>`[]` — java-eecc, python, rust |
+| `didDocumentMetadata.watchers` | impls disagree | 30 | *(absent)* | `(absent)` — dart, java, java-eecc<br>`[]` — python, ts<br>`null` — rust |
+| `didDocumentMetadata.deactivated` | impls disagree | 28 | *(absent)* | `false` — python, rust, ts<br>`(absent)` — dart, java, java-eecc |
 | `didDocumentMetadata.witness` | impls disagree | 26 | *(absent)* | `(absent)` — dart, java, java-eecc<br>`{}` — python, ts<br>`null` — rust |
-| `didDocumentMetadata.deactivated` | impls disagree | 24 | *(absent)* | `false` — python, rust, ts<br>`(absent)` — dart, java, java-eecc |
-| `didDocumentMetadata.updated` | missing from ours | 20 | *(absent)* | `"2000-01-01T00:00:00Z"` — python, rust, ts<br>`"2026-07-29T18:17:37Z"` — java<br>`"2026-07-29T18:21:36Z"` — java-eecc |
-| `didDocument.service[].serviceEndpoint` | impls disagree | 18 | `"https://example.com/"` | `"https://example.com/"` — dart, java, java-eecc, python, ts<br>`"https://example.com"` — rust |
-| `didDocumentMetadata.nextKeyHashes` | impls disagree | 13 | *(absent)* | `(absent)` — dart, java, java-eecc, python, rust<br>`[]` — ts |
-| `didDocumentMetadata.prerotation` | impls disagree | 13 | *(absent)* | `(absent)` — dart, java, java-eecc, python, rust<br>`false` — ts |
-| `didDocumentMetadata.previousLogEntryHash` | impls disagree | 13 | *(absent)* | `(absent)` — dart, java, java-eecc, python, rust<br>`"{SCID}"` — ts |
-| `didDocumentMetadata.updateKeys` | impls disagree | 13 | *(absent)* | `(absent)` — dart, java, java-eecc, python, rust<br>`["z6MkjchhfUsD6mmvni8mCdXHw216Xrm9bQe2mBH1P5RDjVJG"]` — ts |
-| `didDocumentMetadata.versionTime` | impls disagree | 13 | `"2000-01-01T00:00:00Z"` | `"2000-01-01T00:00:00Z"` — python, rust<br>`(absent)` — ts<br>`"2026-07-29T18:17:37Z"` — java |
+| `didDocumentMetadata.updated` | missing from ours | 25 | *(absent)* | `"2000-01-01T00:00:00Z"` — python, rust, ts<br>`"2026-07-29T18:17:37Z"` — java<br>`"2026-07-29T18:21:36Z"` — java-eecc |
+| `didDocument.service[].serviceEndpoint` | impls disagree | 20 | `"https://example.com/"` | `"https://example.com/"` — dart, java, java-eecc, python, ts<br>`"https://example.com"` — rust |
+| `didDocumentMetadata.nextKeyHashes` | impls disagree | 15 | *(absent)* | `(absent)` — dart, java, java-eecc, python, rust<br>`[]` — ts |
+| `didDocumentMetadata.prerotation` | impls disagree | 15 | *(absent)* | `(absent)` — dart, java, java-eecc, python, rust<br>`false` — ts |
+| `didDocumentMetadata.previousLogEntryHash` | impls disagree | 15 | *(absent)* | `(absent)` — dart, java, java-eecc, python, rust<br>`"{SCID}"` — ts |
+| `didDocumentMetadata.updateKeys` | impls disagree | 15 | *(absent)* | `(absent)` — dart, java, java-eecc, python, rust<br>`["z6MkjchhfUsD6mmvni8mCdXHw216Xrm9bQe2mBH1P5RDjVJG"]` — ts |
+| `didDocumentMetadata.versionTime` | impls disagree | 15 | `"2000-01-01T00:00:00Z"` | `"2000-01-01T00:00:00Z"` — python, rust<br>`(absent)` — ts<br>`"2026-07-29T18:17:37Z"` — java |
 | `didDocumentMetadata.portable` | missing from ours | 10 | *(absent)* | `true` — dart, java, java-eecc, python, rust, ts |
 | `didDocument.service[].type` | impls disagree | 6 | *(absent)* | `"relativeRef"` — dart, java-eecc, python, rust<br>`(absent)` — java, ts |
+| `didDocumentMetadata.witness.witnesses[].id` | impls disagree | 5 | *(absent)* | `"did:key:z6Mkrv5Cm2XCLumMPTqooLTCw6YDf421d7VdTziwrZ8vNf4L"` — python, rust, ts<br>`(absent)` — dart, java, java-eecc |
 | `didDocument` | impls disagree | 4 | `null` | `(absent)` — dart, java, java-eecc, python, rust<br>`null` — ts |
 | `didDocument.authentication` | impls disagree | 4 | *(absent)* | `["did:webvh:{SCID}:example.com#P5RDjVJG"]` — java-eecc, python, rust<br>`["did:webvh:{SCID}:example.com#z6MkjchhfUsD6mmvni8mCdXHw216X…` — dart, java<br>`(absent)` — ts |
 | `didDocument.controller` | impls disagree | 4 | *(absent)* | `"did:webvh:{SCID}:example.com"` — dart, java, java-eecc, python, rust<br>`(absent)` — ts |
@@ -93,6 +84,7 @@ Each row is one root cause. `Cases` counts the (scenario × implementation) repl
 | `didDocument.verificationMethod[].id` | impls disagree | 4 | *(absent)* | `(absent)` — dart, java, ts<br>`"did:webvh:{SCID}:example.com#P5RDjVJG"` — java-eecc, python, rust |
 | `didDocument.verificationMethod[].publicKeyMultibase` | impls disagree | 4 | *(absent)* | `(absent)` — dart, java, ts<br>`"z6MkjchhfUsD6mmvni8mCdXHw216Xrm9bQe2mBH1P5RDjVJG"` — java-eecc, python, rust |
 | `didDocument.verificationMethod[].type` | impls disagree | 4 | *(absent)* | `(absent)` — dart, java, ts<br>`"Multikey"` — java-eecc, python, rust |
+| `didDocumentMetadata.witness.threshold` | impls disagree | 4 | *(absent)* | `1` — python, rust, ts<br>`(absent)` — dart, java, java-eecc |
 | `didDocument.service[].@context` | impls disagree | 3 | *(absent)* | `"https://identity.foundation/linked-vp/contexts/v1"` — dart, java-eecc, python, rust<br>`(absent)` — java, ts |
 | `didDocumentMetadata.updated` | impls disagree | 1 | `"2000-01-02T00:00:00Z"` | `"2000-01-03T00:00:00Z"` — python, rust<br>`"2000-01-02T00:00:00Z"` — ts<br>`"2026-07-29T18:17:38Z"` — java |
 
@@ -168,16 +160,10 @@ Two independent axes. **Rejected** is the security-relevant question — did we 
 | `pre-rotation` | `resolutionResult.json` | DIFF (13) | **REJECTED**<br>`invalidDidLog` | DIFF (14) | DIFF (7) | DIFF (7) | DIFF (6) |
 | `pre-rotation-consume` | `resolutionResult.json` | DIFF (12) | **REJECTED**<br>`invalidDidLog` | DIFF (13) | DIFF (6) | DIFF (6) | DIFF (5) |
 | `services` | `resolutionResult.json` | DIFF (12) | **REJECTED**<br>`invalidDidLog` | DIFF (13) | DIFF (6) | DIFF (6) | DIFF (5) |
-| `witness-threshold` | `resolutionResult.json` | **REJECTED**<br>`witnessValidationFailed` | **REJECTED**<br>`invalidDidLog` | **REJECTED**<br>`witnessValidationFailed` | **REJECTED**<br>`witnessValidationFailed` | **REJECTED**<br>`witnessValidationFailed` | **REJECTED**<br>`witnessValidationFailed` |
-| `witness-update` | `resolutionResult.json` | **REJECTED**<br>`witnessValidationFailed` | **REJECTED**<br>`invalidDidLog` | **REJECTED**<br>`witnessValidationFailed` | **REJECTED**<br>`witnessValidationFailed` | **REJECTED**<br>`witnessValidationFailed` | **REJECTED**<br>`witnessValidationFailed` |
+| `witness-threshold` | `resolutionResult.json` | DIFF (14) | **REJECTED**<br>`invalidDidLog` | DIFF (15) | DIFF (7) | DIFF (7) | DIFF (6) |
+| `witness-update` | `resolutionResult.json` | DIFF (13) | **REJECTED**<br>`invalidDidLog` | DIFF (15) | DIFF (6) | DIFF (6) | DIFF (5) |
 
 ## E. Full diagnostics for rejected logs
-
-**10 rejection(s)** — `witness-threshold`/`ts`, `witness-threshold`/`rust`, `witness-threshold`/`java`, `witness-threshold`/`java-eecc`, `witness-threshold`/`dart`, `witness-update`/`ts`, `witness-update`/`rust`, `witness-update`/`java`, `witness-update`/`java-eecc`, `witness-update`/`dart`
-
-```
-(no exception logged)
-```
 
 **7 rejection(s)** — `basic-create`/`python`, `basic-update`/`python`, `deactivate`/`python`, `key-rotation`/`python`, `multi-update`/`python`
 

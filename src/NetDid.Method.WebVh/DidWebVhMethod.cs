@@ -26,6 +26,14 @@ public sealed class DidWebVhMethod : DidMethodBase
     public const int DefaultMaxControllerProofsPerEntry =
         LogChainValidator.DefaultMaxControllerProofsPerEntry;
 
+    /// <summary>
+    /// Default maximum witness-proof Data Integrity verifications per resolution. Like the
+    /// controller-proof cap, this is a resolver resource policy: the witness-file byte cap
+    /// alone is not a CPU cap, because one witness key can mint unlimited distinct proofs.
+    /// </summary>
+    public const int DefaultMaxWitnessProofVerifications =
+        WitnessValidator.DefaultMaxProofVerifications;
+
     private readonly IWebVhHttpClient _httpClient;
     private readonly EddsaJcs2022Cryptosuite _suite;
     private readonly LogChainValidator _chainValidator;
@@ -39,7 +47,8 @@ public sealed class DidWebVhMethod : DidMethodBase
     internal const string MethodVersion = "did:webvh:1.0";
 
     /// <summary>
-    /// Creates a did:webvh method using <see cref="DefaultMaxControllerProofsPerEntry"/>.
+    /// Creates a did:webvh method using <see cref="DefaultMaxControllerProofsPerEntry"/> and
+    /// <see cref="DefaultMaxWitnessProofVerifications"/>.
     /// </summary>
     public DidWebVhMethod(IWebVhHttpClient httpClient, ILogger<DidWebVhMethod>? logger = null)
         : this(httpClient, logger, DefaultMaxControllerProofsPerEntry)
@@ -57,11 +66,37 @@ public sealed class DidWebVhMethod : DidMethodBase
         IWebVhHttpClient httpClient,
         ILogger<DidWebVhMethod>? logger,
         int maxControllerProofsPerEntry)
+        : this(httpClient, logger, maxControllerProofsPerEntry, DefaultMaxWitnessProofVerifications)
     {
+    }
+
+    /// <summary>
+    /// Creates a did:webvh method with caller-specified controller-proof and witness-proof
+    /// verification budgets.
+    /// </summary>
+    /// <param name="httpClient">Client used to fetch did:webvh artifacts.</param>
+    /// <param name="logger">Optional resolver logger.</param>
+    /// <param name="maxControllerProofsPerEntry">
+    /// Maximum controller proofs verified per log entry. Must be at least one. Raising this value
+    /// increases the canonicalization and signature-verification work an untrusted log can cause.
+    /// </param>
+    /// <param name="maxWitnessProofVerifications">
+    /// Maximum witness-proof signature verifications per resolution. Must be at least one.
+    /// Validation fails closed (<c>witnessValidationFailed</c>) when a witness file demands more.
+    /// </param>
+    public DidWebVhMethod(
+        IWebVhHttpClient httpClient,
+        ILogger<DidWebVhMethod>? logger,
+        int maxControllerProofsPerEntry,
+        int maxWitnessProofVerifications)
+    {
+        ArgumentOutOfRangeException.ThrowIfLessThan(maxControllerProofsPerEntry, 1);
+        ArgumentOutOfRangeException.ThrowIfLessThan(maxWitnessProofVerifications, 1);
+
         _httpClient = httpClient ?? throw new ArgumentNullException(nameof(httpClient));
         _suite = new EddsaJcs2022Cryptosuite();
         _chainValidator = new LogChainValidator(maxControllerProofsPerEntry);
-        _witnessValidator = new WitnessValidator(_suite);
+        _witnessValidator = new WitnessValidator(maxWitnessProofVerifications);
         _logger = logger ?? NullLogger<DidWebVhMethod>.Instance;
     }
 
@@ -128,6 +163,11 @@ public sealed class DidWebVhMethod : DidMethodBase
         if (createOptions.UpdateKey.KeyType != KeyType.Ed25519)
             throw new ArgumentException("did:webvh requires an Ed25519 update key.");
 
+        // Snapshot the caller's witness proofs once at the trust boundary, before any await: a
+        // hostile IReadOnlyList can present different contents per enumeration, publishing an
+        // artifact that differs from what was inspected (issue #135 review round 2, finding 3).
+        var witnessProofs = SnapshotWitnessProofs(createOptions.WitnessProofs);
+
         // Step 1: Build DID string with safe placeholder (valid DID syntax for object construction)
         var didTemplate = BuildDidTemplate(createOptions.Domain, createOptions.Path,
             ScidGenerator.SafePlaceholder);
@@ -192,9 +232,9 @@ public sealed class DidWebVhMethod : DidMethodBase
             [DidWebVhArtifacts.DidJson] = didJsonContent
         };
 
-        if (createOptions.WitnessProofs is { Count: > 0 })
+        if (witnessProofs is { Count: > 0 })
         {
-            var merged = WitnessValidator.MergeWitnessProofs(null, createOptions.WitnessProofs);
+            var merged = WitnessValidator.MergeWitnessProofs(null, witnessProofs);
             artifacts[DidWebVhArtifacts.DidWitnessJson] = Encoding.UTF8.GetString(WitnessValidator.SerializeWitnessFile(merged));
         }
 
@@ -299,6 +339,7 @@ public sealed class DidWebVhMethod : DidMethodBase
             // the transition. In particular, an entry cannot disable or replace the requirement
             // that authorizes that entry itself.
             WitnessFile? witnessFile = null;
+            WitnessValidator.VerificationSession? witnessSession = null;
             bool anyEntryRequiresWitness = WitnessValidator.RequiresWitness(
                 perEntryParams, targetIndex);
             if (anyEntryRequiresWitness)
@@ -319,9 +360,13 @@ public sealed class DidWebVhMethod : DidMethodBase
                     };
                 }
 
-                witnessFile = WitnessValidator.ParseWitnessFile(witnessContent);
+                witnessFile = WitnessValidator.ParseWitnessFile(
+                    witnessContent, out var witnessParseError, ct);
                 if (witnessFile is null)
                 {
+                    _logger.LogWarning(
+                        "did-witness.json for {Did} could not be parsed: {Reason}",
+                        did, witnessParseError);
                     return new DidResolutionResult
                     {
                         DidDocument = null,
@@ -332,7 +377,13 @@ public sealed class DidWebVhMethod : DidMethodBase
                     };
                 }
 
-                if (!_witnessValidator.ValidateAllWitnesses(witnessFile, entries, targetIndex, perEntryParams.ToList()))
+                witnessSession = _witnessValidator.CreateSession(witnessFile, ct);
+                if (!await _witnessValidator.ValidateAllWitnessesAsync(
+                        witnessSession,
+                        entries,
+                        targetIndex,
+                        perEntryParams.ToList(),
+                        ct))
                 {
                     return new DidResolutionResult
                     {
@@ -369,17 +420,29 @@ public sealed class DidWebVhMethod : DidMethodBase
                             {
                                 var witnessUrl = DidUrlMapper.MapToWitnessUrl(did);
                                 var witnessContent = await _httpClient.FetchWitnessFileAsync(witnessUrl, ct);
-                                witnessFile = witnessContent is null
-                                    ? null
-                                    : WitnessValidator.ParseWitnessFile(witnessContent);
+                                if (witnessContent is not null)
+                                {
+                                    witnessFile = WitnessValidator.ParseWitnessFile(
+                                        witnessContent, out var tailParseError, ct);
+                                    if (witnessFile is null)
+                                    {
+                                        _logger.LogWarning(
+                                            "did-witness.json for {Did} could not be parsed: {Reason}",
+                                            did, tailParseError);
+                                    }
+                                }
                             }
 
-                            fullChainWitnessesValid = witnessFile is not null &&
-                                _witnessValidator.ValidateAllWitnesses(
-                                    witnessFile,
+                            if (witnessFile is not null && witnessSession is null)
+                                witnessSession = _witnessValidator.CreateSession(witnessFile, ct);
+
+                            fullChainWitnessesValid = witnessSession is not null &&
+                                await _witnessValidator.ValidateAllWitnessesAsync(
+                                    witnessSession,
                                     entries,
                                     entries.Count - 1,
-                                    fullPerEntryParams.ToList());
+                                    fullPerEntryParams.ToList(),
+                                    ct);
                         }
 
                         deactivatedForMetadata = fullChainWitnessesValid;
@@ -467,6 +530,16 @@ public sealed class DidWebVhMethod : DidMethodBase
 
         if (updateOptions.SigningKey.KeyType != KeyType.Ed25519)
             throw new ArgumentException("did:webvh requires an Ed25519 signing key.");
+
+        // Snapshot the caller's witness proofs once at the trust boundary, before any await
+        // (issue #135 review round 2, finding 3), and consume CurrentWitnessContent whenever it
+        // is supplied — not only when a new proof batch accompanies it (finding 2): supplied
+        // content that cannot be parsed must fail the operation, never be silently ignored.
+        var witnessProofs = SnapshotWitnessProofs(updateOptions.WitnessProofs);
+        var existingWitness = ParseRequiredWitnessContent(
+            updateOptions.CurrentWitnessContent,
+            nameof(updateOptions.CurrentWitnessContent),
+            ct);
 
         // Parse and validate existing log
         var entries = LogEntrySerializer.ParseJsonLines(updateOptions.CurrentLogContent);
@@ -619,12 +692,9 @@ public sealed class DidWebVhMethod : DidMethodBase
             [DidWebVhArtifacts.DidJson] = Encoding.UTF8.GetString(DidWebCompatibility.GenerateDidJson(did, newDocument))
         };
 
-        if (updateOptions.WitnessProofs is { Count: > 0 })
+        if (existingWitness is not null || witnessProofs is { Count: > 0 })
         {
-            WitnessFile? existing = null;
-            if (updateOptions.CurrentWitnessContent is not null)
-                existing = WitnessValidator.ParseWitnessFile(updateOptions.CurrentWitnessContent);
-            var merged = WitnessValidator.MergeWitnessProofs(existing, updateOptions.WitnessProofs);
+            var merged = WitnessValidator.MergeWitnessProofs(existingWitness, witnessProofs ?? []);
             updateArtifacts[DidWebVhArtifacts.DidWitnessJson] = Encoding.UTF8.GetString(WitnessValidator.SerializeWitnessFile(merged));
         }
 
@@ -639,6 +709,57 @@ public sealed class DidWebVhMethod : DidMethodBase
         };
     }
 
+    /// <summary>
+    /// Snapshots caller-supplied witness proofs exactly once — the outer list AND every
+    /// nested <c>Proofs</c> list — at the public operation boundary, before any await. A
+    /// hostile <see cref="IReadOnlyList{T}"/> implementation can present different contents
+    /// per enumeration; everything downstream (merge, serialization, the published artifact)
+    /// reads only this private copy. <see cref="DataIntegrityProofValue"/> is immutable, so
+    /// sharing the proof instances themselves is safe.
+    /// </summary>
+    private static IReadOnlyList<WitnessProofEntry>? SnapshotWitnessProofs(
+        IReadOnlyList<WitnessProofEntry>? witnessProofs)
+    {
+        if (witnessProofs is null)
+            return null;
+
+        var snapshot = new List<WitnessProofEntry>();
+        foreach (var entry in witnessProofs)
+        {
+            snapshot.Add(new WitnessProofEntry
+            {
+                VersionId = entry.VersionId,
+                Proofs = entry.Proofs.ToList()
+            });
+        }
+
+        return snapshot;
+    }
+
+    /// <summary>
+    /// Parses caller-supplied <c>CurrentWitnessContent</c>, throwing when supplied content
+    /// cannot be parsed: silently publishing a witness artifact stripped of the caller's
+    /// existing proofs — or silently ignoring the supplied file altogether — would be a
+    /// dishonest Success (issue #135 review round 2, finding 2). Returns null only when no
+    /// content was supplied.
+    /// </summary>
+    private static WitnessFile? ParseRequiredWitnessContent(
+        byte[]? content,
+        string paramName,
+        CancellationToken ct)
+    {
+        if (content is null)
+            return null;
+
+        var parsed = WitnessValidator.ParseWitnessFile(content, out var witnessParseError, ct);
+        return parsed ?? throw new ArgumentException(
+            "CurrentWitnessContent is not a parseable did:webvh v1.0 did-witness.json " +
+            $"({witnessParseError}). Fix the file (a pre-3.2 NetDid file needs the " +
+            "issue #135 migration) or omit CurrentWitnessContent to publish only the " +
+            "supplied WitnessProofs.",
+            paramName);
+    }
+
     protected override async Task<DidDeactivateResult> DeactivateCoreAsync(
         string did, DidDeactivateOptions options, CancellationToken ct)
     {
@@ -647,6 +768,15 @@ public sealed class DidWebVhMethod : DidMethodBase
 
         if (deactivateOptions.SigningKey.KeyType != KeyType.Ed25519)
             throw new ArgumentException("did:webvh requires an Ed25519 signing key.");
+
+        // Same witness trust-boundary handling as Update (issue #135 review round 2, findings
+        // 2-3). Deactivation is never blocked by a bad witness file: the caller can retry
+        // without CurrentWitnessContent to publish the supplied proofs alone.
+        var witnessProofs = SnapshotWitnessProofs(deactivateOptions.WitnessProofs);
+        var existingWitness = ParseRequiredWitnessContent(
+            deactivateOptions.CurrentWitnessContent,
+            nameof(deactivateOptions.CurrentWitnessContent),
+            ct);
 
         // Parse and validate existing log
         var entries = LogEntrySerializer.ParseJsonLines(deactivateOptions.CurrentLogContent);
@@ -722,12 +852,9 @@ public sealed class DidWebVhMethod : DidMethodBase
             [DidWebVhArtifacts.DidJsonl] = logContent
         };
 
-        if (deactivateOptions.WitnessProofs is { Count: > 0 })
+        if (existingWitness is not null || witnessProofs is { Count: > 0 })
         {
-            WitnessFile? existing = null;
-            if (deactivateOptions.CurrentWitnessContent is not null)
-                existing = WitnessValidator.ParseWitnessFile(deactivateOptions.CurrentWitnessContent);
-            var merged = WitnessValidator.MergeWitnessProofs(existing, deactivateOptions.WitnessProofs);
+            var merged = WitnessValidator.MergeWitnessProofs(existingWitness, witnessProofs ?? []);
             deactivateArtifacts[DidWebVhArtifacts.DidWitnessJson] = Encoding.UTF8.GetString(WitnessValidator.SerializeWitnessFile(merged));
         }
 

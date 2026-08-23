@@ -1009,7 +1009,7 @@ public class DidWebVhMethodTests
         [
             {
                 "versionId": "1-zTestScid",
-                "proofs": [
+                "proof": [
                     {
                         "type": "DataIntegrityProof",
                         "cryptosuite": "eddsa-jcs-2022",
@@ -1022,7 +1022,7 @@ public class DidWebVhMethodTests
             },
             {
                 "versionId": "2-zTestHash",
-                "proofs": []
+                "proof": []
             }
         ]
         """;
@@ -1045,7 +1045,7 @@ public class DidWebVhMethodTests
         var json = """
         {
             "versionId": "1-zTestScid",
-            "proofs": [
+            "proof": [
                 {
                     "type": "DataIntegrityProof",
                     "cryptosuite": "eddsa-jcs-2022",
@@ -1072,7 +1072,7 @@ public class DidWebVhMethodTests
         // for version 1, since witnessing version 3 implies approval of all prior entries.
         var crypto = new DefaultCryptoProvider();
         var suite = new EddsaJcs2022Cryptosuite();
-        var validator = new WitnessValidator(suite);
+        var validator = new WitnessValidator();
 
         // Create 3 log entries, all requiring witnessing
         var witnessSigner = new KeyPairSigner(
@@ -1103,10 +1103,11 @@ public class DidWebVhMethodTests
             perEntryParams.Add(new LogEntryParameters { Witness = witnessConfig });
         }
 
-        // Create witness proofs ONLY for version 3
-        var entry3Json = LogEntrySerializer.SerializeWithoutProof(entries[2]);
+        // Create witness proofs ONLY for version 3, over the spec's {"versionId": ...}
+        // witness input document (issue #135)
+        var version3Json = $$"""{"versionId":{{JsonSerializer.Serialize(entries[2].VersionId)}}}""";
         var proof3Created = entries[2].VersionTime.ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ");
-        using var entry3Doc = JsonDocument.Parse(entry3Json);
+        using var entry3Doc = JsonDocument.Parse(version3Json);
         var proof3 = await suite.CreateProofAsync(
             entry3Doc.RootElement,
             new DataIntegrityProof
@@ -1143,7 +1144,7 @@ public class DidWebVhMethodTests
 
         // Validate: version 1 and 2 require witnessing, only version 3 has proofs
         // Per spec, version 3 proof covers versions 1, 2, and 3
-        var result = validator.ValidateAllWitnesses(
+        var result = await validator.ValidateAllWitnessesAsync(
             witnessFile, entries, upToIndex: 2, perEntryParams);
 
         result.Should().BeTrue("later witness proofs should satisfy earlier version requirements");
@@ -1641,9 +1642,11 @@ public class DidWebVhMethodTests
 
         merged.Entries.Should().HaveCount(2);
 
-        // Version 1 should have the new proof (replaced)
+        // Witness collection is incremental (issue #135 review round 2, finding 4): a new
+        // same-version proof APPENDS to the existing approvals — replacement could sink an
+        // already threshold-satisfying version below its threshold for every resolver.
         var v1 = merged.Entries.First(e => e.VersionId == "1-zScid1");
-        v1.Proofs[0].ProofValue.Should().Be("zNewProof");
+        v1.Proofs.Select(p => p.ProofValue).Should().Equal("zOldProof", "zNewProof");
 
         // Version 2 should be added
         var v2 = merged.Entries.First(e => e.VersionId == "2-zHash2");

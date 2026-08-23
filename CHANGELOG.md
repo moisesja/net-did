@@ -7,6 +7,126 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **did:webvh implicit `#files` / `#whois` services and path dereferencing** (issue #136).
+  Successful current and historical resolution now projects both spec-defined services when the
+  controller has not supplied a relative or absolute override: `#files` uses `relativeRef` and the
+  DID-to-HTTPS resource directory, while `#whois` uses `LinkedVerifiablePresentation`, the Linked-VP
+  context, and `<resource-directory>/whois.vp`. Bare `files` / `whois` shorthand accepted by Core is
+  canonicalized to those fragment ids in projected output. Root DIDs omit `.well-known`;
+  deployment-path and encoded-port DIDs preserve their path/port. The same projection brings
+  generated parallel `did.json` artifacts into compliance, while signed `did.jsonl` state and
+  Create/Update result documents remain unchanged. `DefaultDidUrlDereferencer` now routes
+  `<did>/path` through `#files`
+  and `<did>/whois` through `#whois`, returning the constructed HTTP(S) URL as `text/uri-list`;
+  controller-defined endpoint overrides take precedence, while injected `relativeRef`, authority,
+  control-character, and deployment-base escapes are rejected or kept within the selected service.
+  URI-set endpoints return every safely constructed URL; structured endpoints and unsupported
+  schemes fail with the `invalidDid` code required by did:webvh v1.0. Other DID methods retain
+  their prior bare-path behavior even if they define services named `#files` or `#whois`.
+- **DID URL service endpoint fragment preservation.** Across all DID methods, explicit `?service=`
+  and `?serviceType=` URI-list dereferencing now preserves a fragment already present on the
+  selected service endpoint when resolving a path or `relativeRef`, matching the existing public
+  dereferencer contract. Encoded fragments in `relativeRef` cannot override it. Previously, RFC 3986
+  relative resolution silently dropped or combined that endpoint fragment.
+
+- **did:webvh `did-witness.json` now interoperates — spec wire format for witness proofs**
+  (issue #135, Critical; surfaced by the #134 DIF compliance-vector replay). Two divergences
+  made every witnessed did:webvh DID non-interoperable in both directions:
+  - the per-version member was written and read as `proofs`; did:webvh v1.0 and all six
+    reference implementations use **`proof`** (`WitnessValidator.SerializeWitnessFile` /
+    `ParseWitnessFile`);
+  - witness proofs were verified against the log entry serialized without its proof; the spec
+    defines them as `eddsa-jcs-2022` proofs over the **`{"versionId": "..."}`** input document
+    (confirmed empirically against the ts, rust, java and dart suite vectors). The `versionId`
+    embeds the entry hash that chain validation independently recomputes, so an approval still
+    binds the full entry content.
+
+  DIF-suite replay evidence: witnessed happy-path acceptance went from 0/10 to 10/10
+  (`witness-threshold` and `witness-update` × ts/rust/java/java-eecc/dart), and the two
+  witness negative vectors are now rejected by real threshold logic instead of vacuously at
+  parse time. Known-answer fixtures from the suite (ts implementation) are committed as
+  regression tests (`Issue135WitnessInteropTests`), closing the self-generated-test blind spot
+  for this format (#95, #135).
+
+  **Breaking (wire compatibility):** a `did-witness.json` published by an earlier NetDid
+  release is invalid under the corrected format — its proofs were minted over the wrong signed
+  document, so no key rename can rescue them; affected DIDs must have their witness proofs
+  re-collected. If an external witness toolchain produced spec-conformant proofs that NetDid
+  merely stored under the legacy `proofs` key, renaming that member to `proof` in the
+  published file restores validity. **`Update`/`Deactivate` now throw `ArgumentException`
+  when a supplied `CurrentWitnessContent` cannot be parsed** (including the legacy `proofs`
+  dialect, rejected as an explicit migration tripwire) instead of silently publishing a
+  witness artifact stripped of the existing proofs; retry with the file fixed, or omit
+  `CurrentWitnessContent` to publish only the supplied `WitnessProofs`.
+
+- **did:webvh witness validation follows the spec's proof-wise algorithm** (adversarial
+  review of the #135 fix). A version's approvals may legitimately be split across
+  duplicate-`versionId` witness-file entries — the ts reference implementation authors one
+  entry per proof — and are now aggregated in both validation and
+  `MergeWitnessProofs` (which previously kept only the last duplicate, shedding proofs on
+  republish). Witness proofs must carry `proofPurpose: assertionMethod` to count, matching
+  the reference resolvers' threshold arithmetic. Proof-less entries (`versionId` only, a
+  transient state the spec anticipates) and proofs without the optional `created` member now
+  parse instead of invalidating the whole file; a proof with a null `Created` serializes
+  without the member rather than as JSON `null`.
+
+- **did:webvh witness trust boundary hardened** (PR #143 review rounds 2–3).
+  - Witness proofs are verified through DataProofsDotnet's `DataIntegrityProofPipeline` with
+    their **complete wire configuration**: signature-bound members outside the modeled set
+    (`id`, `expires`, `nonce`, extensions) are honored during verification and preserved
+    byte-for-byte on republish, and an unsigned member injected into a wire proof now fails
+    verification instead of being truncated away. Callers ingest complete externally produced
+    proof objects through the new duplicate-rejecting `DataIntegrityProofValue.Parse(string)` or
+    `FromJson(JsonElement)` factories; modeled authorization fields and preserved raw JSON are
+    derived from the same object, while the raw setter remains internal.
+  - A witness proof's verificationMethod must use the spec's strict
+    `did:key:<multibase>#<multibase>` form; the bare-DID form is no longer counted (conforming
+    resolvers discard it).
+  - A configured candidate carrying `previousProof` is verified with its complete same-version
+    dependency closure. Dangling, ambiguous, repeated, and cyclic references fail closed. A
+    dependency may be signed by an unconfigured key because it supplies Data Integrity context,
+    but only the configured candidate signer can contribute a threshold approval; every proof
+    actually processed by the pipeline is charged to the resolution budget. Positive dependency
+    verdicts are memoized only after the complete closure succeeds, preventing an individually
+    valid child of an invalid ancestor from poisoning a later policy check.
+  - `CurrentWitnessContent` is consumed whenever supplied — with or without a new
+    `WitnessProofs` batch — republished in the artifact, and rejected with `ArgumentException`
+    when unparseable instead of being silently ignored.
+  - `MergeWitnessProofs` **appends** same-version proofs (witness collection is incremental)
+    and deduplicates semantically identical complete proof objects by JCS-canonical JSON. Thus
+    parser provenance, formatting, and property order cannot create duplicates, while signed
+    extension members remain part of proof identity. Replacement could sink an already
+    threshold-satisfying version below its threshold.
+  - Caller-supplied `WitnessProofs` collections (outer and nested lists) are snapshotted
+    exactly once at each public operation boundary, before any await, closing the
+    changing-enumerator TOCTOU.
+  - Witness verification work is bounded and near-linear: the file is indexed once per resolution,
+    each repeated effective policy object is validated once, configured signer membership is
+    indexed once per validation pass, signer coverage cursors advance monotonically instead of
+    rescanning every version suffix, and dependency materialization orders only the selected
+    closure instead of rescanning its full proof bucket. Cancellation is checked around bounded
+    JSON/JCS operations and throughout library-owned indexing and traversal loops. JCS-invalid
+    proof data is treated as an invalid proof instead of escaping as `notFound` or invalidating an
+    independently valid historical prefix. One
+    resolution-local proof-verdict and crypto-budget ledger is shared across the requested-prefix
+    and deactivation-tail passes; it is neither a process singleton nor reset per pass. The
+    configurable budget fails closed when exhausted
+    (default `DefaultMaxWitnessProofVerifications` = 1024). Direct construction uses the new
+    `DidWebVhMethod` overload; DI uses the additive three-parameter `AddDidWebVh` overload that
+    accepts both controller- and witness-proof budgets. Existing signatures retain both defaults.
+
+- **did:webvh witness-file parse failures are now diagnosable.** `ParseWitnessFile` rejects
+  duplicate JSON members outright (same trust-boundary rule as the log-entry parser, #101),
+  rejects non-string `versionId` values (previously a crash through `Update`/`Deactivate`
+  merging), narrows its blanket `catch` to the JSON-access exception set, and reports the
+  parse reason through a new overload; `DidWebVhMethod` logs that reason wherever a witness
+  file is consumed, so a malformed file no longer surfaces as a bare
+  `witnessValidationFailed` with no diagnostic. The reason is bounded by construction (type
+  name plus numeric position, or fixed library text) — exception messages are never echoed,
+  since System.Text.Json embeds hostile member names in them.
+
 ### Added
 
 - **did:webvh compliance-vector harness and divergence report** (issue #134). New
@@ -35,30 +155,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   direction), #136 (implicit `#files`/`#whois` services neither materialized nor resolvable),
   #137 (`didDocumentMetadata` omits `scid`/`versionNumber`), #138 (`updated` omitted at
   version 1), #139 (malformed identifiers reported as `notFound` rather than `invalidDid`).
-
-### Fixed
-
-- **did:webvh implicit `#files` / `#whois` services and path dereferencing** (issue #136).
-  Successful current and historical resolution now projects both spec-defined services when the
-  controller has not supplied a relative or absolute override: `#files` uses `relativeRef` and the
-  DID-to-HTTPS resource directory, while `#whois` uses `LinkedVerifiablePresentation`, the Linked-VP
-  context, and `<resource-directory>/whois.vp`. Bare `files` / `whois` shorthand accepted by Core is
-  canonicalized to those fragment ids in projected output. Root DIDs omit `.well-known`;
-  deployment-path and encoded-port DIDs preserve their path/port. The same projection brings
-  generated parallel `did.json` artifacts into compliance, while signed `did.jsonl` state and
-  Create/Update result documents remain unchanged. `DefaultDidUrlDereferencer` now routes
-  `<did>/path` through `#files`
-  and `<did>/whois` through `#whois`, returning the constructed HTTP(S) URL as `text/uri-list`;
-  controller-defined endpoint overrides take precedence, while injected `relativeRef`, authority,
-  control-character, and deployment-base escapes are rejected or kept within the selected service.
-  URI-set endpoints return every safely constructed URL; structured endpoints and unsupported
-  schemes fail with the `invalidDid` code required by did:webvh v1.0. Other DID methods retain
-  their prior bare-path behavior even if they define services named `#files` or `#whois`.
-- **DID URL service endpoint fragment preservation.** Across all DID methods, explicit `?service=`
-  and `?serviceType=` URI-list dereferencing now preserves a fragment already present on the
-  selected service endpoint when resolving a path or `relativeRef`, matching the existing public
-  dereferencer contract. Encoded fragments in `relativeRef` cannot override it. Previously, RFC 3986
-  relative resolution silently dropped or combined that endpoint fragment.
 
 ## [3.1.0] - 2026-08-03
 

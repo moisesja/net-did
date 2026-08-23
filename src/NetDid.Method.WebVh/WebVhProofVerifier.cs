@@ -1,77 +1,16 @@
-using System.Text.Json;
-using DataProofsDotnet;
-using DataProofsDotnet.DataIntegrity;
-using NetDid.Method.WebVh.Model;
-
 namespace NetDid.Method.WebVh;
 
 /// <summary>
-/// Verifies <c>eddsa-jcs-2022</c> Data Integrity proofs on did:webvh <b>witness</b> entries via
-/// DataProofsDotnet, and parses a <c>did:key</c> verificationMethod into its authorized
-/// multibase key (enforcing the DID==fragment anti-spoof rule). Controller proofs on log entries
-/// are verified by the full <c>DataIntegrityProofPipeline</c> (see <see cref="LogChainValidator"/>
-/// and <see cref="WebVhUpdateKeyResolver"/>); <see cref="ExtractDidKeyMultibase"/> is shared with
-/// that path. Relocated here from the removed
-/// <c>NetDid.Core.Crypto.DataIntegrity.DataIntegrityProofEngine</c>; the DID-method-aware parser
-/// has no home in DataProofsDotnet (whose dependency direction forbids DID parsing).
+/// Parses a <c>did:key</c> verificationMethod into its authorized multibase key (enforcing the
+/// DID==fragment anti-spoof rule), shared by the controller-proof authorization path
+/// (<see cref="WebVhUpdateKeyResolver"/>) and the witness path
+/// (<see cref="WebVhWitnessKeyResolver"/>, <see cref="WitnessValidator"/>). Signature
+/// verification itself is delegated to DataProofsDotnet's <c>DataIntegrityProofPipeline</c> for
+/// both proof kinds; this type carries only DID-method-aware parsing, which has no home in
+/// DataProofsDotnet (whose dependency direction forbids DID parsing).
 /// </summary>
 internal static class WebVhProofVerifier
 {
-    /// <summary>
-    /// Verifies a single witness proof's signature over the entry JSON (with the <c>proof</c>
-    /// removed). Returns the signer's multibase key when the signature is valid AND the
-    /// verificationMethod is a well-formed <c>did:key</c> (anti-spoof enforced); otherwise
-    /// <c>null</c>.
-    /// </summary>
-    public static string? VerifyAndExtractSigner(
-        EddsaJcs2022Cryptosuite suite,
-        string entryJsonWithoutProof,
-        DataIntegrityProofValue proofValue)
-    {
-        var multibaseKey = ExtractDidKeyMultibase(proofValue.VerificationMethod);
-        if (multibaseKey is null)
-            return null;
-
-        PublicKeyMaterial publicKey;
-        try
-        {
-            publicKey = PublicKeyMaterial.FromMultikey(multibaseKey);
-        }
-        catch
-        {
-            return null;
-        }
-
-        // Reconstruct the proof from the modeled fields. This path serves witness proofs (from
-        // did-witness.json); controller proofs in a log entry are verified by the full Data
-        // Integrity pipeline instead. A witness proof carrying any member outside this modeled
-        // set drops it here and therefore fails signature verification — fail closed, never
-        // forge. Created is passed verbatim (no DateTimeOffset round-trip) so the hashed proof
-        // configuration is byte-identical to the one signed at creation time.
-        var proof = new DataIntegrityProof
-        {
-            Type = proofValue.Type,
-            Cryptosuite = proofValue.Cryptosuite,
-            VerificationMethod = proofValue.VerificationMethod,
-            Created = proofValue.Created,
-            ProofPurpose = proofValue.ProofPurpose,
-            ProofValue = proofValue.ProofValue,
-        };
-
-        // Fail closed on anything unexpected (malformed entry JSON, or any error the
-        // cryptosuite might surface) — a verification path must never throw for hostile input.
-        try
-        {
-            using var document = JsonDocument.Parse(entryJsonWithoutProof);
-            var result = suite.VerifyProof(document.RootElement, proof, publicKey);
-            return result.Verified ? multibaseKey : null;
-        }
-        catch (Exception)
-        {
-            return null;
-        }
-    }
-
     /// <summary>
     /// Extracts the signer's multibase key from a <c>did:key</c> verification method URL.
     /// Accepts <c>did:key:z6Mk...#z6Mk...</c> (DID and fragment MUST match) and
@@ -115,5 +54,22 @@ internal static class WebVhProofVerifier
             return null;
 
         return multibaseKey;
+    }
+
+    /// <summary>
+    /// The strict form did:webvh v1.0 requires of a <b>witness</b> proof's verificationMethod:
+    /// exactly <c>did:key:&lt;multibase&gt;#&lt;multibase&gt;</c> — the fragment is REQUIRED and
+    /// must equal the DID's method-specific id. The bare-DID form tolerated by
+    /// <see cref="ExtractDidKeyMultibase"/> (kept permissive because configured witness
+    /// <c>id</c>s are bare DIDs) must not be counted for witness proofs: conforming resolvers
+    /// discard it, so counting it would diverge in threshold arithmetic on the same file
+    /// (issue #135 review round 2, finding 6).
+    /// </summary>
+    public static string? ExtractWitnessDidKeyMultibase(string verificationMethod)
+    {
+        if (string.IsNullOrEmpty(verificationMethod) || !verificationMethod.Contains('#'))
+            return null;
+
+        return ExtractDidKeyMultibase(verificationMethod);
     }
 }

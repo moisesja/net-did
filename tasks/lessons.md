@@ -553,3 +553,60 @@
   the boundary explicitly: eligible at exactly the limit may succeed; over-limit success and
   non-eligible-at-limit both fail. Tests must separate UTC from monotonic time and pin frozen,
   backward, cancellation, exact-boundary, and overslept-timer shapes. (PR #132 round 2.)
+- A REBASE is a mechanical task, not a change to be re-proven from scratch. When a branch that
+  already passed the full gate is rebased onto main, scale verification to what the merge could
+  actually break: resolve the conflicts, build, run the AFFECTED test project(s), and regenerate
+  any generated file both sides touched. Do not re-run the entire net-did-verify gate (full
+  Release suite + all five samples + full vector replay) unless a conflict landed in shared
+  runtime code. The user pinged "this was a simple request to fix a merge conflict and it's
+  taking too damn long" — the third instance of the proportionality failure (issues #101, #112).
+  Ceremony is justified by what the diff can break, and a conflict resolution in docs plus one
+  generated report can break almost nothing.
+- When a witness/controller proof is a W3C Data Integrity proof, DELEGATE verification to the
+  DataIntegrityProofPipeline over the proof's COMPLETE wire configuration (capture RawJson at
+  parse, re-emit verbatim on republish) — never hand-reconstruct a reduced proof from modeled
+  fields. A reduced reconstruction (type/cryptosuite/vm/created/purpose/value only) silently
+  drops signature-bound members (`id`/`expires`/`nonce`/extensions): a conforming proof with
+  `expires` is rejected, republish corrupts it, and — the real hole — an attacker appends an
+  UNSIGNED member and the truncated original still verifies. The pipeline strips the whole
+  `proof` member before hashing the document, but that does NOT make singleton verification
+  universally correct: a selected proof carrying `previousProof` is valid only with its complete
+  same-version dependency closure present and verified. Supply that closure to the pipeline,
+  charge every actual dependency verification to the resource ledger, and count only the selected
+  configured witness as a vote. (PR #143 review rounds 2-3, F1/R3-F1.)
+- A witness/threshold verifier over untrusted input needs a CPU bound, not just a byte-cap:
+  `created` is signer-chosen so one key mints unlimited distinct valid proofs, and a <=1 MiB
+  file holds thousands. Bound it with ONE resolution-local session shared across every validation
+  pass in that resolution (including historical prefix + deactivation tail): index the file once,
+  key semantic identity by JCS of the COMPLETE proof object, bind every indexed proof to one filed
+  versionId, memoize verdicts, and keep one remaining-work ledger. A crypto budget alone is not a
+  total-work bound: avoid entry×suffix rescans with descending per-signer cursors, build configured
+  signer membership once for O(1) proof filtering, check a repeated-policy reference cache BEFORE
+  revalidating its full witness list, materialize only selected dependency nodes (never scan a whole
+  version bucket per candidate), check cancellation around bounded JSON/JCS work and within every
+  library-owned loop, and stop when each distinct policy threshold is met. (PR #143 review rounds
+  2-3, F5/R3-F2/R3-F4 and adversarial follow-up.)
+- A Data Integrity pipeline's per-proof result can be locally true while the overall proof set is
+  false because that proof's `previousProof` ancestor failed. Never memoize raw individual true
+  results from a failed aggregate. Cache the candidate false; cache closure members true only when
+  the entire closure succeeds. Otherwise a later policy can consume a poisoned intermediate verdict
+  and accept a chain with an invalid or expired root. (PR #143 round-3 adversarial follow-up.)
+- Canonicalization is an untrusted-input boundary too. Syntactically valid JSON can be outside JCS's
+  numeric data model (for example `1e400`); convert that proof to an invalid candidate instead of
+  letting canonicalization escape resolution as `notFound` or contaminate optional historical-tail
+  isolation. Normalize public parser edge states such as undefined/disposed `JsonElement` to the
+  documented exception type. (PR #143 round-3 adversarial follow-up.)
+- "Consume whenever supplied" beats "consume only alongside a new batch": a parse-and-throw guard
+  nested under `if (newProofs.Count > 0)` lets garbage/legacy `CurrentWitnessContent` pass silently
+  when the caller sends no new proofs — the exact silent-ignore class the fix claimed to close.
+  Hoist supplied-input validation above the batch check. And a merge that REPLACES a version's
+  aggregate breaks incremental collection (republish-as-approvals-arrive): APPEND + dedupe by JCS
+  of the complete proof object, never by raw-text provenance or only the modeled subset. Otherwise
+  parsed-vs-programmatic copies grow the artifact, while modeled-only identity collapses distinct
+  signed extensions. (PR #143 review rounds 2-3, F2+F4/R3-F3.)
+- A public API that accepts externally produced signed JSON needs one authoritative representation.
+  Do not make a raw-JSON field publicly settable beside modeled authorization fields: a caller can
+  claim configured signer B in the model while the raw signature names A. Expose a strict public
+  parser/factory that rejects duplicate members, derives every modeled field from those same bytes,
+  and retains the complete object behind an internal setter. Keep the simple object-initializer path
+  for the library's modeled proof shape. (PR #143 review round 3, R3-F5.)
