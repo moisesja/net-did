@@ -21,8 +21,10 @@ namespace NetDid.Method.WebVh;
 /// configuration, and the same proof is examined for several governed entries during cumulative
 /// coverage; keeping membership out of the resolver makes a proof's cryptographic outcome
 /// policy-independent, which is what lets <see cref="WitnessValidator"/> memoize it. Membership
-/// is enforced by the caller against the governing configuration <b>before</b> any signature is
-/// verified, so an unconfigured signer never consumes the verification budget.
+/// is enforced by the caller against the governing configuration before a candidate can count
+/// toward threshold. An unconfigured proof is cryptographically processed only when a configured
+/// candidate names it as a required <c>previousProof</c> dependency, in which case that work is
+/// charged to the same resolution budget.
 /// </remarks>
 internal sealed class WebVhWitnessKeyResolver : IVerificationMethodResolver
 {

@@ -47,7 +47,8 @@ public sealed class DidWebVhMethod : DidMethodBase
     internal const string MethodVersion = "did:webvh:1.0";
 
     /// <summary>
-    /// Creates a did:webvh method using <see cref="DefaultMaxControllerProofsPerEntry"/>.
+    /// Creates a did:webvh method using <see cref="DefaultMaxControllerProofsPerEntry"/> and
+    /// <see cref="DefaultMaxWitnessProofVerifications"/>.
     /// </summary>
     public DidWebVhMethod(IWebVhHttpClient httpClient, ILogger<DidWebVhMethod>? logger = null)
         : this(httpClient, logger, DefaultMaxControllerProofsPerEntry)
@@ -89,6 +90,9 @@ public sealed class DidWebVhMethod : DidMethodBase
         int maxControllerProofsPerEntry,
         int maxWitnessProofVerifications)
     {
+        ArgumentOutOfRangeException.ThrowIfLessThan(maxControllerProofsPerEntry, 1);
+        ArgumentOutOfRangeException.ThrowIfLessThan(maxWitnessProofVerifications, 1);
+
         _httpClient = httpClient ?? throw new ArgumentNullException(nameof(httpClient));
         _suite = new EddsaJcs2022Cryptosuite();
         _chainValidator = new LogChainValidator(maxControllerProofsPerEntry);
@@ -335,6 +339,7 @@ public sealed class DidWebVhMethod : DidMethodBase
             // the transition. In particular, an entry cannot disable or replace the requirement
             // that authorizes that entry itself.
             WitnessFile? witnessFile = null;
+            WitnessValidator.VerificationSession? witnessSession = null;
             bool anyEntryRequiresWitness = WitnessValidator.RequiresWitness(
                 perEntryParams, targetIndex);
             if (anyEntryRequiresWitness)
@@ -355,7 +360,8 @@ public sealed class DidWebVhMethod : DidMethodBase
                     };
                 }
 
-                witnessFile = WitnessValidator.ParseWitnessFile(witnessContent, out var witnessParseError);
+                witnessFile = WitnessValidator.ParseWitnessFile(
+                    witnessContent, out var witnessParseError, ct);
                 if (witnessFile is null)
                 {
                     _logger.LogWarning(
@@ -371,7 +377,13 @@ public sealed class DidWebVhMethod : DidMethodBase
                     };
                 }
 
-                if (!await _witnessValidator.ValidateAllWitnessesAsync(witnessFile, entries, targetIndex, perEntryParams.ToList(), ct))
+                witnessSession = _witnessValidator.CreateSession(witnessFile, ct);
+                if (!await _witnessValidator.ValidateAllWitnessesAsync(
+                        witnessSession,
+                        entries,
+                        targetIndex,
+                        perEntryParams.ToList(),
+                        ct))
                 {
                     return new DidResolutionResult
                     {
@@ -411,7 +423,7 @@ public sealed class DidWebVhMethod : DidMethodBase
                                 if (witnessContent is not null)
                                 {
                                     witnessFile = WitnessValidator.ParseWitnessFile(
-                                        witnessContent, out var tailParseError);
+                                        witnessContent, out var tailParseError, ct);
                                     if (witnessFile is null)
                                     {
                                         _logger.LogWarning(
@@ -421,9 +433,12 @@ public sealed class DidWebVhMethod : DidMethodBase
                                 }
                             }
 
-                            fullChainWitnessesValid = witnessFile is not null &&
+                            if (witnessFile is not null && witnessSession is null)
+                                witnessSession = _witnessValidator.CreateSession(witnessFile, ct);
+
+                            fullChainWitnessesValid = witnessSession is not null &&
                                 await _witnessValidator.ValidateAllWitnessesAsync(
-                                    witnessFile,
+                                    witnessSession,
                                     entries,
                                     entries.Count - 1,
                                     fullPerEntryParams.ToList(),
@@ -522,7 +537,9 @@ public sealed class DidWebVhMethod : DidMethodBase
         // content that cannot be parsed must fail the operation, never be silently ignored.
         var witnessProofs = SnapshotWitnessProofs(updateOptions.WitnessProofs);
         var existingWitness = ParseRequiredWitnessContent(
-            updateOptions.CurrentWitnessContent, nameof(updateOptions.CurrentWitnessContent));
+            updateOptions.CurrentWitnessContent,
+            nameof(updateOptions.CurrentWitnessContent),
+            ct);
 
         // Parse and validate existing log
         var entries = LogEntrySerializer.ParseJsonLines(updateOptions.CurrentLogContent);
@@ -726,12 +743,15 @@ public sealed class DidWebVhMethod : DidMethodBase
     /// dishonest Success (issue #135 review round 2, finding 2). Returns null only when no
     /// content was supplied.
     /// </summary>
-    private static WitnessFile? ParseRequiredWitnessContent(byte[]? content, string paramName)
+    private static WitnessFile? ParseRequiredWitnessContent(
+        byte[]? content,
+        string paramName,
+        CancellationToken ct)
     {
         if (content is null)
             return null;
 
-        var parsed = WitnessValidator.ParseWitnessFile(content, out var witnessParseError);
+        var parsed = WitnessValidator.ParseWitnessFile(content, out var witnessParseError, ct);
         return parsed ?? throw new ArgumentException(
             "CurrentWitnessContent is not a parseable did:webvh v1.0 did-witness.json " +
             $"({witnessParseError}). Fix the file (a pre-3.2 NetDid file needs the " +
@@ -754,7 +774,9 @@ public sealed class DidWebVhMethod : DidMethodBase
         // without CurrentWitnessContent to publish the supplied proofs alone.
         var witnessProofs = SnapshotWitnessProofs(deactivateOptions.WitnessProofs);
         var existingWitness = ParseRequiredWitnessContent(
-            deactivateOptions.CurrentWitnessContent, nameof(deactivateOptions.CurrentWitnessContent));
+            deactivateOptions.CurrentWitnessContent,
+            nameof(deactivateOptions.CurrentWitnessContent),
+            ct);
 
         // Parse and validate existing log
         var entries = LogEntrySerializer.ParseJsonLines(deactivateOptions.CurrentLogContent);

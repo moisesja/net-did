@@ -569,24 +569,44 @@
   drops signature-bound members (`id`/`expires`/`nonce`/extensions): a conforming proof with
   `expires` is rejected, republish corrupts it, and — the real hole — an attacker appends an
   UNSIGNED member and the truncated original still verifies. The pipeline strips the whole
-  `proof` member before hashing the document, so verifying one proof in an isolated
-  `{"versionId":X,"proof":[<that proof>]}` secured doc is correct (reduces to bare
-  `{"versionId":X}`); other proofs for the same version need not be present. This mirrors the
-  #101 controller-proof lesson — the witness path had drifted from it. (PR #143 review round 2, F1.)
+  `proof` member before hashing the document, but that does NOT make singleton verification
+  universally correct: a selected proof carrying `previousProof` is valid only with its complete
+  same-version dependency closure present and verified. Supply that closure to the pipeline,
+  charge every actual dependency verification to the resource ledger, and count only the selected
+  configured witness as a vote. (PR #143 review rounds 2-3, F1/R3-F1.)
 - A witness/threshold verifier over untrusted input needs a CPU bound, not just a byte-cap:
   `created` is signer-chosen so one key mints unlimited distinct valid proofs, and a <=1 MiB
-  file holds thousands. Bound it with ONE shared per-run session: index the file once, memoize
-  each proof's verdict (reference-keyed — the index owns the canonical instance) across every
-  governed entry so cumulative coverage reuses verdicts instead of re-verifying O(entries×proofs),
-  pre-filter unconfigured/duplicate/wrong-purpose/wrong-VM-form signers BEFORE any cryptography,
-  stop per-entry scanning at the threshold, honor cancellation, and enforce a configurable
-  verification budget that fails closed. Memo soundness precondition: each proof instance is filed
-  under exactly ONE chain-validated versionId, so its single verdict is for exactly one secured
-  document. (PR #143 review round 2, F5.)
+  file holds thousands. Bound it with ONE resolution-local session shared across every validation
+  pass in that resolution (including historical prefix + deactivation tail): index the file once,
+  key semantic identity by JCS of the COMPLETE proof object, bind every indexed proof to one filed
+  versionId, memoize verdicts, and keep one remaining-work ledger. A crypto budget alone is not a
+  total-work bound: avoid entry×suffix rescans with descending per-signer cursors, build configured
+  signer membership once for O(1) proof filtering, check a repeated-policy reference cache BEFORE
+  revalidating its full witness list, materialize only selected dependency nodes (never scan a whole
+  version bucket per candidate), check cancellation around bounded JSON/JCS work and within every
+  library-owned loop, and stop when each distinct policy threshold is met. (PR #143 review rounds
+  2-3, F5/R3-F2/R3-F4 and adversarial follow-up.)
+- A Data Integrity pipeline's per-proof result can be locally true while the overall proof set is
+  false because that proof's `previousProof` ancestor failed. Never memoize raw individual true
+  results from a failed aggregate. Cache the candidate false; cache closure members true only when
+  the entire closure succeeds. Otherwise a later policy can consume a poisoned intermediate verdict
+  and accept a chain with an invalid or expired root. (PR #143 round-3 adversarial follow-up.)
+- Canonicalization is an untrusted-input boundary too. Syntactically valid JSON can be outside JCS's
+  numeric data model (for example `1e400`); convert that proof to an invalid candidate instead of
+  letting canonicalization escape resolution as `notFound` or contaminate optional historical-tail
+  isolation. Normalize public parser edge states such as undefined/disposed `JsonElement` to the
+  documented exception type. (PR #143 round-3 adversarial follow-up.)
 - "Consume whenever supplied" beats "consume only alongside a new batch": a parse-and-throw guard
   nested under `if (newProofs.Count > 0)` lets garbage/legacy `CurrentWitnessContent` pass silently
   when the caller sends no new proofs — the exact silent-ignore class the fix claimed to close.
   Hoist supplied-input validation above the batch check. And a merge that REPLACES a version's
-  aggregate breaks incremental collection (republish-as-approvals-arrive): APPEND + dedupe
-  byte-identical, or a second publish sinks an already-satisfied threshold. (PR #143 review round 2,
-  F2+F4.)
+  aggregate breaks incremental collection (republish-as-approvals-arrive): APPEND + dedupe by JCS
+  of the complete proof object, never by raw-text provenance or only the modeled subset. Otherwise
+  parsed-vs-programmatic copies grow the artifact, while modeled-only identity collapses distinct
+  signed extensions. (PR #143 review rounds 2-3, F2+F4/R3-F3.)
+- A public API that accepts externally produced signed JSON needs one authoritative representation.
+  Do not make a raw-JSON field publicly settable beside modeled authorization fields: a caller can
+  claim configured signer B in the model while the raw signature names A. Expose a strict public
+  parser/factory that rejects duplicate members, derives every modeled field from those same bytes,
+  and retains the complete object behind an internal setter. Keep the simple object-initializer path
+  for the library's modeled proof shape. (PR #143 review round 3, R3-F5.)

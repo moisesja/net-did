@@ -72,30 +72,50 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   parse instead of invalidating the whole file; a proof with a null `Created` serializes
   without the member rather than as JSON `null`.
 
-- **did:webvh witness trust boundary hardened** (PR #143 review round 2).
+- **did:webvh witness trust boundary hardened** (PR #143 review rounds 2–3).
   - Witness proofs are verified through DataProofsDotnet's `DataIntegrityProofPipeline` with
     their **complete wire configuration**: signature-bound members outside the modeled set
     (`id`, `expires`, `nonce`, extensions) are honored during verification and preserved
     byte-for-byte on republish, and an unsigned member injected into a wire proof now fails
-    verification instead of being truncated away.
+    verification instead of being truncated away. Callers ingest complete externally produced
+    proof objects through the new duplicate-rejecting `DataIntegrityProofValue.Parse(string)` or
+    `FromJson(JsonElement)` factories; modeled authorization fields and preserved raw JSON are
+    derived from the same object, while the raw setter remains internal.
   - A witness proof's verificationMethod must use the spec's strict
     `did:key:<multibase>#<multibase>` form; the bare-DID form is no longer counted (conforming
     resolvers discard it).
+  - A configured candidate carrying `previousProof` is verified with its complete same-version
+    dependency closure. Dangling, ambiguous, repeated, and cyclic references fail closed. A
+    dependency may be signed by an unconfigured key because it supplies Data Integrity context,
+    but only the configured candidate signer can contribute a threshold approval; every proof
+    actually processed by the pipeline is charged to the resolution budget. Positive dependency
+    verdicts are memoized only after the complete closure succeeds, preventing an individually
+    valid child of an invalid ancestor from poisoning a later policy check.
   - `CurrentWitnessContent` is consumed whenever supplied — with or without a new
     `WitnessProofs` batch — republished in the artifact, and rejected with `ArgumentException`
     when unparseable instead of being silently ignored.
   - `MergeWitnessProofs` **appends** same-version proofs (witness collection is incremental)
-    and deduplicates byte-identical ones; replacement could sink an already
+    and deduplicates semantically identical complete proof objects by JCS-canonical JSON. Thus
+    parser provenance, formatting, and property order cannot create duplicates, while signed
+    extension members remain part of proof identity. Replacement could sink an already
     threshold-satisfying version below its threshold.
   - Caller-supplied `WitnessProofs` collections (outer and nested lists) are snapshotted
     exactly once at each public operation boundary, before any await, closing the
     changing-enumerator TOCTOU.
-  - Witness verification work is bounded: the file is indexed once, per-proof verdicts are
-    memoized across governed entries, unconfigured/duplicate/wrong-purpose signers are
-    skipped before any cryptography, per-entry scanning stops at the threshold, cancellation
-    is honored, and a configurable per-resolution verification budget fails closed when
-    exhausted (new `DidWebVhMethod` constructor overload, default
-    `DefaultMaxWitnessProofVerifications` = 1024).
+  - Witness verification work is bounded and near-linear: the file is indexed once per resolution,
+    each repeated effective policy object is validated once, configured signer membership is
+    indexed once per validation pass, signer coverage cursors advance monotonically instead of
+    rescanning every version suffix, and dependency materialization orders only the selected
+    closure instead of rescanning its full proof bucket. Cancellation is checked around bounded
+    JSON/JCS operations and throughout library-owned indexing and traversal loops. JCS-invalid
+    proof data is treated as an invalid proof instead of escaping as `notFound` or invalidating an
+    independently valid historical prefix. One
+    resolution-local proof-verdict and crypto-budget ledger is shared across the requested-prefix
+    and deactivation-tail passes; it is neither a process singleton nor reset per pass. The
+    configurable budget fails closed when exhausted
+    (default `DefaultMaxWitnessProofVerifications` = 1024). Direct construction uses the new
+    `DidWebVhMethod` overload; DI uses the additive three-parameter `AddDidWebVh` overload that
+    accepts both controller- and witness-proof budgets. Existing signatures retain both defaults.
 
 - **did:webvh witness-file parse failures are now diagnosable.** `ParseWitnessFile` rejects
   duplicate JSON members outright (same trust-boundary rule as the log-entry parser, #101),

@@ -1,3 +1,5 @@
+using System.Text.Json;
+
 namespace NetDid.Method.WebVh.Model;
 
 /// <summary>
@@ -23,6 +25,60 @@ namespace NetDid.Method.WebVh.Model;
 /// </remarks>
 public sealed class DataIntegrityProofValue
 {
+    /// <summary>
+    /// Parses a complete Data Integrity proof object while retaining its full JSON wire form.
+    /// Unknown signature-bound members are preserved in <see cref="RawJson"/>. Duplicate JSON
+    /// members are rejected recursively.
+    /// </summary>
+    /// <param name="json">A JSON object containing one Data Integrity proof.</param>
+    /// <returns>A proof whose modeled fields and raw wire form come from the same JSON object.</returns>
+    /// <exception cref="ArgumentNullException"><paramref name="json"/> is <c>null</c>.</exception>
+    /// <exception cref="JsonException">
+    /// The input is not a duplicate-free proof object with the required string members.
+    /// </exception>
+    public static DataIntegrityProofValue Parse(string json)
+    {
+        ArgumentNullException.ThrowIfNull(json);
+        try
+        {
+            using var document = JsonDocument.Parse(
+                json, new JsonDocumentOptions { AllowDuplicateProperties = false });
+            return FromDuplicateFreeJson(document.RootElement);
+        }
+        catch (InvalidOperationException ex)
+        {
+            throw new JsonException("The Data Integrity proof contains an invalid JSON value.", ex);
+        }
+    }
+
+    /// <summary>
+    /// Creates a proof from a JSON element while retaining its full JSON wire form. The element
+    /// is reparsed with duplicate-member rejection so callers cannot bypass the same trust-boundary
+    /// guarantee provided by <see cref="Parse"/>.
+    /// </summary>
+    /// <param name="element">A JSON object containing one Data Integrity proof.</param>
+    /// <returns>A proof whose modeled fields and raw wire form come from the same JSON object.</returns>
+    /// <exception cref="JsonException">
+    /// The input is not a duplicate-free proof object with the required string members.
+    /// </exception>
+    public static DataIntegrityProofValue FromJson(JsonElement element)
+    {
+        try
+        {
+            if (element.ValueKind == JsonValueKind.Undefined)
+                throw new JsonException("A Data Integrity proof must be a JSON object.");
+
+            using var document = JsonDocument.Parse(
+                element.GetRawText(),
+                new JsonDocumentOptions { AllowDuplicateProperties = false });
+            return FromDuplicateFreeJson(document.RootElement);
+        }
+        catch (InvalidOperationException ex)
+        {
+            throw new JsonException("The Data Integrity proof contains an invalid JSON value.", ex);
+        }
+    }
+
     /// <summary>Always "DataIntegrityProof".</summary>
     public required string Type { get; init; }
 
@@ -57,4 +113,41 @@ public sealed class DataIntegrityProofValue
     /// members above (the shape NetDid emits when it creates a proof).
     /// </summary>
     public string? RawJson { get; internal init; }
+
+    private static DataIntegrityProofValue FromDuplicateFreeJson(JsonElement element)
+    {
+        if (element.ValueKind != JsonValueKind.Object)
+            throw new JsonException("A Data Integrity proof must be a JSON object.");
+
+        string? created = null;
+        if (element.TryGetProperty("created", out var createdElement))
+        {
+            if (createdElement.ValueKind != JsonValueKind.String)
+                throw new JsonException("Data Integrity proof member 'created' must be a string.");
+            created = createdElement.GetString();
+        }
+
+        return new DataIntegrityProofValue
+        {
+            Type = GetRequiredString(element, "type"),
+            Cryptosuite = GetRequiredString(element, "cryptosuite"),
+            VerificationMethod = GetRequiredString(element, "verificationMethod"),
+            Created = created,
+            ProofPurpose = GetRequiredString(element, "proofPurpose"),
+            ProofValue = GetRequiredString(element, "proofValue"),
+            RawJson = element.GetRawText()
+        };
+    }
+
+    private static string GetRequiredString(JsonElement element, string propertyName)
+    {
+        if (!element.TryGetProperty(propertyName, out var value)
+            || value.ValueKind != JsonValueKind.String)
+        {
+            throw new JsonException(
+                $"Data Integrity proof member '{propertyName}' must be a string.");
+        }
+
+        return value.GetString()!;
+    }
 }
