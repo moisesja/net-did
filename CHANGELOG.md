@@ -33,16 +33,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   document, so no key rename can rescue them; affected DIDs must have their witness proofs
   re-collected. If an external witness toolchain produced spec-conformant proofs that NetDid
   merely stored under the legacy `proofs` key, renaming that member to `proof` in the
-  published file restores validity. During `Update`/`Deactivate`, legacy
-  `CurrentWitnessContent` no longer round-trips: it fails to parse, is logged, and is not
-  merged into the new artifact.
+  published file restores validity. **`Update`/`Deactivate` now throw `ArgumentException`
+  when a supplied `CurrentWitnessContent` cannot be parsed** (including the legacy `proofs`
+  dialect, rejected as an explicit migration tripwire) instead of silently publishing a
+  witness artifact stripped of the existing proofs; retry with the file fixed, or omit
+  `CurrentWitnessContent` to publish only the supplied `WitnessProofs`.
+
+- **did:webvh witness validation follows the spec's proof-wise algorithm** (adversarial
+  review of the #135 fix). A version's approvals may legitimately be split across
+  duplicate-`versionId` witness-file entries — the ts reference implementation authors one
+  entry per proof — and are now aggregated in both validation and
+  `MergeWitnessProofs` (which previously kept only the last duplicate, shedding proofs on
+  republish). Witness proofs must carry `proofPurpose: assertionMethod` to count, matching
+  the reference resolvers' threshold arithmetic. Proof-less entries (`versionId` only, a
+  transient state the spec anticipates) and proofs without the optional `created` member now
+  parse instead of invalidating the whole file; a proof with a null `Created` serializes
+  without the member rather than as JSON `null`.
 
 - **did:webvh witness-file parse failures are now diagnosable.** `ParseWitnessFile` rejects
   duplicate JSON members outright (same trust-boundary rule as the log-entry parser, #101),
-  narrows its blanket `catch` to the JSON-access exception set, and reports the parse reason
-  through a new overload; `DidWebVhMethod` logs that reason wherever a witness file is
-  consumed, so a malformed file no longer surfaces as a bare `witnessValidationFailed` with
-  no diagnostic.
+  rejects non-string `versionId` values (previously a crash through `Update`/`Deactivate`
+  merging), narrows its blanket `catch` to the JSON-access exception set, and reports the
+  parse reason through a new overload; `DidWebVhMethod` logs that reason wherever a witness
+  file is consumed, so a malformed file no longer surfaces as a bare
+  `witnessValidationFailed` with no diagnostic. The reason is bounded by construction (type
+  name plus numeric position, or fixed library text) — exception messages are never echoed,
+  since System.Text.Json embeds hostile member names in them.
 
 ### Added
 
