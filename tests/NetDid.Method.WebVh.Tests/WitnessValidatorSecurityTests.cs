@@ -35,15 +35,15 @@ public class WitnessValidatorSecurityTests
         };
         var genesisProof = await SignEntryAsync(entries[0], witnessSigner);
         var genesisOnly = WitnessFileFor((entries[0], new[] { genesisProof }));
-        var validator = new WitnessValidator(_suite);
+        var validator = new WitnessValidator();
 
-        validator.ValidateAllWitnesses(genesisOnly, entries, 1, postMergeParameters)
+        (await validator.ValidateAllWitnessesAsync(genesisOnly, entries, 1, postMergeParameters))
             .Should().BeFalse("the disabling entry is governed by the preceding witness policy");
 
         var updateProof = await SignEntryAsync(entries[1], witnessSigner);
         var updateOnly = WitnessFileFor((entries[1], new[] { updateProof }));
 
-        validator.ValidateAllWitnesses(updateOnly, entries, 1, postMergeParameters)
+        (await validator.ValidateAllWitnessesAsync(updateOnly, entries, 1, postMergeParameters))
             .Should().BeTrue("a valid proof on the policy transition also covers genesis");
     }
 
@@ -62,20 +62,20 @@ public class WitnessValidatorSecurityTests
             new LogEntryParameters(),
             new LogEntryParameters { Witness = requiredPolicy }
         };
-        var validator = new WitnessValidator(_suite);
+        var validator = new WitnessValidator();
 
         WitnessValidator.RequiresWitness(postMergeParameters, upToIndex: 1).Should().BeTrue(
             "the first positive witness policy is immediately active");
-        validator.ValidateAllWitnesses(
-                new WitnessFile { Entries = [] }, entries, 1, postMergeParameters)
+        (await validator.ValidateAllWitnessesAsync(
+                new WitnessFile { Entries = [] }, entries, 1, postMergeParameters))
             .Should().BeFalse("the enabling entry itself must be witnessed");
 
         var activationProof = await SignEntryAsync(entries[1], signer);
-        validator.ValidateAllWitnesses(
+        (await validator.ValidateAllWitnessesAsync(
                 WitnessFileFor((entries[1], new[] { activationProof })),
                 entries,
                 1,
-                postMergeParameters)
+                postMergeParameters))
             .Should().BeTrue();
     }
 
@@ -101,15 +101,15 @@ public class WitnessValidatorSecurityTests
             new LogEntryParameters { Witness = loweredPolicy }
         };
         var proofOne = await SignEntryAsync(entries[1], witnessOne);
-        var validator = new WitnessValidator(_suite);
+        var validator = new WitnessValidator();
 
-        validator.ValidateAllWitnesses(
-                WitnessFileFor((entries[1], new[] { proofOne })), entries, 1, parameters)
+        (await validator.ValidateAllWitnessesAsync(
+                WitnessFileFor((entries[1], new[] { proofOne })), entries, 1, parameters))
             .Should().BeFalse("the lowering entry must still meet the old threshold of two");
 
         var proofTwo = await SignEntryAsync(entries[1], witnessTwo);
-        validator.ValidateAllWitnesses(
-                WitnessFileFor((entries[1], new[] { proofOne, proofTwo })), entries, 1, parameters)
+        (await validator.ValidateAllWitnessesAsync(
+                WitnessFileFor((entries[1], new[] { proofOne, proofTwo })), entries, 1, parameters))
             .Should().BeTrue();
     }
 
@@ -135,22 +135,22 @@ public class WitnessValidatorSecurityTests
         var oldProofOnReplacement = await SignEntryAsync(entries[1], oldSigner);
         var newProofOnReplacement = await SignEntryAsync(entries[1], newSigner);
         var newProofAfterReplacement = await SignEntryAsync(entries[2], newSigner);
-        var validator = new WitnessValidator(_suite);
+        var validator = new WitnessValidator();
 
-        validator.ValidateAllWitnesses(
+        (await validator.ValidateAllWitnessesAsync(
                 WitnessFileFor((entries[1], new[] { newProofOnReplacement })),
                 entries,
                 1,
-                parameters)
+                parameters))
             .Should().BeFalse("the replacement entry is still governed by the old witness");
 
-        validator.ValidateAllWitnesses(
+        (await validator.ValidateAllWitnessesAsync(
                 WitnessFileFor(
                     (entries[1], new[] { oldProofOnReplacement }),
                     (entries[2], new[] { newProofAfterReplacement })),
                 entries,
                 2,
-                parameters)
+                parameters))
             .Should().BeTrue("the replacement governs the following entry");
     }
 
@@ -173,13 +173,13 @@ public class WitnessValidatorSecurityTests
         var validTwo = await SignEntryAsync(entry, witnessTwo);
         var invalidOne = CopyWithProofValue(validOne, "z0");
         var witnessFile = WitnessFileFor((entry, new[] { invalidOne, validOne, validTwo }));
-        var validator = new WitnessValidator(_suite);
+        var validator = new WitnessValidator();
 
-        validator.ValidateAllWitnesses(
+        (await validator.ValidateAllWitnessesAsync(
                 witnessFile,
                 new[] { entry },
                 upToIndex: 0,
-                new[] { new LogEntryParameters { Witness = policy } })
+                new[] { new LogEntryParameters { Witness = policy } }))
             .Should().BeTrue("only a successfully verified proof may consume a witness vote");
     }
 
@@ -202,13 +202,13 @@ public class WitnessValidatorSecurityTests
         };
         var entry = CreateEntry(1, policy);
         var proof = await SignEntryAsync(entry, signer);
-        var validator = new WitnessValidator(_suite);
+        var validator = new WitnessValidator();
 
-        validator.ValidateAllWitnesses(
+        (await validator.ValidateAllWitnessesAsync(
                 WitnessFileFor((entry, new[] { proof })),
                 new[] { entry },
                 upToIndex: 0,
-                new[] { new LogEntryParameters { Witness = policy } })
+                new[] { new LogEntryParameters { Witness = policy } }))
             .Should().BeFalse("configured witness identity must exactly match the verified signer key");
     }
 
@@ -219,12 +219,12 @@ public class WitnessValidatorSecurityTests
         var policy = PolicyFor(signer, threshold: 2);
         var entry = CreateEntry(1, policy);
         var proof = await SignEntryAsync(entry, signer);
-        var validator = new WitnessValidator(_suite);
+        var validator = new WitnessValidator();
 
-        validator.ValidateWitnesses(
+        (await validator.ValidateWitnessesAsync(
                 WitnessFileFor((entry, new[] { proof, proof })),
                 entry,
-                policy)
+                policy))
             .Should().BeFalse("repeating one valid proof cannot multiply that witness's weight");
     }
 
@@ -245,13 +245,13 @@ public class WitnessValidatorSecurityTests
         var entry = CreateEntry(1, policy);
         var proofOne = await SignEntryAsync(entry, witnessOne);
         var proofTwo = await SignEntryAsync(entry, witnessTwo);
-        var validator = new WitnessValidator(_suite);
+        var validator = new WitnessValidator();
 
-        validator.ValidateWitnesses(
-                WitnessFileFor((entry, new[] { proofOne })), entry, policy)
+        (await validator.ValidateWitnessesAsync(
+                WitnessFileFor((entry, new[] { proofOne })), entry, policy))
             .Should().BeFalse("one verified witness is one approval regardless of legacy weight");
-        validator.ValidateWitnesses(
-                WitnessFileFor((entry, new[] { proofOne, proofTwo })), entry, policy)
+        (await validator.ValidateWitnessesAsync(
+                WitnessFileFor((entry, new[] { proofOne, proofTwo })), entry, policy))
             .Should().BeTrue("two distinct verified witnesses satisfy threshold two");
     }
 

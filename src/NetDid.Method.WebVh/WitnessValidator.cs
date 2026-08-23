@@ -8,56 +8,60 @@ namespace NetDid.Method.WebVh;
 /// <summary>
 /// Validates witness proofs against the configured witness threshold.
 /// </summary>
+/// <remarks>
+/// Witness proofs are W3C Data Integrity proofs and are verified by DataProofsDotnet's
+/// <see cref="DataIntegrityProofPipeline"/> with their <b>complete</b> proof configuration —
+/// the wire JSON captured at parse time (<see cref="DataIntegrityProofValue.RawJson"/>) is the
+/// verification input, so signature-bound members outside the modeled set (<c>id</c>,
+/// <c>expires</c>, <c>nonce</c>, extensions) are neither dropped before verification nor lost
+/// on republish, and an unsigned injected member fails verification instead of being silently
+/// truncated away (issue #135 review round 2, finding 1).
+/// </remarks>
 internal sealed class WitnessValidator
 {
-    private readonly EddsaJcs2022Cryptosuite _suite;
+    /// <summary>
+    /// Default cap on Data Integrity verifications per validation run. This is a resolver
+    /// resource policy, not a conformance limit: `created` is signer-chosen, so one witness key
+    /// can mint unlimited distinct proofs, and a &lt;=1 MiB witness file can carry thousands —
+    /// the byte cap alone is not a CPU cap (issue #135 review round 2, finding 5). Proofs are
+    /// deduplicated, memoized, and pre-filtered by configured-signer membership before any
+    /// cryptography, and per-entry scanning stops at the threshold, so honest files spend at
+    /// most (governed entries × threshold) attempts; the budget bounds the dishonest remainder.
+    /// </summary>
+    public const int DefaultMaxProofVerifications = 1024;
 
-    public WitnessValidator(EddsaJcs2022Cryptosuite suite)
+    private readonly DataIntegrityProofPipeline _pipeline = new();
+    private readonly int _maxProofVerifications;
+
+    public WitnessValidator(int maxProofVerifications = DefaultMaxProofVerifications)
     {
-        _suite = suite;
+        if (maxProofVerifications < 1)
+            throw new ArgumentOutOfRangeException(nameof(maxProofVerifications),
+                "At least one witness proof verification must be allowed.");
+        _maxProofVerifications = maxProofVerifications;
     }
 
     /// <summary>
     /// Validate witness proofs for a log entry.
     /// Returns true if the count of distinct valid witness proofs meets the threshold.
     /// This entry-local helper is retained for direct validation and focused tests;
-    /// production resolution uses <see cref="ValidateAllWitnesses"/> so later proofs
+    /// production resolution uses <see cref="ValidateAllWitnessesAsync"/> so later proofs
     /// can provide cumulative coverage for earlier governed entries.
     /// </summary>
-    public bool ValidateWitnesses(
+    public async Task<bool> ValidateWitnessesAsync(
         WitnessFile witnessFile,
         LogEntry entry,
-        WitnessConfig witnessConfig)
+        WitnessConfig witnessConfig,
+        CancellationToken ct = default)
     {
         if (WitnessPolicyValidator.GetValidationError(witnessConfig) is not null)
             return false;
         if (witnessConfig.IsDisabled)
             return true;
 
-        // The data that witnesses signed is the {"versionId": ...} document (issue #135)
-        var signedDocumentJson = SerializeWitnessSignedDocument(entry.VersionId);
-
-        var approvalCount = 0;
-        var countedSignerKeys = new HashSet<string>(StringComparer.Ordinal);
-
-        // Aggregate across ALL entries carrying this versionId: the spec's algorithm is
-        // proof-wise, and the ts reference implementation authors one array entry per proof,
-        // so a version's approvals legitimately arrive split over duplicate-versionId entries.
-        foreach (var witnessProof in ProofsForVersion(witnessFile, entry.VersionId))
-        {
-            var signerKey = WebVhProofVerifier.VerifyAndExtractSigner(
-                _suite, signedDocumentJson, witnessProof);
-            if (signerKey is null)
-                continue;
-
-            var witness = FindWitnessForSigner(witnessConfig, signerKey);
-            if (witness is null || !countedSignerKeys.Add(signerKey))
-                continue;
-
-            approvalCount++;
-        }
-
-        return approvalCount >= witnessConfig.Threshold;
+        var session = new VerificationSession(witnessFile, _maxProofVerifications);
+        return await ValidateEntryThresholdAsync(
+            session, [entry], entryIndex: 0, upToIndex: 0, witnessConfig, ct).ConfigureAwait(false);
     }
 
     /// <summary>
@@ -65,20 +69,36 @@ internal sealed class WitnessValidator
     /// Per spec, a valid witness proof at version j satisfies the witness requirement
     /// for all versions &lt;= j (cumulative coverage).
     /// </summary>
-    public bool ValidateAllWitnesses(
+    public async Task<bool> ValidateAllWitnessesAsync(
         WitnessFile witnessFile,
         IReadOnlyList<LogEntry> entries,
         int upToIndex,
-        IReadOnlyList<LogEntryParameters> perEntryParams)
+        IReadOnlyList<LogEntryParameters> perEntryParams,
+        CancellationToken ct = default)
     {
+        // One session per run: the proof index, the per-proof verification memo, and the
+        // verification budget are shared across every governed entry, so cumulative coverage
+        // re-USES a proof's verdict instead of re-verifying it per entry.
+        var session = new VerificationSession(witnessFile, _maxProofVerifications);
+
         for (int i = 0; i <= upToIndex; i++)
         {
+            ct.ThrowIfCancellationRequested();
+
             var witnessConfig = GetAuthorizingWitnessConfig(perEntryParams, i);
             if (witnessConfig is not { Threshold: > 0 })
                 continue; // This entry does not require witnessing
 
-            if (!ValidateWitnessesWithCoverage(witnessFile, entries, i, upToIndex, witnessConfig))
+            if (WitnessPolicyValidator.GetValidationError(witnessConfig) is not null)
                 return false;
+            if (witnessConfig.IsDisabled)
+                continue;
+
+            if (!await ValidateEntryThresholdAsync(
+                    session, entries, i, upToIndex, witnessConfig, ct).ConfigureAwait(false))
+            {
+                return false;
+            }
         }
 
         return true;
@@ -106,50 +126,104 @@ internal sealed class WitnessValidator
     /// <summary>
     /// Validate witness coverage for a specific entry by checking proofs at this version
     /// or any later version up to upToIndex. A later proof implies approval of all
-    /// prior entries. Each verified signer key is counted only once.
+    /// prior entries. Each verified signer key is counted only once per entry, scanning
+    /// stops as soon as the threshold is met, and every skip that needs no cryptography
+    /// (unconfigured or already-counted declared signer, wrong declared purpose, memoized
+    /// verdict) happens before the budgeted pipeline call.
     /// </summary>
-    private bool ValidateWitnessesWithCoverage(
-        WitnessFile witnessFile,
+    private async Task<bool> ValidateEntryThresholdAsync(
+        VerificationSession session,
         IReadOnlyList<LogEntry> entries,
         int entryIndex,
         int upToIndex,
-        WitnessConfig witnessConfig)
+        WitnessConfig witnessConfig,
+        CancellationToken ct)
     {
-        if (WitnessPolicyValidator.GetValidationError(witnessConfig) is not null)
-            return false;
-        if (witnessConfig.IsDisabled)
-            return true;
-
         var approvalCount = 0;
         var countedSignerKeys = new HashSet<string>(StringComparer.Ordinal);
 
-        // Check proofs from this version through the latest validated version
+        // Check proofs from this version through the latest validated version. The signed
+        // document is built from the CHAIN-VALIDATED entry's versionId, never the witness
+        // file's claimed key, so an approval only ever counts toward a version this log proves.
         for (int j = entryIndex; j <= upToIndex; j++)
         {
-            // Verify proofs against the {"versionId": ...} document witnesses actually sign.
-            // The versionId is taken from the chain-validated entry, not the witness file's
-            // claimed key, so an approval only ever counts toward a version this log proves.
-            // Duplicate-versionId entries aggregate (one-entry-per-proof authoring is valid).
-            var signedDocumentJson = SerializeWitnessSignedDocument(entries[j].VersionId);
+            ct.ThrowIfCancellationRequested();
 
-            foreach (var witnessProof in ProofsForVersion(witnessFile, entries[j].VersionId))
+            if (!session.ProofsByVersion.TryGetValue(entries[j].VersionId, out var proofs))
+                continue;
+
+            foreach (var witnessProof in proofs)
             {
-                // A malformed proof must not consume the witness's one counted vote. Derive the
-                // signer only from a successfully verified proof, then bind one approval to that
-                // exact configured did:key rather than to a verificationMethod string prefix.
-                var signerKey = WebVhProofVerifier.VerifyAndExtractSigner(_suite, signedDocumentJson, witnessProof);
-                if (signerKey is null)
+                // Pre-filters, cheapest first — none of these consume the verification budget.
+                // The declared verificationMethod and proofPurpose are part of the signed proof
+                // configuration, so a proof can never verify under a different signer or
+                // purpose than it declares; filtering on the declared values is sound.
+                if (!string.Equals(witnessProof.ProofPurpose, "assertionMethod", StringComparison.Ordinal))
                     continue;
 
-                var witness = FindWitnessForSigner(witnessConfig, signerKey);
-                if (witness is null || !countedSignerKeys.Add(signerKey))
+                var declaredSigner =
+                    WebVhProofVerifier.ExtractWitnessDidKeyMultibase(witnessProof.VerificationMethod);
+                if (declaredSigner is null
+                    || countedSignerKeys.Contains(declaredSigner)
+                    || FindWitnessForSigner(witnessConfig, declaredSigner) is null)
+                {
+                    continue;
+                }
+
+                if (!session.VerifiedByProof.TryGetValue(witnessProof, out var verified))
+                {
+                    if (session.RemainingVerifications <= 0)
+                        return false; // Budget exhausted with the threshold unmet: fail closed.
+                    session.RemainingVerifications--;
+
+                    verified = await VerifyWitnessProofAsync(
+                        entries[j].VersionId, entries[j].VersionTime, witnessProof, ct)
+                        .ConfigureAwait(false);
+                    session.VerifiedByProof[witnessProof] = verified;
+                }
+
+                if (!verified || !countedSignerKeys.Add(declaredSigner))
                     continue;
 
                 approvalCount++;
+                if (approvalCount >= witnessConfig.Threshold)
+                    return true;
             }
         }
 
         return approvalCount >= witnessConfig.Threshold;
+    }
+
+    /// <summary>
+    /// Verifies one witness proof — with its complete wire configuration — over the
+    /// spec's signed document for the version it is filed under. Fail closed on anything
+    /// unexpected; a verification path must never throw for hostile input.
+    /// </summary>
+    private async Task<bool> VerifyWitnessProofAsync(
+        string versionId,
+        DateTimeOffset versionTime,
+        DataIntegrityProofValue witnessProof,
+        CancellationToken ct)
+    {
+        var options = new ProofVerificationOptions
+        {
+            ExpectedProofPurpose = "assertionMethod",
+            VerificationTime = versionTime
+        };
+
+        try
+        {
+            var securedDocumentJson = SerializeSecuredWitnessDocument(versionId, witnessProof);
+            using var document = JsonDocument.Parse(securedDocumentJson);
+            var result = await _pipeline.VerifyAsync(
+                document.RootElement, WebVhWitnessKeyResolver.Instance, options, ct)
+                .ConfigureAwait(false);
+            return result.Verified;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            return false;
+        }
     }
 
     private static WitnessConfig? GetAuthorizingWitnessConfig(
@@ -177,38 +251,78 @@ internal sealed class WitnessValidator
     private sealed class WitnessFileFormatException(string message) : JsonException(message);
 
     /// <summary>
-    /// The document a witness signs, per did:webvh v1.0 "DID Witnesses": a Data Integrity proof
-    /// that "use[s] the versionId as input data" — the JCS document <c>{"versionId": "..."}</c>.
-    /// The versionId embeds the entry hash that chain validation independently recomputes over
-    /// the full entry content before witness validation runs, so a witness approval transitively
-    /// binds the whole entry. (Issue #135: verifying against the entry serialized without proof
+    /// Per-validation-run state: the witness file indexed by versionId with byte-identical
+    /// duplicates removed, the per-proof verification memo (reference-keyed — the index holds
+    /// the canonical instance of each distinct proof), and the remaining verification budget.
+    /// A proof is only ever verified against the signed document of the version it is filed
+    /// under, so one memoized verdict per proof instance is complete.
+    /// </summary>
+    private sealed class VerificationSession
+    {
+        public Dictionary<string, List<DataIntegrityProofValue>> ProofsByVersion { get; }
+        public Dictionary<DataIntegrityProofValue, bool> VerifiedByProof { get; } =
+            new(ReferenceEqualityComparer.Instance);
+        public int RemainingVerifications;
+
+        public VerificationSession(WitnessFile witnessFile, int maxProofVerifications)
+        {
+            RemainingVerifications = maxProofVerifications;
+            ProofsByVersion = new Dictionary<string, List<DataIntegrityProofValue>>(StringComparer.Ordinal);
+
+            // Duplicate-versionId entries aggregate: the spec's algorithm is proof-wise and the
+            // ts reference implementation authors one array entry per proof. Byte-identical
+            // duplicates within a version are dropped here so they can never consume budget —
+            // a value tuple so nullable components compare independently (null != "").
+            var seen = new HashSet<(string, string?, string, string, string, string?, string, string)>();
+            foreach (var entry in witnessFile.Entries)
+            {
+                foreach (var proof in entry.Proofs)
+                {
+                    if (!seen.Add((entry.VersionId, proof.RawJson, proof.Type, proof.Cryptosuite,
+                            proof.VerificationMethod, proof.Created, proof.ProofPurpose, proof.ProofValue)))
+                    {
+                        continue;
+                    }
+
+                    if (!ProofsByVersion.TryGetValue(entry.VersionId, out var proofs))
+                    {
+                        proofs = [];
+                        ProofsByVersion[entry.VersionId] = proofs;
+                    }
+
+                    proofs.Add(proof);
+                }
+            }
+        }
+    }
+
+    /// <summary>
+    /// The secured document for one witness proof, per did:webvh v1.0 "DID Witnesses": a Data
+    /// Integrity proof that "use[s] the versionId as input data" — the JCS document
+    /// <c>{"versionId": "..."}</c> secured by the proof under test. The versionId embeds the
+    /// entry hash that chain validation independently recomputes over the full entry content
+    /// before witness validation runs, so a witness approval transitively binds the whole
+    /// entry. The proof is emitted with full wire fidelity so its complete signed configuration
+    /// reaches the pipeline. (Issue #135: verifying against the entry serialized without proof
     /// interoperated with no other implementation.)
     /// </summary>
-    private static string SerializeWitnessSignedDocument(string versionId)
+    private static string SerializeSecuredWitnessDocument(
+        string versionId, DataIntegrityProofValue proof)
     {
         using var stream = new MemoryStream();
         using (var writer = new Utf8JsonWriter(stream))
         {
             writer.WriteStartObject();
             writer.WriteString("versionId", versionId);
+            writer.WritePropertyName("proof");
+            writer.WriteStartArray();
+            WriteProofObject(writer, proof);
+            writer.WriteEndArray();
             writer.WriteEndObject();
         }
 
         return Encoding.UTF8.GetString(stream.ToArray());
     }
-
-    /// <summary>
-    /// All proofs the witness file carries for one chain-validated versionId, across every
-    /// array entry that names it. The spec's verification algorithm is per-proof ("verify each
-    /// Data Integrity proof for the relevant versionId"), and nothing forbids splitting a
-    /// version's proofs over multiple entries — the ts reference implementation writes one
-    /// entry per proof.
-    /// </summary>
-    private static IEnumerable<DataIntegrityProofValue> ProofsForVersion(
-        WitnessFile witnessFile, string versionId)
-        => witnessFile.Entries
-            .Where(e => string.Equals(e.VersionId, versionId, StringComparison.Ordinal))
-            .SelectMany(e => e.Proofs);
 
     private static WitnessEntry? FindWitnessForSigner(WitnessConfig witnessConfig, string signerKey)
     {
@@ -235,17 +349,7 @@ internal sealed class WitnessValidator
             writer.WritePropertyName("proof");
             writer.WriteStartArray();
             foreach (var proof in entry.Proofs)
-            {
-                writer.WriteStartObject();
-                writer.WriteString("type", proof.Type);
-                writer.WriteString("cryptosuite", proof.Cryptosuite);
-                writer.WriteString("verificationMethod", proof.VerificationMethod);
-                if (proof.Created is not null)
-                    writer.WriteString("created", proof.Created);
-                writer.WriteString("proofPurpose", proof.ProofPurpose);
-                writer.WriteString("proofValue", proof.ProofValue);
-                writer.WriteEndObject();
-            }
+                WriteProofObject(writer, proof);
             writer.WriteEndArray();
             writer.WriteEndObject();
         }
@@ -256,28 +360,63 @@ internal sealed class WitnessValidator
     }
 
     /// <summary>
-    /// Merge new witness proof entries with existing ones. New entries replace existing ones
-    /// with the same versionId. Duplicate-versionId entries on either side are aggregated
-    /// rather than last-one-wins — a ts-authored file carries one entry per proof, and
-    /// dropping its siblings on a republish could sink a version below threshold for every
-    /// resolver (issue #135 adversarial round).
+    /// A proof parsed from a witness file re-emits verbatim (byte-identical), preserving
+    /// signature-bound members outside the modeled set (<c>id</c>, <c>expires</c>, extensions)
+    /// so republishing during Update/Deactivate never corrupts another implementation's proof.
+    /// A programmatically created proof has no RawJson and is written from the modeled members
+    /// (the shape NetDid emits); a null <c>Created</c> is omitted, never written as JSON null.
+    /// </summary>
+    private static void WriteProofObject(Utf8JsonWriter writer, DataIntegrityProofValue proof)
+    {
+        if (proof.RawJson is not null)
+        {
+            writer.WriteRawValue(proof.RawJson);
+            return;
+        }
+
+        writer.WriteStartObject();
+        writer.WriteString("type", proof.Type);
+        writer.WriteString("cryptosuite", proof.Cryptosuite);
+        writer.WriteString("verificationMethod", proof.VerificationMethod);
+        if (proof.Created is not null)
+            writer.WriteString("created", proof.Created);
+        writer.WriteString("proofPurpose", proof.ProofPurpose);
+        writer.WriteString("proofValue", proof.ProofValue);
+        writer.WriteEndObject();
+    }
+
+    /// <summary>
+    /// Merge new witness proof entries with existing ones. Proofs APPEND: did:webvh witness
+    /// collection is incremental (the file is republished as approvals arrive), so a new proof
+    /// for a version must join the existing approvals for that version, never replace them —
+    /// replacement could sink an already threshold-satisfying version below its threshold for
+    /// every resolver (issue #135 review round 2, finding 4). Byte-identical proofs are
+    /// deduplicated; duplicate-versionId entries on either side are aggregated (a ts-authored
+    /// file carries one entry per proof).
     /// </summary>
     public static WitnessFile MergeWitnessProofs(
         WitnessFile? existing, IReadOnlyList<WitnessProofEntry> newEntries)
     {
-        var entriesByVersion = new Dictionary<string, List<DataIntegrityProofValue>>();
+        var proofsByVersion = new Dictionary<string, List<DataIntegrityProofValue>>(StringComparer.Ordinal);
         var versionOrder = new List<string>();
+        var seen = new HashSet<(string, string?, string, string, string, string?, string, string)>();
 
         void Aggregate(WitnessProofEntry entry)
         {
-            if (entriesByVersion.TryGetValue(entry.VersionId, out var proofs))
+            if (!proofsByVersion.TryGetValue(entry.VersionId, out var proofs))
             {
-                proofs.AddRange(entry.Proofs);
-            }
-            else
-            {
-                entriesByVersion[entry.VersionId] = [.. entry.Proofs];
+                proofs = [];
+                proofsByVersion[entry.VersionId] = proofs;
                 versionOrder.Add(entry.VersionId);
+            }
+
+            foreach (var proof in entry.Proofs)
+            {
+                if (seen.Add((entry.VersionId, proof.RawJson, proof.Type, proof.Cryptosuite,
+                        proof.VerificationMethod, proof.Created, proof.ProofPurpose, proof.ProofValue)))
+                {
+                    proofs.Add(proof);
+                }
             }
         }
 
@@ -285,13 +424,6 @@ internal sealed class WitnessValidator
         {
             foreach (var entry in existing.Entries)
                 Aggregate(entry);
-        }
-
-        // A new entry replaces the whole aggregated set for its versionId.
-        foreach (var versionId in newEntries.Select(e => e.VersionId).Distinct())
-        {
-            if (entriesByVersion.Remove(versionId))
-                versionOrder.Remove(versionId);
         }
 
         foreach (var entry in newEntries)
@@ -303,7 +435,7 @@ internal sealed class WitnessValidator
                 .Select(versionId => new WitnessProofEntry
                 {
                     VersionId = versionId,
-                    Proofs = entriesByVersion[versionId]
+                    Proofs = proofsByVersion[versionId]
                 })
                 .ToList()
         };
@@ -401,6 +533,8 @@ internal sealed class WitnessValidator
         // appear as a transient state; an entry without proofs contributes no approvals
         // (fail-closed) rather than invalidating the whole file. `created` is optional in
         // VC Data Integrity and absent from the spec's minimum witness proof properties.
+        // RawJson captures the complete wire proof (members beyond the modeled set included)
+        // as the verification input and the republish source.
         var proofs = element.TryGetProperty("proof", out var proofElement)
             ? proofElement.EnumerateArray().Select(e => new DataIntegrityProofValue
             {
@@ -409,7 +543,8 @@ internal sealed class WitnessValidator
                 VerificationMethod = e.GetProperty("verificationMethod").GetString()!,
                 Created = e.TryGetProperty("created", out var created) ? created.GetString() : null,
                 ProofPurpose = e.GetProperty("proofPurpose").GetString()!,
-                ProofValue = e.GetProperty("proofValue").GetString()!
+                ProofValue = e.GetProperty("proofValue").GetString()!,
+                RawJson = e.GetRawText()
             }).ToList()
             : [];
 

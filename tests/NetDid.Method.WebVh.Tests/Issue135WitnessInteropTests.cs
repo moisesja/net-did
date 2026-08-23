@@ -259,7 +259,7 @@ public class Issue135WitnessInteropTests
             Entries = [new WitnessProofEntry { VersionId = entry.VersionId, Proofs = [proof] }]
         };
 
-        new WitnessValidator(_suite).ValidateWitnesses(witnessFile, entry, config)
+        (await new WitnessValidator().ValidateWitnessesAsync(witnessFile, entry, config))
             .Should().BeTrue("the spec's witness input document is {\"versionId\": ...}");
     }
 
@@ -283,7 +283,7 @@ public class Issue135WitnessInteropTests
             Entries = [new WitnessProofEntry { VersionId = entry.VersionId, Proofs = [legacyProof] }]
         };
 
-        new WitnessValidator(_suite).ValidateWitnesses(witnessFile, entry, config)
+        (await new WitnessValidator().ValidateWitnessesAsync(witnessFile, entry, config))
             .Should().BeFalse("a proof over the legacy entry-without-proof document is not a " +
                 "conformant witness approval");
     }
@@ -331,7 +331,7 @@ public class Issue135WitnessInteropTests
             ]
         };
 
-        new WitnessValidator(_suite).ValidateWitnesses(witnessFile, entry, config)
+        (await new WitnessValidator().ValidateWitnessesAsync(witnessFile, entry, config))
             .Should().BeTrue("proofs split across duplicate-versionId entries must aggregate");
     }
 
@@ -446,7 +446,7 @@ public class Issue135WitnessInteropTests
         var reparsed = WitnessValidator.ParseWitnessFile(serialized, out var parseError);
         reparsed.Should().NotBeNull(parseError);
 
-        new WitnessValidator(_suite).ValidateWitnesses(reparsed!, entry, config)
+        (await new WitnessValidator().ValidateWitnessesAsync(reparsed!, entry, config))
             .Should().BeTrue("a witness proof without created is conformant and must count");
     }
 
@@ -471,7 +471,7 @@ public class Issue135WitnessInteropTests
             Entries = [new WitnessProofEntry { VersionId = entry.VersionId, Proofs = [proof] }]
         };
 
-        new WitnessValidator(_suite).ValidateWitnesses(witnessFile, entry, config)
+        (await new WitnessValidator().ValidateWitnessesAsync(witnessFile, entry, config))
             .Should().BeFalse("a genuinely signed proof with a non-assertionMethod purpose is " +
                 "rejected by conformant resolvers and must not count here either");
     }
