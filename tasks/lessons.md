@@ -562,3 +562,31 @@
   taking too damn long" — the third instance of the proportionality failure (issues #101, #112).
   Ceremony is justified by what the diff can break, and a conflict resolution in docs plus one
   generated report can break almost nothing.
+- When a witness/controller proof is a W3C Data Integrity proof, DELEGATE verification to the
+  DataIntegrityProofPipeline over the proof's COMPLETE wire configuration (capture RawJson at
+  parse, re-emit verbatim on republish) — never hand-reconstruct a reduced proof from modeled
+  fields. A reduced reconstruction (type/cryptosuite/vm/created/purpose/value only) silently
+  drops signature-bound members (`id`/`expires`/`nonce`/extensions): a conforming proof with
+  `expires` is rejected, republish corrupts it, and — the real hole — an attacker appends an
+  UNSIGNED member and the truncated original still verifies. The pipeline strips the whole
+  `proof` member before hashing the document, so verifying one proof in an isolated
+  `{"versionId":X,"proof":[<that proof>]}` secured doc is correct (reduces to bare
+  `{"versionId":X}`); other proofs for the same version need not be present. This mirrors the
+  #101 controller-proof lesson — the witness path had drifted from it. (PR #143 review round 2, F1.)
+- A witness/threshold verifier over untrusted input needs a CPU bound, not just a byte-cap:
+  `created` is signer-chosen so one key mints unlimited distinct valid proofs, and a <=1 MiB
+  file holds thousands. Bound it with ONE shared per-run session: index the file once, memoize
+  each proof's verdict (reference-keyed — the index owns the canonical instance) across every
+  governed entry so cumulative coverage reuses verdicts instead of re-verifying O(entries×proofs),
+  pre-filter unconfigured/duplicate/wrong-purpose/wrong-VM-form signers BEFORE any cryptography,
+  stop per-entry scanning at the threshold, honor cancellation, and enforce a configurable
+  verification budget that fails closed. Memo soundness precondition: each proof instance is filed
+  under exactly ONE chain-validated versionId, so its single verdict is for exactly one secured
+  document. (PR #143 review round 2, F5.)
+- "Consume whenever supplied" beats "consume only alongside a new batch": a parse-and-throw guard
+  nested under `if (newProofs.Count > 0)` lets garbage/legacy `CurrentWitnessContent` pass silently
+  when the caller sends no new proofs — the exact silent-ignore class the fix claimed to close.
+  Hoist supplied-input validation above the batch check. And a merge that REPLACES a version's
+  aggregate breaks incremental collection (republish-as-approvals-arrive): APPEND + dedupe
+  byte-identical, or a second publish sinks an already-satisfied threshold. (PR #143 review round 2,
+  F2+F4.)
