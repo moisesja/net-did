@@ -7,6 +7,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **did:webvh `did-witness.json` now interoperates — spec wire format for witness proofs**
+  (issue #135, Critical; surfaced by the #134 DIF compliance-vector replay). Two divergences
+  made every witnessed did:webvh DID non-interoperable in both directions:
+  - the per-version member was written and read as `proofs`; did:webvh v1.0 and all six
+    reference implementations use **`proof`** (`WitnessValidator.SerializeWitnessFile` /
+    `ParseWitnessFile`);
+  - witness proofs were verified against the log entry serialized without its proof; the spec
+    defines them as `eddsa-jcs-2022` proofs over the **`{"versionId": "..."}`** input document
+    (confirmed empirically against the ts, rust, java and dart suite vectors). The `versionId`
+    embeds the entry hash that chain validation independently recomputes, so an approval still
+    binds the full entry content.
+
+  DIF-suite replay evidence: witnessed happy-path acceptance went from 0/10 to 10/10
+  (`witness-threshold` and `witness-update` × ts/rust/java/java-eecc/dart), and the two
+  witness negative vectors are now rejected by real threshold logic instead of vacuously at
+  parse time. Known-answer fixtures from the suite (ts implementation) are committed as
+  regression tests (`Issue135WitnessInteropTests`), closing the self-generated-test blind spot
+  for this format (#95, #135).
+
+  **Breaking (wire compatibility):** a `did-witness.json` published by an earlier NetDid
+  release is invalid under the corrected format — its proofs were minted over the wrong signed
+  document, so no key rename can rescue them; affected DIDs must have their witness proofs
+  re-collected. If an external witness toolchain produced spec-conformant proofs that NetDid
+  merely stored under the legacy `proofs` key, renaming that member to `proof` in the
+  published file restores validity. During `Update`/`Deactivate`, legacy
+  `CurrentWitnessContent` no longer round-trips: it fails to parse, is logged, and is not
+  merged into the new artifact.
+
+- **did:webvh witness-file parse failures are now diagnosable.** `ParseWitnessFile` rejects
+  duplicate JSON members outright (same trust-boundary rule as the log-entry parser, #101),
+  narrows its blanket `catch` to the JSON-access exception set, and reports the parse reason
+  through a new overload; `DidWebVhMethod` logs that reason wherever a witness file is
+  consumed, so a malformed file no longer surfaces as a bare `witnessValidationFailed` with
+  no diagnostic.
+
 ### Added
 
 - **did:webvh compliance-vector harness and divergence report** (issue #134). New
