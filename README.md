@@ -737,7 +737,9 @@ var whois = await dereferencer.DereferenceAsync(
 
 Bare-path dispatch is specific to `did:webvh`; other DID methods keep their existing DID Core
 behavior. Controller-defined `#files` and `#whois` endpoints override the defaults, but the selected
-HTTP(S) authority and deployment resource base remain the redirect boundary.
+HTTP(S) authority and deployment resource base remain the redirect boundary. URI-set endpoints
+produce a CRLF-separated URI list. The special service match is the exact path `/whois`; a query
+does not change that match, while `/whois/` remains an ordinary path beneath `#files`.
 
 Every supplied controller proof on an entry is processed by DataProofsDotnet's Data Integrity pipeline and authorized against the active `updateKeys`: NetDid requires an anti-spoofed `did:key` verification method, Ed25519 `eddsa-jcs-2022`, `assertionMethod`, a valid signature, and an active update key. One authorized signer authorizes the entry, but any invalid or unauthorized extra proof rejects the log as `invalidDidLog`; controller proofs have no threshold semantics. NetDid applies a conservative `System.Uri`-compatible absolute-URI check to a present proof `id` (without surrounding whitespace), rejects duplicate proof ids, resolves `previousProof` references, and treats `expires` at or before the entry's `versionTime` as expired. This accepts the DID, URN, and HTTPS forms used by the SDK, but it is not full WHATWG valid-URL-string conformance and can reject other standards-valid forms. Unknown proof members remain signature-bound and their proof-object JSON is preserved, but NetDid does not claim application semantics for every extension. In particular, array-valued `domain` is not supported by the pinned DataProofsDotnet model. A wire `proof` may be a single object or an array and `created` is optional; reserialization preserves each parsed proof object but normalizes a single-object container to an array. Duplicate JSON members, invalid UTF-8, and malformed content are rejected as `invalidDidLog`.
 

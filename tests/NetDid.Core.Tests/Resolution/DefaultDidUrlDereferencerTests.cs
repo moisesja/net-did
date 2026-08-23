@@ -149,6 +149,62 @@ public class DefaultDidUrlDereferencerTests
     }
 
     [Fact]
+    public async Task Issue136_ServiceQuery_EndpointFragmentPrecedenceAppliesAcrossDidMethods()
+    {
+        var doc = new DidDocument
+        {
+            Id = new Did("did:example:123"),
+            Service =
+            [
+                new Service
+                {
+                    Id = "#files",
+                    Type = "relativeRef",
+                    ServiceEndpoint = ServiceEndpointValue.FromUri(
+                        "https://example.com/base/#endpoint-fragment")
+                }
+            ]
+        };
+        SetupResolverSuccess(doc);
+
+        var result = await _dereferencer.DereferenceAsync(
+            "did:example:123?service=files&relativeRef=asset%23relative-fragment#did-fragment",
+            new DidUrlDereferencingOptions { Accept = "text/uri-list" });
+
+        result.DereferencingMetadata.Error.Should().BeNull();
+        result.ContentStream.Should().Be(
+            "https://example.com/base/asset#endpoint-fragment");
+    }
+
+    [Fact]
+    public async Task Issue136_ServiceTypeQuery_EncodedFragmentCannotOverrideEndpointFragment()
+    {
+        var doc = new DidDocument
+        {
+            Id = new Did("did:example:123"),
+            Service =
+            [
+                new Service
+                {
+                    Id = "#files",
+                    Type = "relativeRef",
+                    ServiceEndpoint = ServiceEndpointValue.FromUri(
+                        "https://example.com/base/#endpoint-fragment")
+                }
+            ]
+        };
+        SetupResolverSuccess(doc);
+
+        var result = await _dereferencer.DereferenceAsync(
+            "did:example:123?serviceType=relativeRef&relativeRef=asset%23relative-fragment",
+            new DidUrlDereferencingOptions { Accept = "text/uri-list" });
+
+        result.DereferencingMetadata.Error.Should().BeNull();
+        result.ContentStream.Should().Be(
+            "https://example.com/base/asset#endpoint-fragment");
+    }
+
+    [Fact]
     public async Task DereferenceAsync_ServiceTypeQuery_ReturnsDidDocumentWithMatchingService()
     {
         var doc = CreateDocWithVmAndService();
@@ -862,8 +918,105 @@ public class DefaultDidUrlDereferencerTests
         result.ContentStream.Should().Be("https://trust.example/profile.vp#credential");
     }
 
+    [Theory]
+    [InlineData("did:webvh:QmTest:example.com/whois?x=1",
+        "https://trust.example/profile.vp")]
+    [InlineData("did:webvh:QmTest:example.com/whois/",
+        "https://example.com/files/whois/")]
+    public async Task Issue136_DereferenceAsync_OnlyExactWhoisPathUsesWhoisService(
+        string didUrl, string expected)
+    {
+        var doc = new DidDocument
+        {
+            Id = new Did(Issue136Did),
+            Service =
+            [
+                new Service
+                {
+                    Id = "#files",
+                    Type = "relativeRef",
+                    ServiceEndpoint = ServiceEndpointValue.FromUri("https://example.com/files/")
+                },
+                new Service
+                {
+                    Id = "#whois",
+                    Type = "LinkedVerifiablePresentation",
+                    ServiceEndpoint = ServiceEndpointValue.FromUri(
+                        "https://trust.example/profile.vp")
+                }
+            ]
+        };
+        SetupResolverSuccess(doc);
+
+        var result = await _dereferencer.DereferenceAsync(didUrl);
+
+        result.DereferencingMetadata.Error.Should().BeNull();
+        result.ContentStream.Should().Be(expected);
+    }
+
     [Fact]
-    public async Task Issue136_DereferenceAsync_Path_WithUnsupportedServiceScheme_ReturnsInvalidDid()
+    public async Task Issue136_DereferenceAsync_Path_UriSetReturnsAllConstructedUrls()
+    {
+        var doc = new DidDocument
+        {
+            Id = new Did(Issue136Did),
+            Service =
+            [
+                new Service
+                {
+                    Id = "#files",
+                    Type = "relativeRef",
+                    ServiceEndpoint = ServiceEndpointValue.FromSet(
+                    [
+                        ServiceEndpointValue.FromUri("https://one.example/base/"),
+                        ServiceEndpointValue.FromUri("https://two.example/mirror/")
+                    ])
+                }
+            ]
+        };
+        SetupResolverSuccess(doc);
+
+        var result = await _dereferencer.DereferenceAsync($"{Issue136Did}/asset.json");
+
+        result.DereferencingMetadata.Error.Should().BeNull();
+        result.DereferencingMetadata.ContentType.Should().Be("text/uri-list");
+        result.ContentStream.Should().Be(
+            "https://one.example/base/asset.json\r\n" +
+            "https://two.example/mirror/asset.json");
+    }
+
+    [Fact]
+    public async Task Issue136_DereferenceAsync_Path_EmptiedUriSetFailsClosed()
+    {
+        var callerOwnedSet = new List<ServiceEndpointValue>
+        {
+            ServiceEndpointValue.FromUri("https://example.com/base/")
+        };
+        var endpoint = ServiceEndpointValue.FromSet(callerOwnedSet);
+        callerOwnedSet.Clear();
+        var doc = new DidDocument
+        {
+            Id = new Did(Issue136Did),
+            Service =
+            [
+                new Service
+                {
+                    Id = "#files",
+                    Type = "relativeRef",
+                    ServiceEndpoint = endpoint
+                }
+            ]
+        };
+        SetupResolverSuccess(doc);
+
+        var result = await _dereferencer.DereferenceAsync($"{Issue136Did}/asset.json");
+
+        result.DereferencingMetadata.Error.Should().Be("invalidDid");
+        result.ContentStream.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task Issue136_DereferenceAsync_Path_WithUnsupportedScheme_ReturnsSpecMandatedInvalidDid()
     {
         var doc = new DidDocument
         {

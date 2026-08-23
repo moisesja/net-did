@@ -2250,7 +2250,9 @@ on this web-resource path returns `invalidDid`. This conventional dispatch is ga
 `did:webvh`; other methods retain DID Core's generic bare-path behavior. The DID URL path itself is
 forced to remain a relative reference, `relativeRef` query injection is ignored, the final URL must
 retain the selected endpoint's authority and resolution base, and URI-list output is canonicalized
-to prevent a path from introducing a second redirect URI:
+to prevent a path from introducing a second redirect URI. URI-set endpoints produce one safe URL
+per URI entry. Only the exact path `/whois` selects `#whois` (queries do not change the path);
+`/whois/` is an ordinary `#files` path:
 
 ```csharp
 public sealed class DefaultDidUrlDereferencer : IDidUrlDereferencer

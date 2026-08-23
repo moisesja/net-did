@@ -113,13 +113,24 @@ internal static class DidWebCompatibility
 
         return services.Select(service => new Service
         {
-            Id = IsDidUrlFor(service.Id, fromDid)
-                ? toDid + service.Id[fromDid.Length..]
-                : service.Id,
+            Id = RewriteServiceId(service.Id, fromDid, toDid),
             Type = service.Type,
             ServiceEndpoint = service.ServiceEndpoint,
             AdditionalProperties = service.AdditionalProperties
         }).ToList();
+    }
+
+    private static string RewriteServiceId(string id, string fromDid, string toDid)
+    {
+        if (IsDidUrlFor(id, fromDid))
+            return toDid + id[fromDid.Length..];
+
+        // Core accepts a bare service selector as the fragment shorthand. Canonicalize the two
+        // conventional overrides in parallel did:web output, whose algorithm requires #files or
+        // #whois (or their absolute forms).
+        return id is ImplicitWebVhServices.FilesFragment or ImplicitWebVhServices.WhoisFragment
+            ? "#" + id
+            : id;
     }
 
     private static bool IsDidUrlFor(string value, string did) =>

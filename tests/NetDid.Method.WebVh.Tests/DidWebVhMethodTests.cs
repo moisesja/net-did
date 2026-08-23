@@ -3495,4 +3495,35 @@ public class DidWebVhMethodTests
         resolved.DidDocument!.Service.Should().Contain(service => service.Id == "#files");
         resolved.DidDocument.Service.Should().Contain(service => service.Id == "#whois");
     }
+
+    [Fact]
+    public async Task Issue136_Resolve_BareConventionalIdOverridesImplicitDefault()
+    {
+        var (method, httpClient) = CreateMethod();
+        var created = await method.CreateAsync(new DidWebVhCreateOptions
+        {
+            Domain = "example.com",
+            UpdateKey = CreateEd25519Signer(),
+            Services =
+            [
+                new Service
+                {
+                    Id = "files",
+                    Type = "CustomFiles",
+                    ServiceEndpoint = ServiceEndpointValue.FromUri("https://cdn.example/files/")
+                }
+            ]
+        });
+        var logContent = (string)created.Artifacts![DidWebVhArtifacts.DidJsonl];
+        httpClient.SetLogResponse(
+            DidUrlMapper.MapToLogUrl(created.Did.Value), Encoding.UTF8.GetBytes(logContent));
+
+        var resolved = await method.ResolveAsync(created.Did.Value);
+
+        resolved.ResolutionMetadata.Error.Should().BeNull();
+        resolved.DidDocument!.Service.Should().HaveCount(2);
+        resolved.DidDocument.Service.Should().ContainSingle(service =>
+            service.Id == "#files" && service.Type == "CustomFiles");
+        resolved.DidDocument.Service.Should().ContainSingle(service => service.Id == "#whois");
+    }
 }

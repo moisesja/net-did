@@ -15,7 +15,7 @@ internal static class ImplicitWebVhServices
 
     internal static DidDocument Materialize(string did, DidDocument document)
     {
-        var services = document.Service?.ToList() ?? [];
+        var services = document.Service?.Select(CanonicalizeConventionalId).ToList() ?? [];
         var resourceBase = DidUrlMapper.MapToResourceBaseUrl(did);
 
         if (!ContainsService(services, document.Id.Value, did, FilesFragment))
@@ -46,6 +46,26 @@ internal static class ImplicitWebVhServices
         return document with { Service = services };
     }
 
+    private static Service CanonicalizeConventionalId(Service service)
+    {
+        var canonicalId = service.Id switch
+        {
+            FilesFragment => "#files",
+            WhoisFragment => "#whois",
+            _ => service.Id
+        };
+        if (canonicalId == service.Id)
+            return service;
+
+        return new Service
+        {
+            Id = canonicalId,
+            Type = service.Type,
+            ServiceEndpoint = service.ServiceEndpoint,
+            AdditionalProperties = service.AdditionalProperties
+        };
+    }
+
     private static bool ContainsService(
         IEnumerable<Service> services, string documentDid, string requestedDid, string fragment)
     {
@@ -54,7 +74,8 @@ internal static class ImplicitWebVhServices
         var requestedId = $"{requestedDid}{relativeId}";
 
         return services.Any(service =>
-            string.Equals(service.Id, relativeId, StringComparison.Ordinal)
+            string.Equals(service.Id, fragment, StringComparison.Ordinal)
+            || string.Equals(service.Id, relativeId, StringComparison.Ordinal)
             || string.Equals(service.Id, documentId, StringComparison.Ordinal)
             || string.Equals(service.Id, requestedId, StringComparison.Ordinal));
     }

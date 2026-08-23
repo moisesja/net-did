@@ -1,5 +1,15 @@
 # Lessons
 
+- A derived-service dedup check and the dereferencer that selects that service must accept the
+  same identifier spellings. If Core normalizes a bare selector such as `files` to `#files` but a
+  method projection recognizes only relative/absolute fragment forms, it emits two services for
+  one normalized id. Centralize or mirror the equivalence set, test every accepted spelling, and
+  canonicalize compatibility artifacts to the target method's normative form. Separately, when a
+  reviewer proposes changing a spec error code, check the method-specific algorithm before the
+  generic registry: did:webvh v1.0 explicitly mandates `invalidDid` for an unsupported path/WHOIS
+  endpoint scheme even though generic DID Resolution defines `invalidDid` more narrowly. (PR #142
+  review round 1.)
+
 - An optional cache must not change the default-off path's peak retention. If validation always
   materializes a cacheable raw representation and appends it unconditionally, the feature can hold
   large wire strings for the full traversal even when no cache will be written. Allocate the raw

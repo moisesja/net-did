@@ -132,4 +132,38 @@ public class DidWebCompatibilityTests
         whois.ServiceEndpoint.Uri.Should().Be("https://trust.example/profile.json");
         services.Should().ContainSingle(service => service.Id == "#messages");
     }
+
+    [Fact]
+    public void Issue136_GenerateDidJson_BareConventionalIdsOverrideAndCanonicalize()
+    {
+        var didWebVh = "did:webvh:QmTest:example.com";
+        var document = new DidDocument
+        {
+            Id = new Did(didWebVh),
+            Service =
+            [
+                new Service
+                {
+                    Id = "files",
+                    Type = "CustomFiles",
+                    ServiceEndpoint = ServiceEndpointValue.FromUri("https://cdn.example/files/")
+                },
+                new Service
+                {
+                    Id = "whois",
+                    Type = "CustomWhois",
+                    ServiceEndpoint = ServiceEndpointValue.FromUri("https://trust.example/whois")
+                }
+            ]
+        };
+
+        var generated = DidDocumentSerializer.Deserialize(
+            Encoding.UTF8.GetString(DidWebCompatibility.GenerateDidJson(didWebVh, document)));
+
+        generated.Service.Should().HaveCount(2);
+        generated.Service.Should().ContainSingle(service =>
+            service.Id == "#files" && service.Type == "CustomFiles");
+        generated.Service.Should().ContainSingle(service =>
+            service.Id == "#whois" && service.Type == "CustomWhois");
+    }
 }
