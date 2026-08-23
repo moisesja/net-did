@@ -44,12 +44,13 @@ internal static class DidWebCompatibility
     {
         var didWeb = ToDidWeb(didWebVh);
         var didWebValue = new Did(didWeb);
+        var projectedDocument = ImplicitWebVhServices.Materialize(didWebVh, document);
 
         // Build alsoKnownAs: include the did:webvh DID and any existing alsoKnownAs
         var alsoKnownAs = new List<string> { didWebVh };
-        if (document.AlsoKnownAs is not null)
+        if (projectedDocument.AlsoKnownAs is not null)
         {
-            foreach (var aka in document.AlsoKnownAs)
+            foreach (var aka in projectedDocument.AlsoKnownAs)
             {
                 if (aka != didWebVh)
                     alsoKnownAs.Add(aka);
@@ -61,17 +62,17 @@ internal static class DidWebCompatibility
         {
             Id = didWebValue,
             AlsoKnownAs = alsoKnownAs,
-            Controller = document.Controller,
-            VerificationMethod = document.VerificationMethod?.Select(vm =>
+            Controller = projectedDocument.Controller,
+            VerificationMethod = projectedDocument.VerificationMethod?.Select(vm =>
                 RewriteVerificationMethod(vm, didWebVh, didWeb, didWebValue)).ToList(),
-            Authentication = RewriteRelationships(document.Authentication, didWebVh, didWeb),
-            AssertionMethod = RewriteRelationships(document.AssertionMethod, didWebVh, didWeb),
-            KeyAgreement = RewriteRelationships(document.KeyAgreement, didWebVh, didWeb),
-            CapabilityInvocation = RewriteRelationships(document.CapabilityInvocation, didWebVh, didWeb),
-            CapabilityDelegation = RewriteRelationships(document.CapabilityDelegation, didWebVh, didWeb),
-            Service = document.Service,
-            Context = document.Context,
-            AdditionalProperties = document.AdditionalProperties
+            Authentication = RewriteRelationships(projectedDocument.Authentication, didWebVh, didWeb),
+            AssertionMethod = RewriteRelationships(projectedDocument.AssertionMethod, didWebVh, didWeb),
+            KeyAgreement = RewriteRelationships(projectedDocument.KeyAgreement, didWebVh, didWeb),
+            CapabilityInvocation = RewriteRelationships(projectedDocument.CapabilityInvocation, didWebVh, didWeb),
+            CapabilityDelegation = RewriteRelationships(projectedDocument.CapabilityDelegation, didWebVh, didWeb),
+            Service = RewriteServices(projectedDocument.Service, didWebVh, didWeb),
+            Context = projectedDocument.Context,
+            AdditionalProperties = projectedDocument.AdditionalProperties
         };
 
         var json = DidDocumentSerializer.Serialize(webDoc, DidContentTypes.JsonLd);
@@ -104,4 +105,35 @@ internal static class DidWebCompatibility
             return entry;
         }).ToList();
     }
+
+    private static List<Service>? RewriteServices(
+        IReadOnlyList<Service>? services, string fromDid, string toDid)
+    {
+        if (services is null) return null;
+
+        return services.Select(service => new Service
+        {
+            Id = RewriteServiceId(service.Id, fromDid, toDid),
+            Type = service.Type,
+            ServiceEndpoint = service.ServiceEndpoint,
+            AdditionalProperties = service.AdditionalProperties
+        }).ToList();
+    }
+
+    private static string RewriteServiceId(string id, string fromDid, string toDid)
+    {
+        if (IsDidUrlFor(id, fromDid))
+            return toDid + id[fromDid.Length..];
+
+        // Core accepts a bare service selector as the fragment shorthand. Canonicalize the two
+        // conventional overrides in parallel did:web output, whose algorithm requires #files or
+        // #whois (or their absolute forms).
+        return id is ImplicitWebVhServices.FilesFragment or ImplicitWebVhServices.WhoisFragment
+            ? "#" + id
+            : id;
+    }
+
+    private static bool IsDidUrlFor(string value, string did) =>
+        value.StartsWith(did, StringComparison.Ordinal) &&
+        (value.Length == did.Length || value[did.Length] is '#' or '/' or '?' or ';');
 }

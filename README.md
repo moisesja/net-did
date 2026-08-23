@@ -708,7 +708,7 @@ Console.WriteLine(result.Did);
 // Output: did:webvh:z6Rk8Rx...:example.com
 ```
 
-The result includes `Artifacts["did.jsonl"]` (the verifiable log) and `Artifacts["did.json"]` (did:web backwards-compatible document). Host these at `https://example.com/.well-known/did.jsonl` and `did.json`. When `WitnessProofs` are provided, a `did-witness.json` artifact is also produced.
+The result includes `Artifacts["did.jsonl"]` (the verifiable log) and `Artifacts["did.json"]` (did:web backwards-compatible document). Host these at `https://example.com/.well-known/did.jsonl` and `did.json`. The parallel `did.json` includes the derived `#files` and Linked-VP `#whois` services when the controller has not explicitly overridden them; those services are not written into the signed log state. When `WitnessProofs` are provided, a `did-witness.json` artifact is also produced.
 
 ### Resolve a did:webvh
 
@@ -720,7 +720,26 @@ Console.WriteLine(doc.Service![0].Type);  // "TurtleShellPds"
 Console.WriteLine(resolved.DocumentMetadata!.VersionId);  // "1-z6Rk8Rx..."
 ```
 
-Resolution fetches the `did.jsonl` log over HTTPS, validates the hash chain and Data Integrity Proofs, and returns the latest DID Document.
+Resolution fetches the `did.jsonl` log over HTTPS, validates the hash chain and Data Integrity Proofs, and returns the latest DID Document. The resolved view materializes did:webvh's implicit `#files` (`relativeRef`) and `#whois` (`LinkedVerifiablePresentation`) services when absent; controller-defined relative or absolute service ids take precedence. For a root DID their default endpoints are `https://example.com/` and `https://example.com/whois.vp`; deployment-path DIDs place them beside `did.jsonl`, without a `.well-known` segment.
+
+`DefaultDidUrlDereferencer` uses those services for bare paths. It returns the constructed external URL as `text/uri-list` for the caller to retrieve; Core does not fetch or validate external resource bytes:
+
+```csharp
+var dereferencer = new DefaultDidUrlDereferencer(didWebVh);
+var resource = await dereferencer.DereferenceAsync(
+    $"{resolved.DidDocument!.Id.Value}/governance/issuers.json");
+// resource.ContentStream == "https://example.com/governance/issuers.json"
+
+var whois = await dereferencer.DereferenceAsync(
+    $"{resolved.DidDocument.Id.Value}/whois");
+// whois.ContentStream == "https://example.com/whois.vp"
+```
+
+Bare-path dispatch is specific to `did:webvh`; other DID methods keep their existing DID Core
+behavior. Controller-defined `#files` and `#whois` endpoints override the defaults, but the selected
+HTTP(S) authority and deployment resource base remain the redirect boundary. URI-set endpoints
+produce a CRLF-separated URI list. The special service match is the exact path `/whois`; a query
+does not change that match, while `/whois/` remains an ordinary path beneath `#files`.
 
 Every supplied controller proof on an entry is processed by DataProofsDotnet's Data Integrity pipeline and authorized against the active `updateKeys`: NetDid requires an anti-spoofed `did:key` verification method, Ed25519 `eddsa-jcs-2022`, `assertionMethod`, a valid signature, and an active update key. One authorized signer authorizes the entry, but any invalid or unauthorized extra proof rejects the log as `invalidDidLog`; controller proofs have no threshold semantics. NetDid applies a conservative `System.Uri`-compatible absolute-URI check to a present proof `id` (without surrounding whitespace), rejects duplicate proof ids, resolves `previousProof` references, and treats `expires` at or before the entry's `versionTime` as expired. This accepts the DID, URN, and HTTPS forms used by the SDK, but it is not full WHATWG valid-URL-string conformance and can reject other standards-valid forms. Unknown proof members remain signature-bound and their proof-object JSON is preserved, but NetDid does not claim application semantics for every extension. In particular, array-valued `domain` is not supported by the pinned DataProofsDotnet model. A wire `proof` may be a single object or an array and `created` is optional; reserialization preserves each parsed proof object but normalizes a single-object container to an array. Duplicate JSON members, invalid UTF-8, and malformed content are rejected as `invalidDidLog`.
 

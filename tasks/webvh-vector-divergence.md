@@ -64,11 +64,8 @@ Each row is one root cause. `Cases` counts the (scenario × implementation) repl
 
 | Path | Kind | Cases | Ours | Reference implementations |
 |---|---|---:|---|---|
-| `didDocument.service[].id` | missing from ours | 116 | *(absent)* | `"did:webvh:{SCID}:example.com#files"` — dart, java, python, rust, ts<br>`"#files"` — java-eecc |
-| `didDocument.service[].serviceEndpoint` | missing from ours | 116 | *(absent)* | `"https://example.com/"` — dart, java, java-eecc, python, ts<br>`"https://example.com"` — rust |
-| `didDocument.service[].type` | missing from ours | 116 | *(absent)* | `"relativeRef"` — dart, java, java-eecc, python, rust, ts |
+| `didDocument.service[].id` | impls disagree | 98 | `"#files"` | `"did:webvh:{SCID}:example.com#files"` — dart, java, python, rust, ts<br>`"#files"` — java-eecc |
 | `didDocumentMetadata.scid` | missing from ours | 63 | *(absent)* | `"{SCID}"` — dart, java, java-eecc, python, rust, ts |
-| `didDocument.service[].@context` | missing from ours | 58 | *(absent)* | `"https://identity.foundation/linked-vp/contexts/v1"` — dart, java, java-eecc, python, rust, ts |
 | `didDocumentMetadata.versionNumber` | impls disagree | 50 | *(absent)* | `1` — dart, java, java-eecc, python, rust<br>`(absent)` — ts |
 | `didDocumentMetadata.portable` | impls disagree | 32 | *(absent)* | `false` — java, python, rust, ts<br>`(absent)` — dart, java-eecc |
 | `didDocument.assertionMethod` | impls disagree | 28 | *(absent)* | `[]` — java-eecc, python, rust<br>`["did:webvh:{SCID}:example.com#z6MkjchhfUsD6mmvni8mCdXHw216X…` — dart, java<br>`(absent)` — ts |
@@ -80,14 +77,13 @@ Each row is one root cause. `Cases` counts the (scenario × implementation) repl
 | `didDocumentMetadata.witness` | impls disagree | 26 | *(absent)* | `(absent)` — dart, java, java-eecc<br>`{}` — python, ts<br>`null` — rust |
 | `didDocumentMetadata.deactivated` | impls disagree | 24 | *(absent)* | `false` — python, rust, ts<br>`(absent)` — dart, java, java-eecc |
 | `didDocumentMetadata.updated` | missing from ours | 20 | *(absent)* | `"2000-01-01T00:00:00Z"` — python, rust, ts<br>`"2026-07-29T18:17:37Z"` — java<br>`"2026-07-29T18:21:36Z"` — java-eecc |
+| `didDocument.service[].serviceEndpoint` | impls disagree | 18 | `"https://example.com/"` | `"https://example.com/"` — dart, java, java-eecc, python, ts<br>`"https://example.com"` — rust |
 | `didDocumentMetadata.nextKeyHashes` | impls disagree | 13 | *(absent)* | `(absent)` — dart, java, java-eecc, python, rust<br>`[]` — ts |
 | `didDocumentMetadata.prerotation` | impls disagree | 13 | *(absent)* | `(absent)` — dart, java, java-eecc, python, rust<br>`false` — ts |
 | `didDocumentMetadata.previousLogEntryHash` | impls disagree | 13 | *(absent)* | `(absent)` — dart, java, java-eecc, python, rust<br>`"{SCID}"` — ts |
 | `didDocumentMetadata.updateKeys` | impls disagree | 13 | *(absent)* | `(absent)` — dart, java, java-eecc, python, rust<br>`["z6MkjchhfUsD6mmvni8mCdXHw216Xrm9bQe2mBH1P5RDjVJG"]` — ts |
 | `didDocumentMetadata.versionTime` | impls disagree | 13 | `"2000-01-01T00:00:00Z"` | `"2000-01-01T00:00:00Z"` — python, rust<br>`(absent)` — ts<br>`"2026-07-29T18:17:37Z"` — java |
 | `didDocumentMetadata.portable` | missing from ours | 10 | *(absent)* | `true` — dart, java, java-eecc, python, rust, ts |
-| `didDocument.service[].id` | impls disagree | 6 | *(absent)* | `"did:webvh:{SCID}:example.com#files"` — dart, python, rust<br>`(absent)` — java, ts<br>`"#files"` — java-eecc |
-| `didDocument.service[].serviceEndpoint` | impls disagree | 6 | *(absent)* | `"https://example.com/"` — dart, java-eecc, python<br>`(absent)` — java, ts<br>`"https://example.com"` — rust |
 | `didDocument.service[].type` | impls disagree | 6 | *(absent)* | `"relativeRef"` — dart, java-eecc, python, rust<br>`(absent)` — java, ts |
 | `didDocument` | impls disagree | 4 | `null` | `(absent)` — dart, java, java-eecc, python, rust<br>`null` — ts |
 | `didDocument.authentication` | impls disagree | 4 | *(absent)* | `["did:webvh:{SCID}:example.com#P5RDjVJG"]` — java-eecc, python, rust<br>`["did:webvh:{SCID}:example.com#z6MkjchhfUsD6mmvni8mCdXHw216X…` — dart, java<br>`(absent)` — ts |
@@ -159,19 +155,19 @@ Two independent axes. **Rejected** is the security-relevant question — did we 
 
 | Scenario | Target | `ts` | `python` | `rust` | `java` | `java-eecc` | `dart` |
 |---|---|---|---|---|---|---|---|
-| `basic-create` | `resolutionResult.json` | DIFF (18) | **REJECTED**<br>`invalidDidLog` | DIFF (18) | DIFF (12) | DIFF (14) | DIFF (11) |
-| `basic-update` | `resolutionResult.json` | DIFF (17) | **REJECTED**<br>`invalidDidLog` | DIFF (17) | DIFF (11) | DIFF (13) | DIFF (10) |
+| `basic-create` | `resolutionResult.json` | DIFF (13) | **REJECTED**<br>`invalidDidLog` | DIFF (14) | DIFF (7) | DIFF (7) | DIFF (6) |
+| `basic-update` | `resolutionResult.json` | DIFF (12) | **REJECTED**<br>`invalidDidLog` | DIFF (13) | DIFF (6) | DIFF (6) | DIFF (5) |
 | `deactivate` | `resolutionResult.json` | DIFF (9) | **REJECTED**<br>`invalidDidLog` | DIFF (25) | DIFF (13) | DIFF (22) | DIFF (19) |
-| `key-rotation` | `resolutionResult.json` | DIFF (17) | **REJECTED**<br>`invalidDidLog` | DIFF (17) | DIFF (11) | DIFF (13) | DIFF (10) |
-| `multi-update` | `resolutionResult.1.json` | DIFF (18) | **REJECTED**<br>`invalidDidLog` | DIFF (18) | DIFF (12) | DIFF (14) | DIFF (11) |
-| `multi-update` | `resolutionResult.2.json` | DIFF (17) | **REJECTED**<br>`invalidDidLog` | DIFF (18) | DIFF (11) | DIFF (13) | DIFF (10) |
-| `multi-update` | `resolutionResult.json` | DIFF (17) | **REJECTED**<br>`invalidDidLog` | DIFF (17) | DIFF (11) | DIFF (13) | DIFF (10) |
-| `multiple-update-keys` | `resolutionResult.json` | DIFF (17) | **REJECTED**<br>`invalidDidLog` | DIFF (17) | — | DIFF (13) | — |
-| `portable` | `resolutionResult.json` | DIFF (18) | **REJECTED**<br>`invalidDidLog` | DIFF (18) | DIFF (12) | DIFF (15) | DIFF (12) |
-| `portable-move` | `resolutionResult.json` | DIFF (17) | **REJECTED**<br>`invalidDidLog` | DIFF (17) | DIFF (11) | DIFF (14) | DIFF (11) |
-| `pre-rotation` | `resolutionResult.json` | DIFF (18) | **REJECTED**<br>`invalidDidLog` | DIFF (18) | DIFF (12) | DIFF (14) | DIFF (11) |
-| `pre-rotation-consume` | `resolutionResult.json` | DIFF (17) | **REJECTED**<br>`invalidDidLog` | DIFF (17) | DIFF (11) | DIFF (13) | DIFF (10) |
-| `services` | `resolutionResult.json` | DIFF (17) | **REJECTED**<br>`invalidDidLog` | DIFF (17) | DIFF (11) | DIFF (13) | DIFF (10) |
+| `key-rotation` | `resolutionResult.json` | DIFF (12) | **REJECTED**<br>`invalidDidLog` | DIFF (13) | DIFF (6) | DIFF (6) | DIFF (5) |
+| `multi-update` | `resolutionResult.1.json` | DIFF (13) | **REJECTED**<br>`invalidDidLog` | DIFF (14) | DIFF (7) | DIFF (7) | DIFF (6) |
+| `multi-update` | `resolutionResult.2.json` | DIFF (12) | **REJECTED**<br>`invalidDidLog` | DIFF (14) | DIFF (6) | DIFF (6) | DIFF (5) |
+| `multi-update` | `resolutionResult.json` | DIFF (12) | **REJECTED**<br>`invalidDidLog` | DIFF (13) | DIFF (6) | DIFF (6) | DIFF (5) |
+| `multiple-update-keys` | `resolutionResult.json` | DIFF (12) | **REJECTED**<br>`invalidDidLog` | DIFF (13) | — | DIFF (6) | — |
+| `portable` | `resolutionResult.json` | DIFF (13) | **REJECTED**<br>`invalidDidLog` | DIFF (14) | DIFF (7) | DIFF (8) | DIFF (7) |
+| `portable-move` | `resolutionResult.json` | DIFF (12) | **REJECTED**<br>`invalidDidLog` | DIFF (13) | DIFF (6) | DIFF (7) | DIFF (6) |
+| `pre-rotation` | `resolutionResult.json` | DIFF (13) | **REJECTED**<br>`invalidDidLog` | DIFF (14) | DIFF (7) | DIFF (7) | DIFF (6) |
+| `pre-rotation-consume` | `resolutionResult.json` | DIFF (12) | **REJECTED**<br>`invalidDidLog` | DIFF (13) | DIFF (6) | DIFF (6) | DIFF (5) |
+| `services` | `resolutionResult.json` | DIFF (12) | **REJECTED**<br>`invalidDidLog` | DIFF (13) | DIFF (6) | DIFF (6) | DIFF (5) |
 | `witness-threshold` | `resolutionResult.json` | **REJECTED**<br>`witnessValidationFailed` | **REJECTED**<br>`invalidDidLog` | **REJECTED**<br>`witnessValidationFailed` | **REJECTED**<br>`witnessValidationFailed` | **REJECTED**<br>`witnessValidationFailed` | **REJECTED**<br>`witnessValidationFailed` |
 | `witness-update` | `resolutionResult.json` | **REJECTED**<br>`witnessValidationFailed` | **REJECTED**<br>`invalidDidLog` | **REJECTED**<br>`witnessValidationFailed` | **REJECTED**<br>`witnessValidationFailed` | **REJECTED**<br>`witnessValidationFailed` | **REJECTED**<br>`witnessValidationFailed` |
 

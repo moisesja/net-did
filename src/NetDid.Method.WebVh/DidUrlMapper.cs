@@ -19,6 +19,23 @@ public static class DidUrlMapper
     /// <summary>Map a did:webvh DID to the HTTPS URL of its did-witness.json file.</summary>
     public static Uri MapToWitnessUrl(string did) => BuildHttpsUrl(did, "did-witness.json");
 
+    /// <summary>
+    /// Map a did:webvh DID to the HTTPS directory that contains its resources. Unlike log
+    /// retrieval, a root DID uses the origin root rather than <c>/.well-known/</c>.
+    /// </summary>
+    internal static Uri MapToResourceBaseUrl(string did)
+    {
+        var (domain, path) = ExtractDomainAndPath(did);
+        var (host, port) = ValidateDomain(domain, did);
+        var segments = ValidatePathSegments(path, did);
+
+        var builder = new UriBuilder("https", host) { Port = port ?? -1 };
+        builder.Path = segments.Count == 0
+            ? "/"
+            : "/" + string.Join("/", segments) + "/";
+        return builder.Uri;
+    }
+
     /// <summary>Extract the SCID from a did:webvh DID.</summary>
     public static string ExtractScid(string did)
     {

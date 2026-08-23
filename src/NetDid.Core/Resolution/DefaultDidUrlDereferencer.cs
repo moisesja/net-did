@@ -88,7 +88,15 @@ public sealed class DefaultDidUrlDereferencer : IDidUrlDereferencer
             return DidUrlDereferencingResult.Success(filteredDoc, accept);
         }
 
-        // Step 3: Fragment-only → select resource from DID Document
+        // Step 3: A conventional #files service maps DID URL paths to external resources.
+        // The special /whois path uses #whois directly rather than appending "/whois" to it.
+        // did:webvh resolution materializes both implicit services; explicit definitions win.
+        // Keep this method gate explicit until another DID method needs bare-path dispatch; at
+        // that point the resolver contract should expose a capability instead of adding strings.
+        if (parsed.Path is not null && parsed.Did.Method == "webvh")
+            return BuildPathServiceResult(doc, parsed);
+
+        // Step 4: Fragment-only → select resource from DID Document
         if (parsed.Fragment is not null)
         {
             var resource = FindByFragment(doc, parsed.Fragment, options?.VerificationRelationship);
@@ -97,7 +105,7 @@ public sealed class DefaultDidUrlDereferencer : IDidUrlDereferencer
             return DidUrlDereferencingResult.Success(resource, accept);
         }
 
-        // Step 4: Path without service query → DID Core does not define semantics
+        // DID Core does not assign generic semantics to a bare path. did:webvh is handled above.
         if (parsed.Path is not null)
             return DidUrlDereferencingResult.Error("notFound");
 
@@ -105,6 +113,107 @@ public sealed class DefaultDidUrlDereferencer : IDidUrlDereferencer
         return DidUrlDereferencingResult.Success(
             resolution.DidDocument, accept,
             resolution.DocumentMetadata);
+    }
+
+    private static DidUrlDereferencingResult BuildPathServiceResult(DidDocument doc, DidUrl parsed)
+    {
+        var isWhois = string.Equals(parsed.Path, "/whois", StringComparison.Ordinal);
+        var service = FindServiceById(doc, isWhois ? "whois" : "files");
+        if (service is null)
+            return DidUrlDereferencingResult.Error("notFound");
+
+        // ParseDidUrl guarantees that a non-null path begins with '/'. Strip exactly that DID
+        // URL separator so RFC 3986 resolution appends beneath a deployment-path endpoint rather
+        // than treating it as an origin-rooted reference.
+        var externalPath = isWhois ? null : parsed.Path![1..];
+        if (externalPath is not null && ContainsControlCharacter(externalPath))
+            return DidUrlDereferencingResult.Error("invalidDidUrl");
+
+        // Force the stripped path to remain an RFC 3986 relative-path reference. Without this
+        // prefix, a valid first segment containing ':' or extra leading slashes can be interpreted
+        // as a new scheme or authority instead of content beneath the selected service endpoint.
+        var externalUrl = parsed with
+        {
+            Path = externalPath is null ? null : "./" + externalPath
+        };
+
+        var endpointValues = service.ServiceEndpoint.IsUri
+            ? new List<ServiceEndpointValue> { service.ServiceEndpoint }
+            : service.ServiceEndpoint.IsSet
+                ? service.ServiceEndpoint.Set!.ToList()
+                : null;
+        if (endpointValues is null || endpointValues.Count == 0)
+            return DidUrlDereferencingResult.Error("invalidDid");
+
+        var redirects = new List<string>(endpointValues.Count);
+        foreach (var endpointValue in endpointValues)
+        {
+            // did:webvh v1.0 § DID URL Path Resolution and § WHOIS Resolution explicitly
+            // require invalidDid when the selected endpoint scheme is unsupported.
+            if (!endpointValue.IsUri
+                || !Uri.TryCreate(endpointValue.Uri, UriKind.Absolute, out var endpoint)
+                || endpoint.Scheme is not ("http" or "https"))
+            {
+                return DidUrlDereferencingResult.Error("invalidDid");
+            }
+
+            string serviceUrl;
+            try
+            {
+                // relativeRef is meaningful only with explicit ?service= selection. A conventional
+                // DID URL path is itself the relative reference and must not accept a second one.
+                serviceUrl = ConstructServiceUrl(endpointValue, externalUrl.Path, null,
+                    externalUrl.Fragment);
+            }
+            catch (UriFormatException)
+            {
+                return DidUrlDereferencingResult.Error("invalidDidUrl");
+            }
+
+            if (!Uri.TryCreate(serviceUrl, UriKind.Absolute, out var resolved)
+                || !HasSameAuthority(endpoint, resolved)
+                || !IsWithinResolutionBase(endpoint, resolved))
+            {
+                return DidUrlDereferencingResult.Error("invalidDidUrl");
+            }
+
+            redirects.Add(resolved.AbsoluteUri);
+        }
+
+        return DidUrlDereferencingResult.ServiceEndpointRedirect(string.Join("\r\n", redirects));
+    }
+
+    private static bool ContainsControlCharacter(string value)
+    {
+        if (value.Any(character => char.IsControl(character)))
+            return true;
+
+        try
+        {
+            // One decode catches direct percent-encoded CR/LF without creating an unbounded
+            // nested-decoding loop. The returned redirect is separately canonicalized through
+            // Uri.AbsoluteUri, so encoded percent signs cannot become raw URI-list delimiters.
+            return Uri.UnescapeDataString(value).Any(character => char.IsControl(character));
+        }
+        catch (UriFormatException)
+        {
+            return true;
+        }
+    }
+
+    private static bool HasSameAuthority(Uri expected, Uri actual) =>
+        string.Equals(expected.Scheme, actual.Scheme, StringComparison.OrdinalIgnoreCase)
+        && string.Equals(expected.IdnHost, actual.IdnHost, StringComparison.OrdinalIgnoreCase)
+        && expected.Port == actual.Port
+        && string.Equals(expected.UserInfo, actual.UserInfo, StringComparison.Ordinal);
+
+    private static bool IsWithinResolutionBase(Uri endpoint, Uri resolved)
+    {
+        var endpointPath = endpoint.AbsolutePath;
+        var basePath = endpointPath.EndsWith('/')
+            ? endpointPath
+            : endpointPath[..(endpointPath.LastIndexOf('/') + 1)];
+        return resolved.AbsolutePath.StartsWith(basePath, StringComparison.Ordinal);
     }
 
     private static DidUrlDereferencingResult BuildServiceResult(
@@ -312,15 +421,18 @@ public sealed class DefaultDidUrlDereferencer : IDidUrlDereferencer
         if (relativeRef is not null)
             relative += relativeRef;
 
-        // Only append the DID URL fragment if the base URI does not already have one
-        if (fragment is not null && string.IsNullOrEmpty(baseUri.Fragment))
-            relative += "#" + fragment;
+        // Use System.Uri for RFC 3986 reference resolution, then apply fragment precedence as a
+        // distinct component. Concatenating fragments lets an encoded '#' inside relativeRef win.
+        var resolved = string.IsNullOrEmpty(relative)
+            ? baseUri
+            : new Uri(baseUri, relative);
+        var effectiveFragment = !string.IsNullOrEmpty(baseUri.Fragment)
+            ? baseUri.Fragment[1..]
+            : fragment;
+        if (effectiveFragment is null)
+            return resolved.ToString();
 
-        if (string.IsNullOrEmpty(relative))
-            return baseUri.ToString();
-
-        // Use System.Uri for RFC 3986 reference resolution
-        var resolved = new Uri(baseUri, relative);
-        return resolved.ToString();
+        var builder = new UriBuilder(resolved) { Fragment = effectiveFragment };
+        return builder.Uri.ToString();
     }
 }

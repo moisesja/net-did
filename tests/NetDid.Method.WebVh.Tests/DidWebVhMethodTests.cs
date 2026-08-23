@@ -461,8 +461,8 @@ public class DidWebVhMethodTests
 
         var resolveResult = await method.ResolveAsync(did);
         resolveResult.DidDocument.Should().NotBeNull();
-        resolveResult.DidDocument!.Service.Should().HaveCount(1);
-        resolveResult.DidDocument.Service![0].Type.Should().Be("NewService");
+        resolveResult.DidDocument!.Service.Should()
+            .ContainSingle(service => service.Type == "NewService");
         resolveResult.DocumentMetadata!.Updated.Should().NotBeNull();
     }
 
@@ -2786,7 +2786,8 @@ public class DidWebVhMethodTests
 
         resolved.ResolutionMetadata.Error.Should().BeNull(
             "the published bytes must be the same single snapshot that was hashed and signed");
-        resolved.DidDocument!.Service.Should().ContainSingle()
+        resolved.DidDocument!.Service.Should()
+            .ContainSingle(service => service.Id == "#service-first")
             .Which.Id.Should().Be("#service-first");
 
         // The reported document is the private snapshot, not the caller's live instance.
@@ -3390,5 +3391,139 @@ public class DidWebVhMethodTests
 
         resolveResult.DidDocument.Should().BeNull();
         resolveResult.ResolutionMetadata.Error.Should().Be("invalidDidLog");
+    }
+
+    // ================================================================
+    // ISSUE #136: IMPLICIT #files / #whois SERVICES
+    // ================================================================
+
+    [Fact]
+    public async Task Issue136_Resolve_MaterializesImplicitServicesWithoutChangingSignedState()
+    {
+        var (method, httpClient) = CreateMethod();
+        var created = await method.CreateAsync(new DidWebVhCreateOptions
+        {
+            Domain = "example.com",
+            UpdateKey = CreateEd25519Signer()
+        });
+        var logContent = (string)created.Artifacts![DidWebVhArtifacts.DidJsonl];
+        httpClient.SetLogResponse(
+            DidUrlMapper.MapToLogUrl(created.Did.Value), Encoding.UTF8.GetBytes(logContent));
+
+        var resolved = await method.ResolveAsync(created.Did.Value);
+
+        resolved.DidDocument.Should().NotBeNull();
+        resolved.DidDocument!.Service.Should().HaveCount(2);
+        var services = resolved.DidDocument.Service!;
+        var files = services.Single(service => service.Id == "#files");
+        files.Type.Should().Be("relativeRef");
+        files.ServiceEndpoint.Uri.Should().Be("https://example.com/");
+        var whois = services.Single(service => service.Id == "#whois");
+        whois.Type.Should().Be("LinkedVerifiablePresentation");
+        whois.ServiceEndpoint.Uri.Should().Be("https://example.com/whois.vp");
+        whois.AdditionalProperties!["@context"].GetString().Should()
+            .Be("https://identity.foundation/linked-vp/contexts/v1");
+
+        var signedState = LogEntrySerializer.ParseJsonLines(Encoding.UTF8.GetBytes(logContent))[0].State;
+        signedState.Service.Should().BeNull(
+            "implicit services are resolver output and must not alter signed DID-log state");
+        created.DidDocument.Service.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task Issue136_Resolve_PathDid_PreservesExplicitFilesAndAddsPathBasedWhois()
+    {
+        var (method, httpClient) = CreateMethod();
+        var created = await method.CreateAsync(new DidWebVhCreateOptions
+        {
+            Domain = "example.com",
+            Path = "users/alice",
+            UpdateKey = CreateEd25519Signer(),
+            Services =
+            [
+                new Service
+                {
+                    Id = "#files",
+                    Type = "relativeRef",
+                    ServiceEndpoint = ServiceEndpointValue.FromUri("https://cdn.example/files/")
+                }
+            ]
+        });
+        var logContent = (string)created.Artifacts![DidWebVhArtifacts.DidJsonl];
+        httpClient.SetLogResponse(
+            DidUrlMapper.MapToLogUrl(created.Did.Value), Encoding.UTF8.GetBytes(logContent));
+
+        var resolved = await method.ResolveAsync(created.Did.Value);
+
+        resolved.DidDocument!.Service.Should().HaveCount(2);
+        var services = resolved.DidDocument.Service!;
+        services.Single(service => service.Id == "#files")
+            .ServiceEndpoint.Uri.Should().Be("https://cdn.example/files/");
+        services.Single(service => service.Id == "#whois")
+            .ServiceEndpoint.Uri.Should().Be("https://example.com/users/alice/whois.vp");
+    }
+
+    [Fact]
+    public async Task Issue136_Resolve_HistoricalVersion_MaterializesImplicitServices()
+    {
+        var (method, httpClient) = CreateMethod();
+        var signer = CreateEd25519Signer();
+        var created = await method.CreateAsync(new DidWebVhCreateOptions
+        {
+            Domain = "example.com",
+            UpdateKey = signer
+        });
+        var initialLog = (string)created.Artifacts![DidWebVhArtifacts.DidJsonl];
+        var updated = await method.UpdateAsync(created.Did.Value, new DidWebVhUpdateOptions
+        {
+            CurrentLogContent = Encoding.UTF8.GetBytes(initialLog),
+            SigningKey = signer
+        });
+        var fullLog = (string)updated.Artifacts![DidWebVhArtifacts.DidJsonl];
+        var genesisVersionId = LogEntrySerializer.ParseJsonLines(
+            Encoding.UTF8.GetBytes(fullLog))[0].VersionId;
+        httpClient.SetLogResponse(
+            DidUrlMapper.MapToLogUrl(created.Did.Value), Encoding.UTF8.GetBytes(fullLog));
+
+        var resolved = await method.ResolveAsync(created.Did.Value, new DidResolutionOptions
+        {
+            VersionId = genesisVersionId
+        });
+
+        resolved.ResolutionMetadata.Error.Should().BeNull();
+        resolved.DocumentMetadata!.VersionId.Should().Be(genesisVersionId);
+        resolved.DidDocument!.Service.Should().Contain(service => service.Id == "#files");
+        resolved.DidDocument.Service.Should().Contain(service => service.Id == "#whois");
+    }
+
+    [Fact]
+    public async Task Issue136_Resolve_BareConventionalIdOverridesImplicitDefault()
+    {
+        var (method, httpClient) = CreateMethod();
+        var created = await method.CreateAsync(new DidWebVhCreateOptions
+        {
+            Domain = "example.com",
+            UpdateKey = CreateEd25519Signer(),
+            Services =
+            [
+                new Service
+                {
+                    Id = "files",
+                    Type = "CustomFiles",
+                    ServiceEndpoint = ServiceEndpointValue.FromUri("https://cdn.example/files/")
+                }
+            ]
+        });
+        var logContent = (string)created.Artifacts![DidWebVhArtifacts.DidJsonl];
+        httpClient.SetLogResponse(
+            DidUrlMapper.MapToLogUrl(created.Did.Value), Encoding.UTF8.GetBytes(logContent));
+
+        var resolved = await method.ResolveAsync(created.Did.Value);
+
+        resolved.ResolutionMetadata.Error.Should().BeNull();
+        resolved.DidDocument!.Service.Should().HaveCount(2);
+        resolved.DidDocument.Service.Should().ContainSingle(service =>
+            service.Id == "#files" && service.Type == "CustomFiles");
+        resolved.DidDocument.Service.Should().ContainSingle(service => service.Id == "#whois");
     }
 }

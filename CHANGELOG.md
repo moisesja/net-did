@@ -36,6 +36,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   #137 (`didDocumentMetadata` omits `scid`/`versionNumber`), #138 (`updated` omitted at
   version 1), #139 (malformed identifiers reported as `notFound` rather than `invalidDid`).
 
+### Fixed
+
+- **did:webvh implicit `#files` / `#whois` services and path dereferencing** (issue #136).
+  Successful current and historical resolution now projects both spec-defined services when the
+  controller has not supplied a relative or absolute override: `#files` uses `relativeRef` and the
+  DID-to-HTTPS resource directory, while `#whois` uses `LinkedVerifiablePresentation`, the Linked-VP
+  context, and `<resource-directory>/whois.vp`. Bare `files` / `whois` shorthand accepted by Core is
+  canonicalized to those fragment ids in projected output. Root DIDs omit `.well-known`;
+  deployment-path and encoded-port DIDs preserve their path/port. The same projection brings
+  generated parallel `did.json` artifacts into compliance, while signed `did.jsonl` state and
+  Create/Update result documents remain unchanged. `DefaultDidUrlDereferencer` now routes
+  `<did>/path` through `#files`
+  and `<did>/whois` through `#whois`, returning the constructed HTTP(S) URL as `text/uri-list`;
+  controller-defined endpoint overrides take precedence, while injected `relativeRef`, authority,
+  control-character, and deployment-base escapes are rejected or kept within the selected service.
+  URI-set endpoints return every safely constructed URL; structured endpoints and unsupported
+  schemes fail with the `invalidDid` code required by did:webvh v1.0. Other DID methods retain
+  their prior bare-path behavior even if they define services named `#files` or `#whois`.
+- **DID URL service endpoint fragment preservation.** Across all DID methods, explicit `?service=`
+  and `?serviceType=` URI-list dereferencing now preserves a fragment already present on the
+  selected service endpoint when resolving a path or `relativeRef`, matching the existing public
+  dereferencer contract. Encoded fragments in `relativeRef` cannot override it. Previously, RFC 3986
+  relative resolution silently dropped or combined that endpoint fragment.
+
 ## [3.1.0] - 2026-08-03
 
 ### Added

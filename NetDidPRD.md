@@ -1195,7 +1195,9 @@ well-known placeholder string (`{SCID}`) that stands in for the real SCID during
    with the update key using Data Integrity Proof
    (eddsa-jcs-2022). The proof is over the entry with the real SCID, not the placeholder.
 8. Return: the DID string, the DID Document, the `did.jsonl` content (single line), and a
-   `did.json` file for did:web compatibility.
+   `did.json` file for did:web compatibility. The parallel `did.json` projection adds the
+   implicit `#files` and `#whois` services when the controller has not explicitly defined them;
+   the signed `did.jsonl` state remains controller-authored and does not gain derived services.
 9. The caller is responsible for publishing `did.jsonl` and `did.json` at the correct web URL.
 
 ### 7.6 Resolve
@@ -1211,7 +1213,23 @@ well-known placeholder string (`{SCID}`) that stands in for the real SCID during
    - **Per-entry SCID identity (issue #101).** did:webvh v1.0 additionally requires the SCID segment of `state.id` to be byte-for-byte identical to `parameters.scid` **for every entry, not just the first**, "independently of whether portability is enabled" — only the host/path portion may change under portability. `LogChainValidator` enforces this for the genesis and every subsequent validated entry (an entry whose `state.id` carries a foreign SCID, is not a `did:webvh` DID, or omits `state.id` fails chain validation → `invalidDidLog`). Because historical resolution validates only the prefix through the selected version (step 9), a corrupt later tail does not revoke an already-established version; latest resolution validates the whole chain.
 7. Validate every explicitly declared witness policy before it can take effect, at genesis and on every later transition. The disabling form is the empty object `{}`. A configured policy MUST contain both `threshold` and a non-empty `witnesses` list; `threshold` MUST be in the inclusive range `1..count(distinct witness ids)`; every id MUST already be Unicode NFC-normalized, MUST be unique under ordinal comparison in that canonical form, MUST be a bare `did:key` DID, and MUST encode an Ed25519 key compatible with `eddsa-jcs-2022`. Missing fields, duplicate or non-canonical ids, zero/negative/out-of-range thresholds, malformed keys, and unsupported key types invalidate the log rather than being coerced to “no witnesses.”
 8. Determine the witness authority for every entry. Genesis is governed by the witness policy it declares. The first later entry that changes from no active witnesses to a configured policy is immediately governed by that new policy and MUST itself be witnessed. Once a policy is active, it governs the entry that lowers, removes, or replaces it, and the replacement takes effect only after that entry is published. If any entry through the requested version requires witnessing, fetch `did-witness.json` and validate cumulative witness coverage against those authorizing policies. Count a configured witness only after its proof verifies and binds to the exact configured `did:key` signer (never a `verificationMethod` prefix), and count each distinct signer at most once per required entry.
-9. Return the DID Document from the selected valid entry. When `DidResolutionOptions.IncludeLog == true`, also surface the validated resolution scope as `Artifacts["did.jsonl"]` (UTF-8 JSONL) and `Artifacts["log.entries"]` (`IReadOnlyList<LogEntry>`). Latest resolution returns the complete fetched log after complete validation. A successfully selected historical `versionId`/`versionTime` resolution returns only the exact raw and parsed prefix through the selected entry; later entries are not resolution evidence and MUST NOT be exposed in those artifacts.
+9. Return a projected DID Document from the selected valid entry. The projection preserves every
+   controller-defined service and adds either missing did:webvh implicit service: `#files` with
+   type `relativeRef` and the HTTPS resource-directory endpoint, and `#whois` with type
+   `LinkedVerifiablePresentation`, the Linked-VP context, and `<resource-directory>/whois.vp`.
+   Relative (`#files` / `#whois`) and absolute (`<did>#files` / `<did>#whois`) controller entries
+   both override the corresponding default independently. Projection occurs only after chain,
+   identity, and witness validation and never mutates the parsed signed state. The v1.0 spec is
+   explicit that path dereferencing must fall back to these services and that parallel `did:web`
+   output must add them; serializing them in ordinary did:webvh resolution output is the
+   interoperability behavior shared by all six pinned DIF vector implementations (issue #136),
+   rather than an overstated independent materialization MUST.
+10. When `DidResolutionOptions.IncludeLog == true`, also surface the validated resolution scope as
+   `Artifacts["did.jsonl"]` (UTF-8 JSONL) and `Artifacts["log.entries"]`
+   (`IReadOnlyList<LogEntry>`). Latest resolution returns the complete fetched log after complete
+   validation. A successfully selected historical `versionId`/`versionTime` resolution returns only
+   the exact raw and parsed prefix through the selected entry; later entries are not resolution
+   evidence and MUST NOT be exposed in those artifacts.
 
 #### Witness weight compatibility and migration
 
@@ -2222,8 +2240,19 @@ public sealed record DidUrlDereferencingOptions
 ```
 
 **Default implementation**: `DefaultDidUrlDereferencer` composes with `IDidResolver` and implements
-the W3C §7.2 dereferencing algorithm for fragment, service endpoint selection (with path and
-`relativeRef`), and `versionId`/`versionTime` query parameters:
+the W3C §7.2 dereferencing algorithm for fragment and service endpoint selection (with path and
+`relativeRef`), conventional `#files` / `#whois` path dispatch, and `versionId`/`versionTime` query
+parameters. A conventional path result is a `text/uri-list` redirect for the caller to retrieve;
+Core does not fetch or validate the external resource bytes. `/whois` selects `#whois` and uses its
+endpoint directly; every other bare path selects `#files` and appends beneath its endpoint. A
+missing conventional service remains `notFound`, and a non-HTTP(S), non-URI, or structured endpoint
+on this web-resource path returns `invalidDid`. This conventional dispatch is gated to
+`did:webvh`; other methods retain DID Core's generic bare-path behavior. The DID URL path itself is
+forced to remain a relative reference, `relativeRef` query injection is ignored, the final URL must
+retain the selected endpoint's authority and resolution base, and URI-list output is canonicalized
+to prevent a path from introducing a second redirect URI. URI-set endpoints produce one safe URL
+per URI entry. Only the exact path `/whois` selects `#whois` (queries do not change the path);
+`/whois/` is an ordinary `#files` path:
 
 ```csharp
 public sealed class DefaultDidUrlDereferencer : IDidUrlDereferencer
@@ -2271,7 +2300,21 @@ public sealed class DefaultDidUrlDereferencer : IDidUrlDereferencer
             return DidUrlDereferencingResult.ServiceEndpointRedirect(serviceUrl);
         }
 
-        // Step 3: Fragment-only → select resource from DID Document
+        // Step 3: Conventional path → #whois endpoint or path beneath #files
+        if (parsed.Path is not null && parsed.Did.Method == "webvh")
+        {
+            var service = FindServiceById(
+                resolution.DidDocument, parsed.Path == "/whois" ? "whois" : "files");
+            if (service is null)
+                return DidUrlDereferencingResult.Error("notFound");
+
+            // Require an absolute HTTP(S) URI. /whois uses its endpoint directly;
+            // other paths are forced to a relative reference before RFC 3986 resolution,
+            // preserving the selected authority and did:webvh deployment resource base.
+            return BuildConventionalPathResult(service, parsed);
+        }
+
+        // Step 4: Fragment-only → select resource from DID Document
         if (parsed.Fragment is not null)
         {
             var resource = FindByFragment(resolution.DidDocument, parsed.Fragment);
@@ -2279,11 +2322,6 @@ public sealed class DefaultDidUrlDereferencer : IDidUrlDereferencer
                 return DidUrlDereferencingResult.Error("notFound");
             return DidUrlDereferencingResult.Success(resource, accept);
         }
-
-        // Step 4: Path without service query → DID Core does not define semantics
-        // for bare paths; return an error rather than silently ignoring the path.
-        if (parsed.Path is not null)
-            return DidUrlDereferencingResult.Error("notFound");
 
         // No path, fragment, or service query: return the full DID Document
         return DidUrlDereferencingResult.Success(
