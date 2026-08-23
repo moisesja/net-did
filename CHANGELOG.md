@@ -72,6 +72,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   parse instead of invalidating the whole file; a proof with a null `Created` serializes
   without the member rather than as JSON `null`.
 
+- **did:webvh witness trust boundary hardened** (PR #143 review round 2).
+  - Witness proofs are verified through DataProofsDotnet's `DataIntegrityProofPipeline` with
+    their **complete wire configuration**: signature-bound members outside the modeled set
+    (`id`, `expires`, `nonce`, extensions) are honored during verification and preserved
+    byte-for-byte on republish, and an unsigned member injected into a wire proof now fails
+    verification instead of being truncated away.
+  - A witness proof's verificationMethod must use the spec's strict
+    `did:key:<multibase>#<multibase>` form; the bare-DID form is no longer counted (conforming
+    resolvers discard it).
+  - `CurrentWitnessContent` is consumed whenever supplied — with or without a new
+    `WitnessProofs` batch — republished in the artifact, and rejected with `ArgumentException`
+    when unparseable instead of being silently ignored.
+  - `MergeWitnessProofs` **appends** same-version proofs (witness collection is incremental)
+    and deduplicates byte-identical ones; replacement could sink an already
+    threshold-satisfying version below its threshold.
+  - Caller-supplied `WitnessProofs` collections (outer and nested lists) are snapshotted
+    exactly once at each public operation boundary, before any await, closing the
+    changing-enumerator TOCTOU.
+  - Witness verification work is bounded: the file is indexed once, per-proof verdicts are
+    memoized across governed entries, unconfigured/duplicate/wrong-purpose signers are
+    skipped before any cryptography, per-entry scanning stops at the threshold, cancellation
+    is honored, and a configurable per-resolution verification budget fails closed when
+    exhausted (new `DidWebVhMethod` constructor overload, default
+    `DefaultMaxWitnessProofVerifications` = 1024).
+
 - **did:webvh witness-file parse failures are now diagnosable.** `ParseWitnessFile` rejects
   duplicate JSON members outright (same trust-boundary rule as the log-entry parser, #101),
   rejects non-string `versionId` values (previously a crash through `Update`/`Deactivate`

@@ -24,11 +24,13 @@ public sealed record DidWebVhDeactivateOptions : DidDeactivateOptions
     public IReadOnlyList<WitnessProofEntry>? WitnessProofs { get; init; }
 
     /// <summary>
-    /// Existing did-witness.json content to merge with new proofs. Must be a parseable
-    /// did:webvh v1.0 witness file (<c>proof</c> member; issue #135) — unparseable content
-    /// fails the deactivation with <see cref="ArgumentException"/> rather than silently
-    /// publishing an artifact stripped of the existing proofs. Omit it to publish only the
-    /// supplied <see cref="WitnessProofs"/>.
+    /// Existing did-witness.json content to merge with new proofs. Consumed whenever supplied —
+    /// with or without an accompanying <see cref="WitnessProofs"/> batch — and republished in
+    /// the resulting artifact; same-version proofs append (witness collection is incremental).
+    /// Must be a parseable did:webvh v1.0 witness file (<c>proof</c> member; issue #135) —
+    /// unparseable content fails the deactivation with <see cref="ArgumentException"/> rather
+    /// than being silently ignored or publishing an artifact stripped of the existing proofs.
+    /// Omit it to publish only the supplied <see cref="WitnessProofs"/>.
     /// </summary>
     public byte[]? CurrentWitnessContent { get; init; }
 }
