@@ -54,6 +54,45 @@ public class Issue135ReviewRound2Tests
     }
 
     [Fact]
+    public async Task Issue135_R2_ProofWithIdAndExtensionMembers_Verifies()
+    {
+        var signer = CreateSigner();
+        var config = PolicyFor(signer, threshold: 1);
+        var entry = CreateEntry(1, config);
+        var proof = await SignVersionAsync(entry.VersionId, signer,
+            id: "urn:uuid:11111111-1111-1111-1111-111111111111",
+            expires: "2030-01-01T00:00:00Z",
+            extraSignedMemberJson: "\"x-witness-ext\":\"kept\"");
+
+        var file = ParseFile(WitnessFileJson(entry.VersionId, ProofJson(proof)));
+
+        (await new WitnessValidator().ValidateWitnessesAsync(file, entry, config))
+            .Should().BeTrue("id, expires and extension members are all part of the signed " +
+                "configuration and must verify through the pipeline, not be dropped");
+    }
+
+    /// <summary>
+    /// Memoization soundness: a per-proof verdict is keyed by the proof instance, and each
+    /// instance is filed under exactly one (chain-validated) versionId. A proof genuinely
+    /// signed over a DIFFERENT versionId, filed in the witness file under the real version,
+    /// must not verify — the secured document binds to the LOG's versionId, never the witness
+    /// file's claim, so the memo can never return a foreign-document verdict.
+    /// </summary>
+    [Fact]
+    public async Task Issue135_R2_ProofSignedForForeignVersion_DoesNotCount()
+    {
+        var signer = CreateSigner();
+        var config = PolicyFor(signer, threshold: 1);
+        var entry = CreateEntry(1, config);
+        var foreignProof = await SignVersionAsync("9-QmForeignVersion", signer);
+
+        var file = ParseFile(WitnessFileJson(entry.VersionId, ProofJson(foreignProof)));
+
+        (await new WitnessValidator().ValidateWitnessesAsync(file, entry, config))
+            .Should().BeFalse("a proof signed over a foreign versionId cannot approve this entry");
+    }
+
+    [Fact]
     public async Task Issue135_R2_UnsignedInjectedProofMember_FailsVerification()
     {
         var signer = CreateSigner();
@@ -444,34 +483,60 @@ public class Issue135ReviewRound2Tests
         KeyPairSigner signer,
         string? expires = null,
         string? verificationMethod = null,
-        DateTimeOffset? created = null)
+        DateTimeOffset? created = null,
+        string? id = null,
+        string? extraSignedMemberJson = null)
     {
+        Dictionary<string, JsonElement>? additional = null;
+        if (extraSignedMemberJson is not null)
+        {
+            additional = new Dictionary<string, JsonElement>();
+            using var extra = JsonDocument.Parse("{" + extraSignedMemberJson + "}");
+            foreach (var member in extra.RootElement.EnumerateObject())
+                additional[member.Name] = member.Value.Clone();
+        }
+
         var proofOptions = new DataIntegrityProof
         {
+            Id = id,
             Cryptosuite = EddsaJcs2022Cryptosuite.CryptosuiteName,
             VerificationMethod = verificationMethod
                 ?? $"did:key:{signer.MultibasePublicKey}#{signer.MultibasePublicKey}",
             Created = (created ?? SignTime).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ"),
             Expires = expires,
-            ProofPurpose = "assertionMethod"
+            ProofPurpose = "assertionMethod",
+            AdditionalProperties = additional
         };
+
         var documentJson =
             $$"""{"versionId":{{JsonSerializer.Serialize(versionId)}}}""";
         using var document = JsonDocument.Parse(documentJson);
         return await _suite.CreateProofAsync(document.RootElement, proofOptions, signer);
     }
 
-    /// <summary>Wire JSON for one signed proof, optionally with an UNSIGNED injected member.</summary>
+    /// <summary>
+    /// Wire JSON for one signed proof. All signed members the proof carries (including
+    /// <c>id</c> and any extension in <c>AdditionalProperties</c>) are emitted, so the wire
+    /// bytes match what was signed. <paramref name="extraMemberJson"/> injects an UNSIGNED
+    /// member for the tamper tests.
+    /// </summary>
     private static string ProofJson(DataIntegrityProof proof, string? extraMemberJson = null)
     {
         var sb = new StringBuilder("{");
         sb.Append($"\"type\":{JsonSerializer.Serialize(proof.Type)},");
         sb.Append($"\"cryptosuite\":{JsonSerializer.Serialize(proof.Cryptosuite)},");
+        if (proof.Id is not null)
+            sb.Append($"\"id\":{JsonSerializer.Serialize(proof.Id)},");
         sb.Append($"\"verificationMethod\":{JsonSerializer.Serialize(proof.VerificationMethod)},");
         if (proof.Created is not null)
             sb.Append($"\"created\":{JsonSerializer.Serialize(proof.Created)},");
         if (proof.Expires is not null)
             sb.Append($"\"expires\":{JsonSerializer.Serialize(proof.Expires)},");
+        if (proof.AdditionalProperties is not null)
+        {
+            foreach (var member in proof.AdditionalProperties)
+                sb.Append($"{JsonSerializer.Serialize(member.Key)}:{member.Value.GetRawText()},");
+        }
         if (extraMemberJson is not null)
             sb.Append(extraMemberJson).Append(',');
         sb.Append($"\"proofPurpose\":{JsonSerializer.Serialize(proof.ProofPurpose)},");
