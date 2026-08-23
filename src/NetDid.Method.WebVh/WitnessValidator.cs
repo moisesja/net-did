@@ -34,18 +34,16 @@ internal sealed class WitnessValidator
         if (witnessConfig.IsDisabled)
             return true;
 
-        // Find the witness proof entry matching this log version
-        var proofEntry = witnessFile.Entries.FirstOrDefault(e => e.VersionId == entry.VersionId);
-        if (proofEntry is null)
-            return false; // No witness proofs for this version
-
         // The data that witnesses signed is the {"versionId": ...} document (issue #135)
         var signedDocumentJson = SerializeWitnessSignedDocument(entry.VersionId);
 
         var approvalCount = 0;
         var countedSignerKeys = new HashSet<string>(StringComparer.Ordinal);
 
-        foreach (var witnessProof in proofEntry.Proofs)
+        // Aggregate across ALL entries carrying this versionId: the spec's algorithm is
+        // proof-wise, and the ts reference implementation authors one array entry per proof,
+        // so a version's approvals legitimately arrive split over duplicate-versionId entries.
+        foreach (var witnessProof in ProofsForVersion(witnessFile, entry.VersionId))
         {
             var signerKey = WebVhProofVerifier.VerifyAndExtractSigner(
                 _suite, signedDocumentJson, witnessProof);
@@ -128,16 +126,13 @@ internal sealed class WitnessValidator
         // Check proofs from this version through the latest validated version
         for (int j = entryIndex; j <= upToIndex; j++)
         {
-            var proofEntry = witnessFile.Entries.FirstOrDefault(e => e.VersionId == entries[j].VersionId);
-            if (proofEntry is null)
-                continue;
-
             // Verify proofs against the {"versionId": ...} document witnesses actually sign.
             // The versionId is taken from the chain-validated entry, not the witness file's
             // claimed key, so an approval only ever counts toward a version this log proves.
+            // Duplicate-versionId entries aggregate (one-entry-per-proof authoring is valid).
             var signedDocumentJson = SerializeWitnessSignedDocument(entries[j].VersionId);
 
-            foreach (var witnessProof in proofEntry.Proofs)
+            foreach (var witnessProof in ProofsForVersion(witnessFile, entries[j].VersionId))
             {
                 // A malformed proof must not consume the witness's one counted vote. Derive the
                 // signer only from a successfully verified proof, then bind one approval to that
@@ -175,6 +170,13 @@ internal sealed class WitnessValidator
     }
 
     /// <summary>
+    /// A witness-file structural rule enforced by this parser. Distinct from raw
+    /// <see cref="JsonException"/> so the catch above can surface its message verbatim: it is
+    /// only ever thrown with fixed library-owned text, never content from the parsed file.
+    /// </summary>
+    private sealed class WitnessFileFormatException(string message) : JsonException(message);
+
+    /// <summary>
     /// The document a witness signs, per did:webvh v1.0 "DID Witnesses": a Data Integrity proof
     /// that "use[s] the versionId as input data" — the JCS document <c>{"versionId": "..."}</c>.
     /// The versionId embeds the entry hash that chain validation independently recomputes over
@@ -194,6 +196,19 @@ internal sealed class WitnessValidator
 
         return Encoding.UTF8.GetString(stream.ToArray());
     }
+
+    /// <summary>
+    /// All proofs the witness file carries for one chain-validated versionId, across every
+    /// array entry that names it. The spec's verification algorithm is per-proof ("verify each
+    /// Data Integrity proof for the relevant versionId"), and nothing forbids splitting a
+    /// version's proofs over multiple entries — the ts reference implementation writes one
+    /// entry per proof.
+    /// </summary>
+    private static IEnumerable<DataIntegrityProofValue> ProofsForVersion(
+        WitnessFile witnessFile, string versionId)
+        => witnessFile.Entries
+            .Where(e => string.Equals(e.VersionId, versionId, StringComparison.Ordinal))
+            .SelectMany(e => e.Proofs);
 
     private static WitnessEntry? FindWitnessForSigner(WitnessConfig witnessConfig, string signerKey)
     {
@@ -225,7 +240,8 @@ internal sealed class WitnessValidator
                 writer.WriteString("type", proof.Type);
                 writer.WriteString("cryptosuite", proof.Cryptosuite);
                 writer.WriteString("verificationMethod", proof.VerificationMethod);
-                writer.WriteString("created", proof.Created);
+                if (proof.Created is not null)
+                    writer.WriteString("created", proof.Created);
                 writer.WriteString("proofPurpose", proof.ProofPurpose);
                 writer.WriteString("proofValue", proof.ProofValue);
                 writer.WriteEndObject();
@@ -240,24 +256,57 @@ internal sealed class WitnessValidator
     }
 
     /// <summary>
-    /// Merge new witness proof entries with existing ones.
-    /// New entries replace existing ones with the same versionId.
+    /// Merge new witness proof entries with existing ones. New entries replace existing ones
+    /// with the same versionId. Duplicate-versionId entries on either side are aggregated
+    /// rather than last-one-wins — a ts-authored file carries one entry per proof, and
+    /// dropping its siblings on a republish could sink a version below threshold for every
+    /// resolver (issue #135 adversarial round).
     /// </summary>
     public static WitnessFile MergeWitnessProofs(
         WitnessFile? existing, IReadOnlyList<WitnessProofEntry> newEntries)
     {
-        var entriesByVersion = new Dictionary<string, WitnessProofEntry>();
+        var entriesByVersion = new Dictionary<string, List<DataIntegrityProofValue>>();
+        var versionOrder = new List<string>();
+
+        void Aggregate(WitnessProofEntry entry)
+        {
+            if (entriesByVersion.TryGetValue(entry.VersionId, out var proofs))
+            {
+                proofs.AddRange(entry.Proofs);
+            }
+            else
+            {
+                entriesByVersion[entry.VersionId] = [.. entry.Proofs];
+                versionOrder.Add(entry.VersionId);
+            }
+        }
 
         if (existing is not null)
         {
             foreach (var entry in existing.Entries)
-                entriesByVersion[entry.VersionId] = entry;
+                Aggregate(entry);
+        }
+
+        // A new entry replaces the whole aggregated set for its versionId.
+        foreach (var versionId in newEntries.Select(e => e.VersionId).Distinct())
+        {
+            if (entriesByVersion.Remove(versionId))
+                versionOrder.Remove(versionId);
         }
 
         foreach (var entry in newEntries)
-            entriesByVersion[entry.VersionId] = entry;
+            Aggregate(entry);
 
-        return new WitnessFile { Entries = entriesByVersion.Values.ToList() };
+        return new WitnessFile
+        {
+            Entries = versionOrder
+                .Select(versionId => new WitnessProofEntry
+                {
+                    VersionId = versionId,
+                    Proofs = entriesByVersion[versionId]
+                })
+                .ToList()
+        };
     }
 
     /// <summary>
@@ -313,23 +362,56 @@ internal sealed class WitnessValidator
             // The JSON-access set: Parse raises JsonException, DecodeUtf8 wraps invalid UTF-8
             // in FormatException, and element accessors raise the remainder (e.g. GetString on
             // a non-string, GetProperty on a missing member, unpaired-surrogate decode).
-            parseError = $"{ex.GetType().Name}: {ex.Message}";
+            //
+            // The reason is bounded by construction: a BCL type name plus numeric positions.
+            // Exception messages are excluded — System.Text.Json echoes hostile member names
+            // (including U+2028/U+2029 line separators) into JsonException.Message, and this
+            // string reaches caller logs. The one exception is the internal marker type below,
+            // whose messages are fixed library-owned text.
+            parseError = ex switch
+            {
+                WitnessFileFormatException => ex.Message,
+                JsonException { LineNumber: not null } jsonEx =>
+                    $"{ex.GetType().Name} at line {jsonEx.LineNumber}, byte {jsonEx.BytePositionInLine}",
+                _ => ex.GetType().Name,
+            };
             return null;
         }
     }
 
     private static WitnessProofEntry ParseProofEntry(JsonElement element)
     {
-        var versionId = element.GetProperty("versionId").GetString()!;
-        var proofs = element.GetProperty("proof").EnumerateArray().Select(e => new DataIntegrityProofValue
-        {
-            Type = e.GetProperty("type").GetString()!,
-            Cryptosuite = e.GetProperty("cryptosuite").GetString()!,
-            VerificationMethod = e.GetProperty("verificationMethod").GetString()!,
-            Created = e.GetProperty("created").GetString()!,
-            ProofPurpose = e.GetProperty("proofPurpose").GetString()!,
-            ProofValue = e.GetProperty("proofValue").GetString()!
-        }).ToList();
+        // A non-string versionId must fail the parse, not flow onward: a null key crashes
+        // the MergeWitnessProofs dictionary inside public Update/Deactivate.
+        var versionIdElement = element.GetProperty("versionId");
+        if (versionIdElement.ValueKind != JsonValueKind.String)
+            throw new WitnessFileFormatException("did-witness.json entry versionId must be a string.");
+
+        var versionId = versionIdElement.GetString()!;
+
+        // Migration tripwire: `proofs` is the pre-#135 NetDid wire format, and with proof-less
+        // entries tolerated below it would otherwise parse as an inert empty entry — silently
+        // shedding every legacy proof on a republish instead of failing loudly.
+        if (element.TryGetProperty("proofs", out _))
+            throw new WitnessFileFormatException(
+                "did-witness.json entry carries the legacy 'proofs' member (pre-#135 NetDid " +
+                "wire format); the did:webvh v1.0 member is 'proof'.");
+
+        // The spec says proof-less entries "SHOULD be removed", so they may legitimately
+        // appear as a transient state; an entry without proofs contributes no approvals
+        // (fail-closed) rather than invalidating the whole file. `created` is optional in
+        // VC Data Integrity and absent from the spec's minimum witness proof properties.
+        var proofs = element.TryGetProperty("proof", out var proofElement)
+            ? proofElement.EnumerateArray().Select(e => new DataIntegrityProofValue
+            {
+                Type = e.GetProperty("type").GetString()!,
+                Cryptosuite = e.GetProperty("cryptosuite").GetString()!,
+                VerificationMethod = e.GetProperty("verificationMethod").GetString()!,
+                Created = e.TryGetProperty("created", out var created) ? created.GetString() : null,
+                ProofPurpose = e.GetProperty("proofPurpose").GetString()!,
+                ProofValue = e.GetProperty("proofValue").GetString()!
+            }).ToList()
+            : [];
 
         return new WitnessProofEntry
         {

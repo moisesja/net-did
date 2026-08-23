@@ -639,9 +639,14 @@ public sealed class DidWebVhMethod : DidMethodBase
                     updateOptions.CurrentWitnessContent, out var witnessParseError);
                 if (existing is null)
                 {
-                    _logger.LogWarning(
-                        "CurrentWitnessContent for {Did} could not be parsed and is not merged: {Reason}",
-                        did, witnessParseError);
+                    // Silently publishing a witness artifact stripped of the caller's existing
+                    // proofs would be a dishonest Success; fail with a retry contract instead.
+                    throw new ArgumentException(
+                        "CurrentWitnessContent is not a parseable did:webvh v1.0 did-witness.json " +
+                        $"({witnessParseError}). Fix the file (a pre-3.2 NetDid file needs the " +
+                        "issue #135 migration) or omit CurrentWitnessContent to publish only the " +
+                        "supplied WitnessProofs.",
+                        nameof(updateOptions.CurrentWitnessContent));
                 }
             }
             var merged = WitnessValidator.MergeWitnessProofs(existing, updateOptions.WitnessProofs);
@@ -751,9 +756,14 @@ public sealed class DidWebVhMethod : DidMethodBase
                     deactivateOptions.CurrentWitnessContent, out var witnessParseError);
                 if (existing is null)
                 {
-                    _logger.LogWarning(
-                        "CurrentWitnessContent for {Did} could not be parsed and is not merged: {Reason}",
-                        did, witnessParseError);
+                    // Same honest-failure contract as Update; deactivation is never blocked —
+                    // retry without CurrentWitnessContent publishes the supplied proofs alone.
+                    throw new ArgumentException(
+                        "CurrentWitnessContent is not a parseable did:webvh v1.0 did-witness.json " +
+                        $"({witnessParseError}). Fix the file (a pre-3.2 NetDid file needs the " +
+                        "issue #135 migration) or omit CurrentWitnessContent to publish only the " +
+                        "supplied WitnessProofs.",
+                        nameof(deactivateOptions.CurrentWitnessContent));
                 }
             }
             var merged = WitnessValidator.MergeWitnessProofs(existing, deactivateOptions.WitnessProofs);

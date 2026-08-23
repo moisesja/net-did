@@ -28,6 +28,12 @@ internal static class WebVhProofVerifier
         string signedDocumentJson,
         DataIntegrityProofValue proofValue)
     {
+        // did:webvh v1.0 fixes the witness proofPurpose to assertionMethod, and the reference
+        // resolvers reject other purposes; counting them would diverge from every conformant
+        // resolver's threshold arithmetic on the same file. (Issue #135 adversarial round.)
+        if (!string.Equals(proofValue.ProofPurpose, "assertionMethod", StringComparison.Ordinal))
+            return null;
+
         var multibaseKey = ExtractDidKeyMultibase(proofValue.VerificationMethod);
         if (multibaseKey is null)
             return null;

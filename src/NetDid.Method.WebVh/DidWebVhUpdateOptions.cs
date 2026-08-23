@@ -36,7 +36,13 @@ public sealed record DidWebVhUpdateOptions : DidUpdateOptions
     /// <summary>Witness proofs to include in the did-witness.json artifact.</summary>
     public IReadOnlyList<WitnessProofEntry>? WitnessProofs { get; init; }
 
-    /// <summary>Existing did-witness.json content to merge with new proofs.</summary>
+    /// <summary>
+    /// Existing did-witness.json content to merge with new proofs. Must be a parseable
+    /// did:webvh v1.0 witness file (<c>proof</c> member; issue #135) — unparseable content
+    /// fails the update with <see cref="ArgumentException"/> rather than silently publishing
+    /// an artifact stripped of the existing proofs. Omit it to publish only the supplied
+    /// <see cref="WitnessProofs"/>.
+    /// </summary>
     public byte[]? CurrentWitnessContent { get; init; }
 }
 

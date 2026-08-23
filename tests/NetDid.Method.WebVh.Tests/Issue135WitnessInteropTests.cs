@@ -290,6 +290,290 @@ public class Issue135WitnessInteropTests
 
     #endregion
 
+    #region Adversarial round: split entries, proof profile, writer contract
+
+    /// <summary>
+    /// The ts reference implementation authors ONE array entry PER witness proof, so proofs for
+    /// a single version legitimately arrive split across duplicate-versionId entries (the
+    /// committed negative fixture carries exactly that shape). The spec's algorithm is
+    /// proof-wise ("verify each proof for the relevant versionId"); consulting only the first
+    /// matching entry falsely rejects validly witnessed threshold≥2 DIDs.
+    /// </summary>
+    [Fact]
+    public async Task Issue135_SplitWitnessEntries_AggregateAcrossDuplicateVersionIds()
+    {
+        var signerA = CreateSigner();
+        var signerB = CreateSigner();
+        var config = new WitnessConfig
+        {
+            Threshold = 2,
+            Witnesses =
+            [
+                new WitnessEntry { Id = $"did:key:{signerA.MultibasePublicKey}" },
+                new WitnessEntry { Id = $"did:key:{signerB.MultibasePublicKey}" }
+            ]
+        };
+        var entry = CreateEntry(1, config);
+        var witnessFile = new WitnessFile
+        {
+            Entries =
+            [
+                new WitnessProofEntry
+                {
+                    VersionId = entry.VersionId,
+                    Proofs = [await SignVersionAsync(entry.VersionId, signerA)]
+                },
+                new WitnessProofEntry
+                {
+                    VersionId = entry.VersionId,
+                    Proofs = [await SignVersionAsync(entry.VersionId, signerB)]
+                }
+            ]
+        };
+
+        new WitnessValidator(_suite).ValidateWitnesses(witnessFile, entry, config)
+            .Should().BeTrue("proofs split across duplicate-versionId entries must aggregate");
+    }
+
+    /// <summary>
+    /// End-to-end known answer for the split-entry shape using committed suite artifacts: the
+    /// negative-threshold-not-met vector's GENESIS is fully approved 2-of-2 via two
+    /// single-proof entries sharing its versionId (the vector is negative only because a later
+    /// version is under-approved). A log truncated to that genesis must resolve.
+    /// </summary>
+    [Fact]
+    public async Task Issue135_SuiteSplitEntryGenesisLog_Resolves()
+    {
+        var (_, log, witness) = SuiteFixture("issue135-negative-threshold-not-met-ts");
+        var genesisLine = Encoding.UTF8.GetString(log)
+            .Split('\n', StringSplitOptions.RemoveEmptyEntries)[0];
+        using var doc = JsonDocument.Parse(genesisLine);
+        var did = doc.RootElement.GetProperty("state").GetProperty("id").GetString()!;
+
+        var http = new MockWebVhHttpClient();
+        http.SetLogResponse(DidUrlMapper.MapToLogUrl(did), Encoding.UTF8.GetBytes(genesisLine));
+        http.SetWitnessResponse(DidUrlMapper.MapToWitnessUrl(did), witness);
+        var result = await new DidWebVhMethod(http).ResolveAsync(did);
+
+        result.ResolutionMetadata.Error.Should().BeNull(
+            "a 2-of-2 genesis whose approvals are split across two same-versionId entries " +
+            "is validly witnessed");
+        result.DidDocument.Should().NotBeNull();
+    }
+
+    [Fact]
+    public async Task Issue135_MergeWitnessProofs_PreservesSplitEntries()
+    {
+        var signerA = CreateSigner();
+        var signerB = CreateSigner();
+        var existing = new WitnessFile
+        {
+            Entries =
+            [
+                new WitnessProofEntry
+                {
+                    VersionId = "1-QmSplit",
+                    Proofs = [await SignVersionAsync("1-QmSplit", signerA)]
+                },
+                new WitnessProofEntry
+                {
+                    VersionId = "1-QmSplit",
+                    Proofs = [await SignVersionAsync("1-QmSplit", signerB)]
+                }
+            ]
+        };
+        var newEntries = new List<WitnessProofEntry>
+        {
+            new()
+            {
+                VersionId = "2-QmNext",
+                Proofs = [await SignVersionAsync("2-QmNext", signerA)]
+            }
+        };
+
+        var merged = WitnessValidator.MergeWitnessProofs(existing, newEntries);
+
+        merged.Entries.Where(e => e.VersionId == "1-QmSplit").SelectMany(e => e.Proofs)
+            .Should().HaveCount(2, "merging must not drop proofs carried by duplicate-versionId entries");
+        merged.Entries.Should().Contain(e => e.VersionId == "2-QmNext");
+    }
+
+    /// <summary>
+    /// The spec says proof-less entries "SHOULD be removed" — they may legitimately appear as
+    /// a transient state, so one must not reject the whole file (it simply contributes no
+    /// approvals — fail-closed either way).
+    /// </summary>
+    [Fact]
+    public void Issue135_WitnessEntryWithoutProofMember_IsInertNotFatal()
+    {
+        var json = """
+        [
+            { "versionId": "9-QmFutureStaged" },
+            {
+                "versionId": "1-QmTest",
+                "proof": []
+            }
+        ]
+        """;
+
+        var parsed = WitnessValidator.ParseWitnessFile(Encoding.UTF8.GetBytes(json), out var parseError);
+
+        parsed.Should().NotBeNull(parseError);
+        parsed!.Entries.Should().HaveCount(2);
+        parsed.Entries[0].Proofs.Should().BeEmpty();
+    }
+
+    /// <summary>
+    /// `created` is optional in VC Data Integrity and absent from the spec's minimum witness
+    /// proof properties; every reference implementation emits it today, but a proof signed
+    /// without it must parse and verify.
+    /// </summary>
+    [Fact]
+    public async Task Issue135_WitnessProofWithoutCreated_ParsesAndVerifies()
+    {
+        var signer = CreateSigner();
+        var config = PolicyFor(signer, threshold: 1);
+        var entry = CreateEntry(1, config);
+        var proof = await SignVersionWithoutCreatedAsync(entry.VersionId, signer);
+
+        var serialized = WitnessValidator.SerializeWitnessFile(new WitnessFile
+        {
+            Entries = [new WitnessProofEntry { VersionId = entry.VersionId, Proofs = [proof] }]
+        });
+        Encoding.UTF8.GetString(serialized).Should().NotContain("\"created\"",
+            "a null Created must be omitted, not written as JSON null");
+
+        var reparsed = WitnessValidator.ParseWitnessFile(serialized, out var parseError);
+        reparsed.Should().NotBeNull(parseError);
+
+        new WitnessValidator(_suite).ValidateWitnesses(reparsed!, entry, config)
+            .Should().BeTrue("a witness proof without created is conformant and must count");
+    }
+
+    /// <summary>
+    /// The spec fixes witness proofPurpose to assertionMethod, and the reference resolvers
+    /// reject other purposes. Counting them would make NetDid's threshold arithmetic diverge
+    /// from conformant resolvers on the same file.
+    /// </summary>
+    [Fact]
+    public async Task Issue135_WitnessProofWithWrongProofPurpose_DoesNotCount()
+    {
+        var signer = CreateSigner();
+        var config = PolicyFor(signer, threshold: 1);
+        var entry = CreateEntry(1, config);
+        var proof = await SignJsonAsync(
+            JsonSerializer.Serialize(new Dictionary<string, string> { ["versionId"] = entry.VersionId }),
+            signer,
+            new DateTimeOffset(2026, 8, 22, 12, 0, 0, TimeSpan.Zero),
+            proofPurpose: "authentication");
+        var witnessFile = new WitnessFile
+        {
+            Entries = [new WitnessProofEntry { VersionId = entry.VersionId, Proofs = [proof] }]
+        };
+
+        new WitnessValidator(_suite).ValidateWitnesses(witnessFile, entry, config)
+            .Should().BeFalse("a genuinely signed proof with a non-assertionMethod purpose is " +
+                "rejected by conformant resolvers and must not count here either");
+    }
+
+    [Fact]
+    public void Issue135_ParseWitnessFile_NonStringVersionId_IsRejected()
+    {
+        var parsed = WitnessValidator.ParseWitnessFile(
+            Encoding.UTF8.GetBytes("""[{"versionId":null,"proof":[]}]"""), out var parseError);
+
+        parsed.Should().BeNull(
+            "a null versionId would crash the MergeWitnessProofs dictionary in public " +
+            "Update/Deactivate");
+        parseError.Should().NotBeNullOrEmpty();
+    }
+
+    /// <summary>
+    /// The parse reason reaches caller logs; System.Text.Json echoes hostile member names
+    /// (including U+2028/U+2029 line separators) into exception messages, so the reason must
+    /// be bounded by construction: type name plus numeric position only.
+    /// </summary>
+    [Fact]
+    public void Issue135_ParseError_DoesNotEchoHostileMemberNames()
+    {
+        var hostileName = "evil" + '\u2028' + "injected" + '\u2028' + "name";
+        var json = $$"""[{"versionId":"1-QmTest","{{hostileName}}":1,"{{hostileName}}":2,"proof":[]}]""";
+
+        var parsed = WitnessValidator.ParseWitnessFile(Encoding.UTF8.GetBytes(json), out var parseError);
+
+        parsed.Should().BeNull("duplicate members are rejected");
+        parseError.Should().NotBeNullOrEmpty();
+        parseError.Should().NotContain("\u2028", "U+2028 line separators forge log lines in Unicode-aware viewers");
+        parseError.Should().NotContain("evil", "attacker-controlled member names must not reach logs");
+    }
+
+    [Fact]
+    public async Task Issue135_Update_UnparseableCurrentWitnessContent_Throws()
+    {
+        var method = new DidWebVhMethod(new MockWebVhHttpClient());
+        var signer = CreateSigner();
+        var createResult = await method.CreateAsync(new DidWebVhCreateOptions
+        {
+            Domain = "example.com",
+            UpdateKey = signer
+        });
+        var logContent = (string)createResult.Artifacts![DidWebVhArtifacts.DidJsonl];
+        var newProof = await SignVersionAsync("2-QmNew", signer);
+
+        var act = () => method.UpdateAsync(createResult.Did.Value, new DidWebVhUpdateOptions
+        {
+            CurrentLogContent = Encoding.UTF8.GetBytes(logContent),
+            SigningKey = signer,
+            CurrentWitnessContent = Encoding.UTF8.GetBytes(
+                """[{"versionId":"1-QmLegacy","proofs":[]}]"""),
+            WitnessProofs =
+            [
+                new WitnessProofEntry
+                {
+                    VersionId = "2-QmNew",
+                    Proofs = [newProof]
+                }
+            ]
+        });
+
+        await act.Should().ThrowAsync<ArgumentException>(
+            "silently publishing a witness artifact stripped of the caller's existing proofs " +
+            "is a dishonest Success");
+    }
+
+    [Fact]
+    public async Task Issue135_Deactivate_UnparseableCurrentWitnessContent_Throws()
+    {
+        var method = new DidWebVhMethod(new MockWebVhHttpClient());
+        var signer = CreateSigner();
+        var createResult = await method.CreateAsync(new DidWebVhCreateOptions
+        {
+            Domain = "example.com",
+            UpdateKey = signer
+        });
+        var logContent = (string)createResult.Artifacts![DidWebVhArtifacts.DidJsonl];
+        var newProof = await SignVersionAsync("2-QmNew", signer);
+
+        var act = () => method.DeactivateAsync(createResult.Did.Value, new DidWebVhDeactivateOptions
+        {
+            CurrentLogContent = Encoding.UTF8.GetBytes(logContent),
+            SigningKey = signer,
+            CurrentWitnessContent = Encoding.UTF8.GetBytes("not-a-witness-file"),
+            WitnessProofs =
+            [
+                new WitnessProofEntry
+                {
+                    VersionId = "2-QmNew",
+                    Proofs = [newProof]
+                }
+            ]
+        });
+
+        await act.Should().ThrowAsync<ArgumentException>();
+    }
+
+    #endregion
+
     #region Helpers
 
     private KeyPairSigner CreateSigner()
@@ -318,16 +602,26 @@ public class Issue135WitnessInteropTests
             signer,
             new DateTimeOffset(2026, 8, 22, 12, 0, 0, TimeSpan.Zero));
 
+    private Task<DataIntegrityProofValue> SignVersionWithoutCreatedAsync(
+        string versionId, KeyPairSigner signer)
+        => SignJsonAsync(
+            JsonSerializer.Serialize(new Dictionary<string, string> { ["versionId"] = versionId }),
+            signer,
+            created: null);
+
     private async Task<DataIntegrityProofValue> SignJsonAsync(
-        string documentJson, KeyPairSigner signer, DateTimeOffset created)
+        string documentJson,
+        KeyPairSigner signer,
+        DateTimeOffset? created,
+        string proofPurpose = "assertionMethod")
     {
         var proofOptions = new DataIntegrityProof
         {
             Cryptosuite = EddsaJcs2022Cryptosuite.CryptosuiteName,
             VerificationMethod =
                 $"did:key:{signer.MultibasePublicKey}#{signer.MultibasePublicKey}",
-            Created = created.ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ"),
-            ProofPurpose = "assertionMethod"
+            Created = created?.ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ"),
+            ProofPurpose = proofPurpose
         };
         using var document = JsonDocument.Parse(documentJson);
         var proof = await _suite.CreateProofAsync(document.RootElement, proofOptions, signer);
@@ -337,7 +631,7 @@ public class Issue135WitnessInteropTests
             Type = proof.Type,
             Cryptosuite = proof.Cryptosuite!,
             VerificationMethod = proof.VerificationMethod!,
-            Created = proof.Created!,
+            Created = proof.Created,
             ProofPurpose = proof.ProofPurpose!,
             ProofValue = proof.ProofValue!
         };
