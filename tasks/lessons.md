@@ -553,3 +553,12 @@
   the boundary explicitly: eligible at exactly the limit may succeed; over-limit success and
   non-eligible-at-limit both fail. Tests must separate UTC from monotonic time and pin frozen,
   backward, cancellation, exact-boundary, and overslept-timer shapes. (PR #132 round 2.)
+- A REBASE is a mechanical task, not a change to be re-proven from scratch. When a branch that
+  already passed the full gate is rebased onto main, scale verification to what the merge could
+  actually break: resolve the conflicts, build, run the AFFECTED test project(s), and regenerate
+  any generated file both sides touched. Do not re-run the entire net-did-verify gate (full
+  Release suite + all five samples + full vector replay) unless a conflict landed in shared
+  runtime code. The user pinged "this was a simple request to fix a merge conflict and it's
+  taking too damn long" — the third instance of the proportionality failure (issues #101, #112).
+  Ceremony is justified by what the diff can break, and a conflict resolution in docs plus one
+  generated report can break almost nothing.
