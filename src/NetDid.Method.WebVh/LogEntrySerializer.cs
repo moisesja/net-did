@@ -380,6 +380,7 @@ public static class LogEntrySerializer
         try
         {
             var root = doc.RootElement;
+            RequireDecodableStrings(root);
 
             foreach (var property in root.EnumerateObject())
             {
@@ -444,6 +445,28 @@ public static class LogEntrySerializer
             // Did constructor) resolves as invalidDidLog, not notFound or an unhandled exception.
             // Deliberate FormatExceptions above propagate unchanged.
             throw new FormatException("did:webvh log entry contains malformed content.", ex);
+        }
+    }
+
+    // System.Text.Json decodes an escaped string only when something reads it. A value the typed
+    // model never reads (e.g. an unknown publicKeyJwk member) would otherwise first be decoded when
+    // the raw state is re-emitted for hashing, outside this boundary, so an unpaired surrogate
+    // there resolved as notFound (issue #145). Member names were already decoded by Parse.
+    private static void RequireDecodableStrings(JsonElement element)
+    {
+        switch (element.ValueKind)
+        {
+            case JsonValueKind.Object:
+                foreach (var property in element.EnumerateObject())
+                    RequireDecodableStrings(property.Value);
+                break;
+            case JsonValueKind.Array:
+                foreach (var item in element.EnumerateArray())
+                    RequireDecodableStrings(item);
+                break;
+            case JsonValueKind.String:
+                _ = element.GetString();
+                break;
         }
     }
 

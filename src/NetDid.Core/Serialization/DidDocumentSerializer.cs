@@ -1,5 +1,6 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using System.Text.Unicode;
 using Microsoft.IdentityModel.Tokens;
 using NetDid.Core.Model;
 
@@ -207,22 +208,32 @@ public static class DidDocumentSerializer
     // with default options keeps the LAST of a duplicated member, so a decoy
     // ("controller":[attacker],"controller":self) would smuggle an unvalidated value past the
     // per-property guards and diverge from first-wins/reject consumers (issue #121). Fail closed.
-    // Comparing names means decoding them, so an unpaired surrogate escape in a member NAME throws
-    // InvalidOperationException from Parse; map it to this boundary's JsonException (issue #145).
+    //
+    // Unpaired surrogates map to this boundary's JsonException (issue #145). Comparing names means
+    // decoding them, so an escaped one in a member NAME throws InvalidOperationException from
+    // Parse, and a raw one anywhere in a string fails UTF-8 transcoding with ArgumentException.
     private static void RejectDuplicateMembers(string json)
     {
         try
         {
             using (JsonDocument.Parse(json, RejectDuplicatesOptions)) { }
         }
-        catch (InvalidOperationException ex)
+        catch (Exception ex) when (ex is InvalidOperationException
+            or (ArgumentException and not ArgumentNullException))
         {
-            throw InvalidMemberName(ex);
+            throw InvalidText(ex);
         }
     }
 
     private static void RejectDuplicateMembers(ReadOnlySpan<byte> utf8Json)
     {
+        // The parser checks UTF-8 only in strings it decodes, and compares undecoded names by raw
+        // bytes. An ill-formed name inside an extension object (a WTF-8 surrogate, or 0xFF beside
+        // 0xFE) would pass this guard and decode to U+FFFD later. Require strict UTF-8, as the
+        // string overload does by construction (issue #145).
+        if (!Utf8.IsValid(utf8Json))
+            throw new JsonException("The DID document is not valid UTF-8.");
+
         try
         {
             // JsonDocument.Parse has no ReadOnlySpan<byte> overload; copy to honor the same guard.
@@ -230,13 +241,13 @@ public static class DidDocumentSerializer
         }
         catch (InvalidOperationException ex)
         {
-            throw InvalidMemberName(ex);
+            throw InvalidText(ex);
         }
     }
 
-    // Fixed text: the offending name is attacker-controlled and is never echoed.
-    private static JsonException InvalidMemberName(InvalidOperationException inner)
-        => new("The DID document contains a JSON member name that is not valid UTF-16.", inner);
+    // Fixed text: the offending content is attacker-controlled and is never echoed.
+    private static JsonException InvalidText(Exception inner)
+        => new("The DID document contains text that is not valid UTF-16 (an unpaired surrogate).", inner);
 
     // W3C DID Core §5.2: a verification method's `controller` is REQUIRED and cannot be inferred
     // from the document — it does NOT default to the DID subject. Reject a resolved document whose
