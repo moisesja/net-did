@@ -1,5 +1,7 @@
 using System.Text.Json;
 using AwesomeAssertions;
+using Microsoft.IdentityModel.Tokens;
+using NetDid.Core.Model;
 using NetDid.Core.Serialization;
 
 namespace NetDid.Core.Tests.Serialization;
@@ -287,6 +289,170 @@ public class Issue145UnpairedSurrogateMemberNameTests
         var doc = DidDocumentSerializer.Deserialize(json);
 
         doc.VerificationMethod![0].PublicKeyJwk!.X.Should().Be("11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo");
+    }
+
+    #endregion
+
+    #region Issue145_MalformedShapes (round-3 adversarial review, pre-existing)
+
+    private const string RootAnchor = "\"id\": \"did:example:123\",";
+
+    // Shapes DID Core does not allow. Before the fix each one either leaked a raw
+    // KeyNotFoundException / InvalidOperationException / ArgumentException from the public
+    // Deserialize, or was accepted and later crashed Serialize (NullReferenceException, or an
+    // "object cycle" for nested serviceEndpoint sets).
+    public static TheoryData<string, string> MalformedShapes => new()
+    {
+        { "\"type\": \"Multikey\",", "\"type\": null," },
+        { "\"type\": \"Multikey\",", "" },
+        { "\"id\": \"did:example:123#key-1\",", "\"id\": 5," },
+        { "\"id\": \"did:example:123#key-1\",", "" },
+        { "\"type\": \"Example\",", "\"type\": null," },
+        { "\"verificationMethod\": [{", "\"verificationMethod\": [null, {" },
+        { "\"service\": [{", "\"service\": [null, {" },
+        { RootAnchor, "\"verificationMethod\": {}, " + RootAnchor },
+        { RootAnchor, "\"alsoKnownAs\": \"https://a.example\", " + RootAnchor },
+        { RootAnchor, "\"alsoKnownAs\": [1], " + RootAnchor },
+        { RootAnchor, "\"alsoKnownAs\": [null], " + RootAnchor },
+        { RootAnchor, "\"authentication\": [\"\"], " + RootAnchor },
+        { RootAnchor, "\"authentication\": [null], " + RootAnchor },
+        { RootAnchor, "\"authentication\": [5], " + RootAnchor },
+        { RootAnchor, "\"authentication\": [{\"id\": \"did:example:123#k2\", \"type\": null, " +
+            "\"controller\": \"did:example:123\"}], " + RootAnchor },
+        { "\"serviceEndpoint\": \"https://example.com\"", "\"x-ext\": 1" },
+        { "\"serviceEndpoint\": \"https://example.com\"", "\"serviceEndpoint\": \"\"" },
+        { "\"serviceEndpoint\": \"https://example.com\"", "\"serviceEndpoint\": []" },
+        { "\"serviceEndpoint\": \"https://example.com\"", "\"serviceEndpoint\": [[\"https://a.example\"]]" },
+        { "\"serviceEndpoint\": \"https://example.com\"", "\"serviceEndpoint\": [5]" },
+    };
+
+    [Theory]
+    [MemberData(nameof(MalformedShapes))]
+    public void Issue145_MalformedShape_ThrowsJsonException(string find, string replace)
+    {
+        var json = Doctor(find, replace);
+        var utf8 = System.Text.Encoding.UTF8.GetBytes(json);
+
+        var fromString = () => DidDocumentSerializer.Deserialize(json);
+        var fromUtf8 = () => DidDocumentSerializer.Deserialize(utf8.AsSpan());
+
+        fromString.Should().Throw<JsonException>();
+        fromUtf8.Should().Throw<JsonException>();
+    }
+
+    [Theory]
+    [InlineData("\"serviceEndpoint\": {\"uri\": \"https://a.example\", \"accept\": [\"didcomm/v2\"]}")]
+    [InlineData("\"serviceEndpoint\": [\"https://a.example\", {\"uri\": \"https://b.example\"}]")]
+    public void Issue145_Control_ConformantServiceEndpoint_RoundTrips(string endpoint)
+    {
+        var json = Doctor("\"serviceEndpoint\": \"https://example.com\"", endpoint);
+
+        var doc = DidDocumentSerializer.Deserialize(json);
+        var again = DidDocumentSerializer.Deserialize(DidDocumentSerializer.Serialize(doc));
+
+        again.Service![0].ServiceEndpoint.IsUri.Should().BeFalse();
+    }
+
+    #endregion
+
+    #region Issue145_WriterRejectsUnpairedSurrogates (round-4, writer side)
+
+    private const string Did = "did:example:123";
+
+    // Utf8JsonWriter silently replaces an unpaired surrogate with U+FFFD, so Serialize published
+    // bytes that differ from the caller's model while reporting success. Each position below is a
+    // string the serializer writes; {text} is placed there.
+    public static TheoryData<string> WritePositions => new()
+    {
+        "vm-id", "vm-type", "vm-multibase", "vm-jwk-x", "vm-blockchain", "vm-extension-key",
+        "service-id", "service-type", "endpoint-uri", "endpoint-map-key", "endpoint-set-uri",
+        "service-extension-key", "also-known-as", "context", "document-extension-key",
+        "relationship-reference",
+    };
+
+    private static DidDocument DocumentWith(string position, string text)
+    {
+        var extension = JsonSerializer.SerializeToElement(1);
+        var vm = new VerificationMethod
+        {
+            Id = position == "vm-id" ? $"{Did}#{text}" : $"{Did}#key-1",
+            Type = position == "vm-type" ? text : "Multikey",
+            Controller = new Did(Did),
+            PublicKeyMultibase = position == "vm-multibase" ? text
+                : position is "vm-jwk-x" or "vm-blockchain" ? null
+                : "z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK",
+            PublicKeyJwk = position == "vm-jwk-x"
+                ? new JsonWebKey { Kty = "OKP", Crv = "Ed25519", X = text }
+                : null,
+            BlockchainAccountId = position == "vm-blockchain" ? text : null,
+            AdditionalProperties = position == "vm-extension-key"
+                ? new Dictionary<string, JsonElement> { [text] = extension }
+                : null,
+        };
+        var endpoint = position switch
+        {
+            "endpoint-uri" => ServiceEndpointValue.FromUri(text),
+            "endpoint-map-key" => ServiceEndpointValue.FromMap(
+                new Dictionary<string, JsonElement> { [text] = extension }),
+            "endpoint-set-uri" => ServiceEndpointValue.FromSet(
+                [ServiceEndpointValue.FromUri("https://a.example"), ServiceEndpointValue.FromUri(text)]),
+            _ => ServiceEndpointValue.FromUri("https://example.com"),
+        };
+        var service = new Service
+        {
+            Id = position == "service-id" ? $"{Did}#{text}" : $"{Did}#svc",
+            Type = position == "service-type" ? text : "Example",
+            ServiceEndpoint = endpoint,
+            AdditionalProperties = position == "service-extension-key"
+                ? new Dictionary<string, JsonElement> { [text] = extension }
+                : null,
+        };
+        return new DidDocument
+        {
+            Id = new Did(Did),
+            AlsoKnownAs = position == "also-known-as" ? [text] : null,
+            Context = position == "context" ? ["https://www.w3.org/ns/did/v1", text] : null,
+            VerificationMethod = [vm],
+            Authentication = position == "relationship-reference"
+                ? [VerificationRelationshipEntry.FromReference($"{Did}#{text}")]
+                : null,
+            Service = [service],
+            AdditionalProperties = position == "document-extension-key"
+                ? new Dictionary<string, JsonElement> { [text] = extension }
+                : null,
+        };
+    }
+
+    [Theory]
+    [MemberData(nameof(WritePositions))]
+    public void Issue145_Serialize_UnpairedSurrogate_ThrowsArgumentException(string position)
+    {
+        var doc = DocumentWith(position, "x\uD800y");
+
+        var jsonLd = () => DidDocumentSerializer.Serialize(doc);
+        var json = () => DidDocumentSerializer.Serialize(doc, DidContentTypes.Json);
+        var utf8 = () => DidDocumentSerializer.SerializeToUtf8(doc);
+        var incomplete = () => DidDocumentSerializer.SerializeAllowingIncompleteVerificationMethods(
+            doc, DidContentTypes.JsonLd);
+
+        jsonLd.Should().Throw<ArgumentException>()
+            .Which.Message.Should().NotContain("\uD800", "the offending text is never echoed");
+        json.Should().Throw<ArgumentException>();
+        utf8.Should().Throw<ArgumentException>();
+        incomplete.Should().Throw<ArgumentException>();
+    }
+
+    [Theory]
+    [MemberData(nameof(WritePositions))]
+    public void Issue145_Control_SurrogatePair_SerializesFaithfully(string position)
+    {
+        const string text = "x\uD83D\uDE00y";
+        var doc = DocumentWith(position, text);
+
+        var serialized = DidDocumentSerializer.Serialize(doc);
+
+        serialized.Should().NotContain("\\uFFFD").And.NotContain("\uFFFD",
+            "a well-formed surrogate pair must be written as itself, not replaced");
     }
 
     #endregion

@@ -516,6 +516,38 @@ public class DidEthrWriteTests
         chain.CurrentBlockNumber.Should().Be(0);
     }
 
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task Issue145_Update_ServiceEndpointWithUnpairedSurrogate_ThrowsBeforeAnyRpc(bool add)
+    {
+        // Encoding.UTF8 silently replaces an unpaired surrogate with EF BF BD, so this used to
+        // write (or revoke) a different endpoint on-chain than the caller supplied.
+        var chain = new EmulatedEthereumChain(Registry);
+        var owner = NewActor();
+        DidEthrServiceAttribute[] services =
+        [
+            new DidEthrServiceAttribute
+            {
+                ServiceType = "X", ServiceEndpoint = "https://x.example/\uD800",
+            },
+        ];
+
+        var act = () => MethodFor(chain).UpdateAsync($"did:ethr:sepolia:{owner.Address}",
+            new DidEthrUpdateOptions
+            {
+                ControllerKey  = owner.Signer,
+                AddServices    = add ? services : null,
+                RemoveServices = add ? null : services,
+            });
+
+        (await act.Should().ThrowAsync<ArgumentException>())
+            .Which.ParamName.Should().Be(add
+                ? nameof(DidEthrUpdateOptions.AddServices)
+                : nameof(DidEthrUpdateOptions.RemoveServices));
+        chain.CurrentBlockNumber.Should().Be(0, "nothing may be broadcast");
+    }
+
     [Fact]
     public async Task Update_MidBatchRevert_ReportsLandedOperations()
     {

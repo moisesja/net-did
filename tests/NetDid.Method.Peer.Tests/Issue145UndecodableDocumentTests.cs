@@ -3,6 +3,7 @@ using System.Text;
 using AwesomeAssertions;
 using NetCid;
 using NetCrypto;
+using NetDid.Core.Model;
 using NetDid.Method.Peer;
 
 namespace NetDid.Method.Peer.Tests;
@@ -48,5 +49,79 @@ public class Issue145UndecodableDocumentTests
         resolved.DidDocument.Should().BeNull(
             "a document that cannot be serialized must not be returned as a resolution result");
         resolved.ResolutionMetadata.Error.Should().Be("notFound");
+    }
+
+    [Theory]
+    [InlineData("""{"verificationMethod":[{"id":"#k","type":null,"publicKeyMultibase":"z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK"}]}""")]
+    [InlineData("""{"verificationMethod":[null]}""")]
+    public async Task Issue145_MalformedDocumentShape_FailsClosed(string inputDocumentJson)
+    {
+        // Round-3 adversarial review: these resolved to documents that crash Serialize.
+        var resolved = await _method.ResolveAsync(EncodePeer4(inputDocumentJson));
+
+        resolved.DidDocument.Should().BeNull();
+    }
+
+    // ── Writer side (round 4): Create used to publish U+FFFD in place of the caller's text ──
+
+    private static Service ServiceWithType(string type) => new()
+    {
+        Id = "#svc",
+        Type = type,
+        ServiceEndpoint = ServiceEndpointValue.FromUri("https://example.com/didcomm")
+    };
+
+    [Fact]
+    public async Task Issue145_Numalgo2Create_ServiceWithUnpairedSurrogate_ThrowsArgumentException()
+    {
+        var act = () => _method.CreateAsync(new DidPeerCreateOptions
+        {
+            Numalgo = PeerNumalgo.Two,
+            Keys =
+            [
+                new PeerKeyPurpose(
+                    new KeyPairSigner(new DefaultKeyGenerator().Generate(KeyType.Ed25519),
+                        new DefaultCryptoProvider()),
+                    PeerPurpose.Authentication)
+            ],
+            Services = [ServiceWithType("DIDComm\uD800Messaging")]
+        });
+
+        await act.Should().ThrowAsync<ArgumentException>();
+    }
+
+    [Fact]
+    public async Task Issue145_Numalgo4Create_ServiceWithUnpairedSurrogate_ThrowsArgumentException()
+    {
+        // Before the fix the DID hashed the U+FFFD-altered bytes while the returned document
+        // kept the original text, so the two disagreed.
+        var act = () => _method.CreateAsync(new DidPeerCreateOptions
+        {
+            Numalgo = PeerNumalgo.Four,
+            InputDocument = new DidDocument { Service = [ServiceWithType("Example\uDC00")] }
+        });
+
+        await act.Should().ThrowAsync<ArgumentException>();
+    }
+
+    [Fact]
+    public async Task Issue145_Control_Numalgo2Create_SurrogatePairServiceType_RoundTrips()
+    {
+        var created = await _method.CreateAsync(new DidPeerCreateOptions
+        {
+            Numalgo = PeerNumalgo.Two,
+            Keys =
+            [
+                new PeerKeyPurpose(
+                    new KeyPairSigner(new DefaultKeyGenerator().Generate(KeyType.Ed25519),
+                        new DefaultCryptoProvider()),
+                    PeerPurpose.Authentication)
+            ],
+            Services = [ServiceWithType("Example😀")]
+        });
+
+        var resolved = await _method.ResolveAsync(created.Did.Value);
+
+        resolved.DidDocument!.Service![0].Type.Should().Be("Example😀");
     }
 }

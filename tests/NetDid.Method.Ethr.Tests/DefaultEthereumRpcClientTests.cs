@@ -506,6 +506,24 @@ public class DefaultEthereumRpcClientTests
             .Should().ThrowAsync<EthereumInteractionException>().WithMessage("*eth_call*");
     }
 
+    public static TheoryData<string> Issue145ReceiptsWithForgedText => new()
+    {
+        // A node-supplied status copied into the message could forge a log line.
+        $$"""{"status":"0x1\r\nFORGED LOG LINE","blockNumber":"0x5","transactionHash":"{{ReceiptHash}}"}""",
+        // A mismatching transactionHash was copied verbatim too.
+        """{"status":"0x1","blockNumber":"0x5","transactionHash":"0xbb\r\nFORGED LOG LINE"}""",
+    };
+
+    [Theory]
+    [MemberData(nameof(Issue145ReceiptsWithForgedText))]
+    public async Task Issue145_GetTransactionReceipt_NodeTextIsNeverEchoed(string receipt)
+    {
+        var act = () => ClientWithResult(receipt).GetTransactionReceiptAsync(ReceiptHash);
+
+        (await act.Should().ThrowAsync<EthereumInteractionException>())
+            .Which.Message.Should().NotContain("FORGED").And.NotContain("\n");
+    }
+
     [Fact]
     public async Task Issue145_Control_EscapedSurrogatePairInIgnoredMember_StillParses()
     {

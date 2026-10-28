@@ -438,6 +438,157 @@ public class Issue145UnpairedSurrogateMemberNameTests
 
     #endregion
 
+    #region Issue145_MalformedStateShapes (round-3 adversarial review, pre-existing)
+
+    [Theory]
+    [InlineData("\"type\":\"Multikey\"", "\"type\":null")]
+    [InlineData("\"verificationMethod\":[", "\"verificationMethod\":[null,")]
+    public async Task Issue145_StateShapeThatCrashedTheModel_ResolvesInvalidDidLog(string find, string replace)
+    {
+        // These used to throw NullReferenceException inside the state's document model, which
+        // escaped the parse boundary and resolved as notFound.
+        var (did, jsonl, _) = await CreateLogAsync();
+        var doctored = DoctorGenesisLine(jsonl, find, replace);
+
+        var parse = () => LogEntrySerializer.ParseJsonLines(Encoding.UTF8.GetBytes(doctored));
+        parse.Should().Throw<FormatException>();
+
+        var result = await ResolveLogAsync(did, doctored);
+        result.ResolutionMetadata.Error.Should().Be("invalidDidLog");
+    }
+
+    #endregion
+
+    #region Issue145_AuthoringRejectsUnpairedSurrogates (round 4, writer side)
+
+    // Utf8JsonWriter silently replaces an unpaired surrogate with U+FFFD, so these used to
+    // publish a log whose bytes differ from the caller's input while reporting success.
+
+    [Fact]
+    public async Task Issue145_Create_ServiceWithUnpairedSurrogate_ThrowsArgumentException()
+    {
+        var signer = new KeyPairSigner(_keyGen.Generate(KeyType.Ed25519), _crypto);
+        var (method, _) = CreateMethod();
+
+        var act = () => method.CreateAsync(new DidWebVhCreateOptions
+        {
+            Domain = "example.com",
+            UpdateKey = signer,
+            Services =
+            [
+                new Service
+                {
+                    Id = "#svc",
+                    Type = "Linked\uD800Domains",
+                    ServiceEndpoint = ServiceEndpointValue.FromUri("https://example.com")
+                }
+            ]
+        });
+
+        await act.Should().ThrowAsync<ArgumentException>();
+    }
+
+    [Fact]
+    public async Task Issue145_Create_PreRotationCommitmentWithUnpairedSurrogate_ThrowsArgumentException()
+    {
+        var signer = new KeyPairSigner(_keyGen.Generate(KeyType.Ed25519), _crypto);
+        var (method, _) = CreateMethod();
+
+        var act = () => method.CreateAsync(new DidWebVhCreateOptions
+        {
+            Domain = "example.com",
+            UpdateKey = signer,
+            PreRotationCommitments = ["Qm\uD800"]
+        });
+
+        await act.Should().ThrowAsync<ArgumentException>();
+    }
+
+    [Fact]
+    public async Task Issue145_Create_WatcherWithUnpairedSurrogate_ThrowsArgumentException()
+    {
+        var signer = new KeyPairSigner(_keyGen.Generate(KeyType.Ed25519), _crypto);
+        var (method, _) = CreateMethod();
+
+        var act = () => method.CreateAsync(new DidWebVhCreateOptions
+        {
+            Domain = "example.com",
+            UpdateKey = signer,
+            Watchers = ["https://watcher.example/\uD800"]
+        });
+
+        // System.Uri accepts it, so the watcher URL check alone never caught this.
+        await act.Should().ThrowAsync<ArgumentException>(
+            "a watcher URL that cannot be encoded must never be published as U+FFFD");
+    }
+
+    [Fact]
+    public async Task Issue145_Update_NewDocumentWithUnpairedSurrogate_ThrowsArgumentException()
+    {
+        var (did, jsonl, signer) = await CreateLogAsync();
+        var current = LogEntrySerializer.ParseJsonLines(Encoding.UTF8.GetBytes(jsonl))[0].State;
+        var (method, _) = CreateMethod();
+
+        var act = () => method.UpdateAsync(did, new DidWebVhUpdateOptions
+        {
+            CurrentLogContent = Encoding.UTF8.GetBytes(jsonl),
+            SigningKey = signer,
+            NewDocument = current with { AlsoKnownAs = ["https://alias.example/\uD800"] }
+        });
+
+        await act.Should().ThrowAsync<ArgumentException>();
+    }
+
+    private static DataIntegrityProofValue ProgrammaticProof(string proofValue) => new()
+    {
+        Type = "DataIntegrityProof",
+        Cryptosuite = "eddsa-jcs-2022",
+        VerificationMethod = "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK" +
+            "#z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK",
+        ProofPurpose = "assertionMethod",
+        ProofValue = proofValue
+    };
+
+    public static TheoryData<string> MalformedWitnessInputs => new()
+    {
+        "proof-value-surrogate", "version-id-surrogate", "null-entry", "null-proofs", "null-proof",
+        "null-version-id",
+    };
+
+    private static WitnessProofEntry?[] WitnessInput(string kind) => kind switch
+    {
+        "proof-value-surrogate" =>
+            [new WitnessProofEntry { VersionId = "1-QmA", Proofs = [ProgrammaticProof("z3\uD800abc")] }],
+        "version-id-surrogate" =>
+            [new WitnessProofEntry { VersionId = "1-Qm\uD800A", Proofs = [ProgrammaticProof("z3abc")] }],
+        "null-entry" => [null],
+        "null-proofs" => [new WitnessProofEntry { VersionId = "1-QmA", Proofs = null! }],
+        "null-proof" => [new WitnessProofEntry { VersionId = "1-QmA", Proofs = [null!] }],
+        "null-version-id" =>
+            [new WitnessProofEntry { VersionId = null!, Proofs = [ProgrammaticProof("z3abc")] }],
+        _ => throw new ArgumentOutOfRangeException(nameof(kind)),
+    };
+
+    [Theory]
+    [MemberData(nameof(MalformedWitnessInputs))]
+    public async Task Issue145_Update_MalformedWitnessInput_ThrowsArgumentException(string kind)
+    {
+        var (did, jsonl, signer) = await CreateLogAsync();
+        var (method, _) = CreateMethod();
+
+        var act = () => method.UpdateAsync(did, new DidWebVhUpdateOptions
+        {
+            CurrentLogContent = Encoding.UTF8.GetBytes(jsonl),
+            SigningKey = signer,
+            WitnessProofs = WitnessInput(kind)!
+        });
+
+        (await act.Should().ThrowAsync<ArgumentException>())
+            .Which.ParamName.Should().Be(nameof(DidWebVhUpdateOptions.WitnessProofs));
+    }
+
+    #endregion
+
     #region Issue145_WitnessFile_SurrogateMemberName (pins: this boundary already mapped it)
 
     [Theory]
