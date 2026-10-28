@@ -43,13 +43,14 @@ public static partial class DidParser
     private static partial Regex RelativeFragmentRegex();
 
     // RFC 3986 absolute URI: scheme ":" hier-part [ "?" query ] [ "#" fragment ]. hier-part is
-    // "//" authority path-abempty, or a path. "[" and "]" appear only around an IP-literal host.
+    // "//" authority path-abempty, or a path that does not begin with "//". "[" and "]" appear
+    // only around an IP-literal host.
     private const string PChar = $@"[{Unreserved}{SubDelims}:@]|{PctEncoded}";
     private const string Authority =
         $@"//(?:(?:[{Unreserved}{SubDelims}:]|{PctEncoded})*@)?" +
         $@"(?:\[[{Unreserved}{SubDelims}:]+\]|(?:[{Unreserved}{SubDelims}]|{PctEncoded})*)(?::[0-9]*)?";
 
-    [GeneratedRegex($@"^[A-Za-z][A-Za-z0-9+.\-]*:(?:{Authority}(?:/(?:{PChar})*)*|(?:{PChar}|/)*)(?:\?(?:{QueryOrFragmentChar})*)?(?:#(?:{QueryOrFragmentChar})*)?\z", RegexOptions.Compiled)]
+    [GeneratedRegex($@"^[A-Za-z][A-Za-z0-9+.\-]*:(?:{Authority}(?:/(?:{PChar})*)*|(?!//)(?:{PChar}|/)*)(?:\?(?:{QueryOrFragmentChar})*)?(?:#(?:{QueryOrFragmentChar})*)?\z", RegexOptions.Compiled)]
     private static partial Regex AbsoluteUriRegex();
 
     /// <summary>
@@ -87,7 +88,6 @@ public static partial class DidParser
             return did + "#" + id;
         return id;
     }
-
 
     /// <summary>
     /// Validate a bare DID string conforms to W3C DID syntax: did:&lt;method&gt;:&lt;method-specific-id&gt;.
