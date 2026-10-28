@@ -1,5 +1,5 @@
 using System.Net;
-using FluentAssertions;
+using AwesomeAssertions;
 using NetDid.Method.WebVh;
 
 namespace NetDid.Method.WebVh.Tests;

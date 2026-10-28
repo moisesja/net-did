@@ -1,6 +1,6 @@
 using System.Text.Json;
 using DataProofsDotnet.DataIntegrity;
-using FluentAssertions;
+using AwesomeAssertions;
 using NetCrypto;
 using NetDid.Core.Model;
 using NetDid.Method.WebVh;

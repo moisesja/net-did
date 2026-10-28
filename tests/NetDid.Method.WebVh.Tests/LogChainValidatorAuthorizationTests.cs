@@ -1,7 +1,7 @@
 using System.Text;
 using System.Text.Json;
 using DataProofsDotnet.DataIntegrity;
-using FluentAssertions;
+using AwesomeAssertions;
 using NetDid.Core;
 using NetCrypto;
 using NetDid.Core.Exceptions;

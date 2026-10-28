@@ -1,4 +1,4 @@
-using FluentAssertions;
+using AwesomeAssertions;
 using NetDid.Core.Model;
 using NetDid.Core.Parsing;
 using NetDid.Tests.W3CConformance.Infrastructure;

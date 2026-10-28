@@ -1,4 +1,4 @@
-using FluentAssertions;
+using AwesomeAssertions;
 using NetDid.Method.Ethr.Crypto;
 using NetDid.Method.Ethr.Erc1056;
 using NetDid.Method.Ethr.Resolution;

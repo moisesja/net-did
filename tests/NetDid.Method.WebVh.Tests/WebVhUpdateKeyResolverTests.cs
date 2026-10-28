@@ -1,4 +1,4 @@
-using FluentAssertions;
+using AwesomeAssertions;
 using NetCrypto;
 
 namespace NetDid.Method.WebVh.Tests;

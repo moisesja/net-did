@@ -1,4 +1,4 @@
-using FluentAssertions;
+using AwesomeAssertions;
 using Microsoft.Extensions.Logging;
 using NetDid.Method.Ethr.Rpc;
 using NSubstitute;
