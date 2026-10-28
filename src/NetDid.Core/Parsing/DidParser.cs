@@ -38,9 +38,14 @@ public static partial class DidParser
     [GeneratedRegex($@"^(?<did>did:[a-z0-9]+:(?:(?:{IdCharPattern})*:)*(?:{IdCharPattern})+)(?<path>/(?:{PathChar})*)?(?:;(?<params>(?:{ParamChar})*))?(?:\?(?<query>(?:{QueryOrFragmentChar})*))?(?:#(?<fragment>(?:{QueryOrFragmentChar})*))?\z", RegexOptions.Compiled)]
     private static partial Regex DidUrlRegex();
 
-    // A relative DID URL reference "#fragment" (DID Core §3.2), with the same fragment grammar.
-    [GeneratedRegex($@"^#(?:{QueryOrFragmentChar})+\z", RegexOptions.Compiled)]
-    private static partial Regex RelativeFragmentRegex();
+    // A relative DID URL (DID Core §3.2.2: "MAY contain relative path components, query
+    // parameters, and fragment identifiers"): an RFC 3986 relative-ref whose relative-part is
+    // path-absolute, path-noscheme or path-empty. The network-path form "//authority…" is not one:
+    // it replaces the DID itself, so it never names a resource of this document. A path-noscheme
+    // first segment has no ':', so nothing starting "did:" matches here.
+    private const string SegmentNzNc = $@"(?:[{Unreserved}{SubDelims}@]|{PctEncoded})+";
+    [GeneratedRegex($@"^(?:/(?:(?:{PChar})+(?:/(?:{PChar})*)*)?|{SegmentNzNc}(?:/(?:{PChar})*)*)?(?:\?(?:{QueryOrFragmentChar})*)?(?:#(?:{QueryOrFragmentChar})*)?\z", RegexOptions.Compiled)]
+    private static partial Regex RelativeDidUrlRegex();
 
     // RFC 3986 absolute URI: scheme ":" hier-part [ "?" query ] [ "#" fragment ]. hier-part is
     // "//" authority path-abempty, or a path that does not begin with "//". "[" and "]" appear
@@ -75,37 +80,83 @@ public static partial class DidParser
     internal static bool IsAbsoluteUri(string? value)
         => !string.IsNullOrEmpty(value) && AbsoluteUriRegex().IsMatch(value);
 
-    /// <summary>Whether <paramref name="value"/> is a relative "#fragment" reference.</summary>
-    internal static bool IsRelativeFragment(string? value)
-        => !string.IsNullOrEmpty(value) && RelativeFragmentRegex().IsMatch(value);
+    /// <summary>
+    /// Whether <paramref name="value"/> is a relative DID URL (DID Core §3.2.2): a path, query
+    /// and/or fragment reference such as "#key-1", "/keys/1", "keys/1#k" or "?versionId=1#k".
+    /// A lone "#" is not one.
+    /// </summary>
+    internal static bool IsRelativeDidUrl(string? value)
+        => !string.IsNullOrEmpty(value) && value != "#" && RelativeDidUrlRegex().IsMatch(value);
 
-    // NetDid's documented shorthand (issue #136): a bare id such as "files" or "key-1" stands for
-    // "#files". It is one segment without ':', '/', '?' or '#', so it can never be confused with a
-    // real RFC 3986 relative reference ("//host/x", "/files", "?service=x", "a/b").
+    // NetDid's documented compatibility shorthand (issue #136): one plain segment such as "files"
+    // or "key-1" stands for "#files", where RFC 3986 alone would resolve it to "<did>/files". It
+    // has no ':', '/', '?' or '#', and is never a dot-segment, so every other relative reference
+    // ("/files", "a/b", "?service=x", "./x") keeps its RFC 3986 meaning.
     [GeneratedRegex($@"^(?:[{Unreserved}{SubDelims}@]|{PctEncoded})+\z", RegexOptions.Compiled)]
     private static partial Regex BareShorthandRegex();
 
     /// <summary>Whether <paramref name="value"/> is the bare-id shorthand for "#value".</summary>
     internal static bool IsBareShorthand(string? value)
-        => !string.IsNullOrEmpty(value) && BareShorthandRegex().IsMatch(value);
+        => !string.IsNullOrEmpty(value) && value is not ("." or "..") && BareShorthandRegex().IsMatch(value);
 
     /// <summary>
-    /// The form in which service and verification-method ids are compared: an id of the
-    /// document's own DID ("#x", the bare shorthand "x", or "{did}#x") becomes "#x"; any other
-    /// id is returned unchanged. The one equivalence used by dereferencing and by duplicate-id
-    /// detection (issue #145). It never builds "{did}#x", so its cost follows the id, not the
-    /// DID: a did:peer DID embeds its whole document and can be megabytes long.
+    /// The form in which service and verification-method ids are compared (issue #145): the id
+    /// resolved against the document's DID by RFC 3986 §5, which DID Core §3.2.2 requires (scheme
+    /// "did", authority "&lt;method&gt;:&lt;method-specific-id&gt;", empty path), written without
+    /// the DID itself: "#k", "/keys/1#k", "?versionId=1#k". "keys/1#k", "/keys/1#k" and
+    /// "{did}/keys/1#k" are therefore one id. The one exception is the compatibility shorthand:
+    /// a plain "x" means "#x" (issue #136). An id of another DID, or any other absolute URI, is
+    /// returned unchanged. The one equivalence used by dereferencing, duplicate-id detection and
+    /// verification-relationship checks. It never builds "{did}…", so its cost follows the id,
+    /// not the DID: a did:peer DID embeds its whole document and can be megabytes long.
     /// </summary>
     internal static string ComparableId(string id, string? did)
     {
-        if (id.StartsWith('#'))
-            return id;
-        if (!id.Contains(':'))
+        if (did is not null && id.StartsWith(did, StringComparison.Ordinal)
+            && (id.Length == did.Length || id[did.Length] is '/' or '?' or '#'))
+            return ResolveAgainstDid(id[did.Length..]);
+        if (IsBareShorthand(id))
             return "#" + id;
-        if (did is not null && id.Length > did.Length && id[did.Length] == '#'
-            && id.StartsWith(did, StringComparison.Ordinal))
-            return id[did.Length..];
+        if (IsRelativeDidUrl(id))
+            return ResolveAgainstDid(id);
         return id;
+    }
+
+    // RFC 3986 §5.2.2 for a reference with no scheme or authority, against a base that has an
+    // authority and an empty path (the DID): an empty path keeps the base's empty path, any other
+    // path becomes absolute ("keys/1" merges to "/keys/1", §5.2.3), and dot segments are removed
+    // (§5.2.4). The query and fragment are kept as written.
+    private static string ResolveAgainstDid(string reference)
+    {
+        var end = reference.IndexOfAny(['?', '#']);
+        var path = end < 0 ? reference : reference[..end];
+        var rest = end < 0 ? "" : reference[end..];
+        if (path.Length == 0)
+            return rest;
+        return RemoveDotSegments(path.StartsWith('/') ? path : "/" + path) + rest;
+    }
+
+    // RFC 3986 §5.2.4 for a path that starts with "/".
+    private static string RemoveDotSegments(string path)
+    {
+        if (!path.Contains('.'))
+            return path;
+        var segments = path.Split('/');
+        var output = new List<string>(segments.Length);
+        for (var i = 1; i < segments.Length; i++)
+        {
+            var segment = segments[i];
+            if (segment is "." or "..")
+            {
+                if (segment == ".." && output.Count > 0)
+                    output.RemoveAt(output.Count - 1);
+                if (i == segments.Length - 1)
+                    output.Add("");
+                continue;
+            }
+            output.Add(segment);
+        }
+        return "/" + string.Join('/', output);
     }
 
     /// <summary>
@@ -142,21 +193,17 @@ public static partial class DidParser
     }
 
     /// <summary>
-    /// Validates a DID reference, which can be either an absolute DID URL
-    /// or a relative fragment reference (e.g., "#key-1").
-    /// Per W3C DID Core §3.2, relative DID URLs are valid within DID documents.
+    /// Validates a DID reference: an absolute DID URL, or a relative DID URL (W3C DID Core §3.2.2),
+    /// which may contain relative path components, query parameters and fragment identifiers
+    /// (e.g. "#key-1", "/keys/1", "keys/1#k", "?versionId=1#key-1") and is resolved against the
+    /// DID by RFC 3986 §5. Every component follows the RFC 3986 character rules (issue #145).
     /// </summary>
     public static bool IsValidDidReference(string reference)
     {
         if (string.IsNullOrEmpty(reference))
             return false;
 
-        // Relative fragment reference: #fragment, with the RFC 3986 fragment grammar (issue #145).
-        if (reference.StartsWith('#'))
-            return IsRelativeFragment(reference);
-
-        // Otherwise, must be a valid absolute DID URL
-        return ParseDidUrl(reference) is not null;
+        return IsRelativeDidUrl(reference) || ParseDidUrl(reference) is not null;
     }
 
     /// <summary>Parse a DID URL (DID + optional path, params, query, fragment).</summary>

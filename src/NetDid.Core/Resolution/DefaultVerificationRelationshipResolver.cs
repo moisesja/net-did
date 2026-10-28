@@ -1,4 +1,5 @@
 using NetDid.Core.Model;
+using NetDid.Core.Parsing;
 
 namespace NetDid.Core.Resolution;
 
@@ -39,7 +40,7 @@ public sealed class DefaultVerificationRelationshipResolver : IVerificationRelat
             ?? throw new InvalidOperationException(
                 $"Resolved DID document for '{controllerDid}' has no id.");
 
-        var queryNorm = NormalizeVmId(verificationMethodDidUrl, controllerIdStr);
+        var queryNorm = DidParser.ComparableId(verificationMethodDidUrl, controllerIdStr);
 
         var entries = resolution.DidDocument.GetRelationshipEntries(relationship);
         if (entries is null || entries.Count == 0)
@@ -52,27 +53,11 @@ public sealed class DefaultVerificationRelationshipResolver : IVerificationRelat
                 : entry.EmbeddedMethod?.Id;
             if (entryId is null) continue;
 
-            var entryNorm = NormalizeVmId(entryId, controllerIdStr);
+            var entryNorm = DidParser.ComparableId(entryId, controllerIdStr);
             if (string.Equals(entryNorm, queryNorm, StringComparison.Ordinal))
                 return VerificationRelationshipAuthorizationResult.Authorized();
         }
 
         return VerificationRelationshipAuthorizationResult.NotAuthorized();
-    }
-
-    /// <summary>
-    /// Resolves a verification-method id against the controller's DID. Mirrors the service-id
-    /// normalization in <see cref="DefaultDidUrlDereferencer"/> for VM identifiers:
-    /// <c>"#k1"</c> becomes <c>"{controllerDid}#k1"</c>, a bare <c>"k1"</c> (no <c>':'</c>) becomes
-    /// <c>"{controllerDid}#k1"</c>, and absolute DID URLs are returned unchanged.
-    /// Comparison against entries is ordinal.
-    /// </summary>
-    private static string NormalizeVmId(string id, string controllerDid)
-    {
-        if (id.StartsWith('#'))
-            return controllerDid + id;
-        if (!id.Contains(':'))
-            return controllerDid + "#" + id;
-        return id;
     }
 }

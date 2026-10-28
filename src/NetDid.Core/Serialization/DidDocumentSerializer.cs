@@ -169,8 +169,10 @@ public static class DidDocumentSerializer
         }
 
         // A DID URL, a relative "#fragment", or NetDid's bare-id shorthand for "#id" (issue #136).
+        // An absolute or relative DID URL (§3.2.2); the bare shorthand "files" (issue #136) is a
+        // relative path reference too, compared as "#files" by ComparableId.
         static bool IsReference(string? id)
-            => id is not null && (DidParser.IsValidDidReference(id) || DidParser.IsBareShorthand(id));
+            => id is not null && DidParser.IsValidDidReference(id);
 
         void RequireMethodId(VerificationMethod? vm)
         {
