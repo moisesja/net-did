@@ -1,4 +1,4 @@
-using AwesomeAssertions;
+using FluentAssertions;
 using NSubstitute;
 using NetDid.Core.Model;
 using NetDid.Core.Resolution;

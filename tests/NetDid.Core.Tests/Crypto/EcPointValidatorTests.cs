@@ -1,6 +1,6 @@
 using System.Numerics;
 using System.Security.Cryptography;
-using AwesomeAssertions;
+using FluentAssertions;
 using Microsoft.IdentityModel.Tokens;
 using NetCid;
 using NetCrypto;

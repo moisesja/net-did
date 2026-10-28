@@ -1,5 +1,5 @@
 using System.Reflection;
-using AwesomeAssertions;
+using FluentAssertions;
 using Microsoft.Extensions.DependencyInjection;
 using NetDid.Core;
 using NetDid.Extensions.DependencyInjection;

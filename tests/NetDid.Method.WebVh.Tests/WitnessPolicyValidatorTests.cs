@@ -1,5 +1,5 @@
 using System.Text;
-using AwesomeAssertions;
+using FluentAssertions;
 using NetCrypto;
 using NetDid.Method.WebVh.Model;
 

@@ -1,5 +1,5 @@
 using DotNet.Testcontainers.Builders;
-using AwesomeAssertions;
+using FluentAssertions;
 using Xunit;
 
 namespace NetDid.Method.Ethr.IntegrationTests;

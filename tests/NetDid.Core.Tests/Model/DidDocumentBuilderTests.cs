@@ -1,4 +1,4 @@
-using AwesomeAssertions;
+using FluentAssertions;
 using Microsoft.IdentityModel.Tokens;
 using NetDid.Core.Model;
 

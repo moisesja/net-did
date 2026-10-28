@@ -1,6 +1,6 @@
 using System.Numerics;
 using System.Text;
-using AwesomeAssertions;
+using FluentAssertions;
 using NetDid.Method.Ethr.Transactions;
 using Xunit;
 

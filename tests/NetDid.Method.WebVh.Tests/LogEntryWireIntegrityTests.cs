@@ -2,7 +2,7 @@ using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using DataProofsDotnet.DataIntegrity;
-using AwesomeAssertions;
+using FluentAssertions;
 using NetCrypto;
 using NetDid.Core.Model;
 

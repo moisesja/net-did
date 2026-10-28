@@ -90,14 +90,10 @@ Your editor should pick up these settings automatically from `.editorconfig`.
 
 ## Testing Conventions
 
-Tests use **xUnit v3** with **AwesomeAssertions** for assertions and **NSubstitute** for mocking.
-AwesomeAssertions is the Apache-2.0 fork of FluentAssertions; FluentAssertions 8 and later are
-commercially licensed, so do not add it back.
+Tests use **xunit** with **FluentAssertions** for assertions and **NSubstitute** for mocking.
 
 ### Test project setup
 
-- xUnit v3 is referenced as `xunit.v3.mtp-off`, so tests run under VSTest: `dotnet test` and its
-  `--filter` syntax work as shown below. Test projects build as executables (`<OutputType>Exe</OutputType>`)
 - `GlobalUsings.cs` provides `global using Xunit;` so test files don't need explicit xunit imports
 - Test file structure mirrors `src/` — e.g., `src/NetDid.Core/Parsing/DidParser.cs` is tested by `tests/NetDid.Core.Tests/Parsing/DidParserTests.cs`
 
@@ -117,7 +113,7 @@ GenerateAsync_DuplicateAlias_Throws()
 ### Writing tests
 
 ```csharp
-using AwesomeAssertions;
+using FluentAssertions;
 using NetDid.Core.Crypto;
 
 namespace NetDid.Core.Tests.Crypto;
@@ -148,15 +144,6 @@ dotnet test --filter "FullyQualifiedName~DefaultKeyGeneratorTests"
 # Run a single test
 dotnet test --filter "Generate_Ed25519_ProducesValidKeyPair"
 ```
-
-### Cancellation tokens in tests
-
-The xUnit v3 analyzer rule xUnit1051 asks every call that accepts a `CancellationToken` to pass
-`TestContext.Current.CancellationToken`. It is suppressed in every test project on purpose. Many
-tests control exactly which token reaches the code under test, and a cancelable token is not
-equivalent to the default one: `AbandonableTaskExtensions` takes a different path when
-`ct.CanBeCanceled` is false, and the issue #109 and #122 tests pin both paths. Pass a token only
-when the test is about cancellation, and choose it deliberately.
 
 ## Package Management
 

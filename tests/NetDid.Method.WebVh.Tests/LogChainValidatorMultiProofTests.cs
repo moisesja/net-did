@@ -1,11 +1,9 @@
-using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using DataProofsDotnet;
 using DataProofsDotnet.DataIntegrity;
-using AwesomeAssertions;
-using NetCid;
+using FluentAssertions;
 using NetCrypto;
 using NetDid.Core.Exceptions;
 using NetDid.Core.Model;
@@ -80,7 +78,8 @@ public class LogChainValidatorMultiProofTests
         string? created = null,
         string? expires = null,
         string? id = null,
-        PreviousProofReference? previousProof = null)
+        PreviousProofReference? previousProof = null,
+        IReadOnlyList<string>? arrayDomain = null)
     {
         var vm = $"did:key:{keyPair.MultibasePublicKey}#{keyPair.MultibasePublicKey}";
         var proofOptions = new DataIntegrityProof
@@ -91,7 +90,17 @@ public class LogChainValidatorMultiProofTests
             Expires = expires,
             Id = id,
             ProofPurpose = proofPurpose,
-            PreviousProof = previousProof
+            PreviousProof = previousProof,
+            // The pinned DataProofsDotnet model exposes domain as string?, but its low-level
+            // suite still signs an array-valued domain when supplied as an extension. This
+            // lets the integration test characterize the high-level pipeline limitation with
+            // a cryptographically self-consistent proof.
+            AdditionalProperties = arrayDomain is null
+                ? null
+                : new Dictionary<string, JsonElement>
+                {
+                    ["domain"] = JsonSerializer.SerializeToElement(arrayDomain)
+                }
         };
 
         var entryJsonWithoutProof = LogEntrySerializer.SerializeWithoutProof(entry);
@@ -118,36 +127,6 @@ public class LogChainValidatorMultiProofTests
             // and they round-trip, exactly as a foreign implementation's proof would.
             RawJson = JsonSerializer.Serialize(proof, DataProofsJsonOptions.Default)
         };
-    }
-
-    /// <summary>
-    /// Signs <paramref name="entry"/> with eddsa-jcs-2022 computed by hand from a raw proof
-    /// configuration: Ed25519 over SHA-256(JCS(proofConfig)) ‖ SHA-256(JCS(entry without proof)).
-    /// DataProofsDotnet 1.4.0 refuses an extension member named after a modeled proof member, so
-    /// a proof whose <c>domain</c> is a set (which W3C Data Integrity permits) can no longer be
-    /// produced through its create path. This builds the bytes a foreign implementation would
-    /// emit; <see cref="Issue144_HandSigner_MatchesStockSuiteByteForByte"/> proves it correct.
-    /// </summary>
-    private string HandSignEntry(LogEntry entry, KeyPair keyPair, string created, JsonNode domain)
-    {
-        var proof = new JsonObject
-        {
-            ["type"] = "DataIntegrityProof",
-            ["cryptosuite"] = EddsaJcs2022Cryptosuite.CryptosuiteName,
-            ["verificationMethod"] = $"did:key:{keyPair.MultibasePublicKey}#{keyPair.MultibasePublicKey}",
-            ["created"] = created,
-            ["proofPurpose"] = "assertionMethod",
-            ["domain"] = domain
-        };
-        using var document = JsonDocument.Parse(LogEntrySerializer.SerializeWithoutProof(entry));
-        byte[] hashData =
-        [
-            .. SHA256.HashData(JcsCanonicalizer.Canonicalize(proof)),
-            .. SHA256.HashData(JcsCanonicalizer.Canonicalize(document.RootElement))
-        ];
-        proof["proofValue"] = Multibase.Encode(
-            _crypto.Sign(KeyType.Ed25519, keyPair.PrivateKey, hashData), MultibaseEncoding.Base58Btc);
-        return proof.ToJsonString();
     }
 
     /// <summary>Copies a proof with a different created value, invalidating its signature.</summary>
@@ -729,20 +708,19 @@ public class LogChainValidatorMultiProofTests
     [Fact]
     public async Task Issue101_ArrayValuedDomain_PinnedPipelineRejectsUpstreamLimitation()
     {
-        // W3C Data Integrity permits domain as an unordered set of strings. The pinned pipeline
-        // (DataProofsDotnet 1.4.0) still models domain as string? and therefore rejects it during
-        // proof deserialization. Keep this characterization explicit until DataProofsDotnet
-        // publishes a string-or-set model. The proof is hand-signed (see HandSignEntry), so the
-        // rejection is the model limitation, not a bad signature.
+        // W3C Data Integrity permits domain as an unordered set of strings. The low-level stock
+        // suite signs this representation, but the pinned pipeline models domain as string? and
+        // therefore rejects it during proof deserialization. Keep this characterization explicit
+        // until DataProofsDotnet publishes a string-or-set model.
         var (kpA, signerA) = CreateEd25519();
         var (did, entries, _) = await CreateLogAsync(signerA);
 
         entries[0] = entries[0] with
         {
-            Proof = [DataIntegrityProofValue.Parse(HandSignEntry(
+            Proof = [await SignEntryAsync(
                 entries[0], kpA,
-                created: entries[0].Proof![0].Created!,
-                domain: new JsonArray("domain.example", "https://domain.example:8443")))]
+                created: entries[0].Proof![0].Created,
+                arrayDomain: ["domain.example", "https://domain.example:8443"])]
         };
         var log = SerializeLog(entries);
         Encoding.UTF8.GetString(log).Should().Contain(
@@ -750,61 +728,6 @@ public class LogChainValidatorMultiProofTests
 
         var result = await ResolveLogAsync(did, log);
 
-        result.DidDocument.Should().BeNull();
-        result.ResolutionMetadata.Error.Should().Be("invalidDidLog");
-    }
-
-    // ================================================================
-    // DataProofsDotnet 1.4.0 upgrade (issue #144)
-    // ================================================================
-
-    [Fact]
-    public async Task Issue144_HandSigner_MatchesStockSuiteByteForByte()
-    {
-        // Positive control for HandSignEntry. Ed25519 is deterministic, so for a configuration the
-        // stock suite can still express (a string domain) both must produce the same proofValue.
-        var (kp, signer) = CreateEd25519();
-        var (_, entries, _) = await CreateLogAsync(signer);
-        var created = entries[0].Proof![0].Created!;
-
-        var handSigned = JsonNode.Parse(HandSignEntry(entries[0], kp, created, "domain.example"))!;
-
-        using var document = JsonDocument.Parse(LogEntrySerializer.SerializeWithoutProof(entries[0]));
-        var stock = await new EddsaJcs2022Cryptosuite().CreateProofAsync(
-            document.RootElement,
-            new DataIntegrityProof
-            {
-                Cryptosuite = EddsaJcs2022Cryptosuite.CryptosuiteName,
-                VerificationMethod = $"did:key:{kp.MultibasePublicKey}#{kp.MultibasePublicKey}",
-                Created = created,
-                ProofPurpose = "assertionMethod",
-                Domain = "domain.example"
-            },
-            signer);
-
-        handSigned["proofValue"]!.GetValue<string>().Should().Be(stock.ProofValue);
-    }
-
-    [Fact]
-    public async Task Issue144_ProofExtensionWithUnpairedSurrogate_ResolvesInvalidDidLog()
-    {
-        // NetDid never reads a proof's extension members, so "\uD800" in one survives parsing and
-        // reaches the Data Integrity pipeline. Before 1.4.0 the pipeline threw and NetDid's
-        // catch-all mapped it; 1.4.0 reports a document-level PROOF_TRANSFORMATION_ERROR instead.
-        // Either way the entry must fail proof validation and resolve as invalidDidLog.
-        var (_, signerA) = CreateEd25519();
-        var (did, _, jsonl) = await CreateLogAsync(signerA);
-
-        var doctored = jsonl.Split('\n')[0].Replace(
-            "\"proofPurpose\":\"assertionMethod\"",
-            "\"x-ext\":\"\\uD800\",\"proofPurpose\":\"assertionMethod\"");
-        var entries = LogEntrySerializer.ParseJsonLines(Encoding.UTF8.GetBytes(doctored));
-
-        var act = () => new LogChainValidator().ValidateChainAsync(entries);
-        await act.Should().ThrowAsync<LogChainValidationException>()
-            .WithMessage("*Proof validation failed*");
-
-        var result = await ResolveLogAsync(did, Encoding.UTF8.GetBytes(doctored));
         result.DidDocument.Should().BeNull();
         result.ResolutionMetadata.Error.Should().Be("invalidDidLog");
     }

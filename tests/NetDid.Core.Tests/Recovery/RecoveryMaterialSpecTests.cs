@@ -1,4 +1,4 @@
-using AwesomeAssertions;
+using FluentAssertions;
 using NetDid.Core.Recovery;
 
 namespace NetDid.Core.Tests.Recovery;

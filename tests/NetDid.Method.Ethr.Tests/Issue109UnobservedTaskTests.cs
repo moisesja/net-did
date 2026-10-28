@@ -1,6 +1,6 @@
 using System.Reflection;
 using System.Runtime.CompilerServices;
-using AwesomeAssertions;
+using FluentAssertions;
 using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
 using NetCrypto;

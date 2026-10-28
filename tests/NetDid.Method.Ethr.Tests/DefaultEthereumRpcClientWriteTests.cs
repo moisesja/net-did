@@ -1,7 +1,7 @@
 using System.Net;
 using System.Text;
 using System.Text.Json.Nodes;
-using AwesomeAssertions;
+using FluentAssertions;
 using NetDid.Core.Exceptions;
 using NetDid.Method.Ethr.Rpc;
 using Xunit;

@@ -1,5 +1,5 @@
 using System.Numerics;
-using AwesomeAssertions;
+using FluentAssertions;
 using NetCrypto;
 using NetDid.Core.Exceptions;
 using NetDid.Method.Ethr.Crypto;

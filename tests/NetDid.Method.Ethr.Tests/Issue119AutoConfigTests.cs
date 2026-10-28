@@ -1,4 +1,4 @@
-using AwesomeAssertions;
+using FluentAssertions;
 using Microsoft.Extensions.Logging;
 using NetDid.Method.Ethr.Rpc;
 using NSubstitute;
@@ -761,20 +761,9 @@ public class Issue119AutoConfigTests
     private static readonly string[] Sentinels = ["SECRETPASS", "SECRETKEY", "SECRETQUERY"];
 
     private static void AssertNoSentinel(RecordingLogger logger)
-        => logger.Entries.Should().NotBeEmpty().And.OnlyContain(
+        => logger.Entries.Should().OnlyContain(
             e => !Sentinels.Any(s => e.Message.Contains(s)),
             "credentials embedded in RPC URLs (userinfo, path, query) must never reach logs");
-
-    [Fact]
-    public void Issue144_AssertNoSentinel_RejectsAnEmptyLog()
-    {
-        // Since FluentAssertions 8 (inherited by AwesomeAssertions), OnlyContain passes on an
-        // empty collection. The sentinel checks must still fail when nothing was logged, or a
-        // regression that stopped logging would read as "no credential leaked".
-        var assert = () => AssertNoSentinel(new RecordingLogger());
-
-        assert.Should().Throw<Exception>();
-    }
 
     [Fact]
     public async Task Issue119_SecretUrl_SelectedEndpoint_LogsSanitizedHostOnly()

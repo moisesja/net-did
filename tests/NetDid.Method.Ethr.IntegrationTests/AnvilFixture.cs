@@ -1,4 +1,3 @@
-using System.Runtime.CompilerServices;
 using System.Text;
 using DotNet.Testcontainers.Builders;
 using DotNet.Testcontainers.Containers;
@@ -15,26 +14,15 @@ namespace NetDid.Method.Ethr.IntegrationTests;
 /// </summary>
 public sealed class EthrIntegrationFactAttribute : FactAttribute
 {
-    // xUnit v3 reports test source locations through these compiler-supplied parameters.
-    public EthrIntegrationFactAttribute(
-        [CallerFilePath] string? sourceFilePath = null,
-        [CallerLineNumber] int sourceLineNumber = -1)
-        : this(Environment.GetEnvironmentVariable("NETDID_ETHR_INTEGRATION"), sourceFilePath, sourceLineNumber)
+    public EthrIntegrationFactAttribute()
+        : this(Environment.GetEnvironmentVariable("NETDID_ETHR_INTEGRATION"))
     {
     }
 
     // Test seam (issue #112): lets the gate tests exercise the skip decision for any value
     // without mutating process environment, which could race this assembly's fixture
-    // initialization under runner configs that re-enable collection parallelism. A
-    // single-argument call binds here, not to the public constructor's optional
-    // sourceFilePath, because this overload needs no default arguments.
+    // initialization under runner configs that re-enable collection parallelism.
     internal EthrIntegrationFactAttribute(string? optIn)
-        : this(optIn, sourceFilePath: null, sourceLineNumber: -1)
-    {
-    }
-
-    private EthrIntegrationFactAttribute(string? optIn, string? sourceFilePath, int sourceLineNumber)
-        : base(sourceFilePath, sourceLineNumber)
     {
         if (optIn != "1")
             Skip = "Real-EVM integration tests are opt-in: set NETDID_ETHR_INTEGRATION=1 (requires Docker).";
@@ -67,7 +55,7 @@ public sealed class AnvilFixture : IAsyncLifetime
 
     public DefaultEthereumRpcClient Client { get; private set; } = null!;
 
-    public async ValueTask InitializeAsync()
+    public async Task InitializeAsync()
     {
         if (Environment.GetEnvironmentVariable("NETDID_ETHR_INTEGRATION") != "1")
             return; // every test in the collection is skipped; don't touch Docker
@@ -103,7 +91,7 @@ public sealed class AnvilFixture : IAsyncLifetime
         }
     }
 
-    public async ValueTask DisposeAsync()
+    public async Task DisposeAsync()
     {
         if (_container is not null)
             await _container.DisposeAsync();

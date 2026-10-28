@@ -1,7 +1,7 @@
 using System.Net;
 using System.Reflection;
 using System.Text;
-using AwesomeAssertions;
+using FluentAssertions;
 using NetDid.Method.WebVh;
 
 namespace NetDid.Method.WebVh.Tests;

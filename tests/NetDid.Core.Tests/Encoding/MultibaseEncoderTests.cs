@@ -1,4 +1,4 @@
-using AwesomeAssertions;
+using FluentAssertions;
 using NetCid;
 
 namespace NetDid.Core.Tests.Encoding;

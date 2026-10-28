@@ -1,4 +1,4 @@
-using AwesomeAssertions;
+using FluentAssertions;
 using NetDid.Method.Ethr.Erc1056;
 using NetDid.Method.Ethr.Rpc;
 using Xunit;

@@ -1,5 +1,5 @@
 using System.Text;
-using AwesomeAssertions;
+using FluentAssertions;
 using NetDid.Core.Model;
 using NetDid.Core.Serialization;
 using NetDid.Method.WebVh;

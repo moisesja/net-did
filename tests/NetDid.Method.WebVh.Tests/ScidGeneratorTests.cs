@@ -1,4 +1,4 @@
-using AwesomeAssertions;
+using FluentAssertions;
 using NetCid;
 using NetDid.Method.WebVh;
 

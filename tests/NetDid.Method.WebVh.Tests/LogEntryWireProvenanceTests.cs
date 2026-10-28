@@ -1,7 +1,7 @@
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
-using AwesomeAssertions;
+using FluentAssertions;
 using NetDid.Core.Model;
 using NetDid.Method.WebVh.Model;
 

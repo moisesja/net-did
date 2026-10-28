@@ -1,5 +1,5 @@
 using System.Text.Json;
-using AwesomeAssertions;
+using FluentAssertions;
 using NetDid.Core.Model;
 using NetDid.Core.Serialization;
 

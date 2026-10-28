@@ -1,4 +1,4 @@
-using AwesomeAssertions;
+using FluentAssertions;
 using NetDid.Core.Model;
 
 namespace NetDid.Core.Tests.Model;

@@ -1,6 +1,6 @@
 using System.Globalization;
 using System.Text;
-using AwesomeAssertions;
+using FluentAssertions;
 using NetDid.Core.Model;
 using NetDid.Method.WebVh;
 using NetDid.Method.WebVh.Model;

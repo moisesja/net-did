@@ -3346,8 +3346,8 @@ netdid/
 
 | Tool                 | Usage                                                                      |
 | -------------------- | -------------------------------------------------------------------------- |
-| **xUnit v3**         | Test framework (`xunit.v3.mtp-off`: runs under VSTest)                     |
-| **AwesomeAssertions** | Readable assertions (Apache-2.0 fork of FluentAssertions)                 |
+| **xUnit**            | Test framework                                                             |
+| **FluentAssertions** | Readable assertions                                                        |
 | **NSubstitute**      | Mocking `IEthereumRpcClient`, `IWebVhHttpClient`                           |
 | **Verify**           | Snapshot testing for DID Document serialization (catch unintended changes) |
 | **Bogus**            | Generate random test data                                                  |

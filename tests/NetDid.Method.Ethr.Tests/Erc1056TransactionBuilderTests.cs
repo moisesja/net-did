@@ -1,6 +1,6 @@
 using System.Numerics;
 using System.Text;
-using AwesomeAssertions;
+using FluentAssertions;
 using NetCrypto;
 using NetDid.Method.Ethr.Abi;
 using NetDid.Method.Ethr.Erc1056;

@@ -1,4 +1,4 @@
-using AwesomeAssertions;
+using FluentAssertions;
 using NetCrypto;
 using NetDid.Method.Ethr.Crypto;
 using NetDid.Method.Ethr.Emulator;

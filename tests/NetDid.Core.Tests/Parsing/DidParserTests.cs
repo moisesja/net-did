@@ -1,4 +1,4 @@
-using AwesomeAssertions;
+using FluentAssertions;
 using NetDid.Core.Parsing;
 
 namespace NetDid.Core.Tests.Parsing;

@@ -2,7 +2,7 @@ using System.Globalization;
 using System.Text;
 using System.Text.Json;
 using DataProofsDotnet.DataIntegrity;
-using AwesomeAssertions;
+using FluentAssertions;
 using NetCrypto;
 using NetDid.Core.Model;
 using NetDid.Method.WebVh.Model;
