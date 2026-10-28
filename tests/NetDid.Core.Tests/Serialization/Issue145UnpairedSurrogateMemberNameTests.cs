@@ -681,4 +681,138 @@ public class Issue145UnpairedSurrogateMemberNameTests
     }
 
     #endregion
+
+    #region Issue145_PrReview1_FinalPass (non-blocking adversarial pass on the review fixes)
+
+    // F1: RequireDecodable recursed once per nesting level, so a deeply nested caller JsonElement
+    // overflowed the stack and killed the process, where Serialize used to throw a catchable
+    // exception. Run on a thread with a fixed 1 MB stack so the outcome does not depend on the host.
+    private static Exception? RunOnSmallStack(Action action)
+    {
+        Exception? caught = null;
+        var thread = new Thread(() =>
+        {
+            try { action(); }
+            catch (Exception ex) { caught = ex; }
+        }, maxStackSize: 1 << 20);
+        thread.Start();
+        thread.Join();
+        return caught;
+    }
+
+    private static JsonElement DeeplyNestedArray(int depth)
+    {
+        var json = new string('[', depth) + new string(']', depth);
+        using var document = JsonDocument.Parse(json, new JsonDocumentOptions { MaxDepth = depth + 1 });
+        return document.RootElement.Clone();
+    }
+
+    [Fact]
+    public void Issue145_RequireDecodable_DeeplyNestedElement_DoesNotOverflowTheStack()
+    {
+        var element = DeeplyNestedArray(100_000);
+
+        var caught = RunOnSmallStack(() => Utf16Text.RequireDecodable(element));
+
+        caught.Should().BeNull("a well-formed element is decodable at any depth");
+    }
+
+    [Fact]
+    public void Issue145_Serialize_DeeplyNestedElement_ThrowsCatchably()
+    {
+        var doc = new DidDocument
+        {
+            Id = new Did(Did),
+            AdditionalProperties = new Dictionary<string, JsonElement> { ["x-ext"] = DeeplyNestedArray(100_000) }
+        };
+
+        var caught = RunOnSmallStack(() => DidDocumentSerializer.Serialize(doc));
+
+        caught.Should().BeOfType<JsonException>("the writer's depth limit applies, as before the review fixes");
+    }
+
+    // F2: FromSet stored the copied array itself, so the validated set could still be changed.
+    [Fact]
+    public void Issue145_FromSet_SetIsNotWritable()
+    {
+        var value = ServiceEndpointValue.FromSet([ServiceEndpointValue.FromUri("https://a.example")]);
+        var nested = ServiceEndpointValue.FromSet([ServiceEndpointValue.FromUri("https://b.example")]);
+
+        if (value.Set is IList<ServiceEndpointValue> list)
+        {
+            var act = () => list[0] = nested;
+            act.Should().Throw<NotSupportedException>();
+        }
+
+        value.Set![0].IsUri.Should().BeTrue();
+    }
+
+    // A caller list whose CopyTo keeps the destination array, so it can rewrite it later.
+    private sealed class RetainingList(ServiceEndpointValue item)
+        : IReadOnlyList<ServiceEndpointValue>, ICollection<ServiceEndpointValue>
+    {
+        public ServiceEndpointValue[]? Retained { get; private set; }
+        public ServiceEndpointValue this[int index] => item;
+        public int Count => 1;
+        public bool IsReadOnly => true;
+        public void CopyTo(ServiceEndpointValue[] array, int arrayIndex)
+        {
+            array[arrayIndex] = item;
+            Retained = array;
+        }
+        public IEnumerator<ServiceEndpointValue> GetEnumerator() { yield return item; }
+        System.Collections.IEnumerator System.Collections.IEnumerable.GetEnumerator() => GetEnumerator();
+        public void Add(ServiceEndpointValue value) => throw new NotSupportedException();
+        public void Clear() => throw new NotSupportedException();
+        public bool Contains(ServiceEndpointValue value) => value == item;
+        public bool Remove(ServiceEndpointValue value) => throw new NotSupportedException();
+    }
+
+    [Fact]
+    public void Issue145_FromSet_CallerCannotRewriteTheSnapshot()
+    {
+        var source = new RetainingList(ServiceEndpointValue.FromUri("https://a.example"));
+        var value = ServiceEndpointValue.FromSet(source);
+
+        if (source.Retained is { } retained)
+            retained[0] = ServiceEndpointValue.FromSet([ServiceEndpointValue.FromUri("https://b.example")]);
+
+        value.Set![0].IsUri.Should().BeTrue("the library fills its own copy");
+    }
+
+    [Fact]
+    public void Issue145_Serialize_NestedSetBuiltBypassingTheFactory_ThrowsArgumentException()
+    {
+        // The writer also enforces the shape (the reviewer asked for a production-boundary check),
+        // so a nested set built by reflection still cannot be published.
+        var ctor = typeof(ServiceEndpointValue).GetConstructor(
+            System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance,
+            [typeof(string), typeof(IReadOnlyDictionary<string, JsonElement>), typeof(IReadOnlyList<ServiceEndpointValue>)])!;
+        var inner = ServiceEndpointValue.FromSet([ServiceEndpointValue.FromUri("https://a.example")]);
+        var nested = (ServiceEndpointValue)ctor.Invoke([null, null, new[] { inner }]);
+        var doc = new DidDocument
+        {
+            Id = new Did(Did),
+            Service = [new Service { Id = $"{Did}#svc", Type = "Example", ServiceEndpoint = nested }]
+        };
+
+        var act = () => DidDocumentSerializer.Serialize(doc);
+
+        act.Should().Throw<ArgumentException>();
+    }
+
+    // F3: default(JsonElement) escaped as a raw InvalidOperationException from WriteTo.
+    [Theory]
+    [InlineData("document-extension")]
+    [InlineData("context")]
+    [InlineData("endpoint-map")]
+    public void Issue145_Serialize_DefaultJsonElement_ThrowsArgumentException(string position)
+    {
+        var act = () => DidDocumentSerializer.Serialize(DocumentWithElement(position, default));
+
+        act.Should().Throw<ArgumentException>();
+    }
+
+    #endregion
 }
+
