@@ -177,6 +177,135 @@ public class Issue145UnpairedSurrogateMemberNameTests
 
     #endregion
 
+    #region Issue145_UndecodedSurrogateValue (adversarial review: values the model drops)
+
+    // A verification method whose publicKeyJwk carries an unknown member. The typed model and its
+    // fingerprint never read that member, so before the fix its lone surrogate was first decoded
+    // only when the raw state was re-emitted for hashing, outside the parse boundary (notFound).
+    private static string JwkVerificationMethod(string did, string extensionJson) =>
+        "{\"id\":\"" + did + "#jwk\",\"type\":\"JsonWebKey2020\",\"controller\":\"" + did + "\"," +
+        "\"publicKeyJwk\":{\"kty\":\"OKP\",\"crv\":\"Ed25519\"," +
+        "\"x\":\"11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo\",\"x-ext\":" + extensionJson + "}}";
+
+    public static TheoryData<string> UndecodedSurrogateValues => new()
+    {
+        """{"a":"\uD800"}""",
+        """["\uD800"]""",
+        """{"a":[{"b":"\uDC00"}]}""",
+    };
+
+    private static string WithJwkVerificationMethod(string line, string did, string extensionJson)
+    {
+        const string anchor = "\"verificationMethod\":[";
+        line.Should().Contain(anchor);
+        var index = line.IndexOf(anchor, StringComparison.Ordinal) + anchor.Length;
+        return line[..index] + JwkVerificationMethod(did, extensionJson) + "," + line[index..];
+    }
+
+    [Theory]
+    [MemberData(nameof(UndecodedSurrogateValues))]
+    public async Task Issue145_UndecodedSurrogateValue_GenesisLine_ResolvesInvalidDidLog(string extensionJson)
+    {
+        var (did, jsonl, signer) = await CreateLogAsync();
+        var doctored = WithJwkVerificationMethod(jsonl.Split('\n')[0], did, extensionJson);
+
+        var parse = () => LogEntrySerializer.ParseJsonLines(Encoding.UTF8.GetBytes(doctored));
+        parse.Should().Throw<FormatException>().WithInnerException<InvalidOperationException>();
+
+        var result = await ResolveLogAsync(did, doctored);
+        result.DidDocument.Should().BeNull();
+        result.ResolutionMetadata.Error.Should().Be("invalidDidLog");
+
+        var (method, _) = CreateMethod();
+        var update = () => method.UpdateAsync(did, new DidWebVhUpdateOptions
+        {
+            CurrentLogContent = Encoding.UTF8.GetBytes(doctored),
+            SigningKey = signer
+        });
+        await update.Should().ThrowAsync<FormatException>();
+    }
+
+    [Fact]
+    public async Task Issue145_UndecodedSurrogateValue_LaterLine_ResolvesInvalidDidLogForEveryVersion()
+    {
+        var (did, jsonl, signer) = await CreateLogAsync();
+        var (method, _) = CreateMethod();
+        var updated = await method.UpdateAsync(did, new DidWebVhUpdateOptions
+        {
+            CurrentLogContent = Encoding.UTF8.GetBytes(jsonl),
+            SigningKey = signer
+        });
+        var lines = ((string)updated.Artifacts![DidWebVhArtifacts.DidJsonl]).Split('\n');
+        var firstVersionId = LogEntrySerializer.ParseJsonLines(Encoding.UTF8.GetBytes(lines[0]))[0].VersionId;
+        lines[1] = WithJwkVerificationMethod(lines[1], did, """{"a":"\uD800"}""");
+        var doctored = string.Join('\n', lines);
+
+        var latest = await ResolveLogAsync(did, doctored);
+        latest.ResolutionMetadata.Error.Should().Be("invalidDidLog");
+
+        // A malformed line is a log-level parse failure, as for any other unparseable line.
+        var (historicalMethod, httpClient) = CreateMethod();
+        httpClient.SetLogResponse(DidUrlMapper.MapToLogUrl(did), Encoding.UTF8.GetBytes(doctored));
+        var historical = await historicalMethod.ResolveAsync(did, new DidResolutionOptions
+        {
+            VersionId = firstVersionId
+        });
+        historical.ResolutionMetadata.Error.Should().Be("invalidDidLog");
+    }
+
+    [Theory]
+    [InlineData("""{"a":"😀"}""")]
+    [InlineData("""["café"]""")]
+    public async Task Issue145_Control_ValidEscapedValue_StillParses(string extensionJson)
+    {
+        // A well-formed surrogate PAIR and an ordinary escape must keep parsing: the decode
+        // check rejects only text that cannot be decoded.
+        var (did, jsonl, _) = await CreateLogAsync();
+        var doctored = WithJwkVerificationMethod(jsonl.Split('\n')[0], did, extensionJson);
+
+        var parse = () => LogEntrySerializer.ParseJsonLines(Encoding.UTF8.GetBytes(doctored));
+        parse.Should().NotThrow();
+    }
+
+    [Fact]
+    public async Task Issue145_Control_ValidSurrogatePairMemberName_StillParses()
+    {
+        var (_, jsonl, _) = await CreateLogAsync();
+        var doctored = DoctorGenesisLine(jsonl, "\"state\":{", "\"state\":{\"\\uD83D\\uDE00\":1,");
+
+        var parse = () => LogEntrySerializer.ParseJsonLines(Encoding.UTF8.GetBytes(doctored));
+        parse.Should().NotThrow();
+    }
+
+    #endregion
+
+    #region Issue145_DataIntegrityProofValue_RawSurrogate (adversarial review)
+
+    // HIGH stands for a raw lone surrogate char, substituted at run time: a lone surrogate
+    // cannot survive in an attribute argument, which is stored as UTF-8.
+    [Theory]
+    [InlineData("{\"HIGH\":1,\"type\":\"DataIntegrityProof\"}")]
+    [InlineData("{\"type\":\"HIGH\"}")]
+    public void Issue145_ProofParse_RawLoneSurrogateChar_ThrowsJsonException(string template)
+    {
+        // A raw (unescaped) lone surrogate char in the .NET string fails UTF-8 transcoding with
+        // ArgumentException; the documented invalid-input error is JsonException.
+        var json = template.Replace("HIGH", "\uD800");
+        var act = () => DataIntegrityProofValue.Parse(json);
+
+        act.Should().Throw<System.Text.Json.JsonException>();
+    }
+
+    [Fact]
+    public void Issue145_ProofParse_Null_StillThrowsArgumentNullException()
+    {
+        var act = () => DataIntegrityProofValue.Parse(null!);
+
+        act.Should().Throw<ArgumentNullException>();
+    }
+
+    #endregion
+
     #region Issue145_WitnessFile_SurrogateMemberName (pins: this boundary already mapped it)
 
     [Theory]
