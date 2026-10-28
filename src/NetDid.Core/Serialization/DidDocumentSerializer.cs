@@ -258,7 +258,7 @@ public static class DidDocumentSerializer
         try
         {
             using var document = JsonDocument.Parse(json, RejectDuplicatesOptions);
-            RequireDecodableStrings(document.RootElement);
+            Utf16Text.RequireDecodable(document.RootElement);
         }
         catch (Exception ex) when (ex is InvalidOperationException
             or (ArgumentException and not ArgumentNullException))
@@ -280,29 +280,11 @@ public static class DidDocumentSerializer
         {
             // JsonDocument.Parse has no ReadOnlySpan<byte> overload; copy to honor the same guard.
             using var document = JsonDocument.Parse(utf8Json.ToArray(), RejectDuplicatesOptions);
-            RequireDecodableStrings(document.RootElement);
+            Utf16Text.RequireDecodable(document.RootElement);
         }
         catch (InvalidOperationException ex)
         {
             throw InvalidText(ex);
-        }
-    }
-
-    private static void RequireDecodableStrings(JsonElement element)
-    {
-        switch (element.ValueKind)
-        {
-            case JsonValueKind.Object:
-                foreach (var property in element.EnumerateObject())
-                    RequireDecodableStrings(property.Value);
-                break;
-            case JsonValueKind.Array:
-                foreach (var item in element.EnumerateArray())
-                    RequireDecodableStrings(item);
-                break;
-            case JsonValueKind.String:
-                _ = element.GetString();
-                break;
         }
     }
 
@@ -317,6 +299,27 @@ public static class DidDocumentSerializer
                 "The DID document contains a string with an unpaired UTF-16 surrogate, which cannot " +
                 "be written as UTF-8 without altering it.",
                 "doc");
+
+    // Caller JsonElement values are opaque to Text(): JsonElement.WriteTo would rewrite an
+    // ill-formed UTF-8 string or member name inside one as U+FFFD (issue #145, PR #149 review).
+    // Every name and string is decoded first, on the element actually being written.
+    private static void WriteElement(Utf8JsonWriter writer, JsonElement element)
+    {
+        try
+        {
+            Utf16Text.RequireDecodable(element);
+        }
+        catch (InvalidOperationException ex)
+        {
+            throw new ArgumentException(
+                "The DID document contains a JSON value whose text is not well-formed UTF-8 or " +
+                "UTF-16, which cannot be written without altering it.",
+                "doc",
+                ex);
+        }
+
+        element.WriteTo(writer);
+    }
 
     // Shape guards for the consumption converters (issue #145). Without them a missing member threw
     // KeyNotFoundException, a wrong kind threw InvalidOperationException, and a null required string
@@ -554,7 +557,7 @@ public static class DidDocumentSerializer
                 foreach (var (key, val) in doc.AdditionalProperties)
                 {
                     writer.WritePropertyName(Text(key));
-                    val.WriteTo(writer);
+                    WriteElement(writer, val);
                 }
             }
 
@@ -575,9 +578,14 @@ public static class DidDocumentSerializer
                 if (ctx is string str)
                     writer.WriteStringValue(Text(str));
                 else if (ctx is JsonElement element)
-                    element.WriteTo(writer);
+                    WriteElement(writer, element);
                 else
-                    writer.WriteStringValue(Text(ctx.ToString() ?? string.Empty));
+                    // ToString() would write an object as a string, and a JSON node's ToString()
+                    // already replaces lone surrogates before any check could see them.
+                    throw new ArgumentException(
+                        "A DID document @context entry must be a string or a JsonElement; found " +
+                        $"{ctx.GetType().Name}.",
+                        "doc");
             }
             writer.WriteEndArray();
         }
@@ -687,7 +695,7 @@ public static class DidDocumentSerializer
                         or "publicKeyMultibase" or "publicKeyJwk" or "blockchainAccountId")
                         continue;
                     writer.WritePropertyName(Text(key));
-                    val.WriteTo(writer);
+                    WriteElement(writer, val);
                 }
 
             writer.WriteEndObject();
@@ -748,8 +756,14 @@ public static class DidDocumentSerializer
             {
                 foreach (var (key, val) in value.AdditionalProperties)
                 {
+                    // A reserved name would emit a duplicate member that Deserialize rejects
+                    // (the document-level #121 rule, applied to services; issue #145).
+                    if (key is "id" or "type" or "serviceEndpoint")
+                        throw new ArgumentException(
+                            $"A service's AdditionalProperties contains the reserved member '{key}'.",
+                            "doc");
                     writer.WritePropertyName(Text(key));
-                    val.WriteTo(writer);
+                    WriteElement(writer, val);
                 }
             }
 
@@ -809,7 +823,7 @@ public static class DidDocumentSerializer
                 foreach (var (key, val) in value.Map!)
                 {
                     writer.WritePropertyName(Text(key));
-                    val.WriteTo(writer);
+                    WriteElement(writer, val);
                 }
                 writer.WriteEndObject();
             }

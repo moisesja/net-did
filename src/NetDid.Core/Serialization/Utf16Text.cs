@@ -1,3 +1,5 @@
+using System.Text.Json;
+
 namespace NetDid.Core.Serialization;
 
 /// <summary>
@@ -25,5 +27,33 @@ internal static class Utf16Text
         }
 
         return true;
+    }
+
+    /// <summary>
+    /// Decodes every member name and string value in <paramref name="element"/>, throwing
+    /// <see cref="InvalidOperationException"/> when one is ill-formed UTF-8 or holds an unpaired
+    /// surrogate escape. <c>System.Text.Json</c> parses such text without complaint and decodes
+    /// it only when read, so a reader would otherwise fail outside its boundary and a writer
+    /// (<c>JsonElement.WriteTo</c>) would silently emit U+FFFD instead (issue #145).
+    /// </summary>
+    public static void RequireDecodable(JsonElement element)
+    {
+        switch (element.ValueKind)
+        {
+            case JsonValueKind.Object:
+                foreach (var property in element.EnumerateObject())
+                {
+                    _ = property.Name;
+                    RequireDecodable(property.Value);
+                }
+                break;
+            case JsonValueKind.Array:
+                foreach (var item in element.EnumerateArray())
+                    RequireDecodable(item);
+                break;
+            case JsonValueKind.String:
+                _ = element.GetString();
+                break;
+        }
     }
 }

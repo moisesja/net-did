@@ -986,8 +986,11 @@ public class DefaultDidUrlDereferencerTests
     }
 
     [Fact]
-    public async Task Issue136_DereferenceAsync_Path_EmptiedUriSetFailsClosed()
+    public async Task Issue136_DereferenceAsync_Path_CallerClearingItsListCannotEmptyTheSet()
     {
+        // This test used to clear the caller's list after FromSet and expect the then-empty set to
+        // fail closed. Since issue #145, FromSet copies its entries once, so the emptied state cannot
+        // be built at all: clearing the caller's list leaves the validated endpoint unchanged.
         var callerOwnedSet = new List<ServiceEndpointValue>
         {
             ServiceEndpointValue.FromUri("https://example.com/base/")
@@ -1011,8 +1014,9 @@ public class DefaultDidUrlDereferencerTests
 
         var result = await _dereferencer.DereferenceAsync($"{Issue136Did}/asset.json");
 
-        result.DereferencingMetadata.Error.Should().Be("invalidDid");
-        result.ContentStream.Should().BeNull();
+        endpoint.Set.Should().HaveCount(1);
+        result.DereferencingMetadata.Error.Should().BeNull();
+        result.ContentStream.Should().Be("https://example.com/base/asset.json");
     }
 
     [Fact]
