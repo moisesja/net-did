@@ -47,8 +47,20 @@ internal sealed class Numalgo4Handler
 
         var did = $"did:peer:4{shortForm}:{longForm}";
 
-        // Build the resolved document with the actual DID as id
-        var resolvedDoc = BuildResolvedDocument(did, options.InputDocument);
+        // Build the returned document from the JSON that was hashed, exactly as Resolve does, never
+        // from the caller's object again: its lists may read differently a second time, and the
+        // result must be the document this DID resolves to (PR #149 review round 2).
+        DidDocument encodedDoc;
+        try
+        {
+            encodedDoc = DidDocumentSerializer.DeserializeAllowingIncompleteVerificationMethods(json);
+        }
+        catch (Exception ex) when (ex is not ArgumentException)
+        {
+            throw new ArgumentException(
+                "The input document does not encode a resolvable did:peer:4 document.", ex);
+        }
+        var resolvedDoc = BuildResolvedDocument(did, encodedDoc);
 
         return new DidCreateResult
         {
@@ -110,10 +122,11 @@ internal sealed class Numalgo4Handler
         // Parse the document. did:peer:4's encoded template legitimately omits verification-method
         // controllers (they are contextualized to this DID below), so use the tolerant internal
         // path rather than the public consumption boundary, which requires a controller per §5.2.
-        var json = Encoding.UTF8.GetString(docBytes);
         DidDocument inputDoc;
         try
         {
+            // Strict: ill-formed UTF-8 must fail, not resolve as U+FFFD (issue #145).
+            var json = new UTF8Encoding(false, throwOnInvalidBytes: true).GetString(docBytes);
             inputDoc = DidDocumentSerializer.DeserializeAllowingIncompleteVerificationMethods(json);
         }
         catch
@@ -155,7 +168,7 @@ internal sealed class Numalgo4Handler
             CapabilityDelegation = RewriteRelationships(inputDoc.CapabilityDelegation, did, didValue, originalDid),
             Service = inputDoc.Service?.Select((svc, i) => new Service
             {
-                Id = PrefixId(svc.Id, did),
+                Id = PrefixId(svc.Id, did, originalDid),
                 Type = svc.Type,
                 ServiceEndpoint = svc.ServiceEndpoint,
                 AdditionalProperties = svc.AdditionalProperties
@@ -175,7 +188,7 @@ internal sealed class Numalgo4Handler
         // did = "did:peer:4{shortForm}:{longForm}"
         // We need to find the ':' after "did:peer:4..."
         const string prefix = "did:peer:4";
-        if (!did.StartsWith(prefix)) return null;
+        if (!did.StartsWith(prefix, StringComparison.Ordinal)) return null;
 
         var rest = did[prefix.Length..];
         var colonIdx = rest.IndexOf(':');
@@ -194,7 +207,7 @@ internal sealed class Numalgo4Handler
 
         return new VerificationMethod
         {
-            Id = PrefixId(vm.Id, did),
+            Id = PrefixId(vm.Id, did, originalDid),
             Type = vm.Type,
             Controller = controller,
             PublicKeyMultibase = vm.PublicKeyMultibase,
@@ -203,13 +216,24 @@ internal sealed class Numalgo4Handler
         };
     }
 
-    private static string PrefixId(string id, string did)
+    private static string PrefixId(string id, string did, string? originalDid)
     {
         // If the id starts with '#', prefix with the DID
         if (id.StartsWith('#'))
             return did + id;
+        // An id under the template's placeholder DID is rewritten like a reference to it, so
+        // the document's references keep pointing at its own methods and services (issue #145).
+        if (IsUnderDid(id, originalDid))
+            return did + id[originalDid!.Length..];
         return id;
     }
+
+    // Whether value is originalDid itself or a DID URL of it. "did:example:abcd" is another DID,
+    // not "did:example:abc" + "d", so the next character must end the DID.
+    private static bool IsUnderDid(string value, string? originalDid)
+        => originalDid is not null
+           && value.StartsWith(originalDid, StringComparison.Ordinal)
+           && (value.Length == originalDid.Length || value[originalDid.Length] is '#' or '/' or '?' or ';');
 
     private static List<VerificationRelationshipEntry>? RewriteRelationships(
         IReadOnlyList<VerificationRelationshipEntry>? entries, string did, Did didValue, string? originalDid)
@@ -223,8 +247,8 @@ internal sealed class Numalgo4Handler
                 var reference = entry.Reference!;
                 if (reference.StartsWith('#'))
                     reference = did + reference;
-                else if (originalDid is not null && reference.StartsWith(originalDid))
-                    reference = did + reference[originalDid.Length..];
+                else if (IsUnderDid(reference, originalDid))
+                    reference = did + reference[originalDid!.Length..];
                 return VerificationRelationshipEntry.FromReference(reference);
             }
 

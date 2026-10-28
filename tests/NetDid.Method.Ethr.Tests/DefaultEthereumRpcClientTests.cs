@@ -429,6 +429,111 @@ public class DefaultEthereumRpcClientTests
         logs[0].LogIndex.Should().Be(0);
     }
 
+    // ── Issue #145: result members are decoded at the trust boundary ──────────────
+    //
+    // A result object's member dictionary is built lazily, and a JSON string is decoded only
+    // when read. A lone-surrogate member name, a duplicate member name, or a lone-surrogate
+    // string value used to escape as a raw InvalidOperationException/ArgumentException from
+    // the first access, outside every EthereumInteractionException mapping.
+
+    private const string ReceiptHash =
+        "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+
+    private static DefaultEthereumRpcClient ClientWithResult(string resultJson)
+        => ClientReturning(HttpStatusCode.OK, new StringContent(
+            $"{{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{resultJson}}}"));
+
+    public static TheoryData<string> Issue145MalformedFinalizedBlocks => new()
+    {
+        """{"number":"0x64","\uD800":1}""",
+        """{"number":"0x64","number":"0x65"}""",
+        """{"number":"\uD800"}""",
+    };
+
+    [Theory]
+    [MemberData(nameof(Issue145MalformedFinalizedBlocks))]
+    public async Task Issue145_GetFinalizedBlockNumber_MalformedMembers_ReturnsNull(string block)
+    {
+        var finalized = await ClientWithResult(block).GetFinalizedBlockNumberAsync();
+
+        finalized.Should().BeNull(
+            "finality is an optional capability: a malformed response disables caching");
+    }
+
+    [Theory]
+    [InlineData("""{"timestamp":"0x5","\uD800":1}""")]
+    [InlineData("""{"timestamp":"0x5","timestamp":"0x6"}""")]
+    [InlineData("""{"timestamp":"\uD800"}""")]
+    public async Task Issue145_GetBlockTimestamp_MalformedMembers_ThrowsEthereumInteractionException(
+        string block)
+    {
+        var act = () => ClientWithResult(block).GetBlockTimestampAsync(1);
+
+        (await act.Should().ThrowAsync<EthereumInteractionException>()
+                .WithMessage("*eth_getBlockByNumber*"))
+            .Which.Message.Should().NotContain("same key", "node-supplied text is never echoed");
+    }
+
+    public static TheoryData<string> Issue145MalformedReceipts => new()
+    {
+        $$"""{"status":"0x1","blockNumber":"0x5","transactionHash":"{{ReceiptHash}}","\uD800":1}""",
+        $$"""{"status":"0x1","status":"0x0","blockNumber":"0x5","transactionHash":"{{ReceiptHash}}"}""",
+        $$"""{"status":"0x1","blockNumber":"0x5","transactionHash":"{{ReceiptHash}}","contractAddress":"\uD800"}""",
+    };
+
+    [Theory]
+    [MemberData(nameof(Issue145MalformedReceipts))]
+    public async Task Issue145_GetTransactionReceipt_MalformedMembers_ThrowsEthereumInteractionException(
+        string receipt)
+    {
+        var act = () => ClientWithResult(receipt).GetTransactionReceiptAsync(ReceiptHash);
+
+        await act.Should().ThrowAsync<EthereumInteractionException>()
+            .WithMessage("*eth_getTransactionReceipt*");
+    }
+
+    [Fact]
+    public async Task Issue145_ScalarResults_LoneSurrogate_ThrowEthereumInteractionException()
+    {
+        const string loneSurrogate = "\"\\uD800\"";
+
+        await ClientWithResult(loneSurrogate).Invoking(c => c.GetBlockNumberAsync())
+            .Should().ThrowAsync<EthereumInteractionException>().WithMessage("*eth_blockNumber*");
+        await ClientWithResult(loneSurrogate).Invoking(c => c.GetChainIdAsync())
+            .Should().ThrowAsync<EthereumInteractionException>().WithMessage("*eth_chainId*");
+        await ClientWithResult(loneSurrogate)
+            .Invoking(c => c.CallAsync("0x0000000000000000000000000000000000000000", "0x"))
+            .Should().ThrowAsync<EthereumInteractionException>().WithMessage("*eth_call*");
+    }
+
+    public static TheoryData<string> Issue145ReceiptsWithForgedText => new()
+    {
+        // A node-supplied status copied into the message could forge a log line.
+        $$"""{"status":"0x1\r\nFORGED LOG LINE","blockNumber":"0x5","transactionHash":"{{ReceiptHash}}"}""",
+        // A mismatching transactionHash was copied verbatim too.
+        """{"status":"0x1","blockNumber":"0x5","transactionHash":"0xbb\r\nFORGED LOG LINE"}""",
+    };
+
+    [Theory]
+    [MemberData(nameof(Issue145ReceiptsWithForgedText))]
+    public async Task Issue145_GetTransactionReceipt_NodeTextIsNeverEchoed(string receipt)
+    {
+        var act = () => ClientWithResult(receipt).GetTransactionReceiptAsync(ReceiptHash);
+
+        (await act.Should().ThrowAsync<EthereumInteractionException>())
+            .Which.Message.Should().NotContain("FORGED").And.NotContain("\n");
+    }
+
+    [Fact]
+    public async Task Issue145_Control_EscapedSurrogatePairInIgnoredMember_StillParses()
+    {
+        var timestamp = await ClientWithResult(
+                """{"timestamp":"0x5","extraData":"\uD83D\uDE00","\uD83D\uDE00":1}""")
+            .GetBlockTimestampAsync(1);
+
+        timestamp.Should().Be(5UL);
+    }
+
     // ── Stubs ─────────────────────────────────────────────────────────────────────
 
     private sealed class StubHandler(Func<HttpRequestMessage, HttpResponseMessage> responder)

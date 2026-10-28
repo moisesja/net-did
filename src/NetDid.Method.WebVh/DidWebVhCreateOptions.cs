@@ -42,6 +42,11 @@ public sealed record DidWebVhCreateOptions : DidCreateOptions
     /// <summary>Minimum number of distinct verified witness approvals required.</summary>
     public int WitnessThreshold { get; init; } = 0;
 
-    /// <summary>Witness proofs to include in the did-witness.json artifact.</summary>
+    /// <summary>
+    /// Witness proofs to include in the did-witness.json artifact. A proof whose JSON cannot be
+    /// canonicalized with JCS (RFC 8785), for example one holding an unpaired UTF-16 surrogate,
+    /// is rejected with <see cref="System.ArgumentException"/>: no eddsa-jcs-2022 verifier can
+    /// check it.
+    /// </summary>
     public IReadOnlyList<WitnessProofEntry>? WitnessProofs { get; init; }
 }

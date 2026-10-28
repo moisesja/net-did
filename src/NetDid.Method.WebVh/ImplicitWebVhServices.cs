@@ -13,12 +13,15 @@ internal static class ImplicitWebVhServices
     internal const string WhoisFragment = "whois";
     internal const string LinkedVpContext = "https://identity.foundation/linked-vp/contexts/v1";
 
-    internal static DidDocument Materialize(string did, DidDocument document)
+    // projectionDid: the DID of the parallel did:web document when projecting for did.json. There,
+    // a service id in that DID's form (e.g. "did:web:example.com#whois") is the override too
+    // (issue #145).
+    internal static DidDocument Materialize(string did, DidDocument document, string? projectionDid = null)
     {
         var services = document.Service?.Select(CanonicalizeConventionalId).ToList() ?? [];
         var resourceBase = DidUrlMapper.MapToResourceBaseUrl(did);
 
-        if (!ContainsService(services, document.Id.Value, did, FilesFragment))
+        if (!ContainsService(services, document.Id.Value, did, FilesFragment, projectionDid))
         {
             services.Add(new Service
             {
@@ -28,7 +31,7 @@ internal static class ImplicitWebVhServices
             });
         }
 
-        if (!ContainsService(services, document.Id.Value, did, WhoisFragment))
+        if (!ContainsService(services, document.Id.Value, did, WhoisFragment, projectionDid))
         {
             services.Add(new Service
             {
@@ -67,16 +70,19 @@ internal static class ImplicitWebVhServices
     }
 
     private static bool ContainsService(
-        IEnumerable<Service> services, string documentDid, string requestedDid, string fragment)
+        IEnumerable<Service> services, string documentDid, string requestedDid, string fragment,
+        string? projectionDid)
     {
         var relativeId = $"#{fragment}";
         var documentId = $"{documentDid}{relativeId}";
         var requestedId = $"{requestedDid}{relativeId}";
+        var projectedId = projectionDid is null ? null : $"{projectionDid}{relativeId}";
 
         return services.Any(service =>
             string.Equals(service.Id, fragment, StringComparison.Ordinal)
             || string.Equals(service.Id, relativeId, StringComparison.Ordinal)
             || string.Equals(service.Id, documentId, StringComparison.Ordinal)
-            || string.Equals(service.Id, requestedId, StringComparison.Ordinal));
+            || string.Equals(service.Id, requestedId, StringComparison.Ordinal)
+            || string.Equals(service.Id, projectedId, StringComparison.Ordinal));
     }
 }

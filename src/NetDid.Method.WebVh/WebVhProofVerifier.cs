@@ -42,7 +42,7 @@ internal static class WebVhProofVerifier
             fragment = null;
         }
 
-        if (!didPart.StartsWith("did:key:"))
+        if (!didPart.StartsWith("did:key:", StringComparison.Ordinal))
             return null;
 
         var multibaseKey = didPart["did:key:".Length..];

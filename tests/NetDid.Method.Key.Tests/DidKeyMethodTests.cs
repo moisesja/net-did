@@ -535,4 +535,18 @@ public class DidKeyMethodTests
             return Task.FromResult(sig);
         }
     }
+
+    [Theory]
+    [InlineData("\n")]
+    [InlineData("\r\n")]
+    public async Task Issue145_Resolve_DidWithTrailingNewline_ReturnsInvalidDid(string suffix)
+    {
+        // DidParser anchored with $, which also matches before a trailing newline.
+        var created = await _method.CreateAsync(new DidKeyCreateOptions { KeyType = KeyType.Ed25519 });
+
+        var resolved = await _method.ResolveAsync(created.Did.Value + suffix);
+
+        resolved.DidDocument.Should().BeNull();
+        resolved.ResolutionMetadata.Error.Should().Be("invalidDid");
+    }
 }

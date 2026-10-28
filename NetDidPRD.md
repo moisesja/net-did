@@ -982,7 +982,7 @@ Numalgo 0: Same algorithm as did:key — decode the key, build the document.
 
 Numalgo 2: Parse the DID string, extract each purpose-prefixed segment, decode keys and service blocks, assemble the DID Document with appropriate verification relationships.
 
-Numalgo 4 long-form: Decode the appended input document, verify the short-form hash matches the SHA-256 of the encoded document, populate the DID Document (inserting the DID as `id` and prefixing all relative references).
+Numalgo 4 long-form: Decode the appended input document, verify the short-form hash matches the SHA-256 of the encoded document, populate the DID Document (inserting the DID as `id` and prefixing all relative references). If the template names a placeholder DID as its `id` (the spec forbids this, but NetDid contextualizes it), that DID is replaced by the did:peer:4 DID in controllers, references, and verification-method and service ids alike, and only at a DID boundary (`#`, `/`, `?`, `;` or the end), so `did:example:abcd` is never treated as under `did:example:abc` (issue #145).
 
 Numalgo 4 short-form: The resolver MUST already possess the long-form (received during initial exchange). If the long-form is not available, resolution fails with `notFound`.
 
@@ -997,6 +997,10 @@ Services in numalgo 2 are encoded per the spec's abbreviation rules:
 | `routingKeys`      | `r`         |
 | `accept`           | `a`         |
 | `DIDCommMessaging` | `dm`        |
+
+As the DIF spec says ("Recursively replace common strings in key names and type value"), the first four rows apply to **member names at every depth**, including inside `serviceEndpoint` (`{"t":"dm","s":{"uri":…,"a":[…],"r":[…]}}`), and `DIDCommMessaging` → `dm` applies **only to the type value**. Resolution expands exactly the same way. Create refuses a name that is itself an abbreviation (`t`, `s`, `r`, `a`) and the type `dm`, which would resolve as something other than the caller wrote. The spec's example DID is reproduced byte for byte and resolved with `accept`/`routingKeys` (issue #145).
+
+Service ids: "service id attributes MUST be relative". An explicit relative id is encoded and kept as written; only a service without an id gets `#service`, `#service-1`, …. An absolute id throws `ArgumentException` on Create and makes Resolve return `invalidDid`. A key's `MultibasePublicKey` must not contain `.` (the segment separator). Create returns the document its DID resolves to.
 
 The service JSON is serialized, base64url-encoded (no padding), and appended with an `S` purpose prefix.
 
@@ -1102,8 +1106,12 @@ documented upstream compatibility limitation and is rejected by this version of 
 To keep universal validation sound the parser rejects duplicate JSON members anywhere in a fetched
 entry (`AllowDuplicateProperties = false`) — `System.Text.Json` keeps the last of a duplicate pair,
 so a decoy `proof` beside a valid one would otherwise be silently dropped — and maps JSON-access
-failures at the parse boundary (e.g. a string carrying an unpaired surrogate that decodes with an
-error) to `invalidDidLog`, never `notFound`. did.jsonl and witness files are decoded as strict UTF-8;
+failures at the parse boundary to `invalidDidLog`, never `notFound`. One such failure is an
+unpaired UTF-16 surrogate escape. In a member name it fails during the parse itself, because
+duplicate rejection has to decode each name to compare it. In a value it fails when the string is
+decoded, so the parser decodes every string in the entry once. Otherwise a value the typed model
+never reads, such as an unknown `publicKeyJwk` member, would first be decoded during hashing,
+outside the boundary (issue #145). did.jsonl and witness files are decoded as strict UTF-8;
 malformed byte sequences are never silently replaced before hash or proof verification.
 
 Complete proofs produced outside NetDid MUST enter the public authoring surface through
@@ -1248,7 +1256,7 @@ well-known placeholder string (`{SCID}`) that stands in for the real SCID during
 7. Validate every explicitly declared witness policy before it can take effect, at genesis and on every later transition. The disabling form is the empty object `{}`. A configured policy MUST contain both `threshold` and a non-empty `witnesses` list; `threshold` MUST be in the inclusive range `1..count(distinct witness ids)`; every id MUST already be Unicode NFC-normalized, MUST be unique under ordinal comparison in that canonical form, MUST be a bare `did:key` DID, and MUST encode an Ed25519 key compatible with `eddsa-jcs-2022`. Missing fields, duplicate or non-canonical ids, zero/negative/out-of-range thresholds, malformed keys, and unsupported key types invalidate the log rather than being coerced to “no witnesses.”
 8. Determine the witness authority for every entry. Genesis is governed by the witness policy it declares. The first later entry that changes from no active witnesses to a configured policy is immediately governed by that new policy and MUST itself be witnessed. Once a policy is active, it governs the entry that lowers, removes, or replaces it, and the replacement takes effect only after that entry is published. If any entry through the requested version requires witnessing, fetch `did-witness.json` and validate cumulative witness coverage against those authorizing policies. `did-witness.json` is a JSON array of `{ "versionId": ..., "proof": [...] }` entries (the member is `proof`, singular, per did:webvh v1.0 — issue #135), parsed strictly: UTF-8, duplicate JSON members rejected, and a parse failure is logged with its reason before resolution reports `witnessValidationFailed`.
 
-   Each witness proof is an `eddsa-jcs-2022` Data Integrity proof with `proofPurpose: assertionMethod` and a verificationMethod in the strict `did:key:<multibase>#<multibase>` form (the bare-DID form is not counted — conforming resolvers discard it), whose input document is `{"versionId": "<versionId>"}` — not the log entry itself. The `versionId` embeds the entry hash that chain validation independently recomputes before witness validation runs, so an approval still binds the full entry content, and the input document is always built from the chain-validated entry's `versionId`, never from the witness file's claimed key. Proofs are verified with their complete wire configuration through the Data Integrity pipeline: signature-bound members such as `expires` and extensions are honored, and an unsigned injected member fails verification. A candidate with `previousProof` is verified with the complete dependency closure found in the same version bucket. Missing, duplicate/ambiguous, repeated, or cyclic references fail closed. A failed aggregate MUST NOT memoize an individually successful dependency as valid; positive dependency verdicts are reusable only after the entire supplied closure verifies. Dependency proofs provide Data Integrity context only: the configured candidate's signer is the sole possible approval, while an unconfigured dependency may be cryptographically verified but is never counted toward the threshold. A syntactically valid proof that cannot be represented by JCS is an invalid proof, not a resolver exception.
+   Each witness proof is an `eddsa-jcs-2022` Data Integrity proof with `proofPurpose: assertionMethod` and a verificationMethod in the strict `did:key:<multibase>#<multibase>` form (the bare-DID form is not counted — conforming resolvers discard it), whose input document is `{"versionId": "<versionId>"}` — not the log entry itself. The `versionId` embeds the entry hash that chain validation independently recomputes before witness validation runs, so an approval still binds the full entry content, and the input document is always built from the chain-validated entry's `versionId`, never from the witness file's claimed key. Proofs are verified with their complete wire configuration through the Data Integrity pipeline: signature-bound members such as `expires` and extensions are honored, and an unsigned injected member fails verification. A candidate with `previousProof` is verified with the complete dependency closure found in the same version bucket. Missing, duplicate/ambiguous, repeated, or cyclic references fail closed. A failed aggregate MUST NOT memoize an individually successful dependency as valid; positive dependency verdicts are reusable only after the entire supplied closure verifies. Dependency proofs provide Data Integrity context only: the configured candidate's signer is the sole possible approval, while an unconfigured dependency may be cryptographically verified but is never counted toward the threshold. A syntactically valid proof that cannot be represented by JCS is an invalid proof, not a resolver exception. On the authoring side (Create/Update/Deactivate), such a proof supplied through `WitnessProofs` or `CurrentWitnessContent` is rejected with `ArgumentException` naming that parameter: no eddsa-jcs-2022 verifier can check it, so publishing it would be a dishonest success. The same applies to a null entry, proof list, proof, or `versionId`, and to an unpaired UTF-16 surrogate in a `versionId` or a modeled proof member (issue #145).
 
    A version's proofs may be split across duplicate-`versionId` entries (the ts reference implementation authors one entry per proof) and are aggregated. Semantically identical proofs are deduplicated by the JCS-canonical complete proof object, so whitespace, property order, or parsed-versus-programmatic provenance cannot multiply an approval or grow a republished artifact; signature-bound extensions remain part of identity. Proof-less entries and proofs without the optional `created` member are tolerated and simply contribute no approvals or verify without `created`, respectively. Count a configured witness only after its proof verifies and binds to the exact configured `did:key` signer (never a `verificationMethod` prefix), and count each distinct signer at most once per required entry.
 
@@ -1258,7 +1266,10 @@ well-known placeholder string (`{SCID}`) that stands in for the real SCID during
    type `relativeRef` and the HTTPS resource-directory endpoint, and `#whois` with type
    `LinkedVerifiablePresentation`, the Linked-VP context, and `<resource-directory>/whois.vp`.
    Relative (`#files` / `#whois`) and absolute (`<did>#files` / `<did>#whois`) controller entries
-   both override the corresponding default independently. Projection occurs only after chain,
+   both override the corresponding default independently. In the parallel `did.json`, an entry in
+   the did:web form (`did:web:<host>#whois`) is the override as well, so that document never
+   carries two services with one id; Create and Update build `did.json` before signing, so an
+   invalid projection fails before any signature is produced (issue #145). Projection occurs only after chain,
    identity, and witness validation and never mutates the parsed signed state. The v1.0 spec is
    explicit that path dereferencing must fall back to these services and that parallel `did:web`
    output must add them; serializing them in ordinary did:webvh resolution output is the
@@ -1475,7 +1486,8 @@ public sealed record DidEthrCreateOptions : DidCreateOptions
    call `changed(identity)` and walk every block above the cached watermark, then splice the
    cached prefix only when its first block exactly matches the live `previousChange` pointer.
    Never place a block above the finalized watermark in the indefinite cache. If the chain or
-   endpoint does not support the finalized tag, perform the complete uncached walk. Cache entries
+   endpoint does not support the finalized tag, or returns a malformed finalized block (for
+   example a duplicate or undecodable member), perform the complete uncached walk. Cache entries
    MUST remain within the existing 5,000-event and 32 MiB per-resolution bounds. The cache MUST be
    resolver-owned (not a caller-writable shared cache), MUST have a 64 MiB aggregate size limit,
    MUST skip identities with no reusable finalized event prefix, and MUST NOT replace an entry with
@@ -1493,6 +1505,11 @@ public sealed record DidEthrCreateOptions : DidCreateOptions
      the current block and every subsequent same-block event to point exactly to the current
      block;
    - validate full 256-bit ABI words before narrowing dynamic byte offsets or lengths.
+   The default RPC client maps every malformed result to `EthereumInteractionException` with
+   fixed text. This covers wrong JSON types, duplicate member names, and unpaired UTF-16
+   surrogates in member names or string values (issue #145). `System.Text.Json` builds a result
+   object's member dictionary, and decodes its strings, lazily on first access, so the client
+   forces both at its own boundary.
    Any violation fails closed as `notFound`; a valid authorization event MUST NOT survive beside
    a malformed revocation or deactivation event.
    Cached blocks are untrusted input too: store frozen raw `EthereumLogEntry` values rather than
@@ -1530,7 +1547,18 @@ public sealed record DidEthrCreateOptions : DidCreateOptions
    - Each `DIDAttributeChanged` adds/removes attributes:
      - `did/pub/<keyType>/<purpose>/<encoding>` → verification method (with `publicKeyJwk`
        or `publicKeyMultibase` when the encoding provides full key material)
-     - `did/svc/<serviceType>` → service endpoint
+     - `did/svc/<serviceType>` → service endpoint. As in ethr-did-resolver, only names matching
+       `^did/svc/(\w+)(/\w+)?(/\w+)?$` become services, typed by the first segment, while every
+       `did/svc/` event still counts toward the `#service-N` index. The value is decoded as strict
+       UTF-8 (skipped otherwise), then as JSON with the raw string as fallback; a duplicate member
+       keeps its last value at its first position, as `JSON.parse` does. Only shapes DID Core §5.4
+       can represent are kept (a URI, a map, or a non-empty set of URIs and maps); anything else
+       drops that one service (issue #145).
+   - bytes32 names and delegate types are decoded as strict UTF-8 with trailing NULs trimmed,
+     like the reference `bytes32toString`, and prefixes are matched ordinally. An event whose
+     label is not valid UTF-8 is parsed as a `FilteredEvent`: it links the history walk but is
+     filtered out of the history, so it is not counted and sets no `versionId`, `updated` or
+     `nextVersionId` (issue #145).
 7. Return the assembled DID Document.
 
 **Note on key material representations**: The default (implicit) VM for a did:ethr uses
@@ -1550,7 +1578,11 @@ current key's authority over any subsequent operation:
 ```csharp
 public sealed record DidEthrUpdateOptions : DidUpdateOptions
 {
-    // Add/remove service endpoints (did/svc/<type> attributes)
+    // Add/remove service endpoints (did/svc/<type> attributes). The type is an ASCII bytes32
+    // label; the endpoint is written as UTF-8 and must be well-formed UTF-16 (an unpaired
+    // surrogate throws ArgumentException before any RPC traffic instead of being written as
+    // EF BF BD on-chain; issue #145). The type must be one [A-Za-z0-9_]+ segment and the
+    // endpoint a value the resolver keeps (§8.5), or the call throws before any RPC traffic.
     public IReadOnlyList<DidEthrServiceAttribute>? AddServices { get; init; }
     public IReadOnlyList<DidEthrServiceAttribute>? RemoveServices { get; init; }
 
@@ -1560,7 +1592,9 @@ public sealed record DidEthrUpdateOptions : DidUpdateOptions
 
     // Raw ERC-1056 attributes — most importantly did/pub/<alg>/<purpose>/<encoding>
     // entries that publish FULL key material (see the §8.5 note): the implicit
-    // blockchainAccountId controller VM cannot serve extractable key bytes.
+    // blockchainAccountId controller VM cannot serve extractable key bytes. A did/svc/ name
+    // added here is still a service: its name and value must meet the AddServices rules
+    // (issue #145). RemoveAttributes can revoke any value already on-chain.
     public IReadOnlyList<DidEthrAttribute>? AddAttributes { get; init; }
     public IReadOnlyList<DidEthrAttribute>? RemoveAttributes { get; init; }
 
@@ -2048,6 +2082,18 @@ public static class DidDocumentSerializer
     /// Produce the DID Document as a JSON string in the specified representation.
     /// - JsonLd: includes @context (auto-computed from VM types), all JSON-LD keywords
     /// - Json:   omits @context and any JSON-LD-only properties
+    /// Caller options are honored for formatting (WriteIndented, Encoder) and are locked on
+    /// first use; NetDid's converters always apply first (a caller TypeInfoResolver cannot
+    /// replace them), so the output is always a DID document under the production rules.
+    /// publicKeyJwk is written with its RFC 7517/7518/8037 public members only (kty required);
+    /// private members are never emitted.
+    /// Every string written must be well-formed UTF-16, and every caller JsonElement written
+    /// (extensions, @context objects, serviceEndpoint maps) must decode cleanly. A string
+    /// holding an unpaired surrogate, or a JsonElement holding ill-formed UTF-8 or an escaped
+    /// lone surrogate, throws ArgumentException; the JSON writer would otherwise publish U+FFFD
+    /// in its place while reporting success (issue #145). DID values are syntax-checked ASCII.
+    /// @context entries must be strings or JsonElements, and a service's AdditionalProperties
+    /// must not use a reserved name (id, type, serviceEndpoint).
     public static string Serialize(DidDocument doc, string contentType = DidContentTypes.JsonLd,
         JsonSerializerOptions? options = null);
 
@@ -2059,6 +2105,18 @@ public static class DidDocumentSerializer
     /// Per W3C DID Core §6.2 (JSON consumption): MUST NOT require @context.
     /// Per W3C DID Core §6.3 (JSON-LD consumption): MUST verify @context when
     /// the input is known to be application/did+ld+json.
+    /// Malformed JSON throws JsonException. This covers duplicate members, a missing or
+    /// non-string VM controller, a malformed publicKeyJwk, an unpaired UTF-16 surrogate
+    /// (escaped or raw) in any member name or value, and ill-formed UTF-8 bytes (issues #121,
+    /// #145). It also covers shapes DID Core does not allow: a VM or service whose id or type
+    /// is missing or not a string; a null or non-object entry in verificationMethod or
+    /// service; a non-string alsoKnownAs entry; a blank or non-string/non-object relationship
+    /// entry; and a serviceEndpoint that is missing, blank, an empty set, or a set nested in
+    /// a set (W3C DID Core §5.4). A service type given as a set of strings is not supported.
+    /// Any other JSON-access failure on hostile input also maps to JsonException, never a raw
+    /// BCL exception. Every string is decoded once on the way in, extension values included,
+    /// so a document that deserializes can always be serialized again. A DID-valued member
+    /// that is not a valid DID throws InvalidDidException.
     public static DidDocument Deserialize(string json, string? contentType = null);
     public static DidDocument Deserialize(ReadOnlySpan<byte> utf8Json, string? contentType = null);
 }
@@ -2066,11 +2124,22 @@ public static class DidDocumentSerializer
 
 **Default content type**: `application/did+ld+json` (JSON-LD) is the default for production because it carries the richest semantic information and is required by most DID-consuming ecosystems (Verifiable Credentials, ZCAP-LD, Data Integrity Proofs). Callers who need plain JSON explicitly pass `DidContentTypes.Json`.
 
+**Authoring text fidelity (issue #145).** `Utf8JsonWriter`, `JsonSerializer`, and `Encoding.UTF8` all replace an unpaired UTF-16 surrogate with U+FFFD without raising an error. NetDid never publishes text altered that way. Every authoring path checks the caller text it writes and throws `ArgumentException` instead. That includes both modeled strings and the contents of caller-supplied `JsonElement` values, whose member names and strings are decoded before they are written. This covers the DID document serializer (did:webvh state and `did.json`, did:peer:4 Create), did:webvh log-entry parameters and witness proofs, did:peer:2 service blocks, and did:ethr service endpoints. A check runs where the value is written, so it sees exactly the text that is published.
+
+The service endpoint model enforces W3C DID Core §5.4 itself: `ServiceEndpointValue.FromUri` rejects a blank URI, and `FromSet` copies its entries and rejects an empty set, a null entry, or a nested set. A shape the reader rejects therefore cannot be built and published by any producer. Before this, did:peer:4 Create could return a DID whose own resolution failed. did:peer:2 and did:peer:4 resolution decode the embedded JSON as strict UTF-8, matching Core's span overload. A did:peer:2 service block is consumed under the same rules as a DID document. Duplicate members, undecodable text, a reserved or colliding key after abbreviation expansion, a non-string `t` or `id`, or a missing `s` each make resolution fail with `invalidDid`. did:peer:2 Create rejects the same collisions on the way in. On write, a null required member (VM or service `id`/`type`, an `alsoKnownAs` entry), a null list entry, or a duplicate member name from a custom-comparer dictionary throws `ArgumentException`. NetDid therefore never emits a shape its own reader rejects (issue #145).
+
 ### 9.3 W3C DID Core Normative Requirements on the Document
 
 **Data model requirements** (enforced at construction, independent of representation):
 
-- `id` MUST be a valid DID. The `Did` value object (a `readonly record struct`) validates W3C DID syntax at construction — if a `Did` exists, it is syntactically valid. This makes invalid DIDs unrepresentable in the type system.
+- `id` MUST be a valid DID. The `Did` value object (a `readonly record struct`) validates W3C DID syntax at construction — if a `Did` exists, it is syntactically valid. This makes invalid DIDs unrepresentable in the type system. The syntax regexes anchor with `\z` (not `$`, which in .NET also matches before a trailing newline). DID URL path, params, query and fragment, and relative DID URLs, follow the RFC 3986 character sets that DID Core §3.2 references (issue #145).
+- Consumption and production both enforce DID Core id and URI syntax (issue #145):
+  - verification method ids and relationship references are absolute or relative DID URLs (§5.2, §3.2.2). A relative DID URL "MAY contain relative path components, query parameters, and fragment identifiers" (`#key-1`, `/keys/1`, `keys/1#k`, `?versionId=1#key-1`); a network-path reference (`//host/x`) is rejected because it replaces the DID and so never names a resource of this document;
+  - service ids are URIs (absolute, or relative DID URLs) and unique (§5.4);
+  - ids are compared after RFC 3986 §5 reference resolution against the DID, as §3.2.2 requires (scheme `did`, authority `<method>:<method-specific-id>`, empty path: a relative path merges to `/path`, dot segments are removed). `keys/1#k`, `/keys/1#k` and `<did>/keys/1#k` are one id. One documented compatibility exception: the bare shorthand, one plain segment `x` (issue #136), means `#x`, where RFC 3986 alone gives `<did>/x`. Duplicate detection, fragment and `?service=` dereferencing, and `DefaultVerificationRelationshipResolver` share this one comparison (`DidParser.ComparableId`). It never builds `<did>…`, so the cost follows the ids, not the DID: a did:peer DID embeds its whole document and can be megabytes long;
+  - serviceEndpoint strings and `alsoKnownAs` entries are URIs (§5.4, §5.1.3). An absolute URI follows RFC 3986 `scheme ":" hier-part`, with `[` and `]` only around an IP-literal host (an IPv6 address or IPvFuture) and `//` always starting an authority.
+
+  The bare shorthand has no `:`, `/`, `?` or `#` and is never `.` or `..`, so every real relative reference keeps its RFC 3986 meaning. A violation throws `JsonException` on read and `ArgumentException` on write. did:peer:2, which builds documents without serializing them, applies the same producer checks on Create (`ArgumentException`) and Resolve (`invalidDid`). did:peer:2 and did:peer:4 Create read the caller's input once and return the document the minted DID resolves to (did:peer:2 resolves the DID it encoded; did:peer:4 parses the JSON it hashed), so a caller collection that reads differently twice can never make Create report a document other than the one its DID encodes.
 - `controller`, when present, MUST be a list of valid `Did` values. Serialized as a string when Count == 1, as an array when Count > 1, omitted when null.
 - `verificationMethod[*].id` MUST be a valid DID URL.
 - `verificationMethod[*].controller` MUST be a valid `Did`.
@@ -2281,8 +2350,13 @@ public sealed record DidUrlDereferencingOptions
 
 **Default implementation**: `DefaultDidUrlDereferencer` composes with `IDidResolver` and implements
 the W3C §7.2 dereferencing algorithm for fragment and service endpoint selection (with path and
-`relativeRef`), conventional `#files` / `#whois` path dispatch, and `versionId`/`versionTime` query
-parameters. A conventional path result is a `text/uri-list` redirect for the caller to retrieve;
+`relativeRef`). Fragment and `?service=` lookups compare ids after the same normalization (`x`,
+`#x` and `<did>#x` are one id), so an id that belongs to another DID never matches by fragment
+alone (issue #145). A DID URL with a path and a fragment selects the resource
+`<did>/path#fragment`, never `#fragment` alone, and the `service` parameter selects by fragment
+(`?service=agent/v1` selects `#agent/v1`); it is never resolved as a path. It also covers
+conventional `#files` / `#whois` path dispatch and
+`versionId`/`versionTime` query parameters. A conventional path result is a `text/uri-list` redirect for the caller to retrieve;
 Core does not fetch or validate the external resource bytes. `/whois` selects `#whois` and uses its
 endpoint directly; every other bare path selects `#files` and appends beneath its endpoint. A
 missing conventional service remains `notFound`, and a non-HTTP(S), non-URI, or structured endpoint
@@ -2447,7 +2521,7 @@ public interface IVerificationRelationshipResolver
 
 **Tri-state result.** The decision is explicitly tri-state so callers can distinguish "the controller's document *says no*" from "the controller's document could not be resolved at all". The latter case surfaces the underlying resolution error (`notFound`, `invalidDid`, `methodNotSupported`) so a verifier can fail closed *and* log the infrastructure cause rather than silently treating a network blip as denial.
 
-**Default implementation.** `DefaultVerificationRelationshipResolver` is stateless, composes with `IDidResolver`, and uses `DidDocument.GetRelationshipEntries` (see §10.4) to read the relationship list. Verification-method ids inside the list — both `VerificationRelationshipEntry.Reference` strings and embedded `VerificationMethod.Id` values — are normalized against the controller document's `Id` using the same rule the dereferencer applies to service ids (`"#k1"` ↦ `"{controllerDid}#k1"`; bare `"k1"` ↦ `"{controllerDid}#k1"`; absolute DID URLs unchanged), then matched ordinally against the normalized query URL.
+**Default implementation.** `DefaultVerificationRelationshipResolver` is stateless, composes with `IDidResolver`, and uses `DidDocument.GetRelationshipEntries` (see §10.4) to read the relationship list. Verification-method ids inside the list — both `VerificationRelationshipEntry.Reference` strings and embedded `VerificationMethod.Id` values — are compared with the query URL through the shared `DidParser.ComparableId` (§9.3): RFC 3986 resolution against the controller document's `Id` (`"#k1"`, `"keys/1#k1"`, `"/keys/1#k1"`), the bare shorthand `"k1"` ↦ `"#k1"`, and absolute DID URLs of another DID unchanged, matched ordinally (issue #145).
 
 **Worked example — cross-DID reference (controller authorizes a foreign key).**
 

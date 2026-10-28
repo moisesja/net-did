@@ -1,4 +1,5 @@
 using System.Buffers.Binary;
+using System.Diagnostics.CodeAnalysis;
 using System.Text;
 
 namespace NetDid.Method.Ethr.Abi;
@@ -69,6 +70,29 @@ public static class AbiDecoder
         return Encoding.ASCII.GetString(trimmed);
     }
 
+    private static readonly UTF8Encoding StrictUtf8 = new(false, throwOnInvalidBytes: true);
+
+    /// <summary>
+    /// Decodes a bytes32 label (an attribute name or delegate type) the way ethr-did-resolver's
+    /// <c>bytes32toString</c> does: strict UTF-8, then trailing NULs trimmed. Returns false when
+    /// the word is not valid UTF-8; the reference resolver filters such an event out of the DID
+    /// history (issue #145).
+    /// </summary>
+    public static bool TryDecodeBytes32AsUtf8(ReadOnlySpan<byte> word32, [NotNullWhen(true)] out string? label)
+    {
+        EnsureLength(word32, 32, nameof(word32));
+        try
+        {
+            label = StrictUtf8.GetString(word32).TrimEnd('\0');
+            return true;
+        }
+        catch (DecoderFallbackException)
+        {
+            label = null;
+            return false;
+        }
+    }
+
     /// <summary>
     /// Decodes a dynamic ABI bytes value. The data span must start at offset 0 of the
     /// full event data, and <paramref name="offsetInData"/> gives the byte position of the
@@ -135,14 +159,15 @@ public static class AbiDecoder
 
     /// <summary>
     /// Decodes DIDDelegateChanged event data (4 × 32-byte words).
-    /// Returns (delegateType, delegate20bytes, validTo, previousChange).
+    /// Returns (delegateType, delegate20bytes, validTo, previousChange). The delegate type is
+    /// decoded like <see cref="TryDecodeBytes32AsUtf8"/>, and is null when it is not valid UTF-8.
     /// </summary>
-    public static (string DelegateType, byte[] Delegate, ulong ValidTo, ulong PreviousChange)
+    public static (string? DelegateType, byte[] Delegate, ulong ValidTo, ulong PreviousChange)
         DecodeDelegateChangedData(ReadOnlySpan<byte> data)
     {
         EnsureExactLength(data, 128, "DIDDelegateChanged data");
         return (
-            DecodeBytes32AsString(data[..32]),
+            TryDecodeBytes32AsUtf8(data[..32], out var delegateType) ? delegateType : null,
             DecodeAddress(data[32..64]),
             DecodeUint256(data[64..96]),
             DecodeUint256(data[96..128]));
@@ -151,13 +176,14 @@ public static class AbiDecoder
     /// <summary>
     /// Decodes DIDAttributeChanged event data.
     /// Layout: name(32) | valueOffset(32) | validTo(32) | previousChange(32) | [dynamic bytes payload]
-    /// Returns (name, valueBytes, validTo, previousChange).
+    /// Returns (name, valueBytes, validTo, previousChange). The name is decoded like
+    /// <see cref="TryDecodeBytes32AsUtf8"/>, and is null when it is not valid UTF-8.
     /// </summary>
-    public static (string Name, byte[] Value, ulong ValidTo, ulong PreviousChange)
+    public static (string? Name, byte[] Value, ulong ValidTo, ulong PreviousChange)
         DecodeAttributeChangedData(ReadOnlySpan<byte> data)
     {
         EnsureMinLength(data, 128, "DIDAttributeChanged data");
-        var name     = DecodeBytes32AsString(data[..32]);
+        var name     = TryDecodeBytes32AsUtf8(data[..32], out var label) ? label : null;
         // This event has a four-word static head, so the one dynamic value must begin
         // canonically at byte 128. A pointer into the head can reinterpret authority
         // metadata as a payload length and must not be accepted.

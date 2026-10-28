@@ -96,10 +96,14 @@ public sealed class DefaultDidUrlDereferencer : IDidUrlDereferencer
         if (parsed.Path is not null && parsed.Did.Method == "webvh")
             return BuildPathServiceResult(doc, parsed);
 
-        // Step 4: Fragment-only → select resource from DID Document
+        // Step 4: Fragment → select the resource "<did><path>#<fragment>" from the DID Document. A
+        // path is part of the resource's id: "<did>/k#x" is not "<did>#x" (issue #145).
         if (parsed.Fragment is not null)
         {
-            var resource = FindByFragment(doc, parsed.Fragment, options?.VerificationRelationship);
+            var target = parsed.Path is null
+                ? "#" + parsed.Fragment
+                : DidParser.ComparableId(parsed.Path + "#" + parsed.Fragment, null);
+            var resource = FindByFragment(doc, target, options?.VerificationRelationship);
             if (resource is null)
                 return DidUrlDereferencingResult.Error("notFound");
             return DidUrlDereferencingResult.Success(resource, accept);
@@ -281,27 +285,14 @@ public sealed class DefaultDidUrlDereferencer : IDidUrlDereferencer
     {
         if (doc.Service is null) return null;
 
-        // Normalize the query value to an absolute URI using the document's id
-        var normalizedQuery = NormalizeServiceId(serviceId, doc.Id);
+        // The service parameter names a service by its fragment ("agent" selects "#agent"), so a
+        // plain value is never resolved as a path reference; "#agent" and an absolute DID URL are
+        // ids as written. Ids compare in the shared normalized form (issue #145).
+        var target = serviceId.StartsWith('#') || serviceId.Contains(':')
+            ? DidParser.ComparableId(serviceId, doc.Id.Value)
+            : "#" + serviceId;
 
-        return doc.Service.FirstOrDefault(s =>
-        {
-            var normalizedSvcId = NormalizeServiceId(s.Id, doc.Id);
-            return normalizedSvcId == normalizedQuery;
-        });
-    }
-
-    /// <summary>
-    /// Resolves a service ID to an absolute URI. Relative references like "#svc"
-    /// are resolved against the DID base, producing "did:example:123#svc".
-    /// </summary>
-    private static string NormalizeServiceId(string id, string did)
-    {
-        if (id.StartsWith('#'))
-            return did + id;
-        if (!id.Contains(':'))
-            return did + "#" + id;
-        return id;
+        return doc.Service.FirstOrDefault(s => DidParser.ComparableId(s.Id, doc.Id.Value) == target);
     }
 
     private static bool IsDidDocumentContentType(string accept)
@@ -313,7 +304,9 @@ public sealed class DefaultDidUrlDereferencer : IDidUrlDereferencer
         return doc.Service.Where(s => s.Type == serviceType).ToList();
     }
 
-    private static object? FindByFragment(DidDocument doc, string fragment,
+    // target is the requested resource in ComparableId form ("#x", "/k#x"), built once: every id
+    // below is compared against it (issue #145).
+    private static object? FindByFragment(DidDocument doc, string target,
         string? verificationRelationship = null)
     {
         // When verificationRelationship is specified, only search that relationship
@@ -323,26 +316,14 @@ public sealed class DefaultDidUrlDereferencer : IDidUrlDereferencer
             if (entries is null) return null;
 
             // Check for embedded VM in the specified relationship
-            var embedded = FindEmbeddedVmByFragment(entries, fragment);
+            var embedded = FindEmbeddedVmByFragment(entries, doc.Id.Value, target);
             if (embedded is not null) return embedded;
 
-            // Check for referenced VM by matching fragment in the relationship
-            if (doc.VerificationMethod is not null)
-            {
-                foreach (var entry in entries)
-                {
-                    if (!entry.IsReference) continue;
-                    var vm = FindVmByFragment(doc.VerificationMethod, fragment);
-                    if (vm is not null)
-                    {
-                        // Verify the reference actually points to this VM
-                        var refFragment = entry.Reference!.Contains('#')
-                            ? entry.Reference[(entry.Reference.IndexOf('#') + 1)..]
-                            : entry.Reference;
-                        if (refFragment == fragment) return vm;
-                    }
-                }
-            }
+            // A referenced VM counts only if the relationship references it (same DID, same fragment)
+            var vm = doc.VerificationMethod is null ? null
+                : FindVmByFragment(doc.VerificationMethod, doc.Id.Value, target);
+            if (vm is not null && entries.Any(entry => entry.IsReference && IsSameId(entry.Reference!, doc.Id.Value, target)))
+                return vm;
 
             return null;
         }
@@ -350,55 +331,49 @@ public sealed class DefaultDidUrlDereferencer : IDidUrlDereferencer
         // Search top-level verification methods
         if (doc.VerificationMethod is not null)
         {
-            var vm = FindVmByFragment(doc.VerificationMethod, fragment);
+            var vm = FindVmByFragment(doc.VerificationMethod, doc.Id.Value, target);
             if (vm is not null) return vm;
         }
 
         // Search embedded verification methods in all relationship arrays
-        var embeddedVm = FindEmbeddedVmByFragment(doc.Authentication, fragment)
-            ?? FindEmbeddedVmByFragment(doc.AssertionMethod, fragment)
-            ?? FindEmbeddedVmByFragment(doc.KeyAgreement, fragment)
-            ?? FindEmbeddedVmByFragment(doc.CapabilityInvocation, fragment)
-            ?? FindEmbeddedVmByFragment(doc.CapabilityDelegation, fragment);
+        var embeddedVm = FindEmbeddedVmByFragment(doc.Authentication, doc.Id.Value, target)
+            ?? FindEmbeddedVmByFragment(doc.AssertionMethod, doc.Id.Value, target)
+            ?? FindEmbeddedVmByFragment(doc.KeyAgreement, doc.Id.Value, target)
+            ?? FindEmbeddedVmByFragment(doc.CapabilityInvocation, doc.Id.Value, target)
+            ?? FindEmbeddedVmByFragment(doc.CapabilityDelegation, doc.Id.Value, target);
         if (embeddedVm is not null) return embeddedVm;
 
         // Search services
         if (doc.Service is not null)
         {
-            var svc = doc.Service.FirstOrDefault(s =>
-            {
-                var hashIndex = s.Id.IndexOf('#');
-                var svcFragment = hashIndex >= 0 ? s.Id[(hashIndex + 1)..] : s.Id;
-                return svcFragment == fragment;
-            });
+            var svc = doc.Service.FirstOrDefault(s => IsSameId(s.Id, doc.Id.Value, target));
             if (svc is not null) return svc;
         }
 
         return null;
     }
 
+    // "#x", the bare shorthand "x" and "<did>#x" name the same resource; an id that belongs to
+    // another DID does not, even when its fragment matches (issue #145). One normalization with
+    // the ?service= lookup and duplicate-id detection. target is the requested resource's form.
+    private static bool IsSameId(string id, string? documentDid, string target)
+        => DidParser.ComparableId(id, documentDid) == target;
+
     private static VerificationMethod? FindVmByFragment(
-        IReadOnlyList<VerificationMethod> methods, string fragment)
+        IReadOnlyList<VerificationMethod> methods, string? documentDid, string target)
     {
-        return methods.FirstOrDefault(v =>
-        {
-            var hashIndex = v.Id.IndexOf('#');
-            var vmFragment = hashIndex >= 0 ? v.Id[(hashIndex + 1)..] : v.Id;
-            return vmFragment == fragment;
-        });
+        return methods.FirstOrDefault(v => IsSameId(v.Id, documentDid, target));
     }
 
     private static VerificationMethod? FindEmbeddedVmByFragment(
-        IReadOnlyList<VerificationRelationshipEntry>? entries, string fragment)
+        IReadOnlyList<VerificationRelationshipEntry>? entries, string? documentDid, string target)
     {
         if (entries is null) return null;
         foreach (var entry in entries)
         {
             if (!entry.IsReference && entry.EmbeddedMethod is not null)
             {
-                var hashIndex = entry.EmbeddedMethod.Id.IndexOf('#');
-                var vmFragment = hashIndex >= 0 ? entry.EmbeddedMethod.Id[(hashIndex + 1)..] : entry.EmbeddedMethod.Id;
-                if (vmFragment == fragment) return entry.EmbeddedMethod;
+                if (IsSameId(entry.EmbeddedMethod.Id, documentDid, target)) return entry.EmbeddedMethod;
             }
         }
         return null;

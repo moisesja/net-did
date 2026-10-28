@@ -516,6 +516,147 @@ public class DidEthrWriteTests
         chain.CurrentBlockNumber.Should().Be(0);
     }
 
+    [Theory]
+    [InlineData("not a uri")]
+    [InlineData("123")]
+    public async Task Issue145_Update_UnrepresentableServiceEndpoint_ThrowsBeforeAnyRpc(string endpoint)
+    {
+        // The resolver drops a service whose value is neither a URI nor a JSON map or set of
+        // them (DID Core §5.4), so writing one would publish a service nobody can resolve.
+        var chain = new EmulatedEthereumChain(Registry);
+        var owner = NewActor();
+
+        var act = () => MethodFor(chain).UpdateAsync($"did:ethr:sepolia:{owner.Address}",
+            new DidEthrUpdateOptions
+            {
+                ControllerKey = owner.Signer,
+                AddServices   = [new DidEthrServiceAttribute { ServiceType = "X", ServiceEndpoint = endpoint }],
+            });
+
+        await act.Should().ThrowAsync<ArgumentException>();
+        chain.CurrentBlockNumber.Should().Be(0, "nothing may be broadcast");
+    }
+
+    [Fact]
+    public async Task Issue145_Control_UpdateWithJsonMapServiceEndpoint_ResolvesAsAMap()
+    {
+        var chain = new EmulatedEthereumChain(Registry);
+        var owner = NewActor();
+
+        var result = await MethodFor(chain).UpdateAsync($"did:ethr:sepolia:{owner.Address}",
+            new DidEthrUpdateOptions
+            {
+                ControllerKey = owner.Signer,
+                AddServices   =
+                [
+                    new DidEthrServiceAttribute
+                    {
+                        ServiceType = "Messaging", ServiceEndpoint = """{"uri":"https://hub.example"}""",
+                    },
+                ],
+            });
+
+        result.DidDocument.Service.Should().ContainSingle()
+            .Which.ServiceEndpoint.IsMap.Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task Issue145_Update_ServiceTypeOutsideReferenceGrammar_ThrowsBeforeAnyRpc()
+    {
+        // ethr-did-resolver only adds did/svc/<\w+> names, so this service would never resolve.
+        var chain = new EmulatedEthereumChain(Registry);
+        var owner = NewActor();
+
+        var act = () => MethodFor(chain).UpdateAsync($"did:ethr:sepolia:{owner.Address}",
+            new DidEthrUpdateOptions
+            {
+                ControllerKey = owner.Signer,
+                AddServices   = [new DidEthrServiceAttribute { ServiceType = "Linked-Domains", ServiceEndpoint = "https://x.example" }],
+            });
+
+        await act.Should().ThrowAsync<ArgumentException>();
+        chain.CurrentBlockNumber.Should().Be(0, "nothing may be broadcast");
+    }
+
+    public static TheoryData<string, byte[]> Issue145UnresolvableServiceAttributes => new()
+    {
+        { "did/svc/X", "not a uri"u8.ToArray() },
+        { "did/svc/X", [.. "https://a.example/"u8.ToArray(), 0xED, 0xA0, 0x80] },
+        { "did/svc/Linked-Domains", "https://a.example"u8.ToArray() },
+    };
+
+    [Theory]
+    [MemberData(nameof(Issue145UnresolvableServiceAttributes))]
+    public async Task Issue145_Update_RawServiceAttributeTheResolverWouldDrop_ThrowsBeforeAnyRpc(string name, byte[] value)
+    {
+        // F9: AddAttributes is the raw path, but a did/svc/ name is still a service and must meet
+        // the same rules as AddServices.
+        var chain = new EmulatedEthereumChain(Registry);
+        var owner = NewActor();
+
+        var act = () => MethodFor(chain).UpdateAsync($"did:ethr:sepolia:{owner.Address}",
+            new DidEthrUpdateOptions
+            {
+                ControllerKey = owner.Signer,
+                AddAttributes = [new DidEthrAttribute { Name = name, Value = value }],
+            });
+
+        await act.Should().ThrowAsync<ArgumentException>();
+        chain.CurrentBlockNumber.Should().Be(0, "nothing may be broadcast");
+    }
+
+    [Fact]
+    public async Task Issue145_Update_NullServiceEndpoint_ThrowsBeforeAnyRpc()
+    {
+        // Final adversarial pass: a null endpoint leaked a raw ArgumentNullException (parameter 's')
+        // from Encoding.UTF8.GetBytes.
+        var chain = new EmulatedEthereumChain(Registry);
+        var owner = NewActor();
+
+        var act = () => MethodFor(chain).UpdateAsync($"did:ethr:sepolia:{owner.Address}",
+            new DidEthrUpdateOptions
+            {
+                ControllerKey = owner.Signer,
+                AddServices   = [new DidEthrServiceAttribute { ServiceType = "X", ServiceEndpoint = null! }],
+            });
+
+        (await act.Should().ThrowAsync<ArgumentException>())
+            .Which.Should().NotBeOfType<ArgumentNullException>();
+        chain.CurrentBlockNumber.Should().Be(0, "nothing may be broadcast");
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task Issue145_Update_ServiceEndpointWithUnpairedSurrogate_ThrowsBeforeAnyRpc(bool add)
+    {
+        // Encoding.UTF8 silently replaces an unpaired surrogate with EF BF BD, so this used to
+        // write (or revoke) a different endpoint on-chain than the caller supplied.
+        var chain = new EmulatedEthereumChain(Registry);
+        var owner = NewActor();
+        DidEthrServiceAttribute[] services =
+        [
+            new DidEthrServiceAttribute
+            {
+                ServiceType = "X", ServiceEndpoint = "https://x.example/\uD800",
+            },
+        ];
+
+        var act = () => MethodFor(chain).UpdateAsync($"did:ethr:sepolia:{owner.Address}",
+            new DidEthrUpdateOptions
+            {
+                ControllerKey  = owner.Signer,
+                AddServices    = add ? services : null,
+                RemoveServices = add ? null : services,
+            });
+
+        // Same convention as a null collection entry: ParamName "options", collection in the message.
+        await act.Should().ThrowAsync<ArgumentException>().WithMessage(add
+            ? "*AddServices*unpaired UTF-16 surrogate*"
+            : "*RemoveServices*unpaired UTF-16 surrogate*");
+        chain.CurrentBlockNumber.Should().Be(0, "nothing may be broadcast");
+    }
+
     [Fact]
     public async Task Update_MidBatchRevert_ReportsLandedOperations()
     {

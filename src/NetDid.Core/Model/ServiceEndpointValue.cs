@@ -36,11 +36,30 @@ public sealed class ServiceEndpointValue
         return new(null, map, null);
     }
 
+    /// <summary>
+    /// Creates a set endpoint. W3C DID Core §5.4 allows "a set composed of one or more strings
+    /// and/or maps", so each entry must be a URI or a map, never another set or null. The reader
+    /// rejects a nested set, so no producer may be able to build one (issue #145). The entries are
+    /// copied once into a list the library fills itself and exposes read-only, so the validated set
+    /// cannot change after construction (not through a cast, nor through an array handed to the
+    /// caller's <c>CopyTo</c>).
+    /// </summary>
+    /// <exception cref="ArgumentException">The set is empty, or an entry is null or a set.</exception>
     public static ServiceEndpointValue FromSet(IReadOnlyList<ServiceEndpointValue> set)
     {
         ArgumentNullException.ThrowIfNull(set);
-        if (set.Count == 0) throw new ArgumentException("Set must contain at least one entry.", nameof(set));
-        return new(null, null, set);
+        var entries = new List<ServiceEndpointValue>();
+        foreach (var entry in set)
+        {
+            if (entry is null || entry.IsSet)
+                throw new ArgumentException(
+                    "Set entries must be URIs or maps; a set may not contain null or another set " +
+                    "(W3C DID Core §5.4).",
+                    nameof(set));
+            entries.Add(entry);
+        }
+        if (entries.Count == 0) throw new ArgumentException("Set must contain at least one entry.", nameof(set));
+        return new(null, null, entries.AsReadOnly());
     }
 
     /// <summary>Implicit conversion from string for ergonomic URI creation.</summary>

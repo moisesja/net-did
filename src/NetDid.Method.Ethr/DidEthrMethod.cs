@@ -7,6 +7,7 @@ using NetDid.Core;
 using NetCrypto;
 using NetDid.Core.Exceptions;
 using NetDid.Core.Model;
+using NetDid.Core.Serialization;
 using NetDid.Method.Ethr.Abi;
 using NetDid.Method.Ethr.Crypto;
 using NetDid.Method.Ethr.Erc1056;
@@ -352,7 +353,11 @@ public sealed class DidEthrMethod : DidMethodBase
         // appended in ascending log order during the walk, so this reorders blocks
         // oldest-first WITHOUT reversing events within a block — a flat List.Reverse()
         // would invert a same-block add→revoke into revoke→add and leave a revoked key live.
-        collectedEvents = collectedEvents.OrderBy(e => e.BlockNumber).ToList();
+        // An event ethr-did-resolver filters out (a bytes32 label that is not UTF-8) linked the
+        // walk above but is not part of the history: it is not counted and sets no versionId,
+        // updated or nextVersionId (issue #145).
+        collectedEvents = collectedEvents.Where(e => e is not FilteredEvent)
+            .OrderBy(e => e.BlockNumber).ToList();
 
         // Reference time & optional block-timestamp fetching for VersionTime.
         // Every timestamp fetched anywhere in this resolution is cached so the
@@ -1058,7 +1063,7 @@ public sealed class DidEthrMethod : DidMethodBase
         foreach (var service in removeServices)
             operations.Add(Erc1056TransactionBuilder.RevokeAttribute(
                 identity, "did/svc/" + Required(service, nameof(DidEthrUpdateOptions.RemoveServices)).ServiceType,
-                Encoding.UTF8.GetBytes(service.ServiceEndpoint)));
+                ServiceEndpointBytes(service, nameof(DidEthrUpdateOptions.RemoveServices), requireRepresentable: false)));
         foreach (var del in revokeDelegates)
             operations.Add(Erc1056TransactionBuilder.RevokeDelegate(
                 identity, Required(del, nameof(DidEthrUpdateOptions.RevokeDelegates)).DelegateType,
@@ -1068,18 +1073,43 @@ public sealed class DidEthrMethod : DidMethodBase
                 identity, Required(attribute, nameof(DidEthrUpdateOptions.RemoveAttributes)).Name,
                 attribute.Value));
         foreach (var service in addServices)
+        {
+            var name = "did/svc/" + Required(service, nameof(DidEthrUpdateOptions.AddServices)).ServiceType;
+            // ethr-did-resolver only adds did/svc/<\w+> names, typed by that segment, so any other
+            // ServiceType would publish a service nobody resolves (issue #145).
+            if (service.ServiceType is null || EthrServiceEndpoint.ServiceType(name) != service.ServiceType)
+                throw new ArgumentException(
+                    $"{nameof(DidEthrUpdateOptions.AddServices)} contains a ServiceType that is not one " +
+                    "[A-Za-z0-9_]+ segment; ethr-did-resolver would not resolve the service.",
+                    "options");
             operations.Add(Erc1056TransactionBuilder.SetAttribute(
-                identity, "did/svc/" + Required(service, nameof(DidEthrUpdateOptions.AddServices)).ServiceType,
-                Encoding.UTF8.GetBytes(service.ServiceEndpoint),
+                identity, name,
+                ServiceEndpointBytes(service, nameof(DidEthrUpdateOptions.AddServices), requireRepresentable: true),
                 ValiditySeconds(service.Validity)));
+        }
         foreach (var del in addDelegates)
             operations.Add(Erc1056TransactionBuilder.AddDelegate(
                 identity, Required(del, nameof(DidEthrUpdateOptions.AddDelegates)).DelegateType,
                 del.DelegateAddress, ValiditySeconds(del.Validity)));
         foreach (var attribute in addAttributes)
+        {
+            Required(attribute, nameof(DidEthrUpdateOptions.AddAttributes));
+            // The raw path still publishes a service when the name is did/svc/: it must be one the
+            // resolver keeps, like AddServices (issue #145). Revocation stays unrestricted.
+            if (attribute.Name?.StartsWith("did/svc/", StringComparison.Ordinal) == true
+                && attribute.Value is not null
+                && (EthrServiceEndpoint.ServiceType(attribute.Name) is null
+                    || !EthrServiceEndpoint.TryDecode(attribute.Value, out var text)
+                    || !EthrServiceEndpoint.TryParse(text, out _)))
+                throw new ArgumentException(
+                    $"{nameof(DidEthrUpdateOptions.AddAttributes)} contains a did/svc/ attribute that " +
+                    "ethr-did-resolver would not resolve: the name must be did/svc/<[A-Za-z0-9_]+>, and " +
+                    "the value valid UTF-8 holding an RFC 3986 URI or a JSON map or set of them " +
+                    "(W3C DID Core §5.4).",
+                    "options");
             operations.Add(Erc1056TransactionBuilder.SetAttribute(
-                identity, Required(attribute, nameof(DidEthrUpdateOptions.AddAttributes)).Name,
-                attribute.Value, ValiditySeconds(attribute.Validity)));
+                identity, attribute.Name!, attribute.Value!, ValiditySeconds(attribute.Validity)));
+        }
         if (newOwner is not null)
             operations.Add(Erc1056TransactionBuilder.ChangeOwner(identity, newOwner));
 
@@ -1642,6 +1672,31 @@ public sealed class DidEthrMethod : DidMethodBase
     private static T Required<T>(T? element, string collectionName) where T : class
         => element ?? throw new ArgumentException(
             $"{collectionName} contains a null entry.", "options");
+
+    /// <summary>
+    /// <c>Encoding.UTF8</c> silently replaces an unpaired surrogate with EF BF BD, so the registry
+    /// would record (or be asked to revoke) a different endpoint than the caller supplied
+    /// (issue #145). Service types need no check: they are ASCII-only bytes32 labels.
+    /// </summary>
+    private static byte[] ServiceEndpointBytes(
+        DidEthrServiceAttribute service, string collectionName, bool requireRepresentable)
+    {
+        if (service.ServiceEndpoint is null)
+            throw new ArgumentException($"{collectionName} contains a null service endpoint.", "options");
+        if (!Utf16Text.IsWellFormed(service.ServiceEndpoint))
+            throw new ArgumentException(
+                $"{collectionName} contains a service endpoint with an unpaired UTF-16 surrogate, " +
+                "which cannot be encoded as UTF-8 without altering it.",
+                "options");
+        // A new service must be one the resolver keeps: an RFC 3986 URI, or a JSON map or set of
+        // them (W3C DID Core §5.4). Revoking stays possible for any value already on-chain.
+        if (requireRepresentable && !EthrServiceEndpoint.TryParse(service.ServiceEndpoint, out _))
+            throw new ArgumentException(
+                $"{collectionName} contains a service endpoint that is neither an RFC 3986 URI nor a " +
+                "JSON map or set of them (W3C DID Core §5.4); the resolver would drop it.",
+                "options");
+        return Encoding.UTF8.GetBytes(service.ServiceEndpoint);
+    }
 
     private static ulong ValiditySeconds(TimeSpan validity)
     {

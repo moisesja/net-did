@@ -1,5 +1,10 @@
 # Lessons
 
+- When the user directs me to fix my own PR findings, own the implementation and verification
+  through completion instead of creating another reviewer/fixer handoff. Rebaseline first:
+  another session may already have pushed the fixes, in which case verify and finish those
+  changes without duplicating or claiming their implementation. (PR #149, review round 2.)
+
 - Worktree isolation isolates a subagent's WORKING TREE, not the repository. Every worktree shares
   the branches, the stash, and the remote credentials. During the issue #144 adversarial pass, a
   worktree-isolated agent's session pushed the branch tip straight to GitHub `main`
@@ -644,3 +649,113 @@
   `trunc(head) + 1s` against a 2-second budget. A head up to about 1 s ahead therefore SUCCEEDS,
   and a head exactly 5 minutes ahead still gets `ArgumentException`. Headline numbers ("2 s",
   "5 min") are not the predicate. (Issue #131 adversarial review.)
+- "Catch the JSON-access set" applies to the PARSE call too, not only to later element access,
+  whenever duplicate rejection is on. With `AllowDuplicateProperties = false`, `JsonDocument.Parse`
+  decodes every member NAME to compare it, so an unpaired surrogate escape in a name
+  (`"\uD800":1`) throws `InvalidOperationException` from `Parse` itself. A `catch (JsonException)`
+  around the parse let it fall through to `notFound` in did:webvh and leak from the public
+  `DidDocumentSerializer.Deserialize`. In a VALUE the same escape parses fine and fails only on
+  `GetString`, so value-position tests stay green and hide the name-position gap. When adding a
+  duplicate-rejecting parse, test a lone surrogate in a member name at the root AND nested, plus a
+  lone LOW surrogate (`\uDC00`), which goes through a different decode path. Two more gaps the
+  adversarial pass found in the same fix: (1) a VALUE that the typed model never reads (an unknown
+  `publicKeyJwk` member) is decoded lazily, so it first failed during hashing, outside the boundary.
+  Decode every string once at the parse boundary instead of relying on downstream readers. (2)
+  Each input FORM has its own failure: an escaped surrogate gives `InvalidOperationException`, a
+  raw one in a .NET string gives `ArgumentException` (UTF-8 transcoding), and WTF-8 bytes in a span
+  are not checked at all for names that are never decoded. Test all three forms. (Issue #145.)
+- When an adversarial pass finds PRE-EXISTING defects of the same class as the issue (same kind
+  of wrong error or escaped exception, even in another subsystem), the user wants them FIXED in
+  the same issue and PR, not filed as follow-ups. On issue #145 I proposed filing the three
+  out-of-scope findings (did:ethr RPC member access, witness-authoring JCS failure, Core JWK and
+  extension values); the user said "fix them as part of this issue". Default: present those
+  findings with a plan to fix them in-branch (plan approval still applies). Offer separate issues
+  only for a genuinely different defect class. (Issue #145.)
+- The read-side "undecodable text" class has a WRITE-side mirror image. `Utf8JsonWriter`,
+  `JsonSerializer` and `Encoding.UTF8` all replace an unpaired UTF-16 surrogate with U+FFFD and
+  raise no error. Any authoring path that publishes caller text therefore reports success while
+  publishing different bytes; did:peer:4 even hashed the altered bytes into the DID while returning
+  the original document. When hardening a parse boundary against malformed text, also audit every
+  writer that emits caller strings (JSON writers, `Encoding.UTF8.GetBytes`). Check where the string
+  is written, so the check sees exactly what is published (TOCTOU-proof), and pin a
+  surrogate-pair positive control so the check cannot deny valid text. Separately, `JsonObject`
+  builds its member dictionary lazily and `JsonValue` decodes strings lazily, so an RPC client must
+  force both at its boundary or the first indexer leaks a raw exception. (Issue #145 rounds 3-4.)
+- Unrequested pushes of the issue branch recurred on issue #145 (see the #131 entry):
+  `origin/fix/issue-145-surrogate-member-name` got "update by push" entries to my local HEAD at
+  10:07 (during an adversarial-agent run), 10:37 and 10:38. The last two happened with NO agent
+  running, 7 s to 2 min after a CLI commit. So "the review agent pushed" is NOT established. The
+  repo config shows VS Code Git integration (`branch.*.vscode-merge-base`), so editor-side Git
+  sync or a manual Sync are plausible causes. `main` and tags were untouched and nothing was lost.
+  Rules: check `git ls-remote` for every ref before deciding PR timing; report the push to the
+  user with its timestamps; never force-push; and do not attribute the cause without evidence.
+  (Issue #145.)
+- A writer guarantee has to cover OPAQUE values too, not only modeled strings. Round 4 checked
+  every string and dictionary key the serializer wrote, but `JsonElement.WriteTo` emits the
+  caller's element as-is, and `Utf8JsonWriter` turns ill-formed UTF-8 inside it into U+FFFD. A
+  maintainer reproduced it with a byte-parsed WTF-8 element. When claiming "never publishes altered
+  text", list every value KIND the writer emits (strings, keys, `JsonElement`s, `ToString()` of
+  arbitrary objects) and test each with byte-level hostile input. Separately, a shape rule added
+  only to the READER (no nested `serviceEndpoint` sets) creates "Create succeeds, Resolve fails".
+  Put the rule in the model's factory so producers cannot build what readers reject, and make
+  the factory snapshot its input so the validated value cannot change. (PR #149 review round 1.)
+- A validation walk over CALLER-controlled structure must not recurse per nesting level. The
+  writer-side `RequireDecodable` was recursive, so a deeply nested caller `JsonElement`
+  (`JsonDocumentOptions.MaxDepth` lets a caller build any depth) turned a catchable writer-depth
+  `JsonException` into an uncatchable stack overflow that aborted the process. Reader-side inputs
+  were safe only because of the default MaxDepth of 64. Use an explicit stack. Test on a thread with
+  a fixed small `maxStackSize`, and prove the pre-fix crash in an isolated process (exit 134). Also,
+  "copy once" is not a snapshot if the copy is exposed: `ToArray()` stored as an
+  `IReadOnlyList<T>` can be cast back to `T[]` and written, and `ToArray()` hands a hostile
+  `ICollection<T>.CopyTo` the destination array. Fill your own list by enumeration and expose
+  `AsReadOnly()`. (PR #149 final pass on review round 1.)
+- Never reach for `git stash` to set up a fail-first proof, even for one file. On issue #145 I ran
+  `git stash push <file>` by reflex and moved my uncommitted fix out of the working tree; it was
+  caught and popped at once. The sanctioned sequence is: commit the fix, mutate the committed file
+  (sed or python), run, restore with `git checkout <file>`, and confirm `git diff --stat` is empty.
+  (Issue #145, final-pass F5.)
+- FIX every defect you find; never park it as "noted", "out of scope", "pre-existing", or "a
+  follow-up issue". On issue #145 / PR #149 I kept moving findings into separate issues or
+  "reported, not fixed" notes: first the three follow-ups, then invisible format characters in
+  DID URLs and duplicate service ids. The user had already said to fix same-class findings in the
+  issue, then said to fix the follow-ups here, and finally: "fix any issues you encounter rather
+  than just filing them for later. don't be an idiot". The rule: every confirmed defect found
+  while working on a branch is fixed on that branch, whatever its class or age, with fail-first
+  tests and the usual gates. A finding is deferred only if the user explicitly says so.
+  (PR #149, 2026-10-28.)
+- When a fix adds producer-side validation, tests that used the producer to PLANT hostile input
+  start failing for the wrong reason. On issue #145 the did:ethr Update guard (refuse `did/svc/`
+  values the resolver would drop) broke `BrickProbeTests`, which wrote junk endpoints through
+  `UpdateAsync` to prove resolution survives them. Do not weaken the guard or the probe. Plant the
+  input through the raw wire path another tool could use (a signed `setAttribute` sent to the
+  emulator), so the probe still tests what is on-chain, not what NetDid allows itself to write.
+  (Issue #145, final pass.)
+- An ORDERING claim ("fails before any signature is produced") needs a test that observes the
+  order, not just the exception type. The did:webvh did.json collision test asserted
+  `ArgumentException`, which the pre-fix code also threw, after signing. Wrap the signer in a
+  call-counting `ISigner` and assert zero calls; prove it red by reverting only the reordered file.
+  (Issue #145, final pass.)
+- Never normalize an id by PREFIXING the DID (`did + "#" + fragment`) inside a loop. A did:peer
+  DID embeds its whole document, so the DID length grows with the attacker's input, and any
+  per-element O(DID length) work is quadratic: on issue #145 duplicate detection allocated 7 GB
+  for one 446 KB did:peer:2. Compare in the relative form ("#x"), check ownership with an
+  ordinal `StartsWith(did)` bounded by the id's own length, build any comparison target once,
+  and pin it with a `GC.GetAllocatedBytesForCurrentThread()` bound on a long-DID document.
+  (Issue #145, adversarial pass on the final pass.)
+- Before NARROWING a grammar to "what the spec allows", read every section the governing rule
+  points to, in full. On PR #149 I enforced "VM ids are DID URLs (§5.2)" using only absolute DID
+  URLs and `#fragment`, but §5.2 points to all of §3.2, and §3.2.2 says relative DID URLs "MAY
+  contain relative path components, query parameters, and fragment identifiers", resolved by
+  RFC 3986 §5 against the DID. The reviewer caught the interoperability regression (`/keys/1`,
+  `keys/1#k`, `?versionId=1#key-1` rejected). A stricter check is a breaking change for every
+  conforming document it rejects: list the spec's positive forms as control tests first.
+  (PR #149 review round 2.)
+- When an operation ENCODES caller input and also RETURNS a document, return the decoded
+  encoding, not a second build from the caller's objects. did:peer:2 Create encoded `Services`
+  by enumeration and built its document by indexer, so a list whose two reads differ minted a
+  DID that resolves to `invalidDid` while Create reported a valid document; did:peer:4 Create
+  re-read `InputDocument` the same way. Returning `Resolve(encodedDid)` makes encoding,
+  validation and the result one representation by construction. (PR #149 review round 2.)
+- `git diff --check` only sees uncommitted changes. Before a PR, also run
+  `git diff origin/main...HEAD --check`; two blank lines at EOF reached the reviewer because the
+  gate ran only the working-tree check. (PR #149 review round 2; now in `net-did-verify`.)

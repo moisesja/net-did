@@ -38,6 +38,8 @@ public static class Erc1056EventParser
         if (topic0 == Erc1056Topics.DIDDelegateChanged)
         {
             var (delegateType, del, validTo, prev) = AbiDecoder.DecodeDelegateChangedData(data);
+            if (delegateType is null)
+                return new FilteredEvent(identity, prev, blockNumber);
             return new DelegateChangedEvent(
                 Identity: identity,
                 DelegateType: delegateType,
@@ -50,6 +52,8 @@ public static class Erc1056EventParser
         if (topic0 == Erc1056Topics.DIDAttributeChanged)
         {
             var (name, value, validTo, prev) = AbiDecoder.DecodeAttributeChangedData(data);
+            if (name is null)
+                return new FilteredEvent(identity, prev, blockNumber);
             return new AttributeChangedEvent(
                 Identity: identity,
                 Name: name,

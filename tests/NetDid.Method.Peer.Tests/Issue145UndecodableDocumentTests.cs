@@ -1,0 +1,902 @@
+using System.Security.Cryptography;
+using System.Text;
+using System.Text.Json;
+using AwesomeAssertions;
+using NetCid;
+using NetCrypto;
+using NetDid.Core.Model;
+using NetDid.Core.Resolution;
+using NetDid.Core.Serialization;
+using NetDid.Method.Peer;
+
+namespace NetDid.Method.Peer.Tests;
+
+/// <summary>
+/// Issue #145 (adversarial review): a did:peer:4 long form whose encoded document carries a lone
+/// UTF-16 surrogate in an extension value used to resolve, returning a document that could not
+/// be serialized. Core consumption now decodes every string once, so such a document fails closed.
+/// </summary>
+public class Issue145UndecodableDocumentTests
+{
+    private readonly DidPeerMethod _method = new(new DefaultKeyGenerator());
+
+    // Encodes an input document exactly as did:peer:4 Create does (JSON multicodec 0x0200,
+    // base58btc long form, SHA-256 multihash of the long-form string), from raw JSON, so the
+    // test can carry content the serializer would never emit.
+    private static string EncodePeer4(string inputDocumentJson)
+        => EncodePeer4(Encoding.UTF8.GetBytes(inputDocumentJson));
+
+    private static string EncodePeer4(byte[] inputDocumentUtf8)
+    {
+        var longForm = Multibase.Encode(
+            Multicodec.Prefix(0x0200, inputDocumentUtf8),
+            MultibaseEncoding.Base58Btc);
+        var shortForm = Multibase.Encode(
+            Multihash.Encode(0x12, SHA256.HashData(Encoding.UTF8.GetBytes(longForm))),
+            MultibaseEncoding.Base58Btc);
+        return $"did:peer:4{shortForm}:{longForm}";
+    }
+
+    [Fact]
+    public async Task Issue145_Control_HandEncodedDocument_Resolves()
+    {
+        var resolved = await _method.ResolveAsync(EncodePeer4("""{"x-ext":"😀"}"""));
+
+        resolved.DidDocument.Should().NotBeNull("the hand encoding must match Create's");
+    }
+
+    [Theory]
+    [InlineData("""{"x-ext":"\uD800"}""")]
+    [InlineData("""{"service":[{"id":"#s","type":"X","serviceEndpoint":{"uri":"\uDC00"}}]}""")]
+    public async Task Issue145_LoneSurrogateExtensionValue_FailsClosed(string inputDocumentJson)
+    {
+        var resolved = await _method.ResolveAsync(EncodePeer4(inputDocumentJson));
+
+        resolved.DidDocument.Should().BeNull(
+            "a document that cannot be serialized must not be returned as a resolution result");
+        resolved.ResolutionMetadata.Error.Should().Be("notFound");
+    }
+
+    [Theory]
+    [InlineData("""{"verificationMethod":[{"id":"#k","type":null,"publicKeyMultibase":"z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK"}]}""")]
+    [InlineData("""{"verificationMethod":[null]}""")]
+    public async Task Issue145_MalformedDocumentShape_FailsClosed(string inputDocumentJson)
+    {
+        // Round-3 adversarial review: these resolved to documents that crash Serialize.
+        var resolved = await _method.ResolveAsync(EncodePeer4(inputDocumentJson));
+
+        resolved.DidDocument.Should().BeNull();
+    }
+
+    // ── Writer side (round 4): Create used to publish U+FFFD in place of the caller's text ──
+
+    private static Service ServiceWithType(string type) => new()
+    {
+        Id = "#svc",
+        Type = type,
+        ServiceEndpoint = ServiceEndpointValue.FromUri("https://example.com/didcomm")
+    };
+
+    [Fact]
+    public async Task Issue145_Numalgo2Create_ServiceWithUnpairedSurrogate_ThrowsArgumentException()
+    {
+        var act = () => _method.CreateAsync(new DidPeerCreateOptions
+        {
+            Numalgo = PeerNumalgo.Two,
+            Keys =
+            [
+                new PeerKeyPurpose(
+                    new KeyPairSigner(new DefaultKeyGenerator().Generate(KeyType.Ed25519),
+                        new DefaultCryptoProvider()),
+                    PeerPurpose.Authentication)
+            ],
+            Services = [ServiceWithType("DIDComm\uD800Messaging")]
+        });
+
+        await act.Should().ThrowAsync<ArgumentException>();
+    }
+
+    [Fact]
+    public async Task Issue145_Numalgo4Create_ServiceWithUnpairedSurrogate_ThrowsArgumentException()
+    {
+        // Before the fix the DID hashed the U+FFFD-altered bytes while the returned document
+        // kept the original text, so the two disagreed.
+        var act = () => _method.CreateAsync(new DidPeerCreateOptions
+        {
+            Numalgo = PeerNumalgo.Four,
+            InputDocument = new DidDocument { Service = [ServiceWithType("Example\uDC00")] }
+        });
+
+        await act.Should().ThrowAsync<ArgumentException>();
+    }
+
+    [Fact]
+    public async Task Issue145_Control_Numalgo2Create_SurrogatePairServiceType_RoundTrips()
+    {
+        var created = await _method.CreateAsync(new DidPeerCreateOptions
+        {
+            Numalgo = PeerNumalgo.Two,
+            Keys =
+            [
+                new PeerKeyPurpose(
+                    new KeyPairSigner(new DefaultKeyGenerator().Generate(KeyType.Ed25519),
+                        new DefaultCryptoProvider()),
+                    PeerPurpose.Authentication)
+            ],
+            Services = [ServiceWithType("Example😀")]
+        });
+
+        var resolved = await _method.ResolveAsync(created.Did.Value);
+
+        resolved.DidDocument!.Service![0].Type.Should().Be("Example😀");
+    }
+
+    // ── PR #149 review round 1 + final adversarial pass ──────────────────────────────
+
+    private static PeerKeyPurpose AuthenticationKey() => new(
+        new KeyPairSigner(new DefaultKeyGenerator().Generate(KeyType.Ed25519), new DefaultCryptoProvider()),
+        PeerPurpose.Authentication);
+
+    private static ServiceEndpointValue FlatMixedSet() => ServiceEndpointValue.FromSet(
+    [
+        ServiceEndpointValue.FromUri("https://a.example"),
+        ServiceEndpointValue.FromMap(new Dictionary<string, JsonElement>
+        {
+            ["uri"] = JsonSerializer.SerializeToElement("https://b.example")
+        })
+    ]);
+
+    [Fact]
+    public async Task Issue145_Numalgo4Create_NestedEndpointSet_CannotBeBuilt()
+    {
+        // Reviewer reproduction: Create succeeded with this shape and the returned DID then resolved
+        // as notFound. The shape is now unrepresentable, so Create can never be handed it.
+        var act = () => _method.CreateAsync(new DidPeerCreateOptions
+        {
+            Numalgo = PeerNumalgo.Four,
+            InputDocument = new DidDocument
+            {
+                Service =
+                [
+                    new Service
+                    {
+                        Id = "#svc",
+                        Type = "Example",
+                        ServiceEndpoint = ServiceEndpointValue.FromSet(
+                            [ServiceEndpointValue.FromSet([ServiceEndpointValue.FromUri("https://example.com")])])
+                    }
+                ]
+            }
+        });
+
+        await act.Should().ThrowAsync<ArgumentException>();
+    }
+
+    [Fact]
+    public async Task Issue145_Control_Numalgo4CreateResolve_FlatMixedSet_RoundTrips()
+    {
+        var created = await _method.CreateAsync(new DidPeerCreateOptions
+        {
+            Numalgo = PeerNumalgo.Four,
+            InputDocument = new DidDocument
+            {
+                Service = [new Service { Id = "#svc", Type = "Example", ServiceEndpoint = FlatMixedSet() }]
+            }
+        });
+
+        var resolved = await _method.ResolveAsync(created.Did.Value);
+
+        resolved.ResolutionMetadata.Error.Should().BeNull();
+        var endpoint = resolved.DidDocument!.Service![0].ServiceEndpoint;
+        endpoint.Set.Should().HaveCount(2);
+        endpoint.Set![0].Uri.Should().Be("https://a.example");
+        endpoint.Set[1].IsMap.Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task Issue145_Control_Numalgo2CreateResolve_FlatMixedSet_RoundTrips()
+    {
+        var created = await _method.CreateAsync(new DidPeerCreateOptions
+        {
+            Numalgo = PeerNumalgo.Two,
+            Keys = [AuthenticationKey()],
+            Services = [new Service { Id = "#svc", Type = "Example", ServiceEndpoint = FlatMixedSet() }]
+        });
+
+        var resolved = await _method.ResolveAsync(created.Did.Value);
+
+        var endpoint = resolved.DidDocument!.Service![0].ServiceEndpoint;
+        endpoint.Set.Should().HaveCount(2);
+        endpoint.Set![1].IsMap.Should().BeTrue();
+    }
+
+    private static JsonElement Wtf8String()
+    {
+        byte[] utf8 = [.. "\"a"u8.ToArray(), 0xED, 0xA0, 0x80, .. "b\""u8.ToArray()];
+        using var document = JsonDocument.Parse(utf8);
+        return document.RootElement.Clone();
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task Issue145_Numalgo2Create_UndecodableJsonElement_ThrowsArgumentException(bool inExtension)
+    {
+        // JsonSerializer replaced the ill-formed bytes with U+FFFD inside the DID.
+        var service = new Service
+        {
+            Id = "#svc",
+            Type = "Example",
+            ServiceEndpoint = inExtension
+                ? ServiceEndpointValue.FromUri("https://example.com")
+                : ServiceEndpointValue.FromMap(new Dictionary<string, JsonElement> { ["uri"] = Wtf8String() }),
+            AdditionalProperties = inExtension
+                ? new Dictionary<string, JsonElement> { ["accept"] = Wtf8String() }
+                : null
+        };
+
+        var act = () => _method.CreateAsync(new DidPeerCreateOptions
+        {
+            Numalgo = PeerNumalgo.Two,
+            Keys = [AuthenticationKey()],
+            Services = [service]
+        });
+
+        await act.Should().ThrowAsync<ArgumentException>();
+    }
+
+    [Theory]
+    [InlineData("serviceEndpoint")]
+    [InlineData("s")]
+    [InlineData("type")]
+    [InlineData("t")]
+    [InlineData("id")]
+    [InlineData("a")]
+    public async Task Issue145_Numalgo2Create_ExtensionKeyCollision_ThrowsArgumentException(string key)
+    {
+        // A colliding key overwrote the encoded member, so the DID encoded a different service than
+        // the DidDocument Create returned. "a" collides with the abbreviated "accept" added first.
+        var service = new Service
+        {
+            Id = "#svc",
+            Type = "Example",
+            ServiceEndpoint = ServiceEndpointValue.FromUri("https://good.example"),
+            AdditionalProperties = new Dictionary<string, JsonElement>
+            {
+                ["accept"] = JsonSerializer.SerializeToElement(new[] { "didcomm/v2" }),
+                [key] = JsonSerializer.SerializeToElement("https://evil.example")
+            }
+        };
+
+        var act = () => _method.CreateAsync(new DidPeerCreateOptions
+        {
+            Numalgo = PeerNumalgo.Two,
+            Keys = [AuthenticationKey()],
+            Services = [service]
+        });
+
+        await act.Should().ThrowAsync<ArgumentException>();
+    }
+
+    [Fact]
+    public async Task Issue145_Control_Numalgo2Create_ExtensionKeys_RoundTrip()
+    {
+        var created = await _method.CreateAsync(new DidPeerCreateOptions
+        {
+            Numalgo = PeerNumalgo.Two,
+            Keys = [AuthenticationKey()],
+            Services =
+            [
+                new Service
+                {
+                    Id = "#svc",
+                    Type = "DIDCommMessaging",
+                    ServiceEndpoint = ServiceEndpointValue.FromUri("https://good.example"),
+                    AdditionalProperties = new Dictionary<string, JsonElement>
+                    {
+                        ["accept"] = JsonSerializer.SerializeToElement(new[] { "didcomm/v2" }),
+                        ["routingKeys"] = JsonSerializer.SerializeToElement(Array.Empty<string>())
+                    }
+                }
+            ]
+        });
+
+        var service = (await _method.ResolveAsync(created.Did.Value)).DidDocument!.Service![0];
+
+        service.ServiceEndpoint.Uri.Should().Be("https://good.example");
+        service.AdditionalProperties.Should().ContainKeys("accept", "routingKeys");
+    }
+
+    // ── Resolution decodes the embedded JSON as strict UTF-8 (was lossy) ──
+
+    [Fact]
+    public async Task Issue145_Numalgo4Resolve_IllFormedUtf8_FailsClosed()
+    {
+        byte[] document = [.. """{"alsoKnownAs":["https://a.example/"""u8.ToArray(), 0xED, 0xA0, 0x80, .. "\"]}"u8.ToArray()];
+
+        var resolved = await _method.ResolveAsync(EncodePeer4(document));
+
+        resolved.DidDocument.Should().BeNull("ill-formed UTF-8 must not resolve as U+FFFD");
+    }
+
+    [Fact]
+    public async Task Issue145_Numalgo2Resolve_IllFormedUtf8ServiceBlock_FailsClosed()
+    {
+        var created = await _method.CreateAsync(new DidPeerCreateOptions
+        {
+            Numalgo = PeerNumalgo.Two,
+            Keys = [AuthenticationKey()]
+        });
+        byte[] block = [.. """{"t":"dm","s":"https://a.example/"""u8.ToArray(), 0xED, 0xA0, 0x80, .. "\"}"u8.ToArray()];
+        var segment = Convert.ToBase64String(block).TrimEnd('=').Replace('+', '-').Replace('/', '_');
+
+        var resolved = await _method.ResolveAsync(created.Did.Value + ".S" + segment);
+
+        resolved.DidDocument.Should().BeNull("ill-formed UTF-8 must not resolve as U+FFFD");
+    }
+
+    [Fact]
+    public async Task Issue145_Numalgo2Create_DefaultJsonElement_ThrowsArgumentException()
+    {
+        // Final adversarial pass: default(JsonElement) escaped as a raw InvalidOperationException.
+        var act = () => _method.CreateAsync(new DidPeerCreateOptions
+        {
+            Numalgo = PeerNumalgo.Two,
+            Keys = [AuthenticationKey()],
+            Services =
+            [
+                new Service
+                {
+                    Id = "#svc",
+                    Type = "Example",
+                    ServiceEndpoint = ServiceEndpointValue.FromUri("https://example.com"),
+                    AdditionalProperties = new Dictionary<string, JsonElement> { ["accept"] = default }
+                }
+            ]
+        });
+
+        await act.Should().ThrowAsync<ArgumentException>();
+    }
+
+    // ── F4: the did:peer:2 service decoder now applies the consumption rules (final pass) ──
+
+    private async Task<string> Peer2WithServiceBlock(string serviceJson)
+    {
+        var created = await _method.CreateAsync(new DidPeerCreateOptions
+        {
+            Numalgo = PeerNumalgo.Two,
+            Keys = [AuthenticationKey()]
+        });
+        var segment = Convert.ToBase64String(Encoding.UTF8.GetBytes(serviceJson))
+            .TrimEnd('=').Replace('+', '-').Replace('/', '_');
+        return created.Did.Value + ".S" + segment;
+    }
+
+    [Theory]
+    [InlineData("""{"t":"dm","s":"https://a.example","a":["\ud800"]}""")]
+    [InlineData("""{"t":"dm","s":{"uri":"\udc00"}}""")]
+    [InlineData("""{"t":"dm","s":"https://a.example","serviceEndpoint":"https://evil.example"}""")]
+    [InlineData("""{"t":"dm","s":"https://a.example","type":"Other"}""")]
+    [InlineData("""{"t":"dm","s":"https://a.example","r":[],"routingKeys":[]}""")]
+    [InlineData("""{"t":"dm","s":"https://first.example","s":"https://second.example"}""")]
+    [InlineData("""{"t":"dm","s":"https://a.example","id":null}""")]
+    [InlineData("""{"t":"dm","s":"https://a.example","id":5}""")]
+    [InlineData("""{"t":null,"s":"https://a.example"}""")]
+    public async Task Issue145_Numalgo2Resolve_MalformedServiceBlock_FailsClosed(string serviceJson)
+    {
+        var resolved = await _method.ResolveAsync(await Peer2WithServiceBlock(serviceJson));
+
+        resolved.DidDocument.Should().BeNull();
+        resolved.ResolutionMetadata.Error.Should().Be("invalidDid");
+    }
+
+    [Fact]
+    public async Task Issue145_Control_Numalgo2Resolve_WellFormedServiceBlock_RoundTrips()
+    {
+        var resolved = await _method.ResolveAsync(await Peer2WithServiceBlock(
+            """{"id":"#svc","t":"dm","s":"https://a.example","a":["didcomm/v2"],"r":[]}"""));
+
+        var service = resolved.DidDocument!.Service![0];
+        service.Id.Should().Be("#svc");
+        service.Type.Should().Be("DIDCommMessaging");
+        service.AdditionalProperties.Should().ContainKeys("accept", "routingKeys");
+        var serialize = () => DidDocumentSerializer.Serialize(resolved.DidDocument);
+        serialize.Should().NotThrow();
+    }
+
+    // ── F5: null required members (did:peer:4 Create published "type": null or threw an NRE) ──
+
+    [Theory]
+    [InlineData("id")]
+    [InlineData("type")]
+    public async Task Issue145_Numalgo4Create_ServiceWithNullRequiredMember_ThrowsArgumentException(string member)
+    {
+        var act = () => _method.CreateAsync(new DidPeerCreateOptions
+        {
+            Numalgo = PeerNumalgo.Four,
+            InputDocument = new DidDocument
+            {
+                Service =
+                [
+                    new Service
+                    {
+                        Id = member == "id" ? null! : "#svc",
+                        Type = member == "type" ? null! : "Example",
+                        ServiceEndpoint = ServiceEndpointValue.FromUri("https://example.com")
+                    }
+                ]
+            }
+        });
+
+        await act.Should().ThrowAsync<ArgumentException>();
+    }
+
+    // ── Final pass before push ──────────────────────────────────────────────────────
+
+    // F4: a block was parsed with MaxDepth 64 on its own, but it sits deeper inside the document,
+    // so a deep-enough block resolved to a document Serialize could not write.
+    [Theory]
+    [InlineData("extension")]
+    [InlineData("map-in-set")]
+    public async Task Issue145_Numalgo2Resolve_DeepBlock_EitherFailsClosedOrSerializes(string placement)
+    {
+        for (var depth = 55; depth <= 66; depth++)
+        {
+            var nested = new string('[', depth) + new string(']', depth);
+            var block = placement == "extension"
+                ? $$"""{"t":"dm","s":"https://a.example","x":{{nested}}}"""
+                : $$"""{"t":"dm","s":[{"uri":{{nested}}}]}""";
+
+            var resolved = await _method.ResolveAsync(await Peer2WithServiceBlock(block));
+
+            if (resolved.DidDocument is { } document)
+            {
+                var serialize = () => DidDocumentSerializer.Serialize(document);
+                serialize.Should().NotThrow($"a resolved document at nesting {depth} must serialize again");
+            }
+        }
+    }
+
+    // F5: a null serviceEndpoint or type crashed did:peer:2 Create (NRE/ANE) and let did:peer:4
+    // Create return a DID that then resolved as notFound.
+    [Theory]
+    [InlineData(PeerNumalgo.Two, "endpoint")]
+    [InlineData(PeerNumalgo.Two, "type")]
+    [InlineData(PeerNumalgo.Four, "endpoint")]
+    public async Task Issue145_Create_ServiceWithNullMember_ThrowsArgumentException(PeerNumalgo numalgo, string member)
+    {
+        var service = new Service
+        {
+            Id = "#svc",
+            Type = member == "type" ? null! : "Example",
+            ServiceEndpoint = member == "endpoint" ? null! : ServiceEndpointValue.FromUri("https://example.com")
+        };
+
+        var act = () => _method.CreateAsync(numalgo == PeerNumalgo.Two
+            ? new DidPeerCreateOptions { Numalgo = PeerNumalgo.Two, Keys = [AuthenticationKey()], Services = [service] }
+            : new DidPeerCreateOptions { Numalgo = PeerNumalgo.Four, InputDocument = new DidDocument { Service = [service] } });
+
+        (await act.Should().ThrowAsync<ArgumentException>())
+            .Which.Should().NotBeOfType<ArgumentNullException>();
+    }
+
+    // ── Duplicate service ids (DID Core §5.4: producers MUST NOT, consumers MUST error) ──
+
+    private async Task<string> Peer2WithServiceBlocks(params string[] serviceJsons)
+    {
+        var created = await _method.CreateAsync(new DidPeerCreateOptions
+        {
+            Numalgo = PeerNumalgo.Two,
+            Keys = [AuthenticationKey()]
+        });
+        var did = created.Did.Value;
+        foreach (var json in serviceJsons)
+            did += ".S" + Convert.ToBase64String(Encoding.UTF8.GetBytes(json))
+                .TrimEnd('=').Replace('+', '-').Replace('/', '_');
+        return did;
+    }
+
+    [Theory]
+    [InlineData("""{"t":"dm","s":"https://a.example"}""", """{"id":"#service","t":"dm","s":"https://b.example"}""")]
+    [InlineData("""{"id":"#x","t":"dm","s":"https://a.example"}""", """{"id":"#x","t":"dm","s":"https://b.example"}""")]
+    public async Task Issue145_Numalgo2Resolve_DuplicateServiceIds_FailsClosed(string first, string second)
+    {
+        var resolved = await _method.ResolveAsync(await Peer2WithServiceBlocks(first, second));
+
+        resolved.DidDocument.Should().BeNull();
+        resolved.ResolutionMetadata.Error.Should().Be("invalidDid");
+    }
+
+    // An explicit "#service" beside a service without id (generated "#service"), two equal ids,
+    // and the bare shorthand beside its "#" form. (Explicit relative ids are kept as written
+    // since review round 2, so "svc" no longer turns into a generated "#service".)
+    [Theory]
+    [InlineData("#service", "")]
+    [InlineData("#x", "#x")]
+    [InlineData("svc", "#svc")]
+    public async Task Issue145_Numalgo2Create_DuplicateServiceIds_ThrowsArgumentException(string firstId, string secondId)
+    {
+        var act = () => _method.CreateAsync(new DidPeerCreateOptions
+        {
+            Numalgo = PeerNumalgo.Two,
+            Keys = [AuthenticationKey()],
+            Services =
+            [
+                new Service { Id = firstId, Type = "A", ServiceEndpoint = ServiceEndpointValue.FromUri("https://a.example") },
+                new Service { Id = secondId, Type = "B", ServiceEndpoint = ServiceEndpointValue.FromUri("https://b.example") }
+            ]
+        });
+
+        await act.Should().ThrowAsync<ArgumentException>();
+    }
+
+    // ── Final pass on the id/URI round ──────────────────────────────────────────────
+
+    // F1: "service" (bare) and the auto-generated "#service" name the same service.
+    [Fact]
+    public async Task Issue145_Numalgo2Resolve_BareAndAutoServiceIdCollide_FailsClosed()
+    {
+        var resolved = await _method.ResolveAsync(await Peer2WithServiceBlocks(
+            """{"id":"service","t":"dm","s":"https://evil.example"}""",
+            """{"t":"dm","s":"https://good.example"}"""));
+
+        resolved.DidDocument.Should().BeNull();
+        resolved.ResolutionMetadata.Error.Should().Be("invalidDid");
+    }
+
+    // F2: did:peer:2 Create and Resolve did not apply the DID Core id/URI rules, so NetDid could
+    // mint (or resolve) a DID whose document it cannot serialize.
+    [Theory]
+    [InlineData("#a b", "https://a.example")]
+    [InlineData("#svc", "not a uri")]
+    public async Task Issue145_Numalgo2Create_InvalidServiceIdOrEndpoint_ThrowsArgumentException(string id, string endpoint)
+    {
+        var act = () => _method.CreateAsync(new DidPeerCreateOptions
+        {
+            Numalgo = PeerNumalgo.Two,
+            Keys = [AuthenticationKey()],
+            Services = [new Service { Id = id, Type = "A", ServiceEndpoint = ServiceEndpointValue.FromUri(endpoint) }]
+        });
+
+        await act.Should().ThrowAsync<ArgumentException>();
+    }
+
+    [Theory]
+    [InlineData("""{"t":"dm","s":"not a uri"}""")]
+    [InlineData("""{"id":"","t":"dm","s":"https://a.example"}""")]
+    public async Task Issue145_Numalgo2Resolve_InvalidServiceIdOrEndpoint_FailsClosed(string block)
+    {
+        var resolved = await _method.ResolveAsync(await Peer2WithServiceBlocks(block));
+
+        resolved.DidDocument.Should().BeNull();
+        resolved.ResolutionMetadata.Error.Should().Be("invalidDid");
+    }
+
+    // Adversarial pass on the final pass (F4): a template that names a placeholder DID had its
+    // references rewritten to the did:peer:4 DID but not its ids, so DID-scoped dereferencing
+    // no longer found the key its own authentication entry points to. The rewrite must also
+    // stop at a DID boundary: "did:example:abcd" is another DID, not "did:example:abc" + "d".
+    [Fact]
+    public async Task Issue145_Numalgo4_PlaceholderDidIdsAreRewrittenLikeReferences()
+    {
+        var key = new DefaultKeyGenerator().Generate(KeyType.Ed25519);
+        var created = await _method.CreateAsync(new DidPeerCreateOptions
+        {
+            Numalgo = PeerNumalgo.Four,
+            InputDocument = new DidDocument
+            {
+                Id = new Did("did:example:abc"),
+                VerificationMethod =
+                [
+                    new VerificationMethod
+                    {
+                        Id = "did:example:abc#key-1", Type = "Multikey", PublicKeyMultibase = key.MultibasePublicKey
+                    }
+                ],
+                Authentication =
+                [
+                    VerificationRelationshipEntry.FromReference("did:example:abc#key-1"),
+                    VerificationRelationshipEntry.FromReference("did:example:abcd#key-1")
+                ],
+                Service =
+                [
+                    new Service
+                    {
+                        Id = "did:example:abc#svc", Type = "T", ServiceEndpoint = ServiceEndpointValue.FromUri("https://a.example")
+                    }
+                ]
+            }
+        });
+        var did = created.Did.Value;
+
+        var resolved = (await _method.ResolveAsync(did)).DidDocument!;
+        var key1 = await new DefaultDidUrlDereferencer(_method).DereferenceAsync(did + "#key-1");
+
+        resolved.VerificationMethod!.Single().Id.Should().Be(did + "#key-1");
+        resolved.Service!.Single().Id.Should().Be(did + "#svc");
+        resolved.Authentication!.Select(a => a.Reference)
+            .Should().Equal(did + "#key-1", "did:example:abcd#key-1");
+        key1.ContentStream.Should().BeOfType<VerificationMethod>();
+    }
+
+    // ── Review round 2: one representation for encoding, validation and the returned document ──
+
+    // A caller IReadOnlyList<T> whose indexer and enumerator disagree; nothing forbids it.
+    private sealed class SplitList<T>(T indexed, T enumerated) : IReadOnlyList<T>
+    {
+        public int Count => 1;
+        public T this[int index] => index == 0 ? indexed : throw new ArgumentOutOfRangeException(nameof(index));
+        public IEnumerator<T> GetEnumerator() { yield return enumerated; }
+        System.Collections.IEnumerator System.Collections.IEnumerable.GetEnumerator() => GetEnumerator();
+    }
+
+    // A caller IReadOnlyList<T> that yields `first` on its first enumeration and `later` after.
+    private sealed class ShiftingList<T>(T first, T later) : IReadOnlyList<T>
+    {
+        private int _enumerations;
+        public int Count => 1;
+        public T this[int index] => index == 0 ? later : throw new ArgumentOutOfRangeException(nameof(index));
+        public IEnumerator<T> GetEnumerator() { yield return _enumerations++ == 0 ? first : later; }
+        System.Collections.IEnumerator System.Collections.IEnumerable.GetEnumerator() => GetEnumerator();
+    }
+
+    private static Service DmService(string endpoint) => new()
+    {
+        Id = "#svc", Type = "DIDCommMessaging", ServiceEndpoint = ServiceEndpointValue.FromUri(endpoint)
+    };
+
+    // The reviewer's repro: Create encoded the services by enumeration, then built and validated
+    // its document through the indexer. It reported the valid endpoint and minted a DID that
+    // resolves to invalidDid.
+    [Fact]
+    public async Task Issue145_Numalgo2Create_ServicesReadTwoWays_ValidatesWhatItEncodes()
+    {
+        var act = () => _method.CreateAsync(new DidPeerCreateOptions
+        {
+            Numalgo = PeerNumalgo.Two,
+            Keys = [AuthenticationKey()],
+            Services = new SplitList<Service>(indexed: DmService("https://example.com"), enumerated: DmService("not a URI"))
+        });
+
+        await act.Should().ThrowAsync<ArgumentException>();
+    }
+
+    [Fact]
+    public async Task Issue145_Numalgo2Create_KeysReadTwice_ReturnsTheDocumentItsDidEncodes()
+    {
+        var created = await _method.CreateAsync(new DidPeerCreateOptions
+        {
+            Numalgo = PeerNumalgo.Two,
+            Keys = new ShiftingList<PeerKeyPurpose>(AuthenticationKey(), AuthenticationKey())
+        });
+        var resolved = await _method.ResolveAsync(created.Did.Value);
+
+        DidDocumentSerializer.Serialize(created.DidDocument)
+            .Should().Be(DidDocumentSerializer.Serialize(resolved.DidDocument!));
+    }
+
+    // Positive control: ordinary lists, every service shape, Create's document is the resolved one.
+    [Fact]
+    public async Task Issue145_Numalgo2Create_NormalLists_ReturnsTheDocumentItsDidEncodes()
+    {
+        var created = await _method.CreateAsync(new DidPeerCreateOptions
+        {
+            Numalgo = PeerNumalgo.Two,
+            Keys = [AuthenticationKey(), new PeerKeyPurpose(AuthenticationKey().Key, PeerPurpose.Assertion)],
+            Services =
+            [
+                DmService("https://example.com"),
+                new Service { Id = "#set", Type = "Example", ServiceEndpoint = FlatMixedSet() },
+                new Service
+                {
+                    Id = "#map",
+                    Type = "DIDCommMessaging",
+                    ServiceEndpoint = ServiceEndpointValue.FromMap(new Dictionary<string, JsonElement>
+                    {
+                        ["uri"] = JsonSerializer.SerializeToElement("https://m.example"),
+                        ["routingKeys"] = JsonSerializer.SerializeToElement(new[] { "did:example:r#k" }),
+                        ["accept"] = JsonSerializer.SerializeToElement(new[] { "didcomm/v2" })
+                    })
+                }
+            ]
+        });
+        var resolved = await _method.ResolveAsync(created.Did.Value);
+
+        resolved.ResolutionMetadata.Error.Should().BeNull();
+        DidDocumentSerializer.Serialize(created.DidDocument)
+            .Should().Be(DidDocumentSerializer.Serialize(resolved.DidDocument!));
+    }
+
+    // Same class in did:peer:4: Create hashed the serialized InputDocument, then rebuilt the
+    // returned document from the caller's lists, which may differ on a second read.
+    [Fact]
+    public async Task Issue145_Numalgo4Create_InputListsReadTwice_ReturnsTheDocumentItsDidEncodes()
+    {
+        VerificationMethod Vm() => new()
+        {
+            Id = "#key-1", Type = "Multikey",
+            PublicKeyMultibase = new DefaultKeyGenerator().Generate(KeyType.Ed25519).MultibasePublicKey
+        };
+        var created = await _method.CreateAsync(new DidPeerCreateOptions
+        {
+            Numalgo = PeerNumalgo.Four,
+            InputDocument = new DidDocument
+            {
+                VerificationMethod = new ShiftingList<VerificationMethod>(Vm(), Vm()),
+                Authentication = [VerificationRelationshipEntry.FromReference("#key-1")]
+            }
+        });
+        var resolved = await _method.ResolveAsync(created.Did.Value);
+
+        DidDocumentSerializer.Serialize(created.DidDocument)
+            .Should().Be(DidDocumentSerializer.Serialize(resolved.DidDocument!));
+    }
+
+    // ── Review round 2, adversarial pass ────────────────────────────────────────────
+
+    // An ISigner whose MultibasePublicKey is whatever the test says; Create reads nothing else.
+    private sealed class FixedKeySigner(string multibase) : ISigner
+    {
+        public KeyType KeyType => KeyType.Ed25519;
+        public ReadOnlyMemory<byte> PublicKey => Array.Empty<byte>();
+        public string MultibasePublicKey => multibase;
+        public Task<byte[]> SignAsync(ReadOnlyMemory<byte> data, CancellationToken ct = default)
+            => throw new NotSupportedException();
+    }
+
+    // B4: '.' separates did:peer:2 segments, so a key string containing it injected keys or
+    // services the caller never declared, and Create now returned that document as its own.
+    [Theory]
+    [InlineData(".SeyJ0IjoiWCIsInMiOiJodHRwczovL2EuZXhhbXBsZS8ifQ")]
+    [InlineData(".Vz6MkjchhfUsD6mmvni8mCdXHw216Xrm9bQe2mBH1P5RDjVJG")]
+    [InlineData(".Ez6LSg8zQom395jKLrGiBNruB9MM6V8PWuf2FpEy4uRFiqQBR")]
+    public async Task Issue145_Numalgo2Create_KeyStringWithSegmentSeparator_ThrowsArgumentException(string injected)
+    {
+        var real = new DefaultKeyGenerator().Generate(KeyType.Ed25519).MultibasePublicKey;
+
+        var act = () => _method.CreateAsync(new DidPeerCreateOptions
+        {
+            Numalgo = PeerNumalgo.Two,
+            Keys = [new PeerKeyPurpose(new FixedKeySigner(real + injected), PeerPurpose.Authentication)]
+        });
+
+        await act.Should().ThrowAsync<ArgumentException>();
+    }
+
+    // B5: the DIF peer DID spec's own numalgo 2 example. Its abbreviations are recursive over key
+    // names (type/serviceEndpoint/routingKeys/accept -> t/s/r/a, also inside "s") and apply to the
+    // type value only as DIDCommMessaging -> dm. NetDid neither abbreviated nor expanded nested
+    // names, so it could not produce this DID and resolved it with "a"/"r" map keys.
+    private const string SpecExampleDid =
+        "did:peer:2.Vz6Mkj3PUd1WjvaDhNZhhhXQdz5UnZXmS7ehtx8bsPpD47kKc.Ez6LSg8zQom395jKLrGiBNruB9MM6V8PWuf2FpEy4uRFiqQBR" +
+        ".SeyJ0IjoiZG0iLCJzIjp7InVyaSI6Imh0dHA6Ly9leGFtcGxlLmNvbS9kaWRjb21tIiwiYSI6WyJkaWRjb21tL3YyIl0sInIiOlsiZGlkOmV4YW1wbGU6MTIzNDU2Nzg5YWJjZGVmZ2hpI2tleS0xIl19fQ" +
+        ".SeyJ0IjoiZG0iLCJzIjp7InVyaSI6Imh0dHA6Ly9leGFtcGxlLmNvbS9hbm90aGVyIiwiYSI6WyJkaWRjb21tL3YyIl0sInIiOlsiZGlkOmV4YW1wbGU6MTIzNDU2Nzg5YWJjZGVmZ2hpI2tleS0yIl19fQ";
+
+    private static Service SpecService(string uri, string routingKey) => new()
+    {
+        Id = "",
+        Type = "DIDCommMessaging",
+        ServiceEndpoint = ServiceEndpointValue.FromMap(new Dictionary<string, JsonElement>
+        {
+            ["uri"] = JsonSerializer.SerializeToElement(uri),
+            ["accept"] = JsonSerializer.SerializeToElement(new[] { "didcomm/v2" }),
+            ["routingKeys"] = JsonSerializer.SerializeToElement(new[] { routingKey })
+        })
+    };
+
+    [Fact]
+    public async Task Issue145_Numalgo2_SpecExample_ResolvesWithExpandedNames()
+    {
+        var resolved = await _method.ResolveAsync(SpecExampleDid);
+
+        resolved.ResolutionMetadata.Error.Should().BeNull();
+        var services = resolved.DidDocument!.Service!;
+        services.Select(s => s.Id).Should().Equal("#service", "#service-1");
+        services.Should().AllSatisfy(s => s.Type.Should().Be("DIDCommMessaging"));
+        services[0].ServiceEndpoint.Map!.Keys.Should().Equal("uri", "accept", "routingKeys");
+        services[0].ServiceEndpoint.Map!["routingKeys"][0].GetString()
+            .Should().Be("did:example:123456789abcdefghi#key-1");
+    }
+
+    [Fact]
+    public async Task Issue145_Numalgo2_SpecExample_IsWhatCreateProduces()
+    {
+        var created = await _method.CreateAsync(new DidPeerCreateOptions
+        {
+            Numalgo = PeerNumalgo.Two,
+            Keys =
+            [
+                new PeerKeyPurpose(new FixedKeySigner("z6Mkj3PUd1WjvaDhNZhhhXQdz5UnZXmS7ehtx8bsPpD47kKc"), PeerPurpose.Authentication),
+                new PeerKeyPurpose(new FixedKeySigner("z6LSg8zQom395jKLrGiBNruB9MM6V8PWuf2FpEy4uRFiqQBR"), PeerPurpose.KeyAgreement)
+            ],
+            Services =
+            [
+                SpecService("http://example.com/didcomm", "did:example:123456789abcdefghi#key-1"),
+                SpecService("http://example.com/another", "did:example:123456789abcdefghi#key-2")
+            ]
+        });
+
+        created.Did.Value.Should().Be(SpecExampleDid);
+    }
+
+    // B5: one table was used for both key names and the type value, so a type "t" came back as
+    // "type" and an extension key "dm" as "DIDCommMessaging". Only names are abbreviated as
+    // names, and only the type value DIDCommMessaging as a value.
+    [Fact]
+    public async Task Issue145_Numalgo2_AbbreviationTables_AreNotCrossed()
+    {
+        var created = await _method.CreateAsync(new DidPeerCreateOptions
+        {
+            Numalgo = PeerNumalgo.Two,
+            Keys = [AuthenticationKey()],
+            Services =
+            [
+                new Service
+                {
+                    Id = "#svc", Type = "t", ServiceEndpoint = ServiceEndpointValue.FromUri("https://a.example"),
+                    AdditionalProperties = new Dictionary<string, JsonElement>
+                    {
+                        ["dm"] = JsonSerializer.SerializeToElement("x")
+                    }
+                }
+            ]
+        });
+        var service = (await _method.ResolveAsync(created.Did.Value)).DidDocument!.Service!.Single();
+
+        service.Type.Should().Be("t");
+        service.AdditionalProperties!.Keys.Should().Equal("dm");
+    }
+
+    // B5: a name the decoder would expand ("a" -> "accept", at any depth) or the type "dm" cannot
+    // come back as written, so Create refuses it instead of returning altered caller data.
+    public static TheoryData<Service> AmbiguousAbbreviations => new()
+    {
+        new Service { Id = "#svc", Type = "dm", ServiceEndpoint = ServiceEndpointValue.FromUri("https://a.example") },
+        new Service
+        {
+            Id = "#svc", Type = "Example", ServiceEndpoint = ServiceEndpointValue.FromUri("https://a.example"),
+            AdditionalProperties = new Dictionary<string, JsonElement> { ["a"] = JsonSerializer.SerializeToElement("x") }
+        },
+        new Service
+        {
+            Id = "#svc", Type = "Example",
+            ServiceEndpoint = ServiceEndpointValue.FromMap(new Dictionary<string, JsonElement>
+            {
+                ["uri"] = JsonSerializer.SerializeToElement("https://a.example"),
+                ["r"] = JsonSerializer.SerializeToElement(new[] { "did:example:1#k" })
+            })
+        }
+    };
+
+    [Theory]
+    [MemberData(nameof(AmbiguousAbbreviations))]
+    public async Task Issue145_Numalgo2Create_AmbiguousAbbreviation_ThrowsArgumentException(Service service)
+    {
+        var act = () => _method.CreateAsync(new DidPeerCreateOptions
+        {
+            Numalgo = PeerNumalgo.Two,
+            Keys = [AuthenticationKey()],
+            Services = [service]
+        });
+
+        await act.Should().ThrowAsync<ArgumentException>();
+    }
+
+    // B5: "service id attributes MUST be relative" (DIF spec). An absolute id was dropped and
+    // replaced on Create, and accepted on Resolve.
+    [Fact]
+    public async Task Issue145_Numalgo2_AbsoluteServiceId_IsRejected()
+    {
+        var create = () => _method.CreateAsync(new DidPeerCreateOptions
+        {
+            Numalgo = PeerNumalgo.Two,
+            Keys = [AuthenticationKey()],
+            Services = [new Service { Id = "did:example:other#svc", Type = "Example", ServiceEndpoint = ServiceEndpointValue.FromUri("https://a.example") }]
+        });
+        var resolved = await _method.ResolveAsync(await Peer2WithServiceBlock(
+            """{"id":"https://a.example/x#svc","t":"Example","s":"https://a.example"}"""));
+
+        await create.Should().ThrowAsync<ArgumentException>();
+        resolved.ResolutionMetadata.Error.Should().Be("invalidDid");
+    }
+}

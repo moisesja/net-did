@@ -45,7 +45,8 @@ public sealed class DataIntegrityProofValue
                 json, new JsonDocumentOptions { AllowDuplicateProperties = false });
             return FromDuplicateFreeJson(document.RootElement);
         }
-        catch (InvalidOperationException ex)
+        // ArgumentException: a raw unpaired surrogate char fails UTF-8 transcoding (issue #145).
+        catch (Exception ex) when (ex is InvalidOperationException or ArgumentException)
         {
             throw new JsonException("The Data Integrity proof contains an invalid JSON value.", ex);
         }

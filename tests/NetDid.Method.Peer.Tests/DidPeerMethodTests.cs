@@ -365,13 +365,13 @@ public class DidPeerMethodTests
             [
                 new Service
                 {
-                    Id = "not-a-fragment", // no '#' prefix — will be auto-generated
+                    Id = "", // no id: auto-generated
                     Type = "DIDCommMessaging",
                     ServiceEndpoint = ServiceEndpointValue.FromUri("https://a.example.com")
                 },
                 new Service
                 {
-                    Id = "also-not-fragment",
+                    Id = "",
                     Type = "LinkedDomains",
                     ServiceEndpoint = ServiceEndpointValue.FromUri("https://b.example.com")
                 }
@@ -381,6 +381,40 @@ public class DidPeerMethodTests
         // Per spec: first auto = "#service", second auto = "#service-1" (relative fragments)
         result.DidDocument.Service![0].Id.Should().Be("#service");
         result.DidDocument.Service[1].Id.Should().Be("#service-1");
+    }
+
+    // The DIF spec: "service id attributes MUST be relative", and an id is generated only "If the
+    // id is NOT set". A relative id without a leading '#' used to be dropped silently and
+    // replaced by "#service" (PR #149 review round 2).
+    [Fact]
+    public async Task Numalgo2_ExplicitRelativeServiceIds_ArePreserved()
+    {
+        var key = _keyGen.Generate(KeyType.Ed25519);
+
+        var result = await _method.CreateAsync(new DidPeerCreateOptions
+        {
+            Numalgo = PeerNumalgo.Two,
+            Keys = [new PeerKeyPurpose(new KeyPairSigner(key, _crypto), PeerPurpose.Authentication)],
+            Services =
+            [
+                new Service
+                {
+                    Id = "not-a-fragment",
+                    Type = "DIDCommMessaging",
+                    ServiceEndpoint = ServiceEndpointValue.FromUri("https://a.example.com")
+                },
+                new Service
+                {
+                    Id = "/svc/b",
+                    Type = "LinkedDomains",
+                    ServiceEndpoint = ServiceEndpointValue.FromUri("https://b.example.com")
+                }
+            ]
+        });
+        var resolved = await _method.ResolveAsync(result.Did.Value);
+
+        result.DidDocument.Service!.Select(s => s.Id).Should().Equal("not-a-fragment", "/svc/b");
+        resolved.DidDocument!.Service!.Select(s => s.Id).Should().Equal("not-a-fragment", "/svc/b");
     }
 
     // --- Numalgo 4 ---

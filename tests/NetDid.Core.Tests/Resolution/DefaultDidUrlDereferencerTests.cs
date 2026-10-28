@@ -94,6 +94,139 @@ public class DefaultDidUrlDereferencerTests
         result.ContentStream.Should().BeOfType<Service>();
     }
 
+    // Review round 2, adversarial pass (B1): the ?service= value names a service by its fragment
+    // ("agent" selects "#agent"), so it is never resolved as a path reference. Routing it
+    // through RFC 3986 resolution turned "agent/v1" into "/agent/v1" and lost "#agent/v1".
+    [Theory]
+    [InlineData("?service=agent/v1", "#agent/v1")]
+    [InlineData("?service=agent%2Fv1", "#agent/v1")]
+    [InlineData("?service=q%3Fx", "#q?x")]
+    [InlineData("?service=files", "#files")]
+    public async Task Issue145_DereferenceAsync_ServiceQuery_SelectsByFragment(string query, string expectedId)
+    {
+        SetupResolverSuccess(new DidDocument
+        {
+            Id = new Did("did:example:123"),
+            Service =
+            [
+                new Service { Id = "#agent/v1", Type = "A", ServiceEndpoint = ServiceEndpointValue.FromUri("https://a.example") },
+                new Service { Id = "#q?x", Type = "Q", ServiceEndpoint = ServiceEndpointValue.FromUri("https://q.example") },
+                new Service { Id = "/files", Type = "P", ServiceEndpoint = ServiceEndpointValue.FromUri("https://p.example") },
+                new Service { Id = "#files", Type = "F", ServiceEndpoint = ServiceEndpointValue.FromUri("https://f.example") }
+            ]
+        });
+
+        var result = await _dereferencer.DereferenceAsync("did:example:123" + query,
+            new DidUrlDereferencingOptions { Accept = DidContentTypes.JsonLd });
+
+        result.DereferencingMetadata.Error.Should().BeNull();
+        ((DidDocument)result.ContentStream!).Service!.Single().Id.Should().Be(expectedId);
+    }
+
+    // Review round 2, adversarial pass (B2): a DID URL with a path and a fragment names the
+    // resource "<did>/path#fragment". The fragment step ignored the path, so "<did>/k#x" returned
+    // the method "#x" (another key, in another relationship) and "<did>/other#x" returned it too.
+    [Theory]
+    [InlineData("did:example:123/k#x", null, "/k#x")]
+    [InlineData("did:example:123/k#x", "assertionMethod", "/k#x")]
+    [InlineData("did:example:123/a/../k#x", null, "/k#x")]
+    [InlineData("did:example:123#x", null, "#x")]
+    [InlineData("did:example:123/other#x", null, null)]
+    [InlineData("did:example:123/k#x", "authentication", null)]
+    public async Task Issue145_DereferenceAsync_PathAndFragment_NamesThatResource(
+        string didUrl, string? relationship, string? expectedId)
+    {
+        SetupResolverSuccess(new DidDocument
+        {
+            Id = new Did("did:example:123"),
+            VerificationMethod =
+            [
+                new VerificationMethod
+                {
+                    Id = "#x", Type = "Multikey", Controller = new Did("did:example:123"),
+                    PublicKeyMultibase = "z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK"
+                },
+                new VerificationMethod
+                {
+                    Id = "/k#x", Type = "Multikey", Controller = new Did("did:example:123"),
+                    PublicKeyMultibase = "z6MkjchhfUsD6mmvni8mCdXHw216Xrm9bQe2mBH1P5RDjVJG"
+                }
+            ],
+            Authentication = [VerificationRelationshipEntry.FromReference("#x")],
+            AssertionMethod = [VerificationRelationshipEntry.FromReference("/k#x")]
+        });
+
+        var result = await _dereferencer.DereferenceAsync(didUrl,
+            new DidUrlDereferencingOptions { VerificationRelationship = relationship });
+
+        if (expectedId is null)
+            result.DereferencingMetadata.Error.Should().Be("notFound");
+        else
+            ((VerificationMethod)result.ContentStream!).Id.Should().Be(expectedId);
+    }
+
+    // Issue #145 (adversarial pass on the final pass, F2): every id comparison rebuilt
+    // "{did}#x", so one dereference cost services × DID length. A did:peer DID embeds its whole
+    // document, so a hostile one made that 14 GB. The cost must follow the ids, not the DID.
+    [Theory]
+    [InlineData("#s1999")]
+    [InlineData("?service=s1999")]
+    public async Task Issue145_DereferenceAsync_IdComparison_IsLinearInTheDocument(string suffix)
+    {
+        var did = "did:example:" + new string('a', 200_000);
+        SetupResolverSuccess(new DidDocument
+        {
+            Id = new Did(did),
+            Service = Enumerable.Range(0, 2_000).Select(i => new Service
+            {
+                Id = $"#s{i}", Type = "T", ServiceEndpoint = ServiceEndpointValue.FromUri($"https://a.example/{i}")
+            }).ToList()
+        });
+
+        var before = GC.GetAllocatedBytesForCurrentThread();
+        var result = await _dereferencer.DereferenceAsync(did + suffix);
+        var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
+
+        result.DereferencingMetadata.Error.Should().BeNull();
+        allocated.Should().BeLessThan(64L * 1024 * 1024, "the pre-fix cost was about 1.6 GB");
+    }
+
+    // Issue #145 (final pass F4): fragment lookup matched by fragment only, so a service or
+    // verification method of ANOTHER DID that shares the fragment could be returned.
+    [Fact]
+    public async Task Issue145_DereferenceAsync_Fragment_IgnoresIdsOfOtherDids()
+    {
+        var doc = new DidDocument
+        {
+            Id = new Did("did:example:123"),
+            VerificationMethod =
+            [
+                new VerificationMethod
+                {
+                    Id = "did:example:other#k", Type = "Multikey", Controller = new Did("did:example:other"),
+                    PublicKeyMultibase = "z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK"
+                },
+                new VerificationMethod
+                {
+                    Id = "#k", Type = "Multikey", Controller = new Did("did:example:123"),
+                    PublicKeyMultibase = "z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK"
+                }
+            ],
+            Service =
+            [
+                new Service { Id = "did:example:other#x", Type = "Evil", ServiceEndpoint = ServiceEndpointValue.FromUri("https://evil.example") },
+                new Service { Id = "#x", Type = "Good", ServiceEndpoint = ServiceEndpointValue.FromUri("https://good.example") }
+            ]
+        };
+        SetupResolverSuccess(doc);
+
+        var service = await _dereferencer.DereferenceAsync("did:example:123#x");
+        var method = await _dereferencer.DereferenceAsync("did:example:123#k");
+
+        ((Service)service.ContentStream!).Type.Should().Be("Good");
+        ((VerificationMethod)method.ContentStream!).Id.Should().Be("#k");
+    }
+
     [Fact]
     public async Task DereferenceAsync_Fragment_NotFound_ReturnsError()
     {
@@ -986,8 +1119,11 @@ public class DefaultDidUrlDereferencerTests
     }
 
     [Fact]
-    public async Task Issue136_DereferenceAsync_Path_EmptiedUriSetFailsClosed()
+    public async Task Issue136_DereferenceAsync_Path_CallerClearingItsListCannotEmptyTheSet()
     {
+        // This test used to clear the caller's list after FromSet and expect the then-empty set to
+        // fail closed. Since issue #145, FromSet copies its entries once, so the emptied state cannot
+        // be built at all: clearing the caller's list leaves the validated endpoint unchanged.
         var callerOwnedSet = new List<ServiceEndpointValue>
         {
             ServiceEndpointValue.FromUri("https://example.com/base/")
@@ -1011,8 +1147,9 @@ public class DefaultDidUrlDereferencerTests
 
         var result = await _dereferencer.DereferenceAsync($"{Issue136Did}/asset.json");
 
-        result.DereferencingMetadata.Error.Should().Be("invalidDid");
-        result.ContentStream.Should().BeNull();
+        endpoint.Set.Should().HaveCount(1);
+        result.DereferencingMetadata.Error.Should().BeNull();
+        result.ContentStream.Should().Be("https://example.com/base/asset.json");
     }
 
     [Fact]

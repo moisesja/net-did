@@ -67,7 +67,9 @@ public static class EthrDocumentBuilder
                     break;
                 }
 
-                case AttributeChangedEvent ac when ac.Name.StartsWith("did/pub/"):
+                // Ordinal, like the reference's /^did\/pub\// and /^did\/svc\//: a culture-sensitive
+                // test ignores NUL under ICU and would count "d\0id/svc/…" (issue #145).
+                case AttributeChangedEvent ac when ac.Name.StartsWith("did/pub/", StringComparison.Ordinal):
                 {
                     delegateCount++;
                     var key = $"DIDAttributeChanged-{ac.Name}-{Convert.ToHexString(ac.Value)}";
@@ -78,12 +80,16 @@ public static class EthrDocumentBuilder
                     break;
                 }
 
-                case AttributeChangedEvent ac when ac.Name.StartsWith("did/svc/"):
+                case AttributeChangedEvent ac when ac.Name.StartsWith("did/svc/", StringComparison.Ordinal):
                 {
                     serviceCount++;
+                    // Like ethr-did-resolver: every did/svc/ event counts, but only a name in its
+                    // grammar (typed by the first segment) with a valid UTF-8 value is added or
+                    // revoked. NetDid used to take the whole suffix as the type and decode lossily.
+                    if (EthrServiceEndpoint.ServiceType(ac.Name) is not { } svcName
+                        || !EthrServiceEndpoint.TryDecode(ac.Value, out var svcEndpoint))
+                        break;
                     var key = $"DIDAttributeChanged-{ac.Name}-{Convert.ToHexString(ac.Value)}";
-                    var svcName = ac.Name["did/svc/".Length..];
-                    var svcEndpoint = System.Text.Encoding.UTF8.GetString(ac.Value);
                     if (ac.ValidTo >= refUnix)
                         services[key] = (serviceCount, new ServiceEntry(svcName, svcEndpoint, ac.ValidTo));
                     else
@@ -269,21 +275,14 @@ public static class EthrDocumentBuilder
         }
 
         // Services. As with key material above, an endpoint value we cannot represent must
-        // drop THAT service, never the whole document: `ServiceEndpointValue.FromUri` rejects
-        // an empty or whitespace-only string, and letting that escape made one on-chain
-        // attribute render the entire DID unresolvable for its validity window.
+        // drop THAT service, never the whole document: letting one on-chain attribute fail the
+        // build made the entire DID unresolvable for its validity window. Like ethr-did-resolver,
+        // a JSON value becomes a map or set; DID Core §5.4 decides what is representable.
         var svcList = new List<Service>();
         foreach (var (counter, entry) in validServices)
         {
-            ServiceEndpointValue endpoint;
-            try
-            {
-                endpoint = ServiceEndpointValue.FromUri(entry.Endpoint);
-            }
-            catch (Exception ex) when (ex is ArgumentException or FormatException or UriFormatException)
-            {
+            if (!EthrServiceEndpoint.TryParse(entry.Endpoint, out var endpoint))
                 continue;
-            }
             svcList.Add(new Service
             {
                 Id              = $"{did}#service-{counter}",

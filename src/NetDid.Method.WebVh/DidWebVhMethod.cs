@@ -167,7 +167,8 @@ public sealed class DidWebVhMethod : DidMethodBase
         // Snapshot the caller's witness proofs once at the trust boundary, before any await: a
         // hostile IReadOnlyList can present different contents per enumeration, publishing an
         // artifact that differs from what was inspected (issue #135 review round 2, finding 3).
-        var witnessProofs = SnapshotWitnessProofs(createOptions.WitnessProofs);
+        var witnessProofs = SnapshotWitnessProofs(
+            createOptions.WitnessProofs, nameof(createOptions.WitnessProofs), ct);
 
         // Step 1: Build DID string with safe placeholder (valid DID syntax for object construction)
         var didTemplate = BuildDidTemplate(createOptions.Domain, createOptions.Path,
@@ -212,6 +213,13 @@ public sealed class DidWebVhMethod : DidMethodBase
         var entryHash = ScidGenerator.ComputeEntryHash(entryJsonWithScid);
         var finalEntry = genesisEntryForHashing with { VersionId = $"1-{entryHash}" };
 
+        // Build the final DID string and the parallel did:web document BEFORE signing: a document
+        // whose did:web projection is invalid (e.g. two services that collapse to one id there)
+        // must fail before any signature is produced (issue #145).
+        var did = didTemplate.Replace(ScidGenerator.SafePlaceholder, scid);
+        var didValue = new Did(did);
+        var didJsonContent = Encoding.UTF8.GetString(DidWebCompatibility.GenerateDidJson(did, finalEntry.State));
+
         // Step 8: Sign with Data Integrity Proof
         var proofJson = LogEntrySerializer.SerializeWithoutProof(finalEntry);
         var proofValue = await CreateProofValueAsync(
@@ -219,13 +227,8 @@ public sealed class DidWebVhMethod : DidMethodBase
 
         finalEntry = finalEntry with { Proof = [proofValue] };
 
-        // Build the final DID string
-        var did = didTemplate.Replace(ScidGenerator.SafePlaceholder, scid);
-        var didValue = new Did(did);
-
         // Generate artifacts (as UTF-8 strings for consumer convenience)
         var logContent = Encoding.UTF8.GetString(LogEntrySerializer.ToJsonLines([finalEntry]));
-        var didJsonContent = Encoding.UTF8.GetString(DidWebCompatibility.GenerateDidJson(did, finalEntry.State));
 
         var artifacts = new Dictionary<string, object>
         {
@@ -541,7 +544,8 @@ public sealed class DidWebVhMethod : DidMethodBase
         // (issue #135 review round 2, finding 3), and consume CurrentWitnessContent whenever it
         // is supplied — not only when a new proof batch accompanies it (finding 2): supplied
         // content that cannot be parsed must fail the operation, never be silently ignored.
-        var witnessProofs = SnapshotWitnessProofs(updateOptions.WitnessProofs);
+        var witnessProofs = SnapshotWitnessProofs(
+            updateOptions.WitnessProofs, nameof(updateOptions.WitnessProofs), ct);
         var existingWitness = ParseRequiredWitnessContent(
             updateOptions.CurrentWitnessContent,
             nameof(updateOptions.CurrentWitnessContent),
@@ -683,6 +687,10 @@ public sealed class DidWebVhMethod : DidMethodBase
         // Re-serialize with correct versionId
         entryJsonWithoutProof = LogEntrySerializer.SerializeWithoutProof(newEntry);
 
+        // The parallel did:web document is built before signing, so an invalid projection fails
+        // before any signature is produced (issue #145).
+        var didJsonContent = Encoding.UTF8.GetString(DidWebCompatibility.GenerateDidJson(did, newDocument));
+
         // Sign with Data Integrity Proof
         var proofValue = await CreateProofValueAsync(
             entryJsonWithoutProof, updateOptions.SigningKey, newEntry.VersionTime, ct);
@@ -696,7 +704,7 @@ public sealed class DidWebVhMethod : DidMethodBase
         var updateArtifacts = new Dictionary<string, object>
         {
             [DidWebVhArtifacts.DidJsonl] = logContent,
-            [DidWebVhArtifacts.DidJson] = Encoding.UTF8.GetString(DidWebCompatibility.GenerateDidJson(did, newDocument))
+            [DidWebVhArtifacts.DidJson] = didJsonContent
         };
 
         if (existingWitness is not null || witnessProofs is { Count: > 0 })
@@ -725,7 +733,9 @@ public sealed class DidWebVhMethod : DidMethodBase
     /// sharing the proof instances themselves is safe.
     /// </summary>
     private static IReadOnlyList<WitnessProofEntry>? SnapshotWitnessProofs(
-        IReadOnlyList<WitnessProofEntry>? witnessProofs)
+        IReadOnlyList<WitnessProofEntry>? witnessProofs,
+        string paramName,
+        CancellationToken ct)
     {
         if (witnessProofs is null)
             return null;
@@ -733,13 +743,13 @@ public sealed class DidWebVhMethod : DidMethodBase
         var snapshot = new List<WitnessProofEntry>();
         foreach (var entry in witnessProofs)
         {
-            snapshot.Add(new WitnessProofEntry
-            {
-                VersionId = entry.VersionId,
-                Proofs = entry.Proofs.ToList()
-            });
+            // A null entry or proof list is reported by the guard below, as ArgumentException.
+            snapshot.Add(entry?.Proofs is null
+                ? entry!
+                : new WitnessProofEntry { VersionId = entry.VersionId, Proofs = entry.Proofs.ToList() });
         }
 
+        WitnessValidator.RequirePublishableProofs(snapshot, paramName, ct);
         return snapshot;
     }
 
@@ -758,13 +768,15 @@ public sealed class DidWebVhMethod : DidMethodBase
         if (content is null)
             return null;
 
-        var parsed = WitnessValidator.ParseWitnessFile(content, out var witnessParseError, ct);
-        return parsed ?? throw new ArgumentException(
-            "CurrentWitnessContent is not a parseable did:webvh v1.0 did-witness.json " +
-            $"({witnessParseError}). Fix the file (a pre-3.2 NetDid file needs the " +
-            "issue #135 migration) or omit CurrentWitnessContent to publish only the " +
-            "supplied WitnessProofs.",
-            paramName);
+        var parsed = WitnessValidator.ParseWitnessFile(content, out var witnessParseError, ct)
+            ?? throw new ArgumentException(
+                "CurrentWitnessContent is not a parseable did:webvh v1.0 did-witness.json " +
+                $"({witnessParseError}). Fix the file (a pre-3.2 NetDid file needs the " +
+                "issue #135 migration) or omit CurrentWitnessContent to publish only the " +
+                "supplied WitnessProofs.",
+                paramName);
+        WitnessValidator.RequirePublishableProofs(parsed.Entries, paramName, ct);
+        return parsed;
     }
 
     protected override async Task<DidDeactivateResult> DeactivateCoreAsync(
@@ -779,7 +791,8 @@ public sealed class DidWebVhMethod : DidMethodBase
         // Same witness trust-boundary handling as Update (issue #135 review round 2, findings
         // 2-3). Deactivation is never blocked by a bad witness file: the caller can retry
         // without CurrentWitnessContent to publish the supplied proofs alone.
-        var witnessProofs = SnapshotWitnessProofs(deactivateOptions.WitnessProofs);
+        var witnessProofs = SnapshotWitnessProofs(
+            deactivateOptions.WitnessProofs, nameof(deactivateOptions.WitnessProofs), ct);
         var existingWitness = ParseRequiredWitnessContent(
             deactivateOptions.CurrentWitnessContent,
             nameof(deactivateOptions.CurrentWitnessContent),

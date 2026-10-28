@@ -88,6 +88,344 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Unpaired UTF-16 surrogates in parsed JSON now get the correct error** (issue #145).
+  Resolution already failed closed for this input; only the reported error was wrong. NetDid
+  rejects duplicate JSON members, which means `System.Text.Json` decodes every member name while
+  parsing. A lone surrogate escape in a name (for example `"\uD800":1`) therefore throws
+  `InvalidOperationException` from the parse itself, not `JsonException`, and two parse
+  boundaries let it escape. The adversarial review found three more paths of the same kind; they
+  are fixed here too.
+  - **did:webvh:** a fetched `did.jsonl` line now resolves as `invalidDidLog` instead of
+    `notFound` when it contains a lone surrogate in a member name at any depth, or in a value that
+    the typed model never reads (for example an unknown member inside `publicKeyJwk`, which was
+    decoded only later, while the entry was re-serialized for hashing). Every string in an entry
+    is now decoded once at the parse boundary. `UpdateAsync` and `DeactivateAsync` throw their
+    documented `FormatException` for such a `CurrentLogContent` instead of a raw
+    `InvalidOperationException`.
+    - Such a line is now a log-level parse failure, like any other unparseable line. A request
+      for an earlier version of that log therefore also returns `invalidDidLog`. Before, it
+      returned `notFound`, or, when the requested version was itself a deactivation, the
+      deactivated result.
+  - **Core:** `DidDocumentSerializer.Deserialize` now throws `JsonException`, as it does for every
+    other malformed document, in three cases:
+    - a lone surrogate escape in a member name (both overloads; was `InvalidOperationException`);
+    - a raw lone surrogate char anywhere in the `string` overload's input (was
+      `ArgumentException`);
+    - ill-formed UTF-8 in the `ReadOnlySpan<byte>` overload. This used to be accepted silently
+      inside an extension object. The duplicate check compared those names as raw bytes, so two
+      ill-formed names that both decode to U+FFFD passed, and the document could not then be
+      re-serialized and read back. The overload now requires strict UTF-8, as did:webvh already
+      does for fetched logs.
+
+    Messages are fixed text and never repeat the input. The original exception is kept as
+    `InnerException`. A caller that caught `InvalidOperationException` or `ArgumentException`
+    for this input must catch `JsonException`. `ArgumentNullException` for `null` is unchanged.
+  - **did:webvh `DataIntegrityProofValue.Parse(string)`** now throws its documented
+    `JsonException` for a raw lone surrogate char instead of `ArgumentException`.
+  - Unchanged: the did:webvh witness-file parser already mapped a lone-surrogate name to an
+    unparseable file (`witnessValidationFailed` on resolve, `ArgumentException` for
+    `CurrentWitnessContent`). New tests now pin that behavior. did:peer and did:ethr resolution
+    already mapped it.
+
+  The adversarial review also found three older defects of the same kind. They are fixed here too:
+  - **did:ethr `DefaultEthereumRpcClient`:** a node response whose result object had a duplicate
+    member, or an unpaired surrogate in a member name or string value, leaked a raw
+    `ArgumentException` or `InvalidOperationException` from `GetBlockTimestampAsync`,
+    `GetTransactionReceiptAsync`, `GetFinalizedBlockNumberAsync`, and every method that reads a
+    string result (`GetBlockNumberAsync`, `GetChainIdAsync`, `CallAsync`, and others). These now
+    throw `EthereumInteractionException` with fixed text. One consequence for resolution:
+    - Before, with the opt-in event-history cache enabled, such a finalized-block response failed
+      resolution as `internalError`.
+    - Now it makes `GetFinalizedBlockNumberAsync` return `null` as documented, and resolution
+      falls back to the full uncached walk.
+  - **did:webvh witness authoring:** a witness proof that cannot be canonicalized with JCS
+    (RFC 8785) made Create, Update, and Deactivate throw `NetCid.JcsFormatException`. Examples are
+    a proof holding an unpaired surrogate, a number such as `1e400`, or `"id":"urn:\uD800"`.
+    Such a proof is now rejected with `ArgumentException` whose `ParamName` is `WitnessProofs`
+    or `CurrentWitnessContent`, because no eddsa-jcs-2022 verifier can check it. Resolution is
+    unchanged: a witness file containing such a proof still parses, and the proof counts as one
+    invalid proof.
+  - **Core `DidDocumentSerializer.Deserialize`:**
+    - A malformed `publicKeyJwk` (for example `"x": 5`) now throws `JsonException`. Before, it
+      threw IdentityModel's `ArgumentException` (IDX10805).
+    - An unpaired surrogate in an extension value is now rejected with `JsonException`. This
+      covers document, verification-method, and service extension members, `serviceEndpoint`
+      map values, and unknown `publicKeyJwk` members. Before, it was accepted, and the resulting
+      document then failed to serialize.
+    - **Behavior change:** a did:peer:4 long form whose document contains such a value used to
+      resolve to that unserializable document. It now fails to resolve (`notFound`, the existing
+      did:peer:4 mapping for a malformed document).
+
+  A second adversarial pass found more of the same, and the write side had the mirror-image
+  defect. Both are fixed here:
+  - **Core `DidDocumentSerializer.Deserialize` now rejects document shapes DID Core does not
+    allow with `JsonException`:**
+    - a verification method or service whose `id` or `type` is missing or not a string;
+    - a null or non-object entry in `verificationMethod` or `service`;
+    - a non-string `alsoKnownAs` entry, or a blank, null, or non-object relationship entry;
+    - a `serviceEndpoint` that is missing, blank, an empty set, or a set nested inside a set
+      (W3C DID Core §5.4).
+
+    Before, these either leaked a raw `KeyNotFoundException`, `InvalidOperationException`, or
+    `ArgumentException`, or were accepted and then crashed `Serialize` (`NullReferenceException`,
+    or an "object cycle" error for deeply nested sets). Any other JSON-access failure on hostile
+    input now also maps to `JsonException`. In did:webvh, a fetched log whose state had
+    `"type": null` or a null verification method resolved as `notFound`; it now resolves as
+    `invalidDidLog`. A service `type` given as a set of strings is still unsupported; it now fails
+    with `JsonException` instead of a raw `InvalidOperationException`.
+  - **Writers no longer publish U+FFFD in place of caller text.** `Utf8JsonWriter`,
+    `JsonSerializer`, and `Encoding.UTF8` all replace an unpaired surrogate with U+FFFD silently,
+    so these operations used to report success while publishing text that differed from the
+    caller's input. Each now throws `ArgumentException` instead:
+    - `DidDocumentSerializer.Serialize`, `SerializeToUtf8`, and through them did:webvh Create and
+      Update (state and `did.json`) and did:peer:4 Create. With did:peer:4, the DID used to hash
+      the altered bytes while the returned document kept the original text.
+    - did:webvh log-entry parameters (for example `watchers` and pre-rotation commitments) and
+      witness proofs built in code, including their `versionId`.
+    - did:peer:2 Create (service blocks encoded into the DID).
+    - did:ethr Update service endpoints, rejected before any RPC traffic. Before, the registry
+      recorded (or was asked to revoke) EF BF BD instead.
+  - **Smaller items:**
+    - did:webvh `WitnessProofs` with a null entry, proof list, proof, or `versionId` now throws
+      `ArgumentException("WitnessProofs")` instead of a raw `NullReferenceException` or
+      `ArgumentNullException`.
+    - did:ethr receipt errors no longer copy node-supplied `status` or `transactionHash` text
+      (unbounded, CR/LF allowed) into exception messages.
+
+  Maintainer review of PR #149 found two remaining gaps, and the final adversarial pass found a
+  few more of the same kind. All are fixed here:
+  - **Nested `serviceEndpoint` sets on the authoring path.** The reader rejected them, but
+    `ServiceEndpointValue.FromSet` still built them. So did:peer:4 Create could return a DID
+    whose own resolution failed with `notFound`.
+    - `FromSet` now enforces W3C DID Core §5.4: it throws `ArgumentException` for a null entry or
+      a nested set. It copies its entries into a list it fills itself and exposes read-only, so
+      the validated set cannot change afterwards. Both writers (Core and did:peer:2) also reject a
+      null or nested set entry.
+    - **Behavior change:** code that built nested sets now gets `ArgumentException`. A hand-built
+      did:peer:2 that encodes a nested set no longer resolves.
+  - **Caller `JsonElement` contents.** `Serialize` checked modeled strings and dictionary keys,
+    but wrote `JsonElement` values as-is. Ill-formed UTF-8 inside one was published as U+FFFD,
+    and an escaped lone surrogate threw `JsonException` instead of the documented
+    `ArgumentException`.
+    - Every `JsonElement` written is now decoded first: document, VM and service extensions,
+      `@context` objects, and `serviceEndpoint` maps, in Core and in did:peer:2 Create. A failure
+      throws `ArgumentException`.
+    - This also closes did:webvh Create/Update, which signed such a value into a resolvable log.
+    - A `default(JsonElement)` also throws `ArgumentException`; before, it leaked a raw
+      `InvalidOperationException`. The check walks the element iteratively, so a deeply nested
+      caller element fails with a catchable exception instead of overflowing the stack.
+  - **`@context` entries** must be a string or a `JsonElement`. Any other type now throws
+    `ArgumentException`. Before, it was written with `ToString()`, which writes an object as a
+    string and had already replaced lone surrogates before any check.
+  - **Reserved service extension names.** A `Service.AdditionalProperties` key `id`, `type` or
+    `serviceEndpoint` now throws `ArgumentException` from `Serialize`. Before, it produced a
+    duplicate member that NetDid's own `Deserialize` rejects. In did:peer:2 Create, an extension
+    key that collides with an encoded member after abbreviation (`id`, `t`/`type`,
+    `s`/`serviceEndpoint`, or another extension) is also rejected. Before, it overwrote the
+    member, so the DID encoded a different service than Create returned.
+  - **did:peer:2 and did:peer:4 resolution** now decode the embedded JSON as strict UTF-8. Before,
+    the decode was lossy, so ill-formed bytes resolved as U+FFFD.
+  - **did:ethr Update:** a null service endpoint now throws `ArgumentException` instead of a raw
+    `ArgumentNullException`.
+  - **did:peer:2 service blocks are now read with the same consumption rules as Core.** Each of
+    these makes resolution fail with `invalidDid`:
+    - a duplicate member (it was silently last-wins, against the #121 rule);
+    - an escaped lone surrogate (the resolved document could not be serialized);
+    - a reserved or colliding key after abbreviation expansion, such as `serviceEndpoint` next
+      to `s`, or `r` next to `routingKeys`;
+    - a null or non-string `t` or `id`;
+    - a missing `s`.
+  - **Writers reject null required members, null list entries, and duplicate names.** In each
+    case `Serialize` used to emit JSON null, crash with `NullReferenceException`, or emit a
+    member twice, all of which NetDid's own `Deserialize` rejects. Each now throws
+    `ArgumentException`:
+    - a null verification-method or service `id`/`type`, or a null `alsoKnownAs` entry. With
+      did:peer:4, Create could return a DID that then resolved as `notFound`.
+    - a null entry in `verificationMethod`, `service`, or a relationship list;
+    - two keys with the same text in a caller dictionary that uses a non-ordinal comparer. This
+      applies to document, verification-method, and service extensions, and to endpoint maps.
+      Before, the document-level copy silently kept only one of the two values.
+  - **Caller `JsonSerializerOptions` now produce a DID document.**
+    `DidDocumentSerializer.Serialize` and `SerializeToUtf8` with caller options used to serialize
+    an internal wrapper by reflection (`{"Document":{"Id":{"Value":...`). That output had no
+    `@context`, no production rules, and no UTF-16 checks. Now NetDid's converters always come
+    first, the caller's formatting settings (`WriteIndented`, `Encoder`) are honored, and the
+    effective options are cached per caller instance.
+    - The caller's options are locked on first use, as System.Text.Json itself does, so a later
+      change throws instead of being silently ignored by the cache.
+    - A caller `TypeInfoResolver` cannot replace NetDid's converters.
+  - **`publicKeyJwk` keeps every public member and never a private one.**
+    - Before, the writer kept only `kty`/`crv`/`x`/`y`, so an RSA `JsonWebKey2020` key lost `n` and
+      `e`. It now writes the RFC 7517/7518/8037 public members: `kty`, `crv`, `x`, `y`, `n`, `e`,
+      `kid`, `alg`, `use`, `key_ops`, `x5u`, `x5c`, `x5t`, `x5t#S256`.
+    - Private members (`d`, `p`, `q`, `dp`, `dq`, `qi`, `oth`, `k`) and unknown members are never
+      written.
+    - **Behavior change:** `kty` is required. A JWK whose `kty` is missing or empty throws
+      `JsonException` on read and `ArgumentException` on write. A null `key_ops` or `x5c` entry is
+      also rejected on read, so every JWK that is read can be written again.
+  - **DIDs and DID URLs with a trailing or embedded newline are rejected.**
+    - `DidParser` anchored with `$`, which in .NET also matches before a final `\n`, so
+      `did:example:123\n` was a valid `Did`. It now anchors with `\z`.
+    - DID URL path, params, query, and fragment no longer accept raw whitespace or control
+      characters (RFC 3986).
+    - Relative `#fragment` references follow the same rule in `IsValidDidReference`.
+    - **Behavior change:** such strings now throw `InvalidDidException` (or fail `IsValid`,
+      `ParseDidUrl`, and `IsValidDidReference`).
+  - **Last null-member and depth gaps:**
+    - A null `serviceEndpoint` or a `default(Did)` controller now throws `ArgumentException`
+      instead of being written as JSON null.
+    - did:peer:2 Create rejects a null service type or endpoint with `ArgumentException`.
+      Before, it crashed with `NullReferenceException` or `ArgumentNullException`.
+    - A did:peer:2 service block nested deeper than 62 levels now fails with `invalidDid`. Once
+      embedded in the document, a deeper block exceeds the serializer's 64 levels, so the
+      resolved document could not have been written again.
+  - **DID Core id and URI syntax, on read and on write.** Before, none of the following was
+    checked:
+    - **DID URLs** follow RFC 3986, which DID Core §3.2 names for path, query and fragment. Raw
+      non-ASCII, invisible Unicode format characters (for example U+202E, U+200B, U+FEFF),
+      characters such as `<` `"` `{` `|` `\`, and malformed `%` escapes are now rejected in DID URLs
+      and in relative DID URLs. Percent-encoded text is still accepted.
+    - **Relative DID URLs** (§3.2.2: they "MAY contain relative path components, query
+      parameters, and fragment identifiers") are valid ids and references: `#key-1`, `/keys/1`,
+      `keys/1#k`, `?versionId=1#key-1`. They are resolved against the DID by RFC 3986 §5, with
+      the DID's `<method>:<method-specific-id>` as the authority, so `keys/1#k`, `/keys/1#k`,
+      `./keys/1#k` and `<did>/keys/1#k` name one resource. A network-path reference
+      (`//host/x`) is rejected: it replaces the DID itself, so it never names a resource of this
+      document. `DidParser.IsValidDidReference` accepts every relative form (it used to accept
+      only `#fragment`).
+    - **Document consumption and production** enforce the DID Core rules for:
+      - verification method ids and relationship references (absolute or relative DID URLs,
+        §5.2);
+      - service ids (URIs, §5.4) and their uniqueness (§5.4: "A conforming producer MUST NOT
+        produce multiple service entries with the same id"; "A conforming consumer MUST produce
+        an error if it detects multiple service entries with the same id");
+      - serviceEndpoint strings (URIs, §5.4);
+      - `alsoKnownAs` entries (URIs, §5.1.3).
+
+      Violations throw `JsonException` on read and `ArgumentException` on write. Ids are
+      compared after RFC 3986 resolution against the DID, with one documented compatibility
+      exception: NetDid's bare-id shorthand, one plain segment such as `files` (issue #136),
+      still means `#files`, where RFC 3986 alone gives `<did>/files`. So `x`, `#x` and `<did>#x`
+      are one id, and `x` and `/x` are two. Duplicate detection, fragment and `?service=`
+      dereferencing, and `DefaultVerificationRelationshipResolver` all use this one comparison.
+    - **did:peer:2** rejects duplicate service ids on Create (`ArgumentException`) and on Resolve
+      (`invalidDid`), including an explicit `#service` next to an auto-generated one.
+    - **did:ethr service endpoints** are decoded like ethr-did-resolver: strict UTF-8 (the
+      service is skipped otherwise, where NetDid used to decode lossily), then JSON with the raw
+      string as fallback. A JSON object becomes a map, and an array of URI strings and maps
+      becomes a set; NetDid used to keep every value as a URI string. A value DID Core cannot
+      represent drops only that service. `UpdateAsync` rejects a new endpoint the resolver
+      would drop, and revoking any value already on-chain still works.
+    - **Behavior change:** documents, DID URLs and did:ethr service values that break these DID
+      Core rules are now rejected or dropped. The DIF did:webvh vector replay is identical before
+      and after this change.
+  - **Final adversarial pass on the id/URI rules.** It found gaps in the rules above; all are
+    fixed here:
+    - **Absolute URIs** follow RFC 3986 `scheme ":" hier-part`. `[` and `]` are accepted only
+      around an IP-literal host, which must be an IPv6 address or an IPvFuture
+      (`http://[::1]:8080/x`, `http://[v1.fe80::a+en1]/`), and `//` always starts an authority,
+      never a path. Before, `https://ex[ample.com`, `https://example.com/a[b]`, `http://[foo]/`
+      and `http://host:abc` passed as service endpoints and `alsoKnownAs` entries.
+    - **The bare-id shorthand** is one plain segment with no `:`, `/`, `?` or `#`. Before, a
+      real relative reference such as `/files`, `?service=x` or `a/b` counted as the shorthand
+      and was read as `#/files`, `#?service=x` or `#a/b`; it now keeps its RFC 3986 meaning (see
+      relative DID URLs above). A network-path reference such as `//evil.example/x` was also
+      read as the shorthand; it is now rejected (`JsonException` on read, `ArgumentException` on
+      write).
+    - **Fragment dereferencing** (`<did>#x`) compares ids with the same normalization as
+      `?service=` and duplicate detection. Before, it matched on the fragment alone, so a
+      verification method, embedded method or service whose id belonged to another DID
+      (`did:other:1#x`) could be returned in place of the document's own `#x`.
+    - **did:peer:2 Create and Resolve** apply every Core producer rule: id and URI syntax, and
+      unique service ids after normalization. Before, the local check compared raw ids, so a
+      bare `service` id beside the auto-generated `#service` passed, and an invalid service id or
+      endpoint minted (or resolved) a DID whose document NetDid could not serialize. Create
+      throws `ArgumentException`; Resolve returns `invalidDid`.
+    - **did:webvh `did.json`:** a service whose id is in the parallel did:web form
+      (`did:web:example.com#whois` or `#files`) is now the override there, so the projection no
+      longer adds a second implicit service with the same id. Create and Update build `did.json`
+      before signing, so an invalid projection (two services that collapse to one id under
+      did:web) throws `ArgumentException` before any signature is produced.
+    - **did:ethr service names** follow ethr-did-resolver's grammar
+      (`^did/svc/(\w+)(/\w+)?(/\w+)?$`, typed by the first segment). Every `did/svc/` event is
+      still counted. Before, NetDid took the whole suffix as the type (`did/svc/Hub/x` was typed
+      `Hub/x`) and resolved names the reference resolver ignores.
+    - **did:ethr JSON service values with a duplicate member** keep the last value at the first
+      position, as `JSON.parse` does. Before, NetDid dropped the service.
+    - **did:ethr `UpdateAsync`** rejects, before any RPC traffic, an `AddServices` entry whose
+      `ServiceType` is not one `[A-Za-z0-9_]+` segment, and an `AddAttributes` entry with a
+      `did/svc/` name or value that ethr-did-resolver would drop. Revoking any value already
+      on-chain still works.
+  - **A last adversarial pass over those fixes** found the following; all are fixed here:
+    - **Id comparison cost.** Duplicate detection and fragment and `?service=` dereferencing no
+      longer build `<did>#x` for each id they compare. A did:peer DID embeds its whole document,
+      so that cost grew with services × DID length: one hostile 446 KB did:peer:2 allocated 7 GB
+      during resolution, and a 1 MB one killed the process. The cost now follows the ids. The
+      relationship-scoped fragment lookup also no longer searches every verification method
+      once per relationship entry.
+    - **did:peer:4 placeholder DID.** A template that names a DID (the spec forbids an input
+      `id`, but NetDid has always contextualized one) now has it rewritten in verification
+      method and service ids, as in references, so the document's own references dereference.
+      Both rewrites require a DID boundary: a reference to `did:example:abcd#k` is no longer
+      rewritten as if it were under `did:example:abc`.
+    - **did:ethr labels are decoded like ethr-did-resolver.** bytes32 attribute names and
+      delegate types are strict UTF-8 (they were ASCII, with `?` for any other byte). An event
+      whose label is not valid UTF-8 is filtered out of the DID history, as the reference does:
+      it still links the history walk, but is not counted toward `#delegate-N`/`#service-N` and
+      sets no `versionId`, `updated` or `nextVersionId`. Public API:
+      - `Erc1056EventParser.Parse` returns the new `FilteredEvent` for such an event.
+      - `AbiDecoder.DecodeDelegateChangedData` and `DecodeAttributeChangedData` return the
+        strict-UTF-8 label, or null when it is not valid UTF-8.
+      - `AbiDecoder.TryDecodeBytes32AsUtf8` is new.
+    - **Ordinal prefix checks on untrusted text.** ICU ignores NUL in culture-sensitive
+      comparisons, so `"d\0id/svc/x"` counted as a did:ethr service event, a did:webvh proof
+      `verificationMethod` of `"d\0id:key:z…"` passed the `did:key:` check (yielding a bogus key,
+      not a match), and a verification method type `"Ecdsa\0Secp256k1…"` got the secp256k1
+      JSON-LD context. All three now compare ordinally.
+  - **Maintainer review round 2 of PR #149** found two more gaps; both are fixed here:
+    - **Relative DID URLs were rejected.** The identifier rules above first accepted only
+      absolute DID URLs, `#fragment` and the bare shorthand, so the conforming relative forms of
+      DID Core §3.2.2 (`/keys/1`, `keys/1#k`, `?versionId=1#key-1`) threw on read and write. They
+      are now accepted and compared by RFC 3986 resolution, as described above.
+      `DefaultVerificationRelationshipResolver` had its own normalization, which read `/keys/1`
+      as `<did>#/keys/1` and cost entries × DID length; it now uses the shared comparison.
+    - **did:peer Create returns the document its DID encodes.** did:peer:2 Create encoded
+      `Services` by enumeration but built and validated its document through the indexer, and
+      read `Keys` twice. A caller `IReadOnlyList` whose reads disagree therefore got a DID that
+      resolves to `invalidDid` while Create reported a valid document. Create now reads each list
+      once, encodes once, and returns that DID resolved. That also runs the producer checks;
+      failures throw `ArgumentException`. did:peer:4 Create builds its document from the JSON it
+      hashed instead of re-reading `InputDocument`. For ordinary input the result is unchanged.
+    - The adversarial pass over these fixes found more; all are fixed here:
+      - **`?service=` selects by fragment.** The value names a service by its fragment
+        (`?service=agent/v1` selects `#agent/v1`, as on `main`); it is never resolved as a path.
+        The first version of the fix above routed it through RFC 3986 resolution and lost such
+        services.
+      - **A DID URL with a path and a fragment names `<did>/path#fragment`.** The fragment step
+        ignored the path, so `<did>/k#x` returned the method `#x` (possibly from another
+        relationship, with another key), and `<did>/other#x` returned it too. This predates the
+        PR for absolute ids; relative path ids made it reachable from more documents.
+      - **An id that is no URI reference never matches a valid one.** A network-path query such
+        as `//evil#k` was compared as written, so `DefaultVerificationRelationshipResolver`
+        authorized it against the controller's own `<did>//evil#k`.
+      - **did:peer:2 follows the DIF spec's abbreviation rules.** Member names are abbreviated at
+        every depth (`type`, `serviceEndpoint`, `routingKeys`, `accept` become `t`, `s`, `r`,
+        `a`, also inside `serviceEndpoint`), and only the type value `DIDCommMessaging` becomes
+        `dm`. NetDid used one table for names and values and did not recurse. It therefore could
+        not produce the spec's own example DID, resolved it with `a`/`r` endpoint keys instead of
+        `accept`/`routingKeys`, read a type `t` back as `type`, and read a member `dm` as
+        `DIDCommMessaging`. Create now produces the spec's example DID byte for byte.
+        **Behavior change:** Create refuses a name that would resolve as another (`t`, `s`, `r`,
+        `a`) and the type `dm` (`ArgumentException`), since neither can be published as written.
+      - **did:peer:2 service ids.** The DIF spec says "service id attributes MUST be relative" and
+        generates an id only when none is set. Create used to drop an explicit id without a
+        leading `#` (`svc`, `/svc`) and replace it with `#service`; it now keeps it.
+        **Behavior change:** an absolute service id throws `ArgumentException` on Create (it was
+        silently replaced) and makes Resolve return `invalidDid`.
+      - **did:peer:2 key strings.** A `MultibasePublicKey` containing `.` (the segment separator)
+        added keys or services the caller never declared. It now throws `ArgumentException`, as
+        does a null key entry.
+
 - **did:webvh resolution now rejects log entries dated more than 5 minutes in the future**
   (issue #131). did:webvh v1.0 Read step 4 says an entry's `versionTime` "MUST NOT be more than
   a small, implementation-defined tolerance in the future relative to the resolver's current

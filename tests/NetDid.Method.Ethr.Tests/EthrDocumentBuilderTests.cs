@@ -172,6 +172,158 @@ public class EthrDocumentBuilderTests
         doc.Service[0].ServiceEndpoint.Uri.Should().Be(url);
     }
 
+    // ── Issue #145: service endpoint decoding matches the reference resolver ─────
+    //
+    // ethr-did-resolver decodes the value as strict UTF-8 (skipping the service otherwise),
+    // then tries JSON.parse, falling back to the raw string. NetDid decoded lossily and kept every
+    // value as a URI string. DID Core §5.4 requires URI strings, maps, or sets of them, so a value
+    // that fits none of these drops THAT service only (the existing degrade policy).
+
+    private static NetDid.Core.Model.DidDocument BuildWithServiceValue(byte[] value)
+    {
+        var future = (ulong)(Now.ToUnixTimeSeconds() + 3600);
+        var events = new List<Erc1056Event>
+        {
+            new AttributeChangedEvent(Address, "did/svc/AgentService", value, future, 0, 20)
+        };
+        return EthrDocumentBuilder.Build(Did, MakeIdentifier(), ChainId, events, Now, false);
+    }
+
+    [Fact]
+    public void Issue145_Build_ServiceValueIllFormedUtf8_DropsTheService()
+    {
+        byte[] value = [.. "https://a.example/"u8.ToArray(), 0xED, 0xA0, 0x80];
+
+        BuildWithServiceValue(value).Service.Should().BeNull("ill-formed UTF-8 must not become U+FFFD");
+    }
+
+    [Theory]
+    [InlineData("not a uri")]
+    [InlineData("123")]
+    [InlineData("true")]
+    [InlineData("[]")]
+    [InlineData("[[\"https://a.example\"]]")]
+    public void Issue145_Build_ServiceValueNotRepresentable_DropsTheService(string value)
+    {
+        var doc = BuildWithServiceValue(System.Text.Encoding.UTF8.GetBytes(value));
+
+        doc.Service.Should().BeNull();
+    }
+
+    [Fact]
+    public void Issue145_Build_JsonObjectServiceValue_BecomesAMap()
+    {
+        var doc = BuildWithServiceValue(System.Text.Encoding.UTF8.GetBytes(
+            """{"uri":"https://a.example","accept":["didcomm/v2"]}"""));
+
+        doc.Service![0].ServiceEndpoint.IsMap.Should().BeTrue();
+        doc.Service[0].ServiceEndpoint.Map!["uri"].GetString().Should().Be("https://a.example");
+        var serialize = () => NetDid.Core.Serialization.DidDocumentSerializer.Serialize(doc);
+        serialize.Should().NotThrow();
+    }
+
+    [Fact]
+    public void Issue145_Build_JsonArrayServiceValue_BecomesASet()
+    {
+        var doc = BuildWithServiceValue(System.Text.Encoding.UTF8.GetBytes(
+            """["https://a.example",{"uri":"https://b.example"}]"""));
+
+        var endpoint = doc.Service![0].ServiceEndpoint;
+        endpoint.Set.Should().HaveCount(2);
+        endpoint.Set![0].Uri.Should().Be("https://a.example");
+        endpoint.Set[1].IsMap.Should().BeTrue();
+    }
+
+    [Fact]
+    public void Issue145_Build_JsonStringServiceValue_IsTheString()
+    {
+        var doc = BuildWithServiceValue(System.Text.Encoding.UTF8.GetBytes("\"https://a.example\""));
+
+        doc.Service![0].ServiceEndpoint.Uri.Should().Be("https://a.example");
+    }
+
+    [Fact]
+    public void Issue145_Build_DeepJsonServiceValue_IsDroppedOrSerializes()
+    {
+        // The parsed value lands three levels below the document root, so a deep-enough value must
+        // be dropped rather than produce a document the serializer cannot write.
+        for (var depth = 55; depth <= 66; depth++)
+        {
+            var nested = new string('[', depth) + new string(']', depth);
+            var doc = BuildWithServiceValue(System.Text.Encoding.UTF8.GetBytes($$"""{"uri":{{nested}}}"""));
+
+            var serialize = () => NetDid.Core.Serialization.DidDocumentSerializer.Serialize(doc);
+            serialize.Should().NotThrow($"a resolved document at nesting {depth} must serialize again");
+        }
+    }
+
+    [Fact]
+    public void Issue145_Build_JsonServiceValueWithUndecodableName_DropsTheService()
+    {
+        var doc = BuildWithServiceValue(System.Text.Encoding.UTF8.GetBytes("""{"\uD800":"https://a.example"}"""));
+
+        doc.Service.Should().BeNull();
+    }
+
+    // F7 (final pass): the reference resolver only adds names matching
+    // ^did/(pub|svc)/(\w+)(/(\w+))?(/(\w+))?$, typed by the first segment, but counts every
+    // did/svc/ event.
+    [Fact]
+    public void Issue145_Build_ServiceNameOutsideReferenceGrammar_IsCountedButNotAdded()
+    {
+        var future = (ulong)(Now.ToUnixTimeSeconds() + 3600);
+        var url = System.Text.Encoding.UTF8.GetBytes("https://agent.example.com/api");
+        var events = new List<Erc1056Event>
+        {
+            new AttributeChangedEvent(Address, "did/svc/Linked-Domains", url, future, 0, 20),
+            new AttributeChangedEvent(Address, "did/svc/", url, future, 0, 21),
+            new AttributeChangedEvent(Address, "did/svc/Agent/x/y", url, future, 0, 22)
+        };
+
+        var doc = EthrDocumentBuilder.Build(Did, MakeIdentifier(), ChainId, events, Now, false);
+
+        doc.Service.Should().ContainSingle();
+        doc.Service![0].Type.Should().Be("Agent");
+        doc.Service[0].Id.Should().EndWith("#service-3", "skipped did/svc events still count");
+    }
+
+    // Adversarial pass on the final pass (F3): the did/pub and did/svc prefix tests were
+    // culture-sensitive, and ICU ignores NUL, so "d\0id/svc/…" was counted although
+    // ethr-did-resolver's /^did\/svc\// (and /^did\/pub\//) does not match it.
+    [Fact]
+    public void Issue145_Build_NamePrefixesAreOrdinal()
+    {
+        var future = (ulong)(Now.ToUnixTimeSeconds() + 3600);
+        var url = System.Text.Encoding.UTF8.GetBytes("https://agent.example.com/api");
+        var events = new List<Erc1056Event>
+        {
+            new AttributeChangedEvent(Address, "d\0id/svc/Hub", url, future, 0, 20),
+            new AttributeChangedEvent(Address, "d\0id/pub/Secp256k1/veriKey/hex", [1], future, 0, 21),
+            new AttributeChangedEvent(Address, "did/svc/Hub", url, future, 0, 22),
+            new DelegateChangedEvent(Address, "veriKey", "0x" + new string('b', 40), future, 0, 23)
+        };
+
+        var doc = EthrDocumentBuilder.Build(Did, MakeIdentifier(), ChainId, events, Now, false);
+
+        doc.Service.Should().ContainSingle().Which.Id.Should().Be(Did + "#service-1");
+        doc.VerificationMethod!.Select(vm => vm.Id).Should().Contain(Did + "#delegate-1");
+    }
+
+    // F8: JSON.parse keeps the LAST value of a duplicate member, at its first position.
+    [Fact]
+    public void Issue145_Build_JsonServiceValueWithDuplicateMembers_KeepsTheLastValue()
+    {
+        var doc = BuildWithServiceValue(System.Text.Encoding.UTF8.GetBytes(
+            """{"uri":"https://x.example","uri":"https://y.example","m":{"b":1,"b":2}}"""));
+
+        var map = doc.Service![0].ServiceEndpoint.Map!;
+        map["uri"].GetString().Should().Be("https://y.example");
+        map["m"].GetProperty("b").GetInt32().Should().Be(2);
+        var json = NetDid.Core.Serialization.DidDocumentSerializer.Serialize(doc);
+        var again = () => NetDid.Core.Serialization.DidDocumentSerializer.Deserialize(json);
+        again.Should().NotThrow("the published map carries no duplicate members");
+    }
+
     // ── Secp256k1 key attribute ───────────────────────────────────────────────
 
     [Fact]
