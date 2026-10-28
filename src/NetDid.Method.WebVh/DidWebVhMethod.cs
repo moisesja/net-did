@@ -40,8 +40,9 @@ public sealed class DidWebVhMethod : DidMethodBase
     private readonly WitnessValidator _witnessValidator;
     private readonly ILogger<DidWebVhMethod> _logger;
 
-    // Authoring clock seam: versionTime stamping and the bounded same-second wait read time
-    // from here so tests can pin exact whole-second boundaries deterministically.
+    // Clock seam: versionTime stamping, the bounded same-second wait, and the resolver's
+    // current time for the read-side future-skew bound (issue #131) all read time from here,
+    // so tests can pin exact whole-second and tolerance boundaries deterministically.
     internal TimeProvider Clock { get; init; } = TimeProvider.System;
 
     internal const string MethodVersion = "did:webvh:1.0";
@@ -296,9 +297,14 @@ public sealed class DidWebVhMethod : DidMethodBase
             if (targetIndex < 0)
                 return DidResolutionResult.NotFound(did);
 
+            // The resolver's current time for the future-skew bound (issue #131), observed once
+            // after the fetch so the prefix pass and the deactivation-tail pass below judge
+            // "the future" identically.
+            var now = Clock.GetUtcNow();
+
             // Validate the chain up to the target version
             var perEntryParams = await _chainValidator.ValidateChainWithPerEntryParamsAsync(
-                entries, targetIndex + 1, ct);
+                entries, targetIndex + 1, now, ct);
             var effectiveParams = perEntryParams[^1];
 
             var targetEntry = entries[targetIndex];
@@ -410,7 +416,7 @@ public sealed class DidWebVhMethod : DidMethodBase
                     // Per-entry state.id SCID consistency is enforced inside chain validation,
                     // so a tail claiming a foreign identity fails here and is not asserted.
                     var fullPerEntryParams = await _chainValidator.ValidateChainWithPerEntryParamsAsync(
-                        entries, entries.Count, ct);
+                        entries, entries.Count, now, ct);
                     if (fullPerEntryParams[^1].Deactivated == true)
                     {
                         var fullChainWitnessesValid = true;
@@ -543,7 +549,8 @@ public sealed class DidWebVhMethod : DidMethodBase
 
         // Parse and validate existing log
         var entries = LogEntrySerializer.ParseJsonLines(updateOptions.CurrentLogContent);
-        var effectiveParams = await _chainValidator.ValidateChainAsync(entries, ct);
+        var effectiveParams = await _chainValidator.ValidateChainAsync(
+            entries, Clock.GetUtcNow(), ct);
 
         // Bind the supplied log and new document to the target DID. Without these checks the
         // driver could emit a log the resolver rejects on identity grounds (resolution enforces
@@ -780,7 +787,8 @@ public sealed class DidWebVhMethod : DidMethodBase
 
         // Parse and validate existing log
         var entries = LogEntrySerializer.ParseJsonLines(deactivateOptions.CurrentLogContent);
-        var effectiveParams = await _chainValidator.ValidateChainAsync(entries, ct);
+        var effectiveParams = await _chainValidator.ValidateChainAsync(
+            entries, Clock.GetUtcNow(), ct);
 
         // Bind the supplied log to the target DID (see issue #82 and UpdateCoreAsync).
         RequireAppendableLogForDid(entries, effectiveParams, did);

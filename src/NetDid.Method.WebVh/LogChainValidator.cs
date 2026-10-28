@@ -22,6 +22,15 @@ internal sealed class LogChainValidator
     /// </summary>
     internal const int DefaultMaxControllerProofsPerEntry = 8;
 
+    /// <summary>
+    /// How far an entry's <c>versionTime</c> may lie ahead of the resolver's current time.
+    /// did:webvh v1.0 Read step 4: "The <c>versionTime</c> of every entry MUST NOT be more than a
+    /// small, implementation-defined tolerance in the future relative to the resolver's current
+    /// time. Resolvers SHOULD use a tolerance of no more than 5 minutes. Entries that exceed this
+    /// tolerance MUST cause resolution to fail." An entry exactly at the tolerance is accepted.
+    /// </summary>
+    internal static readonly TimeSpan MaxVersionTimeFutureSkew = TimeSpan.FromMinutes(5);
+
     private readonly DataIntegrityProofPipeline _pipeline;
     private readonly int _maxControllerProofsPerEntry;
 
@@ -35,35 +44,39 @@ internal sealed class LogChainValidator
     }
 
     /// <summary>
-    /// Validate the entire log chain.
+    /// Validate the entire log chain, judging future-dated entries against the system clock.
     /// Returns the effective parameters at the final entry on success.
     /// Throws LogChainValidationException on failure.
     /// </summary>
     public Task<LogEntryParameters> ValidateChainAsync(
         IReadOnlyList<LogEntry> entries, CancellationToken ct = default)
     {
-        return ValidateChainAsync(entries, entries.Count, ct);
+        return ValidateChainAsync(entries, TimeProvider.System.GetUtcNow(), ct);
     }
 
     /// <summary>
-    /// Validate the log chain up to the specified entry count.
-    /// Returns the effective parameters at the last validated entry.
+    /// Validate the entire log chain, judging future-dated entries against
+    /// <paramref name="now"/> (the resolver's current time).
+    /// Returns the effective parameters at the final entry on success.
     /// Throws LogChainValidationException on failure.
     /// </summary>
     public async Task<LogEntryParameters> ValidateChainAsync(
-        IReadOnlyList<LogEntry> entries, int upToCount, CancellationToken ct = default)
+        IReadOnlyList<LogEntry> entries, DateTimeOffset now, CancellationToken ct = default)
     {
-        var perEntry = await ValidateChainWithPerEntryParamsAsync(entries, upToCount, ct);
+        var perEntry = await ValidateChainWithPerEntryParamsAsync(entries, entries.Count, now, ct);
         return perEntry[^1];
     }
 
     /// <summary>
-    /// Validate the log chain and return the effective parameters at each entry.
-    /// Index 0 = genesis entry's effective params, etc.
+    /// Validate the log chain up to the specified entry count and return the effective parameters
+    /// at each entry. Index 0 = genesis entry's effective params, etc. Every validated entry's
+    /// <c>versionTime</c> is judged against <paramref name="now"/>; a caller running several
+    /// passes in one operation must pass the same observation to each.
     /// Throws LogChainValidationException on failure.
     /// </summary>
     public async Task<IReadOnlyList<LogEntryParameters>> ValidateChainWithPerEntryParamsAsync(
-        IReadOnlyList<LogEntry> entries, int upToCount, CancellationToken ct = default)
+        IReadOnlyList<LogEntry> entries, int upToCount, DateTimeOffset now,
+        CancellationToken ct = default)
     {
         if (entries.Count == 0)
             throw new LogChainValidationException(0, "DID log is empty.");
@@ -73,6 +86,7 @@ internal sealed class LogChainValidator
 
         // Validate genesis entry
         var genesis = entries[0];
+        ValidateVersionTimeNotInFuture(genesis.VersionTime, now, 1);
         await ValidateGenesisEntryAsync(genesis, ct);
 
         // did:webvh v1.0: "The SCID segment of state.id MUST be byte-for-byte identical to the
@@ -94,6 +108,7 @@ internal sealed class LogChainValidator
             var current = entries[i];
 
             ValidateStateScidConsistency(current, scid, i + 1);
+            ValidateVersionTimeNotInFuture(current.VersionTime, now, i + 1);
             await ValidateSubsequentEntryAsync(current, previous, effectiveParams, i + 1, ct);
 
             // Merge parameters for the next iteration
@@ -264,6 +279,20 @@ internal sealed class LogChainValidator
         if (current <= previous)
             throw new LogChainValidationException(version,
                 $"versionTime at version {version} must be strictly later than version {version - 1}.");
+    }
+
+    /// <summary>
+    /// Enforces the did:webvh future-skew bound (<see cref="MaxVersionTimeFutureSkew"/>) for one
+    /// entry. Runs for genesis and every subsequent validated entry, before hash and proof work,
+    /// so resolution, Update, and Deactivate share one rule. Subtracting instants cannot overflow
+    /// for any pair of <see cref="DateTimeOffset"/> values, unlike adding the tolerance to now.
+    /// </summary>
+    internal static void ValidateVersionTimeNotInFuture(
+        DateTimeOffset versionTime, DateTimeOffset now, int version)
+    {
+        if (versionTime - now > MaxVersionTimeFutureSkew)
+            throw new LogChainValidationException(version,
+                $"versionTime at version {version} is more than 5 minutes ahead of the resolver's current time.");
     }
 
     private static void ValidateWitnessPolicy(WitnessConfig? config, int version)
