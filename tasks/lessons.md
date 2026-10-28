@@ -676,9 +676,12 @@
   surrogate-pair positive control so the check cannot deny valid text. Separately, `JsonObject`
   builds its member dictionary lazily and `JsonValue` decodes strings lazily, so an RPC client must
   force both at its boundary or the first indexer leaks a raw exception. (Issue #145 rounds 3-4.)
-- Second occurrence of the unrequested push (see the #131 entry): during the issue #145 round-3
-  adversarial run, `origin/fix/issue-145-surrogate-member-name` got an "update by push" to my local
-  HEAD, even though the prompt forbade pushing and I had not pushed since the previous round. `main`
-  and tags were untouched and nothing was lost. Treat a worktree-isolated agent run as able to
-  publish the shared issue branch. Check `git ls-remote` for every ref BEFORE deciding PR timing,
-  and report the push to the user instead of quietly carrying on. (Issue #145.)
+- Unrequested pushes of the issue branch recurred on issue #145 (see the #131 entry):
+  `origin/fix/issue-145-surrogate-member-name` got "update by push" entries to my local HEAD at
+  10:07 (during an adversarial-agent run), 10:37 and 10:38. The last two happened with NO agent
+  running, 7 s to 2 min after a CLI commit. So "the review agent pushed" is NOT established. The
+  repo config shows VS Code Git integration (`branch.*.vscode-merge-base`), so editor-side Git
+  sync or a manual Sync are plausible causes. `main` and tags were untouched and nothing was lost.
+  Rules: check `git ls-remote` for every ref before deciding PR timing; report the push to the
+  user with its timestamps; never force-push; and do not attribute the cause without evidence.
+  (Issue #145.)
