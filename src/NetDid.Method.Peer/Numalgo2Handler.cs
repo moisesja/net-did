@@ -134,7 +134,7 @@ internal sealed class Numalgo2Handler
             KeyAgreement = keyAgreement.Count > 0 ? keyAgreement : null,
             CapabilityInvocation = capabilityInvocation.Count > 0 ? capabilityInvocation : null,
             CapabilityDelegation = capabilityDelegation.Count > 0 ? capabilityDelegation : null,
-            Service = services.Count > 0 ? services : null
+            Service = services.Count > 0 ? RequireUniqueServiceIds(services) : null
         };
     }
 
@@ -165,6 +165,21 @@ internal sealed class Numalgo2Handler
         };
         keyIndex++;
         return vm;
+    }
+
+    // W3C DID Core §5.4: "A conforming producer MUST NOT produce multiple service entries with the
+    // same id" and "A conforming consumer MUST produce an error if it detects" them. An explicit
+    // "#service" beside an auto-generated one, or two equal explicit ids, used to pass both ways.
+    // Create and Resolve assign ids the same way, so this one check covers both (issue #145).
+    private static List<Service> RequireUniqueServiceIds(List<Service> services)
+    {
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var service in services)
+        {
+            if (!seen.Add(service.Id))
+                throw new ArgumentException("did:peer:2 services must have unique ids (W3C DID Core §5.4).");
+        }
+        return services;
     }
 
     private static DidDocument BuildDocument(
@@ -228,6 +243,7 @@ internal sealed class Numalgo2Handler
                     AdditionalProperties = inputServices[i].AdditionalProperties
                 });
             }
+            RequireUniqueServiceIds(services);
         }
 
         return new DidDocument
