@@ -1298,11 +1298,13 @@ public class Issue145UnpairedSurrogateMemberNameTests
         { RootAnchor, "\"authentication\": [\"did:example:123#key 1\"], " + RootAnchor },
         { RootAnchor, "\"authentication\": [\"did:example:123#k‮\"], " + RootAnchor },
         { "\"id\": \"did:example:123#svc\",", "\"id\": \"svc with space\"," },
-        { "\"id\": \"did:example:123#svc\",", "\"id\": \"svc\"," },
+        { "\"id\": \"did:example:123#svc\",", "\"id\": \"1x:y\"," },
         { "\"serviceEndpoint\": \"https://example.com\"", "\"serviceEndpoint\": \"not a uri\"" },
         { "\"serviceEndpoint\": \"https://example.com\"", "\"serviceEndpoint\": \"/relative/path\"" },
         { "\"serviceEndpoint\": \"https://example.com\"", "\"serviceEndpoint\": [\"https://a.example\", \"not a uri\"]" },
         { RootAnchor, "\"alsoKnownAs\": [\"not a uri\"], " + RootAnchor },
+        // The bare shorthand "svc" names the same service as "did:example:123#svc" (issue #136).
+        { "\"service\": [{", "\"service\": [{\"id\": \"svc\", \"type\": \"Dup\", \"serviceEndpoint\": \"https://d.example\"}, {" },
     };
 
     [Theory]
@@ -1321,6 +1323,8 @@ public class Issue145UnpairedSurrogateMemberNameTests
 
     [Theory]
     [InlineData("\"id\": \"did:example:123#svc\",", "\"id\": \"#svc\",")]
+    [InlineData("\"id\": \"did:example:123#svc\",", "\"id\": \"files\",")]
+    [InlineData("\"id\": \"did:example:123#key-1\",", "\"id\": \"key-1\",")]
     [InlineData("\"serviceEndpoint\": \"https://example.com\"", "\"serviceEndpoint\": \"didcomm:transport/queue\"")]
     [InlineData("\"id\": \"did:example:123\",", "\"alsoKnownAs\": [\"did:web:example.com\", \"https://a.example/b?c=d#e\"], \"id\": \"did:example:123\",")]
     public void Issue145_Control_ConformantIdentifiers_StillDeserialize(string find, string replace)
@@ -1361,6 +1365,7 @@ public class Issue145UnpairedSurrogateMemberNameTests
     [Theory]
     [InlineData("did:example:123#svc", "did:example:123#svc")]
     [InlineData("#svc", "did:example:123#svc")]
+    [InlineData("svc", "#svc")]
     public void Issue145_Serialize_DuplicateServiceIds_ThrowsArgumentException(string first, string second)
     {
         var doc = new DidDocument

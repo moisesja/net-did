@@ -242,6 +242,29 @@ public class EthrDocumentBuilderTests
         doc.Service![0].ServiceEndpoint.Uri.Should().Be("https://a.example");
     }
 
+    [Fact]
+    public void Issue145_Build_DeepJsonServiceValue_IsDroppedOrSerializes()
+    {
+        // The parsed value lands three levels below the document root, so a deep-enough value must
+        // be dropped rather than produce a document the serializer cannot write.
+        for (var depth = 55; depth <= 66; depth++)
+        {
+            var nested = new string('[', depth) + new string(']', depth);
+            var doc = BuildWithServiceValue(System.Text.Encoding.UTF8.GetBytes($$"""{"uri":{{nested}}}"""));
+
+            var serialize = () => NetDid.Core.Serialization.DidDocumentSerializer.Serialize(doc);
+            serialize.Should().NotThrow($"a resolved document at nesting {depth} must serialize again");
+        }
+    }
+
+    [Fact]
+    public void Issue145_Build_JsonServiceValueWithUndecodableName_DropsTheService()
+    {
+        var doc = BuildWithServiceValue(System.Text.Encoding.UTF8.GetBytes("""{"\uD800":"https://a.example"}"""));
+
+        doc.Service.Should().BeNull();
+    }
+
     // ── Secp256k1 key attribute ───────────────────────────────────────────────
 
     [Fact]
