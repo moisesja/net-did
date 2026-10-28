@@ -1392,7 +1392,11 @@ public class Issue145UnpairedSurrogateMemberNameTests
     [InlineData("https://ex[ample.com", false)]
     [InlineData("https://example.com/a[b]", false)]
     [InlineData("http://[::1", false)]
+    [InlineData("http://host:abc", false)]      // "//" starts an authority, never a path
+    [InlineData("http://user@[::1]x", false)]
     [InlineData("http://[::1]:8080/x", true)]
+    [InlineData("file:///etc/hosts", true)]
+    [InlineData("urn:a//b", true)]
     [InlineData("https://user:pw@host.example:443/p?q=1#f", true)]
     [InlineData("didcomm:transport/queue", true)]
     [InlineData("urn:uuid:6e8bc430-9c3a-11d9-9669-0800200c9a66", true)]

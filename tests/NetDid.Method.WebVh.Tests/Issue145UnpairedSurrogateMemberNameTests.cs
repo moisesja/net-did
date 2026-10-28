@@ -601,25 +601,62 @@ public class Issue145UnpairedSurrogateMemberNameTests
     }
 
     [Fact]
-    public async Task Issue145_Create_ServicesCollidingInDidJson_ThrowsArgumentException()
+    public async Task Issue145_Create_ServicesCollidingInDidJson_ThrowsBeforeSigning()
     {
         // "did:web:example.com#x" and "#x" are distinct in the did:webvh document but name the
-        // same service in the parallel did.json, which must never carry duplicate ids.
-        var signer = new KeyPairSigner(_keyGen.Generate(KeyType.Ed25519), _crypto);
+        // same service in the parallel did.json, which must never carry duplicate ids. The
+        // projection is built before signing, so no signature is spent on a refused document.
+        var signer = new CountingSigner(new KeyPairSigner(_keyGen.Generate(KeyType.Ed25519), _crypto));
         var (method, _) = CreateMethod();
 
         var act = () => method.CreateAsync(new DidWebVhCreateOptions
         {
             Domain = "example.com",
             UpdateKey = signer,
-            Services =
-            [
-                new Service { Id = "did:web:example.com#x", Type = "A", ServiceEndpoint = ServiceEndpointValue.FromUri("https://a.example") },
-                new Service { Id = "#x", Type = "B", ServiceEndpoint = ServiceEndpointValue.FromUri("https://b.example") }
-            ]
+            Services = CollidingInDidJson
         });
 
         await act.Should().ThrowAsync<ArgumentException>();
+        signer.Calls.Should().Be(0);
+    }
+
+    [Fact]
+    public async Task Issue145_Update_ServicesCollidingInDidJson_ThrowsBeforeSigning()
+    {
+        var (did, jsonl, inner) = await CreateLogAsync();
+        var current = LogEntrySerializer.ParseJsonLines(Encoding.UTF8.GetBytes(jsonl))[0].State;
+        var signer = new CountingSigner(inner);
+        var (method, _) = CreateMethod();
+
+        var act = () => method.UpdateAsync(did, new DidWebVhUpdateOptions
+        {
+            CurrentLogContent = Encoding.UTF8.GetBytes(jsonl),
+            SigningKey = signer,
+            NewDocument = current with { Service = CollidingInDidJson }
+        });
+
+        await act.Should().ThrowAsync<ArgumentException>();
+        signer.Calls.Should().Be(0);
+    }
+
+    private static List<Service> CollidingInDidJson =>
+    [
+        new Service { Id = "did:web:example.com#x", Type = "A", ServiceEndpoint = ServiceEndpointValue.FromUri("https://a.example") },
+        new Service { Id = "#x", Type = "B", ServiceEndpoint = ServiceEndpointValue.FromUri("https://b.example") }
+    ];
+
+    private sealed class CountingSigner(ISigner inner) : ISigner
+    {
+        public int Calls { get; private set; }
+        public KeyType KeyType => inner.KeyType;
+        public ReadOnlyMemory<byte> PublicKey => inner.PublicKey;
+        public string MultibasePublicKey => inner.MultibasePublicKey;
+
+        public Task<byte[]> SignAsync(ReadOnlyMemory<byte> data, CancellationToken ct = default)
+        {
+            Calls++;
+            return inner.SignAsync(data, ct);
+        }
     }
 
     private static DataIntegrityProofValue ProgrammaticProof(string proofValue) => new()
