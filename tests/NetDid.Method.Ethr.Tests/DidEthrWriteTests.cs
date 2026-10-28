@@ -541,10 +541,10 @@ public class DidEthrWriteTests
                 RemoveServices = add ? null : services,
             });
 
-        (await act.Should().ThrowAsync<ArgumentException>())
-            .Which.ParamName.Should().Be(add
-                ? nameof(DidEthrUpdateOptions.AddServices)
-                : nameof(DidEthrUpdateOptions.RemoveServices));
+        // Same convention as a null collection entry: ParamName "options", collection in the message.
+        await act.Should().ThrowAsync<ArgumentException>().WithMessage(add
+            ? "*AddServices*unpaired UTF-16 surrogate*"
+            : "*RemoveServices*unpaired UTF-16 surrogate*");
         chain.CurrentBlockNumber.Should().Be(0, "nothing may be broadcast");
     }
 

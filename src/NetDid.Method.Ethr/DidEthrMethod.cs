@@ -7,6 +7,7 @@ using NetDid.Core;
 using NetCrypto;
 using NetDid.Core.Exceptions;
 using NetDid.Core.Model;
+using NetDid.Core.Serialization;
 using NetDid.Method.Ethr.Abi;
 using NetDid.Method.Ethr.Crypto;
 using NetDid.Method.Ethr.Erc1056;
@@ -1058,7 +1059,7 @@ public sealed class DidEthrMethod : DidMethodBase
         foreach (var service in removeServices)
             operations.Add(Erc1056TransactionBuilder.RevokeAttribute(
                 identity, "did/svc/" + Required(service, nameof(DidEthrUpdateOptions.RemoveServices)).ServiceType,
-                Encoding.UTF8.GetBytes(service.ServiceEndpoint)));
+                ServiceEndpointBytes(service, nameof(DidEthrUpdateOptions.RemoveServices))));
         foreach (var del in revokeDelegates)
             operations.Add(Erc1056TransactionBuilder.RevokeDelegate(
                 identity, Required(del, nameof(DidEthrUpdateOptions.RevokeDelegates)).DelegateType,
@@ -1070,7 +1071,7 @@ public sealed class DidEthrMethod : DidMethodBase
         foreach (var service in addServices)
             operations.Add(Erc1056TransactionBuilder.SetAttribute(
                 identity, "did/svc/" + Required(service, nameof(DidEthrUpdateOptions.AddServices)).ServiceType,
-                Encoding.UTF8.GetBytes(service.ServiceEndpoint),
+                ServiceEndpointBytes(service, nameof(DidEthrUpdateOptions.AddServices)),
                 ValiditySeconds(service.Validity)));
         foreach (var del in addDelegates)
             operations.Add(Erc1056TransactionBuilder.AddDelegate(
@@ -1642,6 +1643,19 @@ public sealed class DidEthrMethod : DidMethodBase
     private static T Required<T>(T? element, string collectionName) where T : class
         => element ?? throw new ArgumentException(
             $"{collectionName} contains a null entry.", "options");
+
+    /// <summary>
+    /// <c>Encoding.UTF8</c> silently replaces an unpaired surrogate with EF BF BD, so the registry
+    /// would record (or be asked to revoke) a different endpoint than the caller supplied
+    /// (issue #145). Service types need no check: they are ASCII-only bytes32 labels.
+    /// </summary>
+    private static byte[] ServiceEndpointBytes(DidEthrServiceAttribute service, string collectionName)
+        => Utf16Text.IsWellFormed(service.ServiceEndpoint)
+            ? Encoding.UTF8.GetBytes(service.ServiceEndpoint)
+            : throw new ArgumentException(
+                $"{collectionName} contains a service endpoint with an unpaired UTF-16 surrogate, " +
+                "which cannot be encoded as UTF-8 without altering it.",
+                "options");
 
     private static ulong ValiditySeconds(TimeSpan validity)
     {

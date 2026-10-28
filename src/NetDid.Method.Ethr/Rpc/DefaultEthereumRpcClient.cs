@@ -240,8 +240,9 @@ public sealed class DefaultEthereumRpcClient : IEthereumRpcClient, IEthereumFina
         {
             "0x1" => true,
             "0x0" => false,
+            // Fixed text: the node-supplied status is never echoed (issue #145).
             _ => throw new EthereumInteractionException(
-                $"Malformed eth_getTransactionReceipt status '{status}': expected 0x0 or 0x1."),
+                "Malformed eth_getTransactionReceipt status: expected 0x0 or 0x1."),
         };
 
         var blockNumberNode = receipt["blockNumber"]
@@ -256,8 +257,9 @@ public sealed class DefaultEthereumRpcClient : IEthereumRpcClient, IEthereumFina
                 "Malformed eth_getTransactionReceipt result: missing or null 'transactionHash'.");
         var reportedHash = GetRpcString(hashNode, "eth_getTransactionReceipt transactionHash");
         if (!string.Equals(reportedHash, transactionHash, StringComparison.OrdinalIgnoreCase))
+            // The node-supplied hash is never echoed (issue #145); the requested hash is ours.
             throw new EthereumInteractionException(
-                $"eth_getTransactionReceipt returned a receipt for '{reportedHash}' " +
+                "eth_getTransactionReceipt returned a receipt for another transaction " +
                 $"instead of the requested '{transactionHash}'.");
 
         string? contractAddress = null;
