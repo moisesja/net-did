@@ -81,12 +81,13 @@ public static class EthrDocumentBuilder
                 case AttributeChangedEvent ac when ac.Name.StartsWith("did/svc/"):
                 {
                     serviceCount++;
-                    // Like ethr-did-resolver: a value that is not valid UTF-8 is skipped (neither
-                    // added nor revoked) but still counts. It used to decode lossily to U+FFFD.
-                    if (!EthrServiceEndpoint.TryDecode(ac.Value, out var svcEndpoint))
+                    // Like ethr-did-resolver: every did/svc/ event counts, but only a name in its
+                    // grammar (typed by the first segment) with a valid UTF-8 value is added or
+                    // revoked. NetDid used to take the whole suffix as the type and decode lossily.
+                    if (EthrServiceEndpoint.ServiceType(ac.Name) is not { } svcName
+                        || !EthrServiceEndpoint.TryDecode(ac.Value, out var svcEndpoint))
                         break;
                     var key = $"DIDAttributeChanged-{ac.Name}-{Convert.ToHexString(ac.Value)}";
-                    var svcName = ac.Name["did/svc/".Length..];
                     if (ac.ValidTo >= refUnix)
                         services[key] = (serviceCount, new ServiceEntry(svcName, svcEndpoint, ac.ValidTo));
                     else

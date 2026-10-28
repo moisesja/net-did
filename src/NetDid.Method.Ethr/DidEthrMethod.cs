@@ -1069,18 +1069,43 @@ public sealed class DidEthrMethod : DidMethodBase
                 identity, Required(attribute, nameof(DidEthrUpdateOptions.RemoveAttributes)).Name,
                 attribute.Value));
         foreach (var service in addServices)
+        {
+            var name = "did/svc/" + Required(service, nameof(DidEthrUpdateOptions.AddServices)).ServiceType;
+            // ethr-did-resolver only adds did/svc/<\w+> names, typed by that segment, so any other
+            // ServiceType would publish a service nobody resolves (issue #145).
+            if (service.ServiceType is null || EthrServiceEndpoint.ServiceType(name) != service.ServiceType)
+                throw new ArgumentException(
+                    $"{nameof(DidEthrUpdateOptions.AddServices)} contains a ServiceType that is not one " +
+                    "[A-Za-z0-9_]+ segment; ethr-did-resolver would not resolve the service.",
+                    "options");
             operations.Add(Erc1056TransactionBuilder.SetAttribute(
-                identity, "did/svc/" + Required(service, nameof(DidEthrUpdateOptions.AddServices)).ServiceType,
+                identity, name,
                 ServiceEndpointBytes(service, nameof(DidEthrUpdateOptions.AddServices), requireRepresentable: true),
                 ValiditySeconds(service.Validity)));
+        }
         foreach (var del in addDelegates)
             operations.Add(Erc1056TransactionBuilder.AddDelegate(
                 identity, Required(del, nameof(DidEthrUpdateOptions.AddDelegates)).DelegateType,
                 del.DelegateAddress, ValiditySeconds(del.Validity)));
         foreach (var attribute in addAttributes)
+        {
+            Required(attribute, nameof(DidEthrUpdateOptions.AddAttributes));
+            // The raw path still publishes a service when the name is did/svc/: it must be one the
+            // resolver keeps, like AddServices (issue #145). Revocation stays unrestricted.
+            if (attribute.Name?.StartsWith("did/svc/", StringComparison.Ordinal) == true
+                && attribute.Value is not null
+                && (EthrServiceEndpoint.ServiceType(attribute.Name) is null
+                    || !EthrServiceEndpoint.TryDecode(attribute.Value, out var text)
+                    || !EthrServiceEndpoint.TryParse(text, out _)))
+                throw new ArgumentException(
+                    $"{nameof(DidEthrUpdateOptions.AddAttributes)} contains a did/svc/ attribute that " +
+                    "ethr-did-resolver would not resolve: the name must be did/svc/<[A-Za-z0-9_]+>, and " +
+                    "the value valid UTF-8 holding an RFC 3986 URI or a JSON map or set of them " +
+                    "(W3C DID Core §5.4).",
+                    "options");
             operations.Add(Erc1056TransactionBuilder.SetAttribute(
-                identity, Required(attribute, nameof(DidEthrUpdateOptions.AddAttributes)).Name,
-                attribute.Value, ValiditySeconds(attribute.Validity)));
+                identity, attribute.Name!, attribute.Value!, ValiditySeconds(attribute.Validity)));
+        }
         if (newOwner is not null)
             operations.Add(Erc1056TransactionBuilder.ChangeOwner(identity, newOwner));
 
