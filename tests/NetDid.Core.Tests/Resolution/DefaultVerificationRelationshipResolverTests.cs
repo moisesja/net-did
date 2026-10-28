@@ -359,4 +359,22 @@ public class DefaultVerificationRelationshipResolverTests
         result.Decision.Should().Be(AuthorizationDecision.Authorized);
         allocated.Should().BeLessThan(64L * 1024 * 1024, "the pre-fix cost was about 1.6 GB");
     }
+
+    // Review round 2, adversarial pass (B3): an id that is no URI reference at all (here a
+    // network-path, "did://evil#k" under RFC 3986) was compared as written, so it equalled the
+    // normalized form "//evil#k" of the controller's own "<did>//evil#k".
+    [Theory]
+    [InlineData("//evil#k")]
+    [InlineData("k 1")]
+    public async Task Issue145_IsAuthorizedForRelationshipAsync_InvalidQuery_NeverMatches(string query)
+    {
+        SetupResolver(DocWith(VerificationRelationship.Authentication,
+            VerificationRelationshipEntry.FromReference(ControllerDid + "//evil#k"),
+            VerificationRelationshipEntry.FromReference(ControllerDid + "#k 1")));
+
+        var result = await _sut.IsAuthorizedForRelationshipAsync(
+            ControllerDid, query, VerificationRelationship.Authentication);
+
+        result.Decision.Should().Be(AuthorizationDecision.NotAuthorized);
+    }
 }

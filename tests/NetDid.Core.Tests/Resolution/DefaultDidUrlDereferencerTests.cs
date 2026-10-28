@@ -94,6 +94,77 @@ public class DefaultDidUrlDereferencerTests
         result.ContentStream.Should().BeOfType<Service>();
     }
 
+    // Review round 2, adversarial pass (B1): the ?service= value names a service by its fragment
+    // ("agent" selects "#agent"), so it is never resolved as a path reference. Routing it
+    // through RFC 3986 resolution turned "agent/v1" into "/agent/v1" and lost "#agent/v1".
+    [Theory]
+    [InlineData("?service=agent/v1", "#agent/v1")]
+    [InlineData("?service=agent%2Fv1", "#agent/v1")]
+    [InlineData("?service=q%3Fx", "#q?x")]
+    [InlineData("?service=files", "#files")]
+    public async Task Issue145_DereferenceAsync_ServiceQuery_SelectsByFragment(string query, string expectedId)
+    {
+        SetupResolverSuccess(new DidDocument
+        {
+            Id = new Did("did:example:123"),
+            Service =
+            [
+                new Service { Id = "#agent/v1", Type = "A", ServiceEndpoint = ServiceEndpointValue.FromUri("https://a.example") },
+                new Service { Id = "#q?x", Type = "Q", ServiceEndpoint = ServiceEndpointValue.FromUri("https://q.example") },
+                new Service { Id = "/files", Type = "P", ServiceEndpoint = ServiceEndpointValue.FromUri("https://p.example") },
+                new Service { Id = "#files", Type = "F", ServiceEndpoint = ServiceEndpointValue.FromUri("https://f.example") }
+            ]
+        });
+
+        var result = await _dereferencer.DereferenceAsync("did:example:123" + query,
+            new DidUrlDereferencingOptions { Accept = DidContentTypes.JsonLd });
+
+        result.DereferencingMetadata.Error.Should().BeNull();
+        ((DidDocument)result.ContentStream!).Service!.Single().Id.Should().Be(expectedId);
+    }
+
+    // Review round 2, adversarial pass (B2): a DID URL with a path and a fragment names the
+    // resource "<did>/path#fragment". The fragment step ignored the path, so "<did>/k#x" returned
+    // the method "#x" (another key, in another relationship) and "<did>/other#x" returned it too.
+    [Theory]
+    [InlineData("did:example:123/k#x", null, "/k#x")]
+    [InlineData("did:example:123/k#x", "assertionMethod", "/k#x")]
+    [InlineData("did:example:123/a/../k#x", null, "/k#x")]
+    [InlineData("did:example:123#x", null, "#x")]
+    [InlineData("did:example:123/other#x", null, null)]
+    [InlineData("did:example:123/k#x", "authentication", null)]
+    public async Task Issue145_DereferenceAsync_PathAndFragment_NamesThatResource(
+        string didUrl, string? relationship, string? expectedId)
+    {
+        SetupResolverSuccess(new DidDocument
+        {
+            Id = new Did("did:example:123"),
+            VerificationMethod =
+            [
+                new VerificationMethod
+                {
+                    Id = "#x", Type = "Multikey", Controller = new Did("did:example:123"),
+                    PublicKeyMultibase = "z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK"
+                },
+                new VerificationMethod
+                {
+                    Id = "/k#x", Type = "Multikey", Controller = new Did("did:example:123"),
+                    PublicKeyMultibase = "z6MkjchhfUsD6mmvni8mCdXHw216Xrm9bQe2mBH1P5RDjVJG"
+                }
+            ],
+            Authentication = [VerificationRelationshipEntry.FromReference("#x")],
+            AssertionMethod = [VerificationRelationshipEntry.FromReference("/k#x")]
+        });
+
+        var result = await _dereferencer.DereferenceAsync(didUrl,
+            new DidUrlDereferencingOptions { VerificationRelationship = relationship });
+
+        if (expectedId is null)
+            result.DereferencingMetadata.Error.Should().Be("notFound");
+        else
+            ((VerificationMethod)result.ContentStream!).Id.Should().Be(expectedId);
+    }
+
     // Issue #145 (adversarial pass on the final pass, F2): every id comparison rebuilt
     // "{did}#x", so one dereference cost services × DID length. A did:peer DID embeds its whole
     // document, so a hostile one made that 14 GB. The cost must follow the ids, not the DID.

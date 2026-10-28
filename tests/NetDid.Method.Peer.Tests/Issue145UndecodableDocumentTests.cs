@@ -727,4 +727,172 @@ public class Issue145UndecodableDocumentTests
         DidDocumentSerializer.Serialize(created.DidDocument)
             .Should().Be(DidDocumentSerializer.Serialize(resolved.DidDocument!));
     }
+
+    // ── Review round 2, adversarial pass ────────────────────────────────────────────
+
+    // An ISigner whose MultibasePublicKey is whatever the test says; Create reads nothing else.
+    private sealed class FixedKeySigner(string multibase) : ISigner
+    {
+        public KeyType KeyType => KeyType.Ed25519;
+        public ReadOnlyMemory<byte> PublicKey => Array.Empty<byte>();
+        public string MultibasePublicKey => multibase;
+        public Task<byte[]> SignAsync(ReadOnlyMemory<byte> data, CancellationToken ct = default)
+            => throw new NotSupportedException();
+    }
+
+    // B4: '.' separates did:peer:2 segments, so a key string containing it injected keys or
+    // services the caller never declared, and Create now returned that document as its own.
+    [Theory]
+    [InlineData(".SeyJ0IjoiWCIsInMiOiJodHRwczovL2EuZXhhbXBsZS8ifQ")]
+    [InlineData(".Vz6MkjchhfUsD6mmvni8mCdXHw216Xrm9bQe2mBH1P5RDjVJG")]
+    [InlineData(".Ez6LSg8zQom395jKLrGiBNruB9MM6V8PWuf2FpEy4uRFiqQBR")]
+    public async Task Issue145_Numalgo2Create_KeyStringWithSegmentSeparator_ThrowsArgumentException(string injected)
+    {
+        var real = new DefaultKeyGenerator().Generate(KeyType.Ed25519).MultibasePublicKey;
+
+        var act = () => _method.CreateAsync(new DidPeerCreateOptions
+        {
+            Numalgo = PeerNumalgo.Two,
+            Keys = [new PeerKeyPurpose(new FixedKeySigner(real + injected), PeerPurpose.Authentication)]
+        });
+
+        await act.Should().ThrowAsync<ArgumentException>();
+    }
+
+    // B5: the DIF peer DID spec's own numalgo 2 example. Its abbreviations are recursive over key
+    // names (type/serviceEndpoint/routingKeys/accept -> t/s/r/a, also inside "s") and apply to the
+    // type value only as DIDCommMessaging -> dm. NetDid neither abbreviated nor expanded nested
+    // names, so it could not produce this DID and resolved it with "a"/"r" map keys.
+    private const string SpecExampleDid =
+        "did:peer:2.Vz6Mkj3PUd1WjvaDhNZhhhXQdz5UnZXmS7ehtx8bsPpD47kKc.Ez6LSg8zQom395jKLrGiBNruB9MM6V8PWuf2FpEy4uRFiqQBR" +
+        ".SeyJ0IjoiZG0iLCJzIjp7InVyaSI6Imh0dHA6Ly9leGFtcGxlLmNvbS9kaWRjb21tIiwiYSI6WyJkaWRjb21tL3YyIl0sInIiOlsiZGlkOmV4YW1wbGU6MTIzNDU2Nzg5YWJjZGVmZ2hpI2tleS0xIl19fQ" +
+        ".SeyJ0IjoiZG0iLCJzIjp7InVyaSI6Imh0dHA6Ly9leGFtcGxlLmNvbS9hbm90aGVyIiwiYSI6WyJkaWRjb21tL3YyIl0sInIiOlsiZGlkOmV4YW1wbGU6MTIzNDU2Nzg5YWJjZGVmZ2hpI2tleS0yIl19fQ";
+
+    private static Service SpecService(string uri, string routingKey) => new()
+    {
+        Id = "",
+        Type = "DIDCommMessaging",
+        ServiceEndpoint = ServiceEndpointValue.FromMap(new Dictionary<string, JsonElement>
+        {
+            ["uri"] = JsonSerializer.SerializeToElement(uri),
+            ["accept"] = JsonSerializer.SerializeToElement(new[] { "didcomm/v2" }),
+            ["routingKeys"] = JsonSerializer.SerializeToElement(new[] { routingKey })
+        })
+    };
+
+    [Fact]
+    public async Task Issue145_Numalgo2_SpecExample_ResolvesWithExpandedNames()
+    {
+        var resolved = await _method.ResolveAsync(SpecExampleDid);
+
+        resolved.ResolutionMetadata.Error.Should().BeNull();
+        var services = resolved.DidDocument!.Service!;
+        services.Select(s => s.Id).Should().Equal("#service", "#service-1");
+        services.Should().AllSatisfy(s => s.Type.Should().Be("DIDCommMessaging"));
+        services[0].ServiceEndpoint.Map!.Keys.Should().Equal("uri", "accept", "routingKeys");
+        services[0].ServiceEndpoint.Map!["routingKeys"][0].GetString()
+            .Should().Be("did:example:123456789abcdefghi#key-1");
+    }
+
+    [Fact]
+    public async Task Issue145_Numalgo2_SpecExample_IsWhatCreateProduces()
+    {
+        var created = await _method.CreateAsync(new DidPeerCreateOptions
+        {
+            Numalgo = PeerNumalgo.Two,
+            Keys =
+            [
+                new PeerKeyPurpose(new FixedKeySigner("z6Mkj3PUd1WjvaDhNZhhhXQdz5UnZXmS7ehtx8bsPpD47kKc"), PeerPurpose.Authentication),
+                new PeerKeyPurpose(new FixedKeySigner("z6LSg8zQom395jKLrGiBNruB9MM6V8PWuf2FpEy4uRFiqQBR"), PeerPurpose.KeyAgreement)
+            ],
+            Services =
+            [
+                SpecService("http://example.com/didcomm", "did:example:123456789abcdefghi#key-1"),
+                SpecService("http://example.com/another", "did:example:123456789abcdefghi#key-2")
+            ]
+        });
+
+        created.Did.Value.Should().Be(SpecExampleDid);
+    }
+
+    // B5: one table was used for both key names and the type value, so a type "t" came back as
+    // "type" and an extension key "dm" as "DIDCommMessaging". Only names are abbreviated as
+    // names, and only the type value DIDCommMessaging as a value.
+    [Fact]
+    public async Task Issue145_Numalgo2_AbbreviationTables_AreNotCrossed()
+    {
+        var created = await _method.CreateAsync(new DidPeerCreateOptions
+        {
+            Numalgo = PeerNumalgo.Two,
+            Keys = [AuthenticationKey()],
+            Services =
+            [
+                new Service
+                {
+                    Id = "#svc", Type = "t", ServiceEndpoint = ServiceEndpointValue.FromUri("https://a.example"),
+                    AdditionalProperties = new Dictionary<string, JsonElement>
+                    {
+                        ["dm"] = JsonSerializer.SerializeToElement("x")
+                    }
+                }
+            ]
+        });
+        var service = (await _method.ResolveAsync(created.Did.Value)).DidDocument!.Service!.Single();
+
+        service.Type.Should().Be("t");
+        service.AdditionalProperties!.Keys.Should().Equal("dm");
+    }
+
+    // B5: a name the decoder would expand ("a" -> "accept", at any depth) or the type "dm" cannot
+    // come back as written, so Create refuses it instead of returning altered caller data.
+    public static TheoryData<Service> AmbiguousAbbreviations => new()
+    {
+        new Service { Id = "#svc", Type = "dm", ServiceEndpoint = ServiceEndpointValue.FromUri("https://a.example") },
+        new Service
+        {
+            Id = "#svc", Type = "Example", ServiceEndpoint = ServiceEndpointValue.FromUri("https://a.example"),
+            AdditionalProperties = new Dictionary<string, JsonElement> { ["a"] = JsonSerializer.SerializeToElement("x") }
+        },
+        new Service
+        {
+            Id = "#svc", Type = "Example",
+            ServiceEndpoint = ServiceEndpointValue.FromMap(new Dictionary<string, JsonElement>
+            {
+                ["uri"] = JsonSerializer.SerializeToElement("https://a.example"),
+                ["r"] = JsonSerializer.SerializeToElement(new[] { "did:example:1#k" })
+            })
+        }
+    };
+
+    [Theory]
+    [MemberData(nameof(AmbiguousAbbreviations))]
+    public async Task Issue145_Numalgo2Create_AmbiguousAbbreviation_ThrowsArgumentException(Service service)
+    {
+        var act = () => _method.CreateAsync(new DidPeerCreateOptions
+        {
+            Numalgo = PeerNumalgo.Two,
+            Keys = [AuthenticationKey()],
+            Services = [service]
+        });
+
+        await act.Should().ThrowAsync<ArgumentException>();
+    }
+
+    // B5: "service id attributes MUST be relative" (DIF spec). An absolute id was dropped and
+    // replaced on Create, and accepted on Resolve.
+    [Fact]
+    public async Task Issue145_Numalgo2_AbsoluteServiceId_IsRejected()
+    {
+        var create = () => _method.CreateAsync(new DidPeerCreateOptions
+        {
+            Numalgo = PeerNumalgo.Two,
+            Keys = [AuthenticationKey()],
+            Services = [new Service { Id = "did:example:other#svc", Type = "Example", ServiceEndpoint = ServiceEndpointValue.FromUri("https://a.example") }]
+        });
+        var resolved = await _method.ResolveAsync(await Peer2WithServiceBlock(
+            """{"id":"https://a.example/x#svc","t":"Example","s":"https://a.example"}"""));
+
+        await create.Should().ThrowAsync<ArgumentException>();
+        resolved.ResolutionMetadata.Error.Should().Be("invalidDid");
+    }
 }
