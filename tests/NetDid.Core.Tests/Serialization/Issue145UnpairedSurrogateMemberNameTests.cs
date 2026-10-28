@@ -1094,6 +1094,19 @@ public class Issue145UnpairedSurrogateMemberNameTests
     }
 
     [Theory]
+    [InlineData("did:example:123/pa th")]
+    [InlineData("did:example:123/path\nX")]
+    [InlineData("did:example:123?q=a\tb")]
+    [InlineData("did:example:123;p=a\rb")]
+    [InlineData("did:example:123#fr ag")]
+    public void Issue145_DidUrl_EmbeddedWhitespaceOrControl_IsRejected(string value)
+    {
+        // RFC 3986 allows no raw whitespace or control characters in any URI component.
+        DidParser.ParseDidUrl(value).Should().BeNull();
+        DidParser.IsValidDidReference(value).Should().BeFalse();
+    }
+
+    [Theory]
     [InlineData("did:example:123")]
     [InlineData("did:example:123#key-1")]
     [InlineData("did:example:123/path/to?versionId=1#frag")]
