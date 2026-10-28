@@ -113,7 +113,11 @@ public static class DidDocumentSerializer
                         $"AdditionalProperties contains the reserved DID document member '{key}', which " +
                         "has a modeled representation and must not be supplied as an extension property.",
                         nameof(doc));
-                additional[key] = val;
+                // A custom-comparer dictionary can hold two keys with the same text; the copy
+                // must not silently keep only one of them (issue #145).
+                if (!additional.TryAdd(key, val))
+                    throw new ArgumentException(
+                        "AdditionalProperties contains a duplicate member name.", nameof(doc));
             }
         }
 
@@ -121,16 +125,26 @@ public static class DidDocumentSerializer
         {
             AlsoKnownAs = doc.AlsoKnownAs?.ToArray(),
             Controller = doc.Controller?.ToArray(),
-            VerificationMethod = doc.VerificationMethod?.ToArray(),
-            Authentication = doc.Authentication?.ToArray(),
-            AssertionMethod = doc.AssertionMethod?.ToArray(),
-            KeyAgreement = doc.KeyAgreement?.ToArray(),
-            CapabilityInvocation = doc.CapabilityInvocation?.ToArray(),
-            CapabilityDelegation = doc.CapabilityDelegation?.ToArray(),
-            Service = doc.Service?.ToArray(),
+            VerificationMethod = NoNullEntries(doc.VerificationMethod, "verificationMethod"),
+            Authentication = NoNullEntries(doc.Authentication, "authentication"),
+            AssertionMethod = NoNullEntries(doc.AssertionMethod, "assertionMethod"),
+            KeyAgreement = NoNullEntries(doc.KeyAgreement, "keyAgreement"),
+            CapabilityInvocation = NoNullEntries(doc.CapabilityInvocation, "capabilityInvocation"),
+            CapabilityDelegation = NoNullEntries(doc.CapabilityDelegation, "capabilityDelegation"),
+            Service = NoNullEntries(doc.Service, "service"),
             Context = doc.Context?.ToArray(),
             AdditionalProperties = additional
         };
+    }
+
+    // The reader rejects a null verificationMethod, service or relationship entry, so the writer
+    // must not emit one either (it crashed with NullReferenceException; issue #145).
+    private static T[]? NoNullEntries<T>(IReadOnlyList<T>? entries, string member) where T : class
+    {
+        var copy = entries?.ToArray();
+        if (copy is not null && Array.IndexOf(copy, null) >= 0)
+            throw new ArgumentException($"'{member}' contains a null entry.", "doc");
+        return copy;
     }
 
     private static string SerializeCore(DidDocument doc, string contentType, JsonSerializerOptions? options)
@@ -293,12 +307,23 @@ public static class DidDocumentSerializer
     // the caller's model while Serialize reported success. Checking at the write site means the
     // check sees exactly what is written. DID values are syntax-checked ASCII and need no check.
     private static string Text(string value)
-        => Utf16Text.IsWellFormed(value)
-            ? value
-            : throw new ArgumentException(
-                "The DID document contains a string with an unpaired UTF-16 surrogate, which cannot " +
-                "be written as UTF-8 without altering it.",
-                "doc");
+        => value is null
+            // A required string (VM/service id or type, an alsoKnownAs entry) that is null would be
+            // written as JSON null, which Deserialize rejects (issue #145).
+            ? throw new ArgumentException("The DID document has a null string where one is required.", "doc")
+            : Utf16Text.IsWellFormed(value)
+                ? value
+                : throw new ArgumentException(
+                    "The DID document contains a string with an unpaired UTF-16 surrogate, which " +
+                    "cannot be written as UTF-8 without altering it.",
+                    "doc");
+
+    // A caller dictionary with a non-ordinal comparer can hold two keys with the same text; writing
+    // both would emit a duplicate member that Deserialize rejects (issues #121, #145).
+    private static string UniqueName(HashSet<string> written, string key)
+        => written.Add(Text(key))
+            ? key
+            : throw new ArgumentException("The DID document contains a duplicate member name.", "doc");
 
     // Caller JsonElement values are opaque to Text(): JsonElement.WriteTo would rewrite an
     // ill-formed UTF-8 string or member name inside one as U+FFFD (issue #145, PR #149 review).
@@ -437,7 +462,8 @@ public static class DidDocumentSerializer
         // Add secp256k1-2019/v1 only when security/v2 is not already provided by the document
         // (did:ethr uses security/v2 per the reference JS resolver; did:key/did:peer use secp256k1-2019/v1)
         var docHasSecurityV2 = doc.Context?.Any(c => c is string s && s == "https://w3id.org/security/v2") == true;
-        if (!docHasSecurityV2 && vmTypes.Any(t => t.StartsWith("EcdsaSecp256k1")))
+        // A null type is rejected where the method is written (Text), not here.
+        if (!docHasSecurityV2 && vmTypes.Any(t => t?.StartsWith("EcdsaSecp256k1") == true))
             contexts.Add("https://w3id.org/security/suites/secp256k1-2019/v1");
 
         // Append any additional context entries (strings or JSON objects) from the document
@@ -558,9 +584,10 @@ public static class DidDocumentSerializer
             // Additional properties
             if (doc.AdditionalProperties is not null)
             {
+                var names = new HashSet<string>(StringComparer.Ordinal);
                 foreach (var (key, val) in doc.AdditionalProperties)
                 {
-                    writer.WritePropertyName(Text(key));
+                    writer.WritePropertyName(UniqueName(names, key));
                     WriteElement(writer, val);
                 }
             }
@@ -690,6 +717,8 @@ public static class DidDocumentSerializer
                 writer.WriteString("blockchainAccountId", Text(value.BlockchainAccountId));
 
             if (value.AdditionalProperties is not null)
+            {
+                var names = new HashSet<string>(StringComparer.Ordinal);
                 foreach (var (key, val) in value.AdditionalProperties)
                 {
                     // Never let an additional member shadow a reserved one already written
@@ -698,9 +727,10 @@ public static class DidDocumentSerializer
                     if (key is "id" or "type" or "controller"
                         or "publicKeyMultibase" or "publicKeyJwk" or "blockchainAccountId")
                         continue;
-                    writer.WritePropertyName(Text(key));
+                    writer.WritePropertyName(UniqueName(names, key));
                     WriteElement(writer, val);
                 }
+            }
 
             writer.WriteEndObject();
         }
@@ -758,6 +788,7 @@ public static class DidDocumentSerializer
 
             if (value.AdditionalProperties is not null)
             {
+                var names = new HashSet<string>(StringComparer.Ordinal);
                 foreach (var (key, val) in value.AdditionalProperties)
                 {
                     // A reserved name would emit a duplicate member that Deserialize rejects
@@ -766,7 +797,7 @@ public static class DidDocumentSerializer
                         throw new ArgumentException(
                             $"A service's AdditionalProperties contains the reserved member '{key}'.",
                             "doc");
-                    writer.WritePropertyName(Text(key));
+                    writer.WritePropertyName(UniqueName(names, key));
                     WriteElement(writer, val);
                 }
             }
@@ -824,9 +855,10 @@ public static class DidDocumentSerializer
             else if (value.IsMap)
             {
                 writer.WriteStartObject();
+                var names = new HashSet<string>(StringComparer.Ordinal);
                 foreach (var (key, val) in value.Map!)
                 {
-                    writer.WritePropertyName(Text(key));
+                    writer.WritePropertyName(UniqueName(names, key));
                     WriteElement(writer, val);
                 }
                 writer.WriteEndObject();
