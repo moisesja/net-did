@@ -789,9 +789,10 @@ public class LogChainValidatorMultiProofTests
     public async Task Issue144_ProofExtensionWithUnpairedSurrogate_ResolvesInvalidDidLog()
     {
         // NetDid never reads a proof's extension members, so "\uD800" in one survives parsing and
-        // reaches the Data Integrity pipeline. Before 1.4.0 the pipeline threw and NetDid's
-        // catch-all mapped it; 1.4.0 reports a document-level PROOF_TRANSFORMATION_ERROR instead.
-        // Either way the entry must fail proof validation and resolve as invalidDidLog.
+        // reaches the Data Integrity pipeline. Before 1.4.0 that proof failed individually
+        // ("Verification failed unexpectedly"); 1.4.0 rejects the whole secured document up front
+        // as one PROOF_TRANSFORMATION_ERROR. Either way the entry must fail proof validation and
+        // resolve as invalidDidLog.
         var (_, signerA) = CreateEd25519();
         var (did, _, jsonl) = await CreateLogAsync(signerA);
 

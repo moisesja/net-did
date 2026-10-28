@@ -33,17 +33,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     `Secp256k1Recoverable` (unchanged), and did:webvh verifies only `eddsa-jcs-2022`. The
     high-S rejection tests for the encoder and the chain emulator still pass. 1.6.0
     (`ICapableKeyStore`) and 1.7.x (`TransferableKeyMaterial`) are additive and unused here.
+
+    **If you use the `ICryptoProvider` that `AddNetDid()` registers** (through `AddNetCrypto()`)
+    to verify secp256k1 signatures yourself, for example ES256K, it now accepts both `(R, S)` and
+    its high-S twin `(R, n−S)`. If your protocol requires low-S, check `S ≤ n/2` yourself. Key any
+    replay or deduplication check on the signed message, never on the signature bytes.
   - **`DataProofsDotnet.Core` 1.1.1 → 1.4.0** (1.4.0 requires NetCrypto 1.7.1). 1.2.x and 1.3.0
     change nothing in `DataProofsDotnet.Core`. 1.4.0 checks the JSON it is given before reading
-    it, and reports an unreadable secured document as one document-level
-    `PROOF_TRANSFORMATION_ERROR` instead of throwing. NetDid's own parse boundary already rejects
-    duplicate members, invalid UTF-8, unpaired surrogates in the members it reads, and excess
-    depth. The only input that now reaches the new check is an unpaired surrogate escape in a
-    proof extension member NetDid does not read. It still resolves `invalidDidLog` (pinned by
-    `Issue144_ProofExtensionWithUnpairedSurrogate_ResolvesInvalidDidLog`); only the logged reason
-    text changes. Create, Update, Deactivate and witness validation are unchanged. The DIF
-    did:webvh compliance-vector replay produces a byte-identical report, and the issue #110
-    pre-upgrade `did.jsonl` fixture still verifies.
+    it, and rejects a secured document that fails the check up front, as one document-level
+    `PROOF_TRANSFORMATION_ERROR`. NetDid's own parse boundary already rejects duplicate members,
+    invalid UTF-8, unpaired surrogates in the members it reads, and excess depth. The only input
+    that now reaches the new check is an unpaired surrogate escape in a proof extension member
+    NetDid does not read. Before 1.4.0 that proof failed individually; it still resolves
+    `invalidDidLog` (pinned by `Issue144_ProofExtensionWithUnpairedSurrogate_ResolvesInvalidDidLog`).
+    Only the reason text changes, in logs and in the `LogChainValidationException` message that
+    Update and Deactivate throw for such a log. Create, Update, Deactivate and witness validation
+    otherwise behave the same. The DIF did:webvh compliance-vector replay produces a
+    byte-identical report, and the issue #110 pre-upgrade `did.jsonl` fixture still verifies.
+
+    **Upgrade note: update every DataProofsDotnet package together.** 1.4.0 changes
+    `DataIntegrityProof.Type` and `AdditionalProperties` from `init` to `set`. That is
+    source-compatible but not binary-compatible. An assembly compiled against an earlier
+    `DataProofsDotnet.Core` that sets either member fails at run time with `MissingMethodException`
+    once NetDid raises Core to 1.4.0. This includes `DataProofsDotnet.Legacy` 1.3.0, whose
+    LD-Signature suites set `Type`. If your application references `DataProofsDotnet.Legacy` or
+    another DataProofsDotnet package directly, move it to 1.4.0 as well, and rebuild your own code
+    that sets those members. NetDid itself sets neither member, and no NetDid public API exposes
+    a DataProofsDotnet type.
   - `Microsoft.Extensions.Caching.Memory`, `.Logging.Abstractions`, `.DependencyInjection`,
     `.DependencyInjection.Abstractions` and `.Http` 10.0.8 → 10.0.14 (servicing releases);
     `Microsoft.IdentityModel.Tokens` 8.19.1 → 8.23.0.
