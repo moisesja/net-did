@@ -245,6 +245,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     - two keys with the same text in a caller dictionary that uses a non-ordinal comparer. This
       applies to document, verification-method, and service extensions, and to endpoint maps.
       Before, the document-level copy silently kept only one of the two values.
+  - **Caller `JsonSerializerOptions` now produce a DID document.**
+    `DidDocumentSerializer.Serialize` and `SerializeToUtf8` with caller options used to serialize
+    an internal wrapper by reflection (`{"Document":{"Id":{"Value":...`). That output had no
+    `@context`, no production rules, and no UTF-16 checks. Now NetDid's converters always come
+    first, the caller's formatting settings (`WriteIndented`, `Encoder`) are honored, and the
+    effective options are cached per caller instance.
+    - The caller's options are locked on first use, as System.Text.Json itself does, so a later
+      change throws instead of being silently ignored by the cache.
+    - A caller `TypeInfoResolver` cannot replace NetDid's converters.
+  - **`publicKeyJwk` keeps every public member and never a private one.**
+    - Before, the writer kept only `kty`/`crv`/`x`/`y`, so an RSA `JsonWebKey2020` key lost `n` and
+      `e`. It now writes the RFC 7517/7518/8037 public members: `kty`, `crv`, `x`, `y`, `n`, `e`,
+      `kid`, `alg`, `use`, `key_ops`, `x5u`, `x5c`, `x5t`, `x5t#S256`.
+    - Private members (`d`, `p`, `q`, `dp`, `dq`, `qi`, `oth`, `k`) and unknown members are never
+      written.
+    - **Behavior change:** `kty` is required. A JWK whose `kty` is missing or empty throws
+      `JsonException` on read and `ArgumentException` on write. A null `key_ops` or `x5c` entry is
+      also rejected on read, so every JWK that is read can be written again.
+  - **DIDs and DID URLs with a trailing or embedded newline are rejected.**
+    - `DidParser` anchored with `$`, which in .NET also matches before a final `\n`, so
+      `did:example:123\n` was a valid `Did`. It now anchors with `\z`.
+    - DID URL path, params, query, and fragment no longer accept raw whitespace or control
+      characters (RFC 3986).
+    - Relative `#fragment` references follow the same rule in `IsValidDidReference`.
+    - **Behavior change:** such strings now throw `InvalidDidException` (or fail `IsValid`,
+      `ParseDidUrl`, and `IsValidDidReference`).
+  - **Last null-member and depth gaps:**
+    - A null `serviceEndpoint` or a `default(Did)` controller now throws `ArgumentException`
+      instead of being written as JSON null.
+    - did:peer:2 Create rejects a null service type or endpoint with `ArgumentException`.
+      Before, it crashed with `NullReferenceException` or `ArgumentNullException`.
+    - A did:peer:2 service block nested deeper than 62 levels now fails with `invalidDid`. Once
+      embedded in the document, a deeper block exceeds the serializer's 64 levels, so the
+      resolved document could not have been written again.
 
 - **did:webvh resolution now rejects log entries dated more than 5 minutes in the future**
   (issue #131). did:webvh v1.0 Read step 4 says an entry's `versionTime` "MUST NOT be more than

@@ -2061,6 +2061,11 @@ public static class DidDocumentSerializer
     /// Produce the DID Document as a JSON string in the specified representation.
     /// - JsonLd: includes @context (auto-computed from VM types), all JSON-LD keywords
     /// - Json:   omits @context and any JSON-LD-only properties
+    /// Caller options are honored for formatting (WriteIndented, Encoder) and are locked on
+    /// first use; NetDid's converters always apply first (a caller TypeInfoResolver cannot
+    /// replace them), so the output is always a DID document under the production rules.
+    /// publicKeyJwk is written with its RFC 7517/7518/8037 public members only (kty required);
+    /// private members are never emitted.
     /// Every string written must be well-formed UTF-16, and every caller JsonElement written
     /// (extensions, @context objects, serviceEndpoint maps) must decode cleanly. A string
     /// holding an unpaired surrogate, or a JsonElement holding ill-formed UTF-8 or an escaped
@@ -2106,7 +2111,7 @@ The service endpoint model enforces W3C DID Core §5.4 itself: `ServiceEndpointV
 
 **Data model requirements** (enforced at construction, independent of representation):
 
-- `id` MUST be a valid DID. The `Did` value object (a `readonly record struct`) validates W3C DID syntax at construction — if a `Did` exists, it is syntactically valid. This makes invalid DIDs unrepresentable in the type system.
+- `id` MUST be a valid DID. The `Did` value object (a `readonly record struct`) validates W3C DID syntax at construction — if a `Did` exists, it is syntactically valid. This makes invalid DIDs unrepresentable in the type system. The syntax regexes anchor with `\z` (not `$`, which in .NET also matches before a trailing newline), and DID URL components exclude raw whitespace and control characters (RFC 3986; issue #145).
 - `controller`, when present, MUST be a list of valid `Did` values. Serialized as a string when Count == 1, as an array when Count > 1, omitted when null.
 - `verificationMethod[*].id` MUST be a valid DID URL.
 - `verificationMethod[*].controller` MUST be a valid `Did`.
