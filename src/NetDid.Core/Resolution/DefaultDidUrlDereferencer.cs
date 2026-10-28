@@ -296,13 +296,7 @@ public sealed class DefaultDidUrlDereferencer : IDidUrlDereferencer
     /// are resolved against the DID base, producing "did:example:123#svc".
     /// </summary>
     private static string NormalizeServiceId(string id, string did)
-    {
-        if (id.StartsWith('#'))
-            return did + id;
-        if (!id.Contains(':'))
-            return did + "#" + id;
-        return id;
-    }
+        => DidParser.ResolveRelativeId(id, did);
 
     private static bool IsDidDocumentContentType(string accept)
         => accept is DidContentTypes.JsonLd or DidContentTypes.Json;

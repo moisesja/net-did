@@ -4,6 +4,7 @@ using System.Text.Json.Serialization;
 using System.Text.Unicode;
 using Microsoft.IdentityModel.Tokens;
 using NetDid.Core.Model;
+using NetDid.Core.Parsing;
 
 namespace NetDid.Core.Serialization;
 
@@ -122,7 +123,7 @@ public static class DidDocumentSerializer
             }
         }
 
-        return doc with
+        var snapshot = doc with
         {
             AlsoKnownAs = doc.AlsoKnownAs?.ToArray(),
             Controller = doc.Controller?.ToArray(),
@@ -136,6 +137,95 @@ public static class DidDocumentSerializer
             Context = doc.Context?.ToArray(),
             AdditionalProperties = additional
         };
+        ValidateIdentifiers(snapshot, message => new ArgumentException(message, nameof(doc)));
+        return snapshot;
+    }
+
+    // DID Core id and URI syntax, checked on consumption (JsonException) and production
+    // (ArgumentException) so NetDid never accepts or emits what the other side rejects (issue #145):
+    // §5.2 a verification method id, and a relationship reference, is a DID URL; §5.4 a service id
+    // is a URI (or a relative "#fragment"), service ids are unique ("A conforming producer MUST NOT
+    // produce multiple service entries with the same id"; "A conforming consumer MUST produce an
+    // error if it detects multiple service entries with the same id"), and endpoint strings are
+    // URIs; §5.1.3 alsoKnownAs entries are URIs. Messages are fixed text.
+    private static void ValidateIdentifiers(DidDocument doc, Func<string, Exception> error)
+    {
+        if (doc.AlsoKnownAs is not null)
+        {
+            foreach (var alias in doc.AlsoKnownAs)
+            {
+                if (!DidParser.IsAbsoluteUri(alias))
+                    throw error("Every 'alsoKnownAs' entry must be an RFC 3986 URI (W3C DID Core §5.1.3).");
+            }
+        }
+
+        // A DID URL, a relative "#fragment", or NetDid's bare-id shorthand for "#id" (issue #136).
+        static bool IsReference(string? id)
+            => id is not null && (DidParser.IsValidDidReference(id) || DidParser.IsBareShorthand(id));
+
+        void RequireMethodId(VerificationMethod? vm)
+        {
+            if (vm is null || !IsReference(vm.Id))
+                throw error("A verification method id must be a DID URL (W3C DID Core §5.2).");
+        }
+
+        if (doc.VerificationMethod is not null)
+            foreach (var vm in doc.VerificationMethod)
+                RequireMethodId(vm);
+
+        foreach (var relationship in new[]
+                 {
+                     doc.Authentication, doc.AssertionMethod, doc.KeyAgreement,
+                     doc.CapabilityInvocation, doc.CapabilityDelegation
+                 })
+        {
+            if (relationship is null)
+                continue;
+            foreach (var entry in relationship)
+            {
+                if (entry is null)
+                    throw error("A verification relationship contains a null entry.");
+                if (entry.IsReference)
+                {
+                    if (!IsReference(entry.Reference))
+                        throw error("A verification relationship reference must be a DID URL (W3C DID Core §5.3).");
+                }
+                else
+                {
+                    RequireMethodId(entry.EmbeddedMethod);
+                }
+            }
+        }
+
+        if (doc.Service is null)
+            return;
+
+        var serviceIds = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var service in doc.Service)
+        {
+            if (service is null)
+                throw error("'service' contains a null entry.");
+            if (!IsReference(service.Id) && !DidParser.IsAbsoluteUri(service.Id))
+                throw error("A service id must be an RFC 3986 URI (W3C DID Core §5.4).");
+
+            // "x", "#x" and "<did>#x" name the same service: compare with the dereferencer's
+            // own normalization, so the two can never disagree about which spellings collide.
+            if (!serviceIds.Add(DidParser.ResolveRelativeId(service.Id, doc.Id.Value)))
+                throw error("Two services have the same id (W3C DID Core §5.4).");
+
+            RequireEndpointUris(service.ServiceEndpoint, error);
+        }
+    }
+
+    private static void RequireEndpointUris(ServiceEndpointValue? endpoint, Func<string, Exception> error)
+    {
+        if (endpoint is null)
+            throw error("A service's serviceEndpoint is required (W3C DID Core §5.4).");
+        if (endpoint.IsUri && !DidParser.IsAbsoluteUri(endpoint.Uri))
+            throw error("A serviceEndpoint string must be an RFC 3986 URI (W3C DID Core §5.4).");
+        if (endpoint.IsSet)
+            foreach (var item in endpoint.Set!)
+                RequireEndpointUris(item, error);
     }
 
     // The reader rejects a null verificationMethod, service or relationship entry, so the writer
@@ -449,6 +539,8 @@ public static class DidDocumentSerializer
 
     private static void ValidateConsumption(DidDocument doc, string? contentType)
     {
+        ValidateIdentifiers(doc, message => new JsonException(message));
+
         // JSON-LD consumption: MUST verify @context
         if (contentType == DidContentTypes.JsonLd)
         {

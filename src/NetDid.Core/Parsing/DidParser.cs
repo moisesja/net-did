@@ -21,11 +21,66 @@ public static partial class DidParser
     [GeneratedRegex($@"^did:[a-z0-9]+:{MethodSpecificIdPattern}\z", RegexOptions.Compiled)]
     private static partial Regex DidRegex();
 
+    // RFC 3986 character sets (DID Core §3.2 defines path-abempty, query and fragment by RFC 3986):
+    // pchar = unreserved / pct-encoded / sub-delims / ":" / "@". Raw non-ASCII, invisible format
+    // characters, whitespace, controls, and characters such as < > " { } | \ ^ ` are not allowed,
+    // and "%" must start a two-hex-digit escape (issue #145).
+    private const string Unreserved = @"A-Za-z0-9\-._~";
+    private const string SubDelims = @"!$&'()*+,;=";
+    private const string PctEncoded = @"%[0-9A-Fa-f]{2}";
+    // A path segment character, except ";", which introduces DID URL parameters here.
+    private const string PathChar = $@"[{Unreserved}!$&'()*+,=:@/]|{PctEncoded}";
+    private const string ParamChar = $@"[{Unreserved}{SubDelims}:@/]|{PctEncoded}";
+    private const string QueryOrFragmentChar = $@"[{Unreserved}{SubDelims}:@/?]|{PctEncoded}";
+
     // DID URL: did-url = did path-abempty [ ";" params ] [ "?" query ] [ "#" fragment ]
-    // RFC 3986 allows no raw whitespace or control characters in any URI component, so the
-    // component classes exclude them; with \z this rejects a trailing or embedded "\n" (issue #145).
-    [GeneratedRegex($@"^(?<did>did:[a-z0-9]+:(?:(?:{IdCharPattern})*:)*(?:{IdCharPattern})+)(?<path>/[^;?#\s\p{{Cc}}]*)?(?:;(?<params>[^?#\s\p{{Cc}}]*))?(?:\?(?<query>[^#\s\p{{Cc}}]*))?(?:#(?<fragment>[^\s\p{{Cc}}]*))?\z", RegexOptions.Compiled)]
+    // Anchored with \z, not $ (which also matches before a trailing "\n").
+    [GeneratedRegex($@"^(?<did>did:[a-z0-9]+:(?:(?:{IdCharPattern})*:)*(?:{IdCharPattern})+)(?<path>/(?:{PathChar})*)?(?:;(?<params>(?:{ParamChar})*))?(?:\?(?<query>(?:{QueryOrFragmentChar})*))?(?:#(?<fragment>(?:{QueryOrFragmentChar})*))?\z", RegexOptions.Compiled)]
     private static partial Regex DidUrlRegex();
+
+    // A relative DID URL reference "#fragment" (DID Core §3.2), with the same fragment grammar.
+    [GeneratedRegex($@"^#(?:{QueryOrFragmentChar})+\z", RegexOptions.Compiled)]
+    private static partial Regex RelativeFragmentRegex();
+
+    // RFC 3986 absolute URI: scheme ":" then URI characters, with "[" "]" (IP literals) only
+    // before the fragment and at most one "#".
+    [GeneratedRegex($@"^[A-Za-z][A-Za-z0-9+.\-]*:(?:[{Unreserved}{SubDelims}:@/?\[\]]|{PctEncoded})*(?:#(?:{QueryOrFragmentChar})*)?\z", RegexOptions.Compiled)]
+    private static partial Regex AbsoluteUriRegex();
+
+    /// <summary>
+    /// Whether <paramref name="value"/> is an RFC 3986 absolute URI (scheme plus the RFC 3986
+    /// character set). Used for service ids and endpoints and alsoKnownAs entries (DID Core
+    /// §5.1.3, §5.4).
+    /// </summary>
+    internal static bool IsAbsoluteUri(string? value)
+        => !string.IsNullOrEmpty(value) && AbsoluteUriRegex().IsMatch(value);
+
+    /// <summary>Whether <paramref name="value"/> is a relative "#fragment" reference.</summary>
+    internal static bool IsRelativeFragment(string? value)
+        => !string.IsNullOrEmpty(value) && RelativeFragmentRegex().IsMatch(value);
+
+    // NetDid's documented shorthand (issue #136): a bare id with no ':' and no '#', such as
+    // "files" or "key-1", stands for "#files". It uses the fragment grammar without ':'.
+    [GeneratedRegex($@"^(?:[{Unreserved}{SubDelims}@/?]|{PctEncoded})+\z", RegexOptions.Compiled)]
+    private static partial Regex BareShorthandRegex();
+
+    /// <summary>Whether <paramref name="value"/> is the bare-id shorthand for "#value".</summary>
+    internal static bool IsBareShorthand(string? value)
+        => !string.IsNullOrEmpty(value) && BareShorthandRegex().IsMatch(value);
+
+    /// <summary>
+    /// Resolves a service or verification-method id against the document's DID: "#x" and the
+    /// bare shorthand "x" both become "{did}#x"; anything containing ':' is returned unchanged.
+    /// The one equivalence used by dereferencing and by duplicate-id detection (issue #145).
+    /// </summary>
+    internal static string ResolveRelativeId(string id, string? did)
+    {
+        if (id.StartsWith('#'))
+            return did + id;
+        if (!id.Contains(':'))
+            return did + "#" + id;
+        return id;
+    }
 
 
     /// <summary>
@@ -71,19 +126,9 @@ public static partial class DidParser
         if (string.IsNullOrEmpty(reference))
             return false;
 
-        // Relative fragment reference: #fragment. Like an absolute DID URL's fragment, it may not
-        // contain raw whitespace or control characters (RFC 3986; issue #145).
+        // Relative fragment reference: #fragment, with the RFC 3986 fragment grammar (issue #145).
         if (reference.StartsWith('#'))
-        {
-            if (reference.Length == 1)
-                return false;
-            foreach (var c in reference.AsSpan(1))
-            {
-                if (char.IsWhiteSpace(c) || char.IsControl(c))
-                    return false;
-            }
-            return true;
-        }
+            return IsRelativeFragment(reference);
 
         // Otherwise, must be a valid absolute DID URL
         return ParseDidUrl(reference) is not null;
