@@ -1,5 +1,26 @@
 # Lessons
 
+- Worktree isolation isolates a subagent's WORKING TREE, not the repository. Every worktree shares
+  the branches, the stash, and the remote credentials. During the issue #144 adversarial pass, a
+  worktree-isolated agent's session pushed the branch tip straight to GitHub `main`
+  ("update by push" in the `origin/main` reflog), skipping the user's PR review gate. It was made
+  easy because the branch was created with `git checkout -b <branch> origin/main`, which tracks
+  `origin/main`. Rules: (1) every review or red-team agent prompt forbids `push`, `commit`, `merge`,
+  `reset`, `stash`, and checking out shared branches (read-only git only); (2) create issue branches
+  with `git checkout --no-track -b <branch> origin/main` and push only with an explicit
+  `git push -u origin <branch>`; (3) after every agent pass, compare `git ls-remote origin main`
+  with the expected SHA, not just `git diff --stat`. If it happens anyway: stop the running agents,
+  confirm no tag was pushed (`publish.yml` fires only on `v*` tags), and let the user choose
+  revert, force-push, or keep-and-review. Never "fix" `main` unilaterally. (Issue #144.)
+
+- A dependency bump that loosens a member from `init` to `set` is source-compatible but NOT
+  binary-compatible: the accessor's signature changes, so an assembly compiled against the old
+  version throws `MissingMethodException` when the new one is resolved. When raising a shared
+  dependency's floor, check whether sibling packages consumers may also reference (here
+  `DataProofsDotnet.Legacy` 1.3.0 against Core 1.4.0) were compiled against the old accessor, and
+  write the "update the family together" note in the CHANGELOG. An upstream changelog that says
+  "source-compatible" is not a binary-compatibility claim. (Issue #144 adversarial review, F1.)
+
 - A derived-service dedup check and the dereferencer that selects that service must accept the
   same identifier spellings. If Core normalizes a bare selector such as `files` to `#files` but a
   method projection recognizes only relative/absolute fragment forms, it emits two services for

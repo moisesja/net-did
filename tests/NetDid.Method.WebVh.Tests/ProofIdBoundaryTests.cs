@@ -3,7 +3,7 @@ using System.Text;
 using System.Text.Json;
 using DataProofsDotnet;
 using DataProofsDotnet.DataIntegrity;
-using FluentAssertions;
+using AwesomeAssertions;
 using NetCrypto;
 using NetDid.Core.Model;
 using NetDid.Method.WebVh.Model;

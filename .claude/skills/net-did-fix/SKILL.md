@@ -30,7 +30,7 @@ The repeatable loop this repo runs for every issue/bug fix. Follow the steps in 
 - Name them `IssueNN_*`, grouped in a region alongside prior `IssueNN_*` blocks.
 - Cover the **full affected surface**, not just the first case (e.g. every EC curve, every media type) — partial coverage is why issues get reopened.
 - **Prove the test fails against the pre-fix code**: stash the fix, run the test, confirm it FAILS, restore. Record this in the Review.
-- Stack: xUnit + NSubstitute + FluentAssertions. Method-specific hostile-input tests go in `NetDid.Method.*.Tests`; DID-Core statements go in `NetDid.Tests.W3CConformance`.
+- Stack: xUnit v3 + NSubstitute + AwesomeAssertions (the Apache-2.0 FluentAssertions fork; `using AwesomeAssertions;`). Method-specific hostile-input tests go in `NetDid.Method.*.Tests`; DID-Core statements go in `NetDid.Tests.W3CConformance`.
 
 ## 5. Verify
 Run the **`net-did-verify`** skill (0-warning Release build, full test suite with per-project counts, W3C conformance green, samples end-to-end, clean `git diff --check`). Never mark done without proving it works.

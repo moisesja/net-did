@@ -32,12 +32,22 @@ public static class ConformanceReportSink
 
 public sealed class W3CReportFixture : IAsyncLifetime
 {
-    public Task InitializeAsync() => Task.CompletedTask;
+    public ValueTask InitializeAsync() => ValueTask.CompletedTask;
 
-    public async Task DisposeAsync()
+    public async ValueTask DisposeAsync()
     {
         var results = ConformanceReportSink.GetResults();
         if (results.Count == 0) return;
+
+        // One statement id must name one statement. Two descriptions under one id make the report
+        // show whichever result the runner happened to record first, and hide a FAIL behind a PASS.
+        var collisions = results.GroupBy(r => r.StatementId)
+            .Where(g => g.Select(r => r.Description).Distinct().Count() > 1)
+            .Select(g => g.Key)
+            .ToList();
+        if (collisions.Count > 0)
+            throw new InvalidOperationException(
+                $"Conformance statement ids reused for different statements: {string.Join(", ", collisions)}");
 
         var report = GenerateMarkdownReport(results);
         var reportPath = Path.Combine(
