@@ -332,4 +332,27 @@ public class Issue145UndecodableDocumentTests
 
         resolved.DidDocument.Should().BeNull("ill-formed UTF-8 must not resolve as U+FFFD");
     }
+
+    [Fact]
+    public async Task Issue145_Numalgo2Create_DefaultJsonElement_ThrowsArgumentException()
+    {
+        // Final adversarial pass: default(JsonElement) escaped as a raw InvalidOperationException.
+        var act = () => _method.CreateAsync(new DidPeerCreateOptions
+        {
+            Numalgo = PeerNumalgo.Two,
+            Keys = [AuthenticationKey()],
+            Services =
+            [
+                new Service
+                {
+                    Id = "#svc",
+                    Type = "Example",
+                    ServiceEndpoint = ServiceEndpointValue.FromUri("https://example.com"),
+                    AdditionalProperties = new Dictionary<string, JsonElement> { ["accept"] = default }
+                }
+            ]
+        });
+
+        await act.Should().ThrowAsync<ArgumentException>();
+    }
 }
