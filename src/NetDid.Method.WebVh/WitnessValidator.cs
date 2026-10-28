@@ -2,6 +2,7 @@ using System.Text;
 using System.Text.Json;
 using DataProofsDotnet.DataIntegrity;
 using NetCid;
+using NetDid.Core.Serialization;
 using NetDid.Method.WebVh.Model;
 
 namespace NetDid.Method.WebVh;
@@ -731,22 +732,41 @@ internal sealed class WitnessValidator
     }
 
     /// <summary>
-    /// Authoring-side guard for caller-supplied witness proofs. A proof whose complete JSON is
-    /// outside the JCS data model (an unpaired surrogate, a number beyond IEEE-754 double range)
-    /// can never be checked by any eddsa-jcs-2022 verifier, so publishing it is a caller error,
-    /// and <see cref="MergeWitnessProofs"/> relies on every proof canonicalizing (issue #145).
-    /// Resolution instead treats such a proof as one invalid proof (<see cref="VerificationSession"/>).
+    /// Authoring-side guard for caller-supplied witness proofs (issue #145). Every proof must be
+    /// publishable exactly as supplied:
+    /// <list type="bullet">
+    /// <item>no null entry, proof list, proof, or versionId;</item>
+    /// <item>no unpaired UTF-16 surrogate in the versionId or a modeled proof member, which the
+    /// JSON writer would silently replace with U+FFFD;</item>
+    /// <item>complete proof JSON inside the JCS data model (no unpaired surrogate, no number beyond
+    /// IEEE-754 double range), or no eddsa-jcs-2022 verifier can check it and
+    /// <see cref="MergeWitnessProofs"/> cannot deduplicate it.</item>
+    /// </list>
+    /// Resolution instead treats a non-canonicalizable proof as one invalid proof
+    /// (<see cref="VerificationSession"/>).
     /// </summary>
-    internal static void RequireCanonicalizableProofs(
-        IEnumerable<WitnessProofEntry> entries, string paramName)
+    internal static void RequirePublishableProofs(
+        IEnumerable<WitnessProofEntry?> entries, string paramName, CancellationToken ct)
     {
         foreach (var entry in entries)
         {
-            foreach (var proof in entry.Proofs)
+            ct.ThrowIfCancellationRequested();
+            if (entry?.VersionId is not { } versionId || entry.Proofs is not { } proofs)
+                throw Unpublishable(paramName, "an entry, its versionId, or its proof list is null");
+            if (!Utf16Text.IsWellFormed(versionId))
+                throw Unpublishable(paramName, "a versionId contains an unpaired UTF-16 surrogate");
+
+            foreach (var proof in proofs)
             {
+                ct.ThrowIfCancellationRequested();
+                if (proof is null)
+                    throw Unpublishable(paramName, "a proof is null");
+                if (!HasWellFormedModeledText(proof))
+                    throw Unpublishable(paramName, "a proof member contains an unpaired UTF-16 surrogate");
+
                 try
                 {
-                    _ = GetCanonicalProofJson(proof);
+                    _ = GetCanonicalProofJson(proof, ct);
                 }
                 catch (Exception ex) when (ex is JsonException
                     or FormatException
@@ -754,18 +774,27 @@ internal sealed class WitnessValidator
                     or ArgumentException
                     or OverflowException)
                 {
-                    // Fixed text: the proof content is caller- or remote-supplied.
-                    throw new ArgumentException(
-                        $"{paramName} contains a witness proof that cannot be canonicalized with " +
-                        "JCS (RFC 8785), for example because it holds an unpaired UTF-16 surrogate " +
-                        "or a number outside the IEEE-754 double range. No eddsa-jcs-2022 verifier " +
-                        "can check such a proof.",
-                        paramName,
-                        ex);
+                    throw Unpublishable(paramName,
+                        "a proof cannot be canonicalized with JCS (RFC 8785), for example because it " +
+                        "holds an unpaired UTF-16 surrogate or a number outside the IEEE-754 double " +
+                        "range; no eddsa-jcs-2022 verifier can check such a proof", ex);
                 }
             }
         }
     }
+
+    private static bool HasWellFormedModeledText(DataIntegrityProofValue proof)
+        => Utf16Text.IsWellFormed(proof.Type)
+            && Utf16Text.IsWellFormed(proof.Cryptosuite)
+            && Utf16Text.IsWellFormed(proof.VerificationMethod)
+            && Utf16Text.IsWellFormed(proof.Created)
+            && Utf16Text.IsWellFormed(proof.ProofPurpose)
+            && Utf16Text.IsWellFormed(proof.ProofValue);
+
+    // Fixed text: the proof content is caller- or remote-supplied and is never echoed.
+    private static ArgumentException Unpublishable(
+        string paramName, string reason, Exception? inner = null)
+        => new($"{paramName} cannot be published: {reason}.", paramName, inner);
 
     private static IndexedProof CreateIndexedProof(
         string versionId,

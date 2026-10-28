@@ -133,7 +133,7 @@ public static class LogEntrySerializer
         writer.WriteStartObject();
 
         // versionId
-        writer.WriteString("versionId", versionIdOverride ?? entry.VersionId);
+        writer.WriteString("versionId", Text(versionIdOverride ?? entry.VersionId));
 
         // versionTime — ISO 8601 UTC
         writer.WritePropertyName("versionTime");
@@ -195,7 +195,7 @@ public static class LogEntrySerializer
         {
             if (property.NameEquals("versionId"))
             {
-                writer.WriteString("versionId", versionIdOverride ?? entry.VersionId);
+                writer.WriteString("versionId", Text(versionIdOverride ?? entry.VersionId));
                 continue;
             }
 
@@ -259,15 +259,15 @@ public static class LogEntrySerializer
         writer.WriteStartObject();
 
         if (parameters.Method is not null)
-            writer.WriteString("method", parameters.Method);
+            writer.WriteString("method", Text(parameters.Method));
         if (parameters.Scid is not null)
-            writer.WriteString("scid", parameters.Scid);
+            writer.WriteString("scid", Text(parameters.Scid));
         if (parameters.UpdateKeys is not null)
         {
             writer.WritePropertyName("updateKeys");
             writer.WriteStartArray();
             foreach (var key in parameters.UpdateKeys)
-                writer.WriteStringValue(key);
+                writer.WriteStringValue(Text(key));
             writer.WriteEndArray();
         }
         if (parameters.Deactivated.HasValue)
@@ -277,7 +277,7 @@ public static class LogEntrySerializer
             writer.WritePropertyName("nextKeyHashes");
             writer.WriteStartArray();
             foreach (var hash in parameters.NextKeyHashes)
-                writer.WriteStringValue(hash);
+                writer.WriteStringValue(Text(hash));
             writer.WriteEndArray();
         }
         if (parameters.Watchers is not null)
@@ -285,7 +285,7 @@ public static class LogEntrySerializer
             writer.WritePropertyName("watchers");
             writer.WriteStartArray();
             foreach (var watcher in parameters.Watchers)
-                writer.WriteStringValue(watcher);
+                writer.WriteStringValue(Text(watcher));
             writer.WriteEndArray();
         }
         if (parameters.Portable.HasValue)
@@ -318,7 +318,7 @@ public static class LogEntrySerializer
             foreach (var w in config.Witnesses ?? [])
             {
                 writer.WriteStartObject();
-                writer.WriteString("id", w.Id);
+                writer.WriteString("id", Text(w.Id));
                 if (w.LegacyWireWeight.HasValue)
                     writer.WriteNumber("weight", w.LegacyWireWeight.Value);
                 writer.WriteEndObject();
@@ -345,17 +345,29 @@ public static class LogEntrySerializer
             }
 
             writer.WriteStartObject();
-            writer.WriteString("type", proof.Type);
-            writer.WriteString("cryptosuite", proof.Cryptosuite);
-            writer.WriteString("verificationMethod", proof.VerificationMethod);
+            writer.WriteString("type", Text(proof.Type));
+            writer.WriteString("cryptosuite", Text(proof.Cryptosuite));
+            writer.WriteString("verificationMethod", Text(proof.VerificationMethod));
             if (proof.Created is not null)
-                writer.WriteString("created", proof.Created);
-            writer.WriteString("proofPurpose", proof.ProofPurpose);
-            writer.WriteString("proofValue", proof.ProofValue);
+                writer.WriteString("created", Text(proof.Created));
+            writer.WriteString("proofPurpose", Text(proof.ProofPurpose));
+            writer.WriteString("proofValue", Text(proof.ProofValue));
             writer.WriteEndObject();
         }
         writer.WriteEndArray();
     }
+
+    // Every caller string a log entry carries is checked where it is written (issue #145):
+    // Utf8JsonWriter silently replaces an unpaired surrogate with U+FFFD, so Create/Update would
+    // otherwise sign and publish text that differs from the caller's input. Strings parsed from a
+    // fetched log always decode, so re-serializing one never trips this. The state is checked by
+    // DidDocumentSerializer.
+    private static string Text(string value)
+        => Utf16Text.IsWellFormed(value)
+            ? value
+            : throw new ArgumentException(
+                "The did:webvh log entry contains a string with an unpaired UTF-16 surrogate, " +
+                "which cannot be written as UTF-8 without altering it.");
 
     internal static LogEntry DeserializeEntry(string json)
     {

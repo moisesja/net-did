@@ -168,7 +168,7 @@ public sealed class DidWebVhMethod : DidMethodBase
         // hostile IReadOnlyList can present different contents per enumeration, publishing an
         // artifact that differs from what was inspected (issue #135 review round 2, finding 3).
         var witnessProofs = SnapshotWitnessProofs(
-            createOptions.WitnessProofs, nameof(createOptions.WitnessProofs));
+            createOptions.WitnessProofs, nameof(createOptions.WitnessProofs), ct);
 
         // Step 1: Build DID string with safe placeholder (valid DID syntax for object construction)
         var didTemplate = BuildDidTemplate(createOptions.Domain, createOptions.Path,
@@ -543,7 +543,7 @@ public sealed class DidWebVhMethod : DidMethodBase
         // is supplied — not only when a new proof batch accompanies it (finding 2): supplied
         // content that cannot be parsed must fail the operation, never be silently ignored.
         var witnessProofs = SnapshotWitnessProofs(
-            updateOptions.WitnessProofs, nameof(updateOptions.WitnessProofs));
+            updateOptions.WitnessProofs, nameof(updateOptions.WitnessProofs), ct);
         var existingWitness = ParseRequiredWitnessContent(
             updateOptions.CurrentWitnessContent,
             nameof(updateOptions.CurrentWitnessContent),
@@ -728,7 +728,8 @@ public sealed class DidWebVhMethod : DidMethodBase
     /// </summary>
     private static IReadOnlyList<WitnessProofEntry>? SnapshotWitnessProofs(
         IReadOnlyList<WitnessProofEntry>? witnessProofs,
-        string paramName)
+        string paramName,
+        CancellationToken ct)
     {
         if (witnessProofs is null)
             return null;
@@ -736,14 +737,13 @@ public sealed class DidWebVhMethod : DidMethodBase
         var snapshot = new List<WitnessProofEntry>();
         foreach (var entry in witnessProofs)
         {
-            snapshot.Add(new WitnessProofEntry
-            {
-                VersionId = entry.VersionId,
-                Proofs = entry.Proofs.ToList()
-            });
+            // A null entry or proof list is reported by the guard below, as ArgumentException.
+            snapshot.Add(entry?.Proofs is null
+                ? entry!
+                : new WitnessProofEntry { VersionId = entry.VersionId, Proofs = entry.Proofs.ToList() });
         }
 
-        WitnessValidator.RequireCanonicalizableProofs(snapshot, paramName);
+        WitnessValidator.RequirePublishableProofs(snapshot, paramName, ct);
         return snapshot;
     }
 
@@ -769,7 +769,7 @@ public sealed class DidWebVhMethod : DidMethodBase
                 "issue #135 migration) or omit CurrentWitnessContent to publish only the " +
                 "supplied WitnessProofs.",
                 paramName);
-        WitnessValidator.RequireCanonicalizableProofs(parsed.Entries, paramName);
+        WitnessValidator.RequirePublishableProofs(parsed.Entries, paramName, ct);
         return parsed;
     }
 
@@ -786,7 +786,7 @@ public sealed class DidWebVhMethod : DidMethodBase
         // 2-3). Deactivation is never blocked by a bad witness file: the caller can retry
         // without CurrentWitnessContent to publish the supplied proofs alone.
         var witnessProofs = SnapshotWitnessProofs(
-            deactivateOptions.WitnessProofs, nameof(deactivateOptions.WitnessProofs));
+            deactivateOptions.WitnessProofs, nameof(deactivateOptions.WitnessProofs), ct);
         var existingWitness = ParseRequiredWitnessContent(
             deactivateOptions.CurrentWitnessContent,
             nameof(deactivateOptions.CurrentWitnessContent),
