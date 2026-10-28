@@ -47,8 +47,20 @@ internal sealed class Numalgo4Handler
 
         var did = $"did:peer:4{shortForm}:{longForm}";
 
-        // Build the resolved document with the actual DID as id
-        var resolvedDoc = BuildResolvedDocument(did, options.InputDocument);
+        // Build the returned document from the JSON that was hashed, exactly as Resolve does, never
+        // from the caller's object again: its lists may read differently a second time, and the
+        // result must be the document this DID resolves to (PR #149 review round 2).
+        DidDocument encodedDoc;
+        try
+        {
+            encodedDoc = DidDocumentSerializer.DeserializeAllowingIncompleteVerificationMethods(json);
+        }
+        catch (Exception ex) when (ex is not ArgumentException)
+        {
+            throw new ArgumentException(
+                "The input document does not encode a resolvable did:peer:4 document.", ex);
+        }
+        var resolvedDoc = BuildResolvedDocument(did, encodedDoc);
 
         return new DidCreateResult
         {

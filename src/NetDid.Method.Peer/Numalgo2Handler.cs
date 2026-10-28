@@ -16,12 +16,13 @@ internal sealed class Numalgo2Handler
 {
     public DidCreateResult Create(DidPeerCreateOptions options)
     {
-        if (options.Keys is null || options.Keys.Count == 0)
-            throw new ArgumentException("Numalgo 2 requires at least one key in Keys.");
-
+        // Each caller list is read exactly once, and the DID built from that one read is the only
+        // representation: the returned document is that DID resolved. Encoding, validation and the
+        // result therefore cannot disagree, whatever a caller IReadOnlyList returns on another
+        // read (PR #149 review round 2).
         var segments = new List<string>();
 
-        foreach (var keyPurpose in options.Keys)
+        foreach (var keyPurpose in options.Keys ?? [])
         {
             var prefix = keyPurpose.Purpose switch
             {
@@ -35,20 +36,28 @@ internal sealed class Numalgo2Handler
             segments.Add($"{prefix}{keyPurpose.Key.MultibasePublicKey}");
         }
 
-        if (options.Services is not null)
+        if (segments.Count == 0)
+            throw new ArgumentException("Numalgo 2 requires at least one key in Keys.");
+
+        foreach (var service in options.Services ?? [])
         {
-            foreach (var service in options.Services)
-            {
-                var encoded = Numalgo2ServiceEncoder.Encode(service);
-                segments.Add($"S{encoded}");
-            }
+            var encoded = Numalgo2ServiceEncoder.Encode(service);
+            segments.Add($"S{encoded}");
         }
 
         var did = "did:peer:2." + string.Join(".", segments);
-        var doc = BuildDocument(did, options.Keys, options.Services);
-        // Never mint a DID whose document NetDid could not serialize (W3C DID Core id and URI
-        // syntax, unique service ids; issue #145).
-        DidDocumentSerializer.ValidateForProduction(doc);
+        DidDocument doc;
+        try
+        {
+            // Resolve runs the DID Core producer checks (id and URI syntax, unique service ids),
+            // so NetDid never mints a DID whose document it could not serialize (issue #145).
+            doc = Resolve(did, did["did:peer:".Length..]);
+        }
+        catch (Exception ex) when (ex is not ArgumentException)
+        {
+            throw new ArgumentException(
+                "The keys and services do not encode a resolvable did:peer:2 document.", ex);
+        }
 
         return new DidCreateResult
         {
@@ -173,96 +182,5 @@ internal sealed class Numalgo2Handler
         };
         keyIndex++;
         return vm;
-    }
-
-    private static DidDocument BuildDocument(
-        string did, IReadOnlyList<PeerKeyPurpose> keys, IReadOnlyList<Service>? inputServices)
-    {
-        var didValue = new Did(did);
-        var verificationMethods = new List<VerificationMethod>();
-        var authentication = new List<VerificationRelationshipEntry>();
-        var assertionMethod = new List<VerificationRelationshipEntry>();
-        var keyAgreement = new List<VerificationRelationshipEntry>();
-        var capabilityInvocation = new List<VerificationRelationshipEntry>();
-        var capabilityDelegation = new List<VerificationRelationshipEntry>();
-        int keyIndex = 1; // 1-based per spec
-
-        foreach (var keyPurpose in keys)
-        {
-            var vmId = $"#key-{keyIndex}";
-            var vm = new VerificationMethod
-            {
-                Id = vmId,
-                Type = "Multikey",
-                Controller = didValue,
-                PublicKeyMultibase = keyPurpose.Key.MultibasePublicKey
-            };
-            verificationMethods.Add(vm);
-
-            var vmRef = VerificationRelationshipEntry.FromReference(vmId);
-            switch (keyPurpose.Purpose)
-            {
-                case PeerPurpose.Assertion:
-                    assertionMethod.Add(vmRef);
-                    break;
-                case PeerPurpose.KeyAgreement:
-                    keyAgreement.Add(vmRef);
-                    break;
-                case PeerPurpose.Authentication:
-                    authentication.Add(vmRef);
-                    break;
-                case PeerPurpose.CapabilityInvocation:
-                    capabilityInvocation.Add(vmRef);
-                    break;
-                case PeerPurpose.CapabilityDelegation:
-                    capabilityDelegation.Add(vmRef);
-                    break;
-            }
-            keyIndex++;
-        }
-
-        List<Service>? services = null;
-        if (inputServices is { Count: > 0 })
-        {
-            services = new List<Service>();
-            int autoServiceIndex = 0;
-            for (int i = 0; i < inputServices.Count; i++)
-            {
-                services.Add(new Service
-                {
-                    Id = GenerateServiceId(inputServices[i].Id, ref autoServiceIndex),
-                    Type = inputServices[i].Type,
-                    ServiceEndpoint = inputServices[i].ServiceEndpoint,
-                    AdditionalProperties = inputServices[i].AdditionalProperties
-                });
-            }
-        }
-
-        return new DidDocument
-        {
-            Id = didValue,
-            VerificationMethod = verificationMethods.Count > 0 ? verificationMethods : null,
-            Authentication = authentication.Count > 0 ? authentication : null,
-            AssertionMethod = assertionMethod.Count > 0 ? assertionMethod : null,
-            KeyAgreement = keyAgreement.Count > 0 ? keyAgreement : null,
-            CapabilityInvocation = capabilityInvocation.Count > 0 ? capabilityInvocation : null,
-            CapabilityDelegation = capabilityDelegation.Count > 0 ? capabilityDelegation : null,
-            Service = services
-        };
-    }
-
-    /// <summary>
-    /// Per DIF peer-DID spec: if the service has an explicit ID, preserve it;
-    /// otherwise auto-generate: first = "#service", subsequent = "#service-1", "#service-2", etc.
-    /// IDs use relative fragment form per spec.
-    /// </summary>
-    private static string GenerateServiceId(string? existingId, ref int autoServiceIndex)
-    {
-        if (!string.IsNullOrEmpty(existingId) && existingId.StartsWith('#'))
-            return existingId;
-
-        var fragment = autoServiceIndex == 0 ? "#service" : $"#service-{autoServiceIndex}";
-        autoServiceIndex++;
-        return fragment;
     }
 }
