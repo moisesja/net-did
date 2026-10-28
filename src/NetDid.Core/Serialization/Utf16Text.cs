@@ -38,22 +38,30 @@ internal static class Utf16Text
     /// </summary>
     public static void RequireDecodable(JsonElement element)
     {
-        switch (element.ValueKind)
+        // Iterative, not recursive: a caller-built element can be nested far deeper than the
+        // call stack allows, and a stack overflow cannot be caught.
+        var pending = new Stack<JsonElement>();
+        pending.Push(element);
+        while (pending.Count > 0)
         {
-            case JsonValueKind.Object:
-                foreach (var property in element.EnumerateObject())
-                {
-                    _ = property.Name;
-                    RequireDecodable(property.Value);
-                }
-                break;
-            case JsonValueKind.Array:
-                foreach (var item in element.EnumerateArray())
-                    RequireDecodable(item);
-                break;
-            case JsonValueKind.String:
-                _ = element.GetString();
-                break;
+            var current = pending.Pop();
+            switch (current.ValueKind)
+            {
+                case JsonValueKind.Object:
+                    foreach (var property in current.EnumerateObject())
+                    {
+                        _ = property.Name;
+                        pending.Push(property.Value);
+                    }
+                    break;
+                case JsonValueKind.Array:
+                    foreach (var item in current.EnumerateArray())
+                        pending.Push(item);
+                    break;
+                case JsonValueKind.String:
+                    _ = current.GetString();
+                    break;
+            }
         }
     }
 }

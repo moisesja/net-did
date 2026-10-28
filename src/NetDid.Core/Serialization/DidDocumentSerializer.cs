@@ -305,15 +305,19 @@ public static class DidDocumentSerializer
     // Every name and string is decoded first, on the element actually being written.
     private static void WriteElement(Utf8JsonWriter writer, JsonElement element)
     {
+        if (element.ValueKind == JsonValueKind.Undefined)
+            throw new ArgumentException("The DID document contains an undefined JSON value.", "doc");
+
         try
         {
             Utf16Text.RequireDecodable(element);
         }
         catch (InvalidOperationException ex)
         {
+            // Also covers ObjectDisposedException (an element whose document was disposed).
             throw new ArgumentException(
-                "The DID document contains a JSON value whose text is not well-formed UTF-8 or " +
-                "UTF-16, which cannot be written without altering it.",
+                "The DID document contains a JSON value that cannot be read, or whose text is not " +
+                "well-formed UTF-8 or UTF-16, so it cannot be written without altering it.",
                 "doc",
                 ex);
         }
@@ -831,7 +835,15 @@ public static class DidDocumentSerializer
             {
                 writer.WriteStartArray();
                 foreach (var item in value.Set!)
+                {
+                    // The model already forbids this; the writer enforces it too, so the shape the
+                    // reader rejects can never be published (W3C DID Core §5.4, issue #145).
+                    if (item is null || item.IsSet)
+                        throw new ArgumentException(
+                            "A serviceEndpoint set entry must be a URI or a map, not null or another set.",
+                            "doc");
                     JsonSerializer.Serialize(writer, item, options);
+                }
                 writer.WriteEndArray();
             }
         }

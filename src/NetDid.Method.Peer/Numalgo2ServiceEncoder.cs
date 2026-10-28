@@ -145,6 +145,9 @@ internal static class Numalgo2ServiceEncoder
     // JsonSerializer would rewrite ill-formed UTF-8 inside a caller JsonElement as U+FFFD (issue #145).
     private static JsonElement Element(JsonElement value)
     {
+        if (value.ValueKind == JsonValueKind.Undefined)
+            throw new ArgumentException("A did:peer:2 service contains an undefined JSON value.");
+
         try
         {
             Utf16Text.RequireDecodable(value);
@@ -153,8 +156,8 @@ internal static class Numalgo2ServiceEncoder
         catch (InvalidOperationException ex)
         {
             throw new ArgumentException(
-                "A did:peer:2 service contains a JSON value whose text is not well-formed UTF-8 or " +
-                "UTF-16, which cannot be encoded without altering it.",
+                "A did:peer:2 service contains a JSON value that cannot be read, or whose text is " +
+                "not well-formed UTF-8 or UTF-16, so it cannot be encoded without altering it.",
                 ex);
         }
     }
@@ -171,7 +174,13 @@ internal static class Numalgo2ServiceEncoder
         }
         if (endpoint.IsSet)
         {
-            return endpoint.Set!.Select(SerializeEndpoint).ToList();
+            // W3C DID Core §5.4: set entries are URIs or maps (the model forbids nesting too).
+            return endpoint.Set!
+                .Select(item => item is null || item.IsSet
+                    ? throw new ArgumentException(
+                        "A did:peer:2 serviceEndpoint set entry must be a URI or a map.")
+                    : SerializeEndpoint(item))
+                .ToList();
         }
         throw new InvalidOperationException("Invalid ServiceEndpointValue");
     }
