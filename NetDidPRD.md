@@ -1102,8 +1102,10 @@ documented upstream compatibility limitation and is rejected by this version of 
 To keep universal validation sound the parser rejects duplicate JSON members anywhere in a fetched
 entry (`AllowDuplicateProperties = false`) — `System.Text.Json` keeps the last of a duplicate pair,
 so a decoy `proof` beside a valid one would otherwise be silently dropped — and maps JSON-access
-failures at the parse boundary (e.g. a string carrying an unpaired surrogate that decodes with an
-error) to `invalidDidLog`, never `notFound`. did.jsonl and witness files are decoded as strict UTF-8;
+failures at the parse boundary to `invalidDidLog`, never `notFound`. One such failure is an
+unpaired UTF-16 surrogate escape. In a member value it fails when the string is decoded. In a
+member name it fails during the parse itself, because duplicate rejection has to decode each name
+to compare it (issue #145). did.jsonl and witness files are decoded as strict UTF-8;
 malformed byte sequences are never silently replaced before hash or proof verification.
 
 Complete proofs produced outside NetDid MUST enter the public authoring surface through
@@ -2059,6 +2061,10 @@ public static class DidDocumentSerializer
     /// Per W3C DID Core §6.2 (JSON consumption): MUST NOT require @context.
     /// Per W3C DID Core §6.3 (JSON-LD consumption): MUST verify @context when
     /// the input is known to be application/did+ld+json.
+    /// Malformed JSON throws JsonException. This covers duplicate members, a missing or
+    /// non-string VM controller, and an unpaired UTF-16 surrogate escape in a member name
+    /// or value (issues #121, #145). A DID-valued member that is not a valid DID throws
+    /// InvalidDidException.
     public static DidDocument Deserialize(string json, string? contentType = null);
     public static DidDocument Deserialize(ReadOnlySpan<byte> utf8Json, string? contentType = null);
 }

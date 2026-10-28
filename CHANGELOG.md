@@ -88,6 +88,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **An unpaired UTF-16 surrogate in a JSON member name now gets the correct error** (issue #145).
+  Resolution already failed closed for this input; only the reported error was wrong. NetDid
+  rejects duplicate JSON members, which means `System.Text.Json` decodes every member name while
+  parsing. A lone surrogate escape in a name (for example `"\uD800":1`) therefore throws
+  `InvalidOperationException` from the parse itself, not `JsonException`, and two parse
+  boundaries let it escape. The same escape in a member value was already handled correctly.
+  - **did:webvh:** a fetched `did.jsonl` line with such a name, at any depth, now resolves as
+    `invalidDidLog` instead of `notFound`. `UpdateAsync` and `DeactivateAsync` now throw their
+    documented `FormatException` for such a `CurrentLogContent` instead of a raw
+    `InvalidOperationException`.
+  - **Core:** `DidDocumentSerializer.Deserialize(string)` and
+    `Deserialize(ReadOnlySpan<byte>)` now throw `JsonException`, as they do for every other
+    malformed document, instead of `InvalidOperationException`. The message is fixed text and
+    never repeats the name. The original exception is kept as `InnerException`. A caller that
+    caught `InvalidOperationException` for this input must catch `JsonException`.
+  - Unchanged: the did:webvh witness-file parser already mapped this input to an unparseable file
+    (`witnessValidationFailed` on resolve, `ArgumentException` for `CurrentWitnessContent`). New
+    tests now pin that behavior. did:peer and did:ethr already mapped it.
+
 - **did:webvh resolution now rejects log entries dated more than 5 minutes in the future**
   (issue #131). did:webvh v1.0 Read step 4 says an entry's `versionTime` "MUST NOT be more than
   a small, implementation-defined tolerance in the future relative to the resolver's current

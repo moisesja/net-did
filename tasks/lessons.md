@@ -644,3 +644,12 @@
   `trunc(head) + 1s` against a 2-second budget. A head up to about 1 s ahead therefore SUCCEEDS,
   and a head exactly 5 minutes ahead still gets `ArgumentException`. Headline numbers ("2 s",
   "5 min") are not the predicate. (Issue #131 adversarial review.)
+- "Catch the JSON-access set" applies to the PARSE call too, not only to later element access,
+  whenever duplicate rejection is on. With `AllowDuplicateProperties = false`, `JsonDocument.Parse`
+  decodes every member NAME to compare it, so an unpaired surrogate escape in a name
+  (`"\uD800":1`) throws `InvalidOperationException` from `Parse` itself. A `catch (JsonException)`
+  around the parse let it fall through to `notFound` in did:webvh and leak from the public
+  `DidDocumentSerializer.Deserialize`. In a VALUE the same escape parses fine and fails only on
+  `GetString`, so value-position tests stay green and hide the name-position gap. When adding a
+  duplicate-rejecting parse, test a lone surrogate in a member name at the root AND nested, plus a
+  lone LOW surrogate (`\uDC00`), which goes through a different decode path. (Issue #145.)
