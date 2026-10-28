@@ -1125,5 +1125,110 @@ public class Issue145UnpairedSurrogateMemberNameTests
     }
 
     #endregion
+
+    #region Issue145_FinalPassBeforePush
+
+    // F1: the cached copy ignored later changes to the caller's options, which were no longer locked.
+    [Fact]
+    public void Issue145_Serialize_CallerOptions_AreLockedOnFirstUse()
+    {
+        var options = new JsonSerializerOptions { WriteIndented = true };
+        DidDocumentSerializer.Serialize(SimpleDocument(), DidContentTypes.JsonLd, options);
+
+        var act = () => options.WriteIndented = false;
+
+        act.Should().Throw<InvalidOperationException>(
+            "as with System.Text.Json itself, options are locked on first use, so a later change " +
+            "cannot be silently ignored by the cached copy");
+    }
+
+    // F6: a caller TypeInfoResolver could bypass NetDid's converters or fail to describe its types.
+    [Fact]
+    public void Issue145_Serialize_CallerTypeInfoResolver_CannotBypassTheConverters()
+    {
+        var options = new JsonSerializerOptions
+        {
+            TypeInfoResolver = System.Text.Json.Serialization.Metadata.JsonTypeInfoResolver.Combine()
+        };
+
+        var json = DidDocumentSerializer.Serialize(SimpleDocument(), DidContentTypes.JsonLd, options);
+
+        json.Should().Contain("\"@context\"").And.Contain("\"id\":\"did:example:123\"");
+    }
+
+    // F2: null entries in key_ops/x5c were accepted on read and then rejected by the writer.
+    [Theory]
+    [InlineData("\"key_ops\": [null]")]
+    [InlineData("\"x5c\": [null]")]
+    public void Issue145_Deserialize_JwkListWithNullEntry_ThrowsJsonException(string member)
+    {
+        var json = Doctor(PublicKeyMultibase,
+            "\"publicKeyJwk\": {\"kty\": \"OKP\", \"crv\": \"Ed25519\", " +
+            "\"x\": \"11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo\", " + member + "}");
+
+        var act = () => DidDocumentSerializer.Deserialize(json);
+
+        act.Should().Throw<JsonException>();
+    }
+
+    // F3: an empty kty was written, then rejected by the reader.
+    [Fact]
+    public void Issue145_Serialize_JwkWithEmptyKty_ThrowsArgumentException()
+    {
+        var act = () => DidDocumentSerializer.Serialize(
+            DocumentWithJwk(new JsonWebKey { Kty = "", Crv = "Ed25519", X = "pubx" }));
+
+        act.Should().Throw<ArgumentException>();
+    }
+
+    // F5: a null serviceEndpoint or a default(Did) controller was emitted as JSON null.
+    [Fact]
+    public void Issue145_Serialize_NullServiceEndpoint_ThrowsArgumentException()
+    {
+        var doc = new DidDocument
+        {
+            Id = new Did(Did),
+            Service = [new Service { Id = $"{Did}#svc", Type = "Example", ServiceEndpoint = null! }]
+        };
+
+        var act = () => DidDocumentSerializer.Serialize(doc);
+
+        act.Should().Throw<ArgumentException>();
+    }
+
+    [Theory]
+    [InlineData(1)]
+    [InlineData(2)]
+    public void Issue145_Serialize_DefaultDidController_ThrowsArgumentException(int count)
+    {
+        var doc = new DidDocument
+        {
+            Id = new Did(Did),
+            Controller = count == 1 ? [default] : [new Did(Did), default]
+        };
+
+        var act = () => DidDocumentSerializer.Serialize(doc);
+
+        act.Should().Throw<ArgumentException>();
+    }
+
+    // F7: the relative-reference branch of IsValidDidReference never reached the anchored regex.
+    [Theory]
+    [InlineData("#a\n")]
+    [InlineData("#a b")]
+    [InlineData("#\t")]
+    [InlineData("#key\u0000")]
+    public void Issue145_RelativeReference_WhitespaceOrControl_IsRejected(string reference)
+    {
+        DidParser.IsValidDidReference(reference).Should().BeFalse();
+    }
+
+    [Fact]
+    public void Issue145_Control_RelativeReference_StillValid()
+    {
+        DidParser.IsValidDidReference("#key-1").Should().BeTrue();
+    }
+
+    #endregion
 }
 

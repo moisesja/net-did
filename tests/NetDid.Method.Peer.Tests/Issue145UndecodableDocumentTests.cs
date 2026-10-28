@@ -429,5 +429,54 @@ public class Issue145UndecodableDocumentTests
 
         await act.Should().ThrowAsync<ArgumentException>();
     }
+
+    // ── Final pass before push ──────────────────────────────────────────────────────
+
+    // F4: a block was parsed with MaxDepth 64 on its own, but it sits deeper inside the document,
+    // so a deep-enough block resolved to a document Serialize could not write.
+    [Theory]
+    [InlineData("extension")]
+    [InlineData("map-in-set")]
+    public async Task Issue145_Numalgo2Resolve_DeepBlock_EitherFailsClosedOrSerializes(string placement)
+    {
+        for (var depth = 55; depth <= 66; depth++)
+        {
+            var nested = new string('[', depth) + new string(']', depth);
+            var block = placement == "extension"
+                ? $$"""{"t":"dm","s":"https://a.example","x":{{nested}}}"""
+                : $$"""{"t":"dm","s":[{"uri":{{nested}}}]}""";
+
+            var resolved = await _method.ResolveAsync(await Peer2WithServiceBlock(block));
+
+            if (resolved.DidDocument is { } document)
+            {
+                var serialize = () => DidDocumentSerializer.Serialize(document);
+                serialize.Should().NotThrow($"a resolved document at nesting {depth} must serialize again");
+            }
+        }
+    }
+
+    // F5: a null serviceEndpoint or type crashed did:peer:2 Create (NRE/ANE) and let did:peer:4
+    // Create return a DID that then resolved as notFound.
+    [Theory]
+    [InlineData(PeerNumalgo.Two, "endpoint")]
+    [InlineData(PeerNumalgo.Two, "type")]
+    [InlineData(PeerNumalgo.Four, "endpoint")]
+    public async Task Issue145_Create_ServiceWithNullMember_ThrowsArgumentException(PeerNumalgo numalgo, string member)
+    {
+        var service = new Service
+        {
+            Id = "#svc",
+            Type = member == "type" ? null! : "Example",
+            ServiceEndpoint = member == "endpoint" ? null! : ServiceEndpointValue.FromUri("https://example.com")
+        };
+
+        var act = () => _method.CreateAsync(numalgo == PeerNumalgo.Two
+            ? new DidPeerCreateOptions { Numalgo = PeerNumalgo.Two, Keys = [AuthenticationKey()], Services = [service] }
+            : new DidPeerCreateOptions { Numalgo = PeerNumalgo.Four, InputDocument = new DidDocument { Service = [service] } });
+
+        (await act.Should().ThrowAsync<ArgumentException>())
+            .Which.Should().NotBeOfType<ArgumentNullException>();
+    }
 }
 
