@@ -127,6 +127,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     `CurrentWitnessContent`). New tests now pin that behavior. did:peer and did:ethr resolution
     already mapped it.
 
+  The adversarial review also found three older defects of the same kind. They are fixed here too:
+  - **did:ethr `DefaultEthereumRpcClient`:** a node response whose result object had a duplicate
+    member, or an unpaired surrogate in a member name or string value, leaked a raw
+    `ArgumentException` or `InvalidOperationException` from `GetBlockTimestampAsync`,
+    `GetTransactionReceiptAsync`, `GetFinalizedBlockNumberAsync`, and every method that reads a
+    string result (`GetBlockNumberAsync`, `GetChainIdAsync`, `CallAsync`, and others). These now
+    throw `EthereumInteractionException` with fixed text. One consequence for resolution:
+    - Before, with the opt-in event-history cache enabled, such a finalized-block response failed
+      resolution as `internalError`.
+    - Now it makes `GetFinalizedBlockNumberAsync` return `null` as documented, and resolution
+      falls back to the full uncached walk.
+  - **did:webvh witness authoring:** a witness proof that cannot be canonicalized with JCS
+    (RFC 8785) made Create, Update, and Deactivate throw `NetCid.JcsFormatException`. Examples are
+    a proof holding an unpaired surrogate, a number such as `1e400`, or `"id":"urn:\uD800"`.
+    Such a proof is now rejected with `ArgumentException` whose `ParamName` is `WitnessProofs`
+    or `CurrentWitnessContent`, because no eddsa-jcs-2022 verifier can check it. Resolution is
+    unchanged: a witness file containing such a proof still parses, and the proof counts as one
+    invalid proof.
+  - **Core `DidDocumentSerializer.Deserialize`:**
+    - A malformed `publicKeyJwk` (for example `"x": 5`) now throws `JsonException`. Before, it
+      threw IdentityModel's `ArgumentException` (IDX10805).
+    - An unpaired surrogate in an extension value is now rejected with `JsonException`. This
+      covers document, verification-method, and service extension members, `serviceEndpoint`
+      map values, and unknown `publicKeyJwk` members. Before, it was accepted, and the resulting
+      document then failed to serialize.
+    - **Behavior change:** a did:peer:4 long form whose document contains such a value used to
+      resolve to that unserializable document. It now fails to resolve (`notFound`, the existing
+      did:peer:4 mapping for a malformed document).
+
 - **did:webvh resolution now rejects log entries dated more than 5 minutes in the future**
   (issue #131). did:webvh v1.0 Read step 4 says an entry's `versionTime` "MUST NOT be more than
   a small, implementation-defined tolerance in the future relative to the resolver's current

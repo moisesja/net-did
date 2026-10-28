@@ -1252,7 +1252,7 @@ well-known placeholder string (`{SCID}`) that stands in for the real SCID during
 7. Validate every explicitly declared witness policy before it can take effect, at genesis and on every later transition. The disabling form is the empty object `{}`. A configured policy MUST contain both `threshold` and a non-empty `witnesses` list; `threshold` MUST be in the inclusive range `1..count(distinct witness ids)`; every id MUST already be Unicode NFC-normalized, MUST be unique under ordinal comparison in that canonical form, MUST be a bare `did:key` DID, and MUST encode an Ed25519 key compatible with `eddsa-jcs-2022`. Missing fields, duplicate or non-canonical ids, zero/negative/out-of-range thresholds, malformed keys, and unsupported key types invalidate the log rather than being coerced to “no witnesses.”
 8. Determine the witness authority for every entry. Genesis is governed by the witness policy it declares. The first later entry that changes from no active witnesses to a configured policy is immediately governed by that new policy and MUST itself be witnessed. Once a policy is active, it governs the entry that lowers, removes, or replaces it, and the replacement takes effect only after that entry is published. If any entry through the requested version requires witnessing, fetch `did-witness.json` and validate cumulative witness coverage against those authorizing policies. `did-witness.json` is a JSON array of `{ "versionId": ..., "proof": [...] }` entries (the member is `proof`, singular, per did:webvh v1.0 — issue #135), parsed strictly: UTF-8, duplicate JSON members rejected, and a parse failure is logged with its reason before resolution reports `witnessValidationFailed`.
 
-   Each witness proof is an `eddsa-jcs-2022` Data Integrity proof with `proofPurpose: assertionMethod` and a verificationMethod in the strict `did:key:<multibase>#<multibase>` form (the bare-DID form is not counted — conforming resolvers discard it), whose input document is `{"versionId": "<versionId>"}` — not the log entry itself. The `versionId` embeds the entry hash that chain validation independently recomputes before witness validation runs, so an approval still binds the full entry content, and the input document is always built from the chain-validated entry's `versionId`, never from the witness file's claimed key. Proofs are verified with their complete wire configuration through the Data Integrity pipeline: signature-bound members such as `expires` and extensions are honored, and an unsigned injected member fails verification. A candidate with `previousProof` is verified with the complete dependency closure found in the same version bucket. Missing, duplicate/ambiguous, repeated, or cyclic references fail closed. A failed aggregate MUST NOT memoize an individually successful dependency as valid; positive dependency verdicts are reusable only after the entire supplied closure verifies. Dependency proofs provide Data Integrity context only: the configured candidate's signer is the sole possible approval, while an unconfigured dependency may be cryptographically verified but is never counted toward the threshold. A syntactically valid proof that cannot be represented by JCS is an invalid proof, not a resolver exception.
+   Each witness proof is an `eddsa-jcs-2022` Data Integrity proof with `proofPurpose: assertionMethod` and a verificationMethod in the strict `did:key:<multibase>#<multibase>` form (the bare-DID form is not counted — conforming resolvers discard it), whose input document is `{"versionId": "<versionId>"}` — not the log entry itself. The `versionId` embeds the entry hash that chain validation independently recomputes before witness validation runs, so an approval still binds the full entry content, and the input document is always built from the chain-validated entry's `versionId`, never from the witness file's claimed key. Proofs are verified with their complete wire configuration through the Data Integrity pipeline: signature-bound members such as `expires` and extensions are honored, and an unsigned injected member fails verification. A candidate with `previousProof` is verified with the complete dependency closure found in the same version bucket. Missing, duplicate/ambiguous, repeated, or cyclic references fail closed. A failed aggregate MUST NOT memoize an individually successful dependency as valid; positive dependency verdicts are reusable only after the entire supplied closure verifies. Dependency proofs provide Data Integrity context only: the configured candidate's signer is the sole possible approval, while an unconfigured dependency may be cryptographically verified but is never counted toward the threshold. A syntactically valid proof that cannot be represented by JCS is an invalid proof, not a resolver exception. On the authoring side (Create/Update/Deactivate), such a proof supplied through `WitnessProofs` or `CurrentWitnessContent` is rejected with `ArgumentException` naming that parameter: no eddsa-jcs-2022 verifier can check it, so publishing it would be a dishonest success (issue #145).
 
    A version's proofs may be split across duplicate-`versionId` entries (the ts reference implementation authors one entry per proof) and are aggregated. Semantically identical proofs are deduplicated by the JCS-canonical complete proof object, so whitespace, property order, or parsed-versus-programmatic provenance cannot multiply an approval or grow a republished artifact; signature-bound extensions remain part of identity. Proof-less entries and proofs without the optional `created` member are tolerated and simply contribute no approvals or verify without `created`, respectively. Count a configured witness only after its proof verifies and binds to the exact configured `did:key` signer (never a `verificationMethod` prefix), and count each distinct signer at most once per required entry.
 
@@ -1479,7 +1479,8 @@ public sealed record DidEthrCreateOptions : DidCreateOptions
    call `changed(identity)` and walk every block above the cached watermark, then splice the
    cached prefix only when its first block exactly matches the live `previousChange` pointer.
    Never place a block above the finalized watermark in the indefinite cache. If the chain or
-   endpoint does not support the finalized tag, perform the complete uncached walk. Cache entries
+   endpoint does not support the finalized tag, or returns a malformed finalized block (for
+   example a duplicate or undecodable member), perform the complete uncached walk. Cache entries
    MUST remain within the existing 5,000-event and 32 MiB per-resolution bounds. The cache MUST be
    resolver-owned (not a caller-writable shared cache), MUST have a 64 MiB aggregate size limit,
    MUST skip identities with no reusable finalized event prefix, and MUST NOT replace an entry with
@@ -1497,6 +1498,11 @@ public sealed record DidEthrCreateOptions : DidCreateOptions
      the current block and every subsequent same-block event to point exactly to the current
      block;
    - validate full 256-bit ABI words before narrowing dynamic byte offsets or lengths.
+   The default RPC client maps every malformed result to `EthereumInteractionException` with
+   fixed text. This covers wrong JSON types, duplicate member names, and unpaired UTF-16
+   surrogates in member names or string values (issue #145). `System.Text.Json` builds a result
+   object's member dictionary, and decodes its strings, lazily on first access, so the client
+   forces both at its own boundary.
    Any violation fails closed as `notFound`; a valid authorization event MUST NOT survive beside
    a malformed revocation or deactivation event.
    Cached blocks are untrusted input too: store frozen raw `EthereumLogEntry` values rather than
@@ -2064,9 +2070,11 @@ public static class DidDocumentSerializer
     /// Per W3C DID Core §6.3 (JSON-LD consumption): MUST verify @context when
     /// the input is known to be application/did+ld+json.
     /// Malformed JSON throws JsonException. This covers duplicate members, a missing or
-    /// non-string VM controller, an unpaired UTF-16 surrogate (escaped or raw) in a member
-    /// name or value, and ill-formed UTF-8 bytes (issues #121, #145). A DID-valued member
-    /// that is not a valid DID throws InvalidDidException.
+    /// non-string VM controller, a malformed publicKeyJwk, an unpaired UTF-16 surrogate
+    /// (escaped or raw) in any member name or value, and ill-formed UTF-8 bytes (issues #121,
+    /// #145). Every string is decoded once on the way in, extension values included, so a
+    /// document that deserializes can always be serialized again. A DID-valued member that
+    /// is not a valid DID throws InvalidDidException.
     public static DidDocument Deserialize(string json, string? contentType = null);
     public static DidDocument Deserialize(ReadOnlySpan<byte> utf8Json, string? contentType = null);
 }
