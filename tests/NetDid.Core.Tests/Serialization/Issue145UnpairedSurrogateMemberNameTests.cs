@@ -814,5 +814,108 @@ public class Issue145UnpairedSurrogateMemberNameTests
     }
 
     #endregion
+
+    #region Issue145_NullMembersAndDuplicateNames (final pass, F5)
+
+    [Theory]
+    [InlineData("vm-id")]
+    [InlineData("vm-type")]
+    [InlineData("service-id")]
+    [InlineData("service-type")]
+    [InlineData("also-known-as")]
+    public void Issue145_Serialize_NullRequiredMember_ThrowsArgumentException(string position)
+    {
+        // Text(null) passed, so Serialize emitted e.g. "type": null, which Deserialize rejects.
+        var doc = new DidDocument
+        {
+            Id = new Did(Did),
+            AlsoKnownAs = position == "also-known-as" ? [null!] : null,
+            VerificationMethod =
+            [
+                new VerificationMethod
+                {
+                    Id = position == "vm-id" ? null! : $"{Did}#key-1",
+                    Type = position == "vm-type" ? null! : "Multikey",
+                    Controller = new Did(Did),
+                    PublicKeyMultibase = "z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK"
+                }
+            ],
+            Service =
+            [
+                new Service
+                {
+                    Id = position == "service-id" ? null! : $"{Did}#svc",
+                    Type = position == "service-type" ? null! : "Example",
+                    ServiceEndpoint = ServiceEndpointValue.FromUri("https://example.com")
+                }
+            ]
+        };
+
+        var act = () => DidDocumentSerializer.Serialize(doc);
+
+        act.Should().Throw<ArgumentException>();
+    }
+
+    // Two distinct string instances with the same text are different keys to this comparer.
+    private sealed class ByReference : IEqualityComparer<string>
+    {
+        public bool Equals(string? x, string? y) => ReferenceEquals(x, y);
+        public int GetHashCode(string obj) => System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(obj);
+    }
+
+    private static Dictionary<string, JsonElement> DuplicateNames(string name)
+    {
+        var map = new Dictionary<string, JsonElement>(new ByReference())
+        {
+            [name] = JsonSerializer.SerializeToElement("https://a.example"),
+            [new string(name.AsSpan())] = JsonSerializer.SerializeToElement("https://b.example")
+        };
+        map.Should().HaveCount(2, "the comparer must admit the duplicate for this test to mean anything");
+        return map;
+    }
+
+    [Theory]
+    [InlineData("document-extension")]
+    [InlineData("vm-extension")]
+    [InlineData("service-extension")]
+    [InlineData("endpoint-map")]
+    public void Issue145_Serialize_DuplicateNamesFromCustomComparer_ThrowsArgumentException(string position)
+    {
+        var doc = new DidDocument
+        {
+            Id = new Did(Did),
+            VerificationMethod =
+            [
+                new VerificationMethod
+                {
+                    Id = $"{Did}#key-1",
+                    Type = "Multikey",
+                    Controller = new Did(Did),
+                    PublicKeyMultibase = "z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK",
+                    AdditionalProperties = position == "vm-extension" ? DuplicateNames("x-ext") : null
+                }
+            ],
+            Service =
+            [
+                new Service
+                {
+                    Id = $"{Did}#svc",
+                    Type = "Example",
+                    ServiceEndpoint = position == "endpoint-map"
+                        ? ServiceEndpointValue.FromMap(DuplicateNames("uri"))
+                        : ServiceEndpointValue.FromUri("https://example.com"),
+                    AdditionalProperties = position == "service-extension" ? DuplicateNames("x-ext") : null
+                }
+            ],
+            AdditionalProperties = position == "document-extension" ? DuplicateNames("x-ext") : null
+        };
+
+        var act = () => DidDocumentSerializer.Serialize(doc);
+
+        act.Should().Throw<ArgumentException>(
+            "a duplicate member is output NetDid's own Deserialize rejects (issue #121)");
+    }
+
+    #endregion
 }
 

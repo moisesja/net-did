@@ -5,6 +5,7 @@ using AwesomeAssertions;
 using NetCid;
 using NetCrypto;
 using NetDid.Core.Model;
+using NetDid.Core.Serialization;
 using NetDid.Method.Peer;
 
 namespace NetDid.Method.Peer.Tests;
@@ -355,4 +356,78 @@ public class Issue145UndecodableDocumentTests
 
         await act.Should().ThrowAsync<ArgumentException>();
     }
+
+    // ── F4: the did:peer:2 service decoder now applies the consumption rules (final pass) ──
+
+    private async Task<string> Peer2WithServiceBlock(string serviceJson)
+    {
+        var created = await _method.CreateAsync(new DidPeerCreateOptions
+        {
+            Numalgo = PeerNumalgo.Two,
+            Keys = [AuthenticationKey()]
+        });
+        var segment = Convert.ToBase64String(Encoding.UTF8.GetBytes(serviceJson))
+            .TrimEnd('=').Replace('+', '-').Replace('/', '_');
+        return created.Did.Value + ".S" + segment;
+    }
+
+    [Theory]
+    [InlineData("""{"t":"dm","s":"https://a.example","a":["\ud800"]}""")]
+    [InlineData("""{"t":"dm","s":{"uri":"\udc00"}}""")]
+    [InlineData("""{"t":"dm","s":"https://a.example","serviceEndpoint":"https://evil.example"}""")]
+    [InlineData("""{"t":"dm","s":"https://a.example","type":"Other"}""")]
+    [InlineData("""{"t":"dm","s":"https://a.example","r":[],"routingKeys":[]}""")]
+    [InlineData("""{"t":"dm","s":"https://first.example","s":"https://second.example"}""")]
+    [InlineData("""{"t":"dm","s":"https://a.example","id":null}""")]
+    [InlineData("""{"t":"dm","s":"https://a.example","id":5}""")]
+    [InlineData("""{"t":null,"s":"https://a.example"}""")]
+    public async Task Issue145_Numalgo2Resolve_MalformedServiceBlock_FailsClosed(string serviceJson)
+    {
+        var resolved = await _method.ResolveAsync(await Peer2WithServiceBlock(serviceJson));
+
+        resolved.DidDocument.Should().BeNull();
+        resolved.ResolutionMetadata.Error.Should().Be("invalidDid");
+    }
+
+    [Fact]
+    public async Task Issue145_Control_Numalgo2Resolve_WellFormedServiceBlock_RoundTrips()
+    {
+        var resolved = await _method.ResolveAsync(await Peer2WithServiceBlock(
+            """{"id":"#svc","t":"dm","s":"https://a.example","a":["didcomm/v2"],"r":[]}"""));
+
+        var service = resolved.DidDocument!.Service![0];
+        service.Id.Should().Be("#svc");
+        service.Type.Should().Be("DIDCommMessaging");
+        service.AdditionalProperties.Should().ContainKeys("accept", "routingKeys");
+        var serialize = () => DidDocumentSerializer.Serialize(resolved.DidDocument);
+        serialize.Should().NotThrow();
+    }
+
+    // ── F5: null required members (did:peer:4 Create published "type": null or threw an NRE) ──
+
+    [Theory]
+    [InlineData("id")]
+    [InlineData("type")]
+    public async Task Issue145_Numalgo4Create_ServiceWithNullRequiredMember_ThrowsArgumentException(string member)
+    {
+        var act = () => _method.CreateAsync(new DidPeerCreateOptions
+        {
+            Numalgo = PeerNumalgo.Four,
+            InputDocument = new DidDocument
+            {
+                Service =
+                [
+                    new Service
+                    {
+                        Id = member == "id" ? null! : "#svc",
+                        Type = member == "type" ? null! : "Example",
+                        ServiceEndpoint = ServiceEndpointValue.FromUri("https://example.com")
+                    }
+                ]
+            }
+        });
+
+        await act.Should().ThrowAsync<ArgumentException>();
+    }
 }
+
