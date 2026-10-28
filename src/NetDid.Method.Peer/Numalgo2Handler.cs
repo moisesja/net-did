@@ -24,6 +24,15 @@ internal sealed class Numalgo2Handler
 
         foreach (var keyPurpose in options.Keys ?? [])
         {
+            if (keyPurpose?.Key is null)
+                throw new ArgumentException("Numalgo 2 Keys contains a null entry or key.");
+            var multibaseKey = keyPurpose.Key.MultibasePublicKey;
+            // '.' separates did:peer:2 segments, so a key string containing it would add keys or
+            // services the caller never declared (issue #145).
+            if (string.IsNullOrEmpty(multibaseKey) || multibaseKey.Contains('.'))
+                throw new ArgumentException(
+                    "A did:peer:2 key's MultibasePublicKey must be one multibase value, without '.'.");
+
             var prefix = keyPurpose.Purpose switch
             {
                 PeerPurpose.Assertion => 'A',
@@ -33,7 +42,7 @@ internal sealed class Numalgo2Handler
                 PeerPurpose.CapabilityDelegation => 'D',
                 _ => throw new ArgumentOutOfRangeException()
             };
-            segments.Add($"{prefix}{keyPurpose.Key.MultibasePublicKey}");
+            segments.Add($"{prefix}{multibaseKey}");
         }
 
         if (segments.Count == 0)
