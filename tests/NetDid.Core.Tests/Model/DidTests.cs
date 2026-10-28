@@ -1,4 +1,4 @@
-using FluentAssertions;
+using AwesomeAssertions;
 using NetDid.Core.Exceptions;
 using NetDid.Core.Model;
 

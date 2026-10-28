@@ -2,7 +2,7 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using DataProofsDotnet.DataIntegrity;
-using FluentAssertions;
+using AwesomeAssertions;
 using NetCid;
 using NetDid.Core;
 using NetCrypto;
@@ -56,7 +56,7 @@ public class DidWebVhMethodTests
         result.Did.Value.Should().Contain(":example.com");
         result.DidDocument.Should().NotBeNull();
         result.DidDocument.Id.Value.Should().Be(result.Did.Value);
-        result.DidDocument.VerificationMethod.Should().HaveCountGreaterOrEqualTo(1);
+        result.DidDocument.VerificationMethod.Should().HaveCountGreaterThanOrEqualTo(1);
         result.DidDocument.Authentication.Should().NotBeEmpty();
         result.DidDocument.AssertionMethod.Should().NotBeEmpty();
         result.Artifacts.Should().ContainKey(DidWebVhArtifacts.DidJsonl);

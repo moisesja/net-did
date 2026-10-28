@@ -1,5 +1,5 @@
 using System.Text.Json;
-using FluentAssertions;
+using AwesomeAssertions;
 using NetDid.Core.Serialization;
 using NetDid.Tests.W3CConformance.Infrastructure;
 

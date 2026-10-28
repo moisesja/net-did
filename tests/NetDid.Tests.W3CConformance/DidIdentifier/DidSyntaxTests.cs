@@ -1,5 +1,5 @@
 using System.Text.RegularExpressions;
-using FluentAssertions;
+using AwesomeAssertions;
 using NetDid.Core.Parsing;
 using NetDid.Tests.W3CConformance.Infrastructure;
 

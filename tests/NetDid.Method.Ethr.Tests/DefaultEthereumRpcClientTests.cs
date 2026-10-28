@@ -1,6 +1,6 @@
 using System.Net;
 using System.Text;
-using FluentAssertions;
+using AwesomeAssertions;
 using NetDid.Core.Exceptions;
 using NetDid.Method.Ethr.Rpc;
 using Xunit;

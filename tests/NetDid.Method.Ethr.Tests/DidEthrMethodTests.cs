@@ -1,4 +1,4 @@
-using FluentAssertions;
+using AwesomeAssertions;
 using NetDid.Core;
 using NetCrypto;
 using NetDid.Core.Model;

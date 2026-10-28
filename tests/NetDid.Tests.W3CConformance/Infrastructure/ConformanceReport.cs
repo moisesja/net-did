@@ -32,9 +32,9 @@ public static class ConformanceReportSink
 
 public sealed class W3CReportFixture : IAsyncLifetime
 {
-    public Task InitializeAsync() => Task.CompletedTask;
+    public ValueTask InitializeAsync() => ValueTask.CompletedTask;
 
-    public async Task DisposeAsync()
+    public async ValueTask DisposeAsync()
     {
         var results = ConformanceReportSink.GetResults();
         if (results.Count == 0) return;

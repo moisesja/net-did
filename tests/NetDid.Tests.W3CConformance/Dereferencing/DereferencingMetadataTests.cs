@@ -1,4 +1,4 @@
-using FluentAssertions;
+using AwesomeAssertions;
 using NetDid.Tests.W3CConformance.Infrastructure;
 
 namespace NetDid.Tests.W3CConformance.Dereferencing;
