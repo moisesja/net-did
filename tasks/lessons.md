@@ -718,3 +718,22 @@
   while working on a branch is fixed on that branch, whatever its class or age, with fail-first
   tests and the usual gates. A finding is deferred only if the user explicitly says so.
   (PR #149, 2026-10-28.)
+- When a fix adds producer-side validation, tests that used the producer to PLANT hostile input
+  start failing for the wrong reason. On issue #145 the did:ethr Update guard (refuse `did/svc/`
+  values the resolver would drop) broke `BrickProbeTests`, which wrote junk endpoints through
+  `UpdateAsync` to prove resolution survives them. Do not weaken the guard or the probe. Plant the
+  input through the raw wire path another tool could use (a signed `setAttribute` sent to the
+  emulator), so the probe still tests what is on-chain, not what NetDid allows itself to write.
+  (Issue #145, final pass.)
+- An ORDERING claim ("fails before any signature is produced") needs a test that observes the
+  order, not just the exception type. The did:webvh did.json collision test asserted
+  `ArgumentException`, which the pre-fix code also threw, after signing. Wrap the signer in a
+  call-counting `ISigner` and assert zero calls; prove it red by reverting only the reordered file.
+  (Issue #145, final pass.)
+- Never normalize an id by PREFIXING the DID (`did + "#" + fragment`) inside a loop. A did:peer
+  DID embeds its whole document, so the DID length grows with the attacker's input, and any
+  per-element O(DID length) work is quadratic: on issue #145 duplicate detection allocated 7 GB
+  for one 446 KB did:peer:2. Compare in the relative form ("#x"), check ownership with an
+  ordinal `StartsWith(did)` bounded by the id's own length, build any comparison target once,
+  and pin it with a `GC.GetAllocatedBytesForCurrentThread()` bound on a long-DID document.
+  (Issue #145, adversarial pass on the final pass.)

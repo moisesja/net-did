@@ -982,7 +982,7 @@ Numalgo 0: Same algorithm as did:key — decode the key, build the document.
 
 Numalgo 2: Parse the DID string, extract each purpose-prefixed segment, decode keys and service blocks, assemble the DID Document with appropriate verification relationships.
 
-Numalgo 4 long-form: Decode the appended input document, verify the short-form hash matches the SHA-256 of the encoded document, populate the DID Document (inserting the DID as `id` and prefixing all relative references).
+Numalgo 4 long-form: Decode the appended input document, verify the short-form hash matches the SHA-256 of the encoded document, populate the DID Document (inserting the DID as `id` and prefixing all relative references). If the template names a placeholder DID as its `id` (the spec forbids this, but NetDid contextualizes it), that DID is replaced by the did:peer:4 DID in controllers, references, and verification-method and service ids alike, and only at a DID boundary (`#`, `/`, `?`, `;` or the end), so `did:example:abcd` is never treated as under `did:example:abc` (issue #145).
 
 Numalgo 4 short-form: The resolver MUST already possess the long-form (received during initial exchange). If the long-form is not available, resolution fails with `notFound`.
 
@@ -1262,7 +1262,10 @@ well-known placeholder string (`{SCID}`) that stands in for the real SCID during
    type `relativeRef` and the HTTPS resource-directory endpoint, and `#whois` with type
    `LinkedVerifiablePresentation`, the Linked-VP context, and `<resource-directory>/whois.vp`.
    Relative (`#files` / `#whois`) and absolute (`<did>#files` / `<did>#whois`) controller entries
-   both override the corresponding default independently. Projection occurs only after chain,
+   both override the corresponding default independently. In the parallel `did.json`, an entry in
+   the did:web form (`did:web:<host>#whois`) is the override as well, so that document never
+   carries two services with one id; Create and Update build `did.json` before signing, so an
+   invalid projection fails before any signature is produced (issue #145). Projection occurs only after chain,
    identity, and witness validation and never mutates the parsed signed state. The v1.0 spec is
    explicit that path dereferencing must fall back to these services and that parallel `did:web`
    output must add them; serializing them in ordinary did:webvh resolution output is the
@@ -1540,7 +1543,18 @@ public sealed record DidEthrCreateOptions : DidCreateOptions
    - Each `DIDAttributeChanged` adds/removes attributes:
      - `did/pub/<keyType>/<purpose>/<encoding>` → verification method (with `publicKeyJwk`
        or `publicKeyMultibase` when the encoding provides full key material)
-     - `did/svc/<serviceType>` → service endpoint
+     - `did/svc/<serviceType>` → service endpoint. As in ethr-did-resolver, only names matching
+       `^did/svc/(\w+)(/\w+)?(/\w+)?$` become services, typed by the first segment, while every
+       `did/svc/` event still counts toward the `#service-N` index. The value is decoded as strict
+       UTF-8 (skipped otherwise), then as JSON with the raw string as fallback; a duplicate member
+       keeps its last value at its first position, as `JSON.parse` does. Only shapes DID Core §5.4
+       can represent are kept (a URI, a map, or a non-empty set of URIs and maps); anything else
+       drops that one service (issue #145).
+   - bytes32 names and delegate types are decoded as strict UTF-8 with trailing NULs trimmed,
+     like the reference `bytes32toString`, and prefixes are matched ordinally. An event whose
+     label is not valid UTF-8 is parsed as a `FilteredEvent`: it links the history walk but is
+     filtered out of the history, so it is not counted and sets no `versionId`, `updated` or
+     `nextVersionId` (issue #145).
 7. Return the assembled DID Document.
 
 **Note on key material representations**: The default (implicit) VM for a did:ethr uses
@@ -1563,7 +1577,8 @@ public sealed record DidEthrUpdateOptions : DidUpdateOptions
     // Add/remove service endpoints (did/svc/<type> attributes). The type is an ASCII bytes32
     // label; the endpoint is written as UTF-8 and must be well-formed UTF-16 (an unpaired
     // surrogate throws ArgumentException before any RPC traffic instead of being written as
-    // EF BF BD on-chain; issue #145).
+    // EF BF BD on-chain; issue #145). The type must be one [A-Za-z0-9_]+ segment and the
+    // endpoint a value the resolver keeps (§8.5), or the call throws before any RPC traffic.
     public IReadOnlyList<DidEthrServiceAttribute>? AddServices { get; init; }
     public IReadOnlyList<DidEthrServiceAttribute>? RemoveServices { get; init; }
 
@@ -1573,7 +1588,9 @@ public sealed record DidEthrUpdateOptions : DidUpdateOptions
 
     // Raw ERC-1056 attributes — most importantly did/pub/<alg>/<purpose>/<encoding>
     // entries that publish FULL key material (see the §8.5 note): the implicit
-    // blockchainAccountId controller VM cannot serve extractable key bytes.
+    // blockchainAccountId controller VM cannot serve extractable key bytes. A did/svc/ name
+    // added here is still a service: its name and value must meet the AddServices rules
+    // (issue #145). RemoveAttributes can revoke any value already on-chain.
     public IReadOnlyList<DidEthrAttribute>? AddAttributes { get; init; }
     public IReadOnlyList<DidEthrAttribute>? RemoveAttributes { get; init; }
 
@@ -2114,10 +2131,10 @@ The service endpoint model enforces W3C DID Core §5.4 itself: `ServiceEndpointV
 - `id` MUST be a valid DID. The `Did` value object (a `readonly record struct`) validates W3C DID syntax at construction — if a `Did` exists, it is syntactically valid. This makes invalid DIDs unrepresentable in the type system. The syntax regexes anchor with `\z` (not `$`, which in .NET also matches before a trailing newline). DID URL path, params, query and fragment, and relative `#fragment` references, follow the RFC 3986 character sets that DID Core §3.2 references (issue #145).
 - Consumption and production both enforce DID Core id and URI syntax (issue #145):
   - verification method ids and relationship references are DID URLs (§5.2);
-  - service ids are URIs and unique, with `x`, `#x` and `<did>#x` counting as one id (§5.4);
-  - serviceEndpoint strings and `alsoKnownAs` entries are URIs (§5.4, §5.1.3).
+  - service ids are URIs and unique, with `x`, `#x` and `<did>#x` counting as one id (§5.4). Ids are compared without building `<did>#x`, so the cost follows the ids, not the DID: a did:peer DID embeds its whole document and can be megabytes long;
+  - serviceEndpoint strings and `alsoKnownAs` entries are URIs (§5.4, §5.1.3). An absolute URI follows RFC 3986 `scheme ":" hier-part`, with `[` and `]` only around an IP-literal host (an IPv6 address or IPvFuture) and `//` always starting an authority.
 
-  NetDid's bare-id shorthand (`files` for `#files`) remains valid. A violation throws `JsonException` on read and `ArgumentException` on write.
+  NetDid's bare-id shorthand (`files` for `#files`) remains valid. It is one segment with no `:`, `/`, `?` or `#`, so a real relative reference (`/files`, `//host/x`, `?service=x`) is never read as the shorthand. A violation throws `JsonException` on read and `ArgumentException` on write. did:peer:2, which builds documents without serializing them, applies the same producer checks on Create (`ArgumentException`) and Resolve (`invalidDid`).
 - `controller`, when present, MUST be a list of valid `Did` values. Serialized as a string when Count == 1, as an array when Count > 1, omitted when null.
 - `verificationMethod[*].id` MUST be a valid DID URL.
 - `verificationMethod[*].controller` MUST be a valid `Did`.
@@ -2328,8 +2345,10 @@ public sealed record DidUrlDereferencingOptions
 
 **Default implementation**: `DefaultDidUrlDereferencer` composes with `IDidResolver` and implements
 the W3C §7.2 dereferencing algorithm for fragment and service endpoint selection (with path and
-`relativeRef`), conventional `#files` / `#whois` path dispatch, and `versionId`/`versionTime` query
-parameters. A conventional path result is a `text/uri-list` redirect for the caller to retrieve;
+`relativeRef`). Fragment and `?service=` lookups compare ids after the same normalization (`x`,
+`#x` and `<did>#x` are one id), so an id that belongs to another DID never matches by fragment
+alone (issue #145). It also covers conventional `#files` / `#whois` path dispatch and
+`versionId`/`versionTime` query parameters. A conventional path result is a `text/uri-list` redirect for the caller to retrieve;
 Core does not fetch or validate the external resource bytes. `/whois` selects `#whois` and uses its
 endpoint directly; every other bare path selects `#files` and appends beneath its endpoint. A
 missing conventional service remains `notFound`, and a non-HTTP(S), non-URI, or structured endpoint

@@ -308,6 +308,67 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     - **Behavior change:** documents, DID URLs and did:ethr service values that break these DID
       Core rules are now rejected or dropped. The DIF did:webvh vector replay is identical before
       and after this change.
+  - **Final adversarial pass on the id/URI rules.** It found gaps in the rules above; all are
+    fixed here:
+    - **Absolute URIs** follow RFC 3986 `scheme ":" hier-part`. `[` and `]` are accepted only
+      around an IP-literal host, which must be an IPv6 address or an IPvFuture
+      (`http://[::1]:8080/x`, `http://[v1.fe80::a+en1]/`), and `//` always starts an authority,
+      never a path. Before, `https://ex[ample.com`, `https://example.com/a[b]`, `http://[foo]/`
+      and `http://host:abc` passed as service endpoints and `alsoKnownAs` entries.
+    - **The bare-id shorthand** is one segment with no `:`, `/`, `?` or `#`. Before, a real
+      relative reference such as `//evil.example/x`, `/files`, `?service=x` or `a/b` counted as
+      the shorthand and was accepted as a service or verification-method id. It is now rejected
+      (`JsonException` on read, `ArgumentException` on write).
+    - **Fragment dereferencing** (`<did>#x`) compares ids with the same normalization as
+      `?service=` and duplicate detection. Before, it matched on the fragment alone, so a
+      verification method, embedded method or service whose id belonged to another DID
+      (`did:other:1#x`) could be returned in place of the document's own `#x`.
+    - **did:peer:2 Create and Resolve** apply every Core producer rule: id and URI syntax, and
+      unique service ids after normalization. Before, the local check compared raw ids, so a
+      bare `service` id beside the auto-generated `#service` passed, and an invalid service id or
+      endpoint minted (or resolved) a DID whose document NetDid could not serialize. Create
+      throws `ArgumentException`; Resolve returns `invalidDid`.
+    - **did:webvh `did.json`:** a service whose id is in the parallel did:web form
+      (`did:web:example.com#whois` or `#files`) is now the override there, so the projection no
+      longer adds a second implicit service with the same id. Create and Update build `did.json`
+      before signing, so an invalid projection (two services that collapse to one id under
+      did:web) throws `ArgumentException` before any signature is produced.
+    - **did:ethr service names** follow ethr-did-resolver's grammar
+      (`^did/svc/(\w+)(/\w+)?(/\w+)?$`, typed by the first segment). Every `did/svc/` event is
+      still counted. Before, NetDid took the whole suffix as the type (`did/svc/Hub/x` was typed
+      `Hub/x`) and resolved names the reference resolver ignores.
+    - **did:ethr JSON service values with a duplicate member** keep the last value at the first
+      position, as `JSON.parse` does. Before, NetDid dropped the service.
+    - **did:ethr `UpdateAsync`** rejects, before any RPC traffic, an `AddServices` entry whose
+      `ServiceType` is not one `[A-Za-z0-9_]+` segment, and an `AddAttributes` entry with a
+      `did/svc/` name or value that ethr-did-resolver would drop. Revoking any value already
+      on-chain still works.
+  - **A last adversarial pass over those fixes** found the following; all are fixed here:
+    - **Id comparison cost.** Duplicate detection and fragment and `?service=` dereferencing no
+      longer build `<did>#x` for each id they compare. A did:peer DID embeds its whole document,
+      so that cost grew with services × DID length: one hostile 446 KB did:peer:2 allocated 7 GB
+      during resolution, and a 1 MB one killed the process. The cost now follows the ids. The
+      relationship-scoped fragment lookup also no longer searches every verification method
+      once per relationship entry.
+    - **did:peer:4 placeholder DID.** A template that names a DID (the spec forbids an input
+      `id`, but NetDid has always contextualized one) now has it rewritten in verification
+      method and service ids, as in references, so the document's own references dereference.
+      Both rewrites require a DID boundary: a reference to `did:example:abcd#k` is no longer
+      rewritten as if it were under `did:example:abc`.
+    - **did:ethr labels are decoded like ethr-did-resolver.** bytes32 attribute names and
+      delegate types are strict UTF-8 (they were ASCII, with `?` for any other byte). An event
+      whose label is not valid UTF-8 is filtered out of the DID history, as the reference does:
+      it still links the history walk, but is not counted toward `#delegate-N`/`#service-N` and
+      sets no `versionId`, `updated` or `nextVersionId`. Public API:
+      - `Erc1056EventParser.Parse` returns the new `FilteredEvent` for such an event.
+      - `AbiDecoder.DecodeDelegateChangedData` and `DecodeAttributeChangedData` return the
+        strict-UTF-8 label, or null when it is not valid UTF-8.
+      - `AbiDecoder.TryDecodeBytes32AsUtf8` is new.
+    - **Ordinal prefix checks on untrusted text.** ICU ignores NUL in culture-sensitive
+      comparisons, so `"d\0id/svc/x"` counted as a did:ethr service event, a did:webvh proof
+      `verificationMethod` of `"d\0id:key:z…"` passed the `did:key:` check (yielding a bogus key,
+      not a match), and a verification method type `"Ecdsa\0Secp256k1…"` got the secp256k1
+      JSON-LD context. All three now compare ordinally.
 
 - **did:webvh resolution now rejects log entries dated more than 5 minutes in the future**
   (issue #131). did:webvh v1.0 Read step 4 says an entry's `versionTime` "MUST NOT be more than
