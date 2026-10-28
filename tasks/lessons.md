@@ -1,5 +1,10 @@
 # Lessons
 
+- When the user directs me to fix my own PR findings, own the implementation and verification
+  through completion instead of creating another reviewer/fixer handoff. Rebaseline first:
+  another session may already have pushed the fixes, in which case verify and finish those
+  changes without duplicating or claiming their implementation. (PR #149, review round 2.)
+
 - Worktree isolation isolates a subagent's WORKING TREE, not the repository. Every worktree shares
   the branches, the stash, and the remote credentials. During the issue #144 adversarial pass, a
   worktree-isolated agent's session pushed the branch tip straight to GitHub `main`
