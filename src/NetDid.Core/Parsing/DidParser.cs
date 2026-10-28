@@ -27,6 +27,7 @@ public static partial class DidParser
     [GeneratedRegex($@"^(?<did>did:[a-z0-9]+:(?:(?:{IdCharPattern})*:)*(?:{IdCharPattern})+)(?<path>/[^;?#\s\p{{Cc}}]*)?(?:;(?<params>[^?#\s\p{{Cc}}]*))?(?:\?(?<query>[^#\s\p{{Cc}}]*))?(?:#(?<fragment>[^\s\p{{Cc}}]*))?\z", RegexOptions.Compiled)]
     private static partial Regex DidUrlRegex();
 
+
     /// <summary>
     /// Validate a bare DID string conforms to W3C DID syntax: did:&lt;method&gt;:&lt;method-specific-id&gt;.
     /// Rejects DID URLs (paths, queries, fragments, parameters).
@@ -70,9 +71,19 @@ public static partial class DidParser
         if (string.IsNullOrEmpty(reference))
             return false;
 
-        // Relative fragment reference: #fragment
+        // Relative fragment reference: #fragment. Like an absolute DID URL's fragment, it may not
+        // contain raw whitespace or control characters (RFC 3986; issue #145).
         if (reference.StartsWith('#'))
-            return reference.Length > 1;
+        {
+            if (reference.Length == 1)
+                return false;
+            foreach (var c in reference.AsSpan(1))
+            {
+                if (char.IsWhiteSpace(c) || char.IsControl(c))
+                    return false;
+            }
+            return true;
+        }
 
         // Otherwise, must be a valid absolute DID URL
         return ParseDidUrl(reference) is not null;

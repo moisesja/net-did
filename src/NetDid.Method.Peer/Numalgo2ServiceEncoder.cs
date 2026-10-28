@@ -31,6 +31,11 @@ internal static class Numalgo2ServiceEncoder
     /// </summary>
     public static string Encode(Service service)
     {
+        ArgumentNullException.ThrowIfNull(service);
+        // A null type or endpoint crashed below (ArgumentNullException / NullReferenceException).
+        if (service.Type is null || service.ServiceEndpoint is null)
+            throw new ArgumentException("A did:peer:2 service requires a type and a serviceEndpoint.");
+
         var abbreviated = new Dictionary<string, object>();
 
         // Preserve explicit service ID in the encoded block
@@ -93,7 +98,14 @@ internal static class Numalgo2ServiceEncoder
         // The same consumption rules as Core (issues #121, #145): duplicate members fail closed
         // and every member name and string must decode, so a resolved service is always one the
         // writer can publish again.
-        using var doc = JsonDocument.Parse(json, new JsonDocumentOptions { AllowDuplicateProperties = false });
+        // MaxDepth 62: the block's root becomes a service object two levels below the document
+        // root, and the document must stay within the serializer's 64 levels, or the resolved
+        // document could not be written again (issue #145).
+        using var doc = JsonDocument.Parse(json, new JsonDocumentOptions
+        {
+            AllowDuplicateProperties = false,
+            MaxDepth = 62
+        });
         var root = doc.RootElement;
         Utf16Text.RequireDecodable(root);
 

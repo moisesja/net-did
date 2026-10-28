@@ -172,7 +172,15 @@ public static class DidDocumentSerializer
             ? DefaultOptions
             : CallerOptions.GetValue(options, static caller =>
             {
-                var effective = new JsonSerializerOptions(caller);
+                // Lock the caller's instance on first use, as System.Text.Json itself does, so a
+                // later change is an error rather than silently ignored by this cache.
+                caller.MakeReadOnly(populateMissingResolver: true);
+                var effective = new JsonSerializerOptions(caller)
+                {
+                    // A caller resolver could describe NetDid's internal types itself (bypassing
+                    // the converters) or fail to describe them at all.
+                    TypeInfoResolver = new System.Text.Json.Serialization.Metadata.DefaultJsonTypeInfoResolver()
+                };
                 var converters = DefaultOptions.Converters;
                 for (var i = converters.Count - 1; i >= 0; i--)
                     effective.Converters.Insert(0, converters[i]);
@@ -561,13 +569,14 @@ public static class DidDocumentSerializer
             if (doc.Controller is { Count: > 0 })
             {
                 writer.WritePropertyName("controller");
+                // Text rejects a default(Did), which would otherwise be written as JSON null.
                 if (doc.Controller.Count == 1)
-                    writer.WriteStringValue(doc.Controller[0].Value);
+                    writer.WriteStringValue(Text(doc.Controller[0].Value!));
                 else
                 {
                     writer.WriteStartArray();
                     foreach (var c in doc.Controller)
-                        writer.WriteStringValue(c.Value);
+                        writer.WriteStringValue(Text(c.Value!));
                     writer.WriteEndArray();
                 }
             }
@@ -759,6 +768,8 @@ public static class DidDocumentSerializer
             // and nothing else. Private key material (d, p, q, dp, dq, qi, oth, k) and unknown
             // members are never written. Before issue #145 only kty/crv/x/y were kept, so an RSA
             // key lost n and e. kty is REQUIRED (RFC 7517 §4.1): Text rejects a null one.
+            if (string.IsNullOrEmpty(jwk.Kty))
+                throw new ArgumentException("A publicKeyJwk must have a non-empty 'kty'.", "doc");
             writer.WriteStartObject();
             writer.WriteString("kty", Text(jwk.Kty));
             WriteOptional(writer, "crv", jwk.Crv);
@@ -828,6 +839,8 @@ public static class DidDocumentSerializer
 
         public override void Write(Utf8JsonWriter writer, Service value, JsonSerializerOptions options)
         {
+            if (value.ServiceEndpoint is null)
+                throw new ArgumentException("A service's serviceEndpoint is required.", "doc");
             writer.WriteStartObject();
             writer.WriteString("id", Text(value.Id));
             writer.WriteString("type", Text(value.Type));
@@ -977,6 +990,10 @@ public static class DidDocumentSerializer
             // set, is defined (issue #145).
             if (string.IsNullOrEmpty(jwk.Kty))
                 throw new JsonException("The verification method's publicKeyJwk is missing 'kty'.");
+            // The writer requires every key_ops/x5c entry to be a string, so reject a null entry
+            // here rather than accept a key that cannot be written again.
+            if (jwk.KeyOps.Contains(null!) || jwk.X5c.Contains(null!))
+                throw new JsonException("The verification method's publicKeyJwk has a null key_ops or x5c entry.");
             return jwk;
         }
     }
