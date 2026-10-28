@@ -1650,12 +1650,16 @@ public sealed class DidEthrMethod : DidMethodBase
     /// (issue #145). Service types need no check: they are ASCII-only bytes32 labels.
     /// </summary>
     private static byte[] ServiceEndpointBytes(DidEthrServiceAttribute service, string collectionName)
-        => Utf16Text.IsWellFormed(service.ServiceEndpoint)
+    {
+        if (service.ServiceEndpoint is null)
+            throw new ArgumentException($"{collectionName} contains a null service endpoint.", "options");
+        return Utf16Text.IsWellFormed(service.ServiceEndpoint)
             ? Encoding.UTF8.GetBytes(service.ServiceEndpoint)
             : throw new ArgumentException(
                 $"{collectionName} contains a service endpoint with an unpaired UTF-16 surrogate, " +
                 "which cannot be encoded as UTF-8 without altering it.",
                 "options");
+    }
 
     private static ulong ValiditySeconds(TimeSpan validity)
     {
