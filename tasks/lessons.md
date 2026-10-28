@@ -737,3 +737,20 @@
   ordinal `StartsWith(did)` bounded by the id's own length, build any comparison target once,
   and pin it with a `GC.GetAllocatedBytesForCurrentThread()` bound on a long-DID document.
   (Issue #145, adversarial pass on the final pass.)
+- Before NARROWING a grammar to "what the spec allows", read every section the governing rule
+  points to, in full. On PR #149 I enforced "VM ids are DID URLs (§5.2)" using only absolute DID
+  URLs and `#fragment`, but §5.2 points to all of §3.2, and §3.2.2 says relative DID URLs "MAY
+  contain relative path components, query parameters, and fragment identifiers", resolved by
+  RFC 3986 §5 against the DID. The reviewer caught the interoperability regression (`/keys/1`,
+  `keys/1#k`, `?versionId=1#key-1` rejected). A stricter check is a breaking change for every
+  conforming document it rejects: list the spec's positive forms as control tests first.
+  (PR #149 review round 2.)
+- When an operation ENCODES caller input and also RETURNS a document, return the decoded
+  encoding, not a second build from the caller's objects. did:peer:2 Create encoded `Services`
+  by enumeration and built its document by indexer, so a list whose two reads differ minted a
+  DID that resolves to `invalidDid` while Create reported a valid document; did:peer:4 Create
+  re-read `InputDocument` the same way. Returning `Resolve(encodedDid)` makes encoding,
+  validation and the result one representation by construction. (PR #149 review round 2.)
+- `git diff --check` only sees uncommitted changes. Before a PR, also run
+  `git diff origin/main...HEAD --check`; two blank lines at EOF reached the reviewer because the
+  gate ran only the working-tree check. (PR #149 review round 2; now in `net-did-verify`.)

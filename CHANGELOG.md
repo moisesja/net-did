@@ -284,19 +284,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     - **DID URLs** follow RFC 3986, which DID Core §3.2 names for path, query and fragment. Raw
       non-ASCII, invisible Unicode format characters (for example U+202E, U+200B, U+FEFF),
       characters such as `<` `"` `{` `|` `\`, and malformed `%` escapes are now rejected in DID URLs
-      and in relative `#fragment` references. Percent-encoded text is still accepted.
+      and in relative DID URLs. Percent-encoded text is still accepted.
+    - **Relative DID URLs** (§3.2.2: they "MAY contain relative path components, query
+      parameters, and fragment identifiers") are valid ids and references: `#key-1`, `/keys/1`,
+      `keys/1#k`, `?versionId=1#key-1`. They are resolved against the DID by RFC 3986 §5, with
+      the DID's `<method>:<method-specific-id>` as the authority, so `keys/1#k`, `/keys/1#k`,
+      `./keys/1#k` and `<did>/keys/1#k` name one resource. A network-path reference
+      (`//host/x`) is rejected: it replaces the DID itself, so it never names a resource of this
+      document. `DidParser.IsValidDidReference` accepts every relative form (it used to accept
+      only `#fragment`).
     - **Document consumption and production** enforce the DID Core rules for:
-      - verification method ids and relationship references (DID URLs, §5.2);
+      - verification method ids and relationship references (absolute or relative DID URLs,
+        §5.2);
       - service ids (URIs, §5.4) and their uniqueness (§5.4: "A conforming producer MUST NOT
         produce multiple service entries with the same id"; "A conforming consumer MUST produce
         an error if it detects multiple service entries with the same id");
       - serviceEndpoint strings (URIs, §5.4);
       - `alsoKnownAs` entries (URIs, §5.1.3).
 
-      Violations throw `JsonException` on read and `ArgumentException` on write. NetDid's
-      documented bare-id shorthand (`files` for `#files`, issue #136) stays valid. Duplicate
-      detection uses the dereferencer's own normalization, so `x`, `#x` and `<did>#x` count as
-      one id.
+      Violations throw `JsonException` on read and `ArgumentException` on write. Ids are
+      compared after RFC 3986 resolution against the DID, with one documented compatibility
+      exception: NetDid's bare-id shorthand, one plain segment such as `files` (issue #136),
+      still means `#files`, where RFC 3986 alone gives `<did>/files`. So `x`, `#x` and `<did>#x`
+      are one id, and `x` and `/x` are two. Duplicate detection, fragment and `?service=`
+      dereferencing, and `DefaultVerificationRelationshipResolver` all use this one comparison.
     - **did:peer:2** rejects duplicate service ids on Create (`ArgumentException`) and on Resolve
       (`invalidDid`), including an explicit `#service` next to an auto-generated one.
     - **did:ethr service endpoints** are decoded like ethr-did-resolver: strict UTF-8 (the
@@ -315,10 +326,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
       (`http://[::1]:8080/x`, `http://[v1.fe80::a+en1]/`), and `//` always starts an authority,
       never a path. Before, `https://ex[ample.com`, `https://example.com/a[b]`, `http://[foo]/`
       and `http://host:abc` passed as service endpoints and `alsoKnownAs` entries.
-    - **The bare-id shorthand** is one segment with no `:`, `/`, `?` or `#`. Before, a real
-      relative reference such as `//evil.example/x`, `/files`, `?service=x` or `a/b` counted as
-      the shorthand and was accepted as a service or verification-method id. It is now rejected
-      (`JsonException` on read, `ArgumentException` on write).
+    - **The bare-id shorthand** is one plain segment with no `:`, `/`, `?` or `#`. Before, a
+      real relative reference such as `/files`, `?service=x` or `a/b` counted as the shorthand
+      and was read as `#/files`, `#?service=x` or `#a/b`; it now keeps its RFC 3986 meaning (see
+      relative DID URLs above). A network-path reference such as `//evil.example/x` was also
+      read as the shorthand; it is now rejected (`JsonException` on read, `ArgumentException` on
+      write).
     - **Fragment dereferencing** (`<did>#x`) compares ids with the same normalization as
       `?service=` and duplicate detection. Before, it matched on the fragment alone, so a
       verification method, embedded method or service whose id belonged to another DID
@@ -369,6 +382,49 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
       `verificationMethod` of `"d\0id:key:z…"` passed the `did:key:` check (yielding a bogus key,
       not a match), and a verification method type `"Ecdsa\0Secp256k1…"` got the secp256k1
       JSON-LD context. All three now compare ordinally.
+  - **Maintainer review round 2 of PR #149** found two more gaps; both are fixed here:
+    - **Relative DID URLs were rejected.** The identifier rules above first accepted only
+      absolute DID URLs, `#fragment` and the bare shorthand, so the conforming relative forms of
+      DID Core §3.2.2 (`/keys/1`, `keys/1#k`, `?versionId=1#key-1`) threw on read and write. They
+      are now accepted and compared by RFC 3986 resolution, as described above.
+      `DefaultVerificationRelationshipResolver` had its own normalization, which read `/keys/1`
+      as `<did>#/keys/1` and cost entries × DID length; it now uses the shared comparison.
+    - **did:peer Create returns the document its DID encodes.** did:peer:2 Create encoded
+      `Services` by enumeration but built and validated its document through the indexer, and
+      read `Keys` twice. A caller `IReadOnlyList` whose reads disagree therefore got a DID that
+      resolves to `invalidDid` while Create reported a valid document. Create now reads each list
+      once, encodes once, and returns that DID resolved. That also runs the producer checks;
+      failures throw `ArgumentException`. did:peer:4 Create builds its document from the JSON it
+      hashed instead of re-reading `InputDocument`. For ordinary input the result is unchanged.
+    - The adversarial pass over these fixes found more; all are fixed here:
+      - **`?service=` selects by fragment.** The value names a service by its fragment
+        (`?service=agent/v1` selects `#agent/v1`, as on `main`); it is never resolved as a path.
+        The first version of the fix above routed it through RFC 3986 resolution and lost such
+        services.
+      - **A DID URL with a path and a fragment names `<did>/path#fragment`.** The fragment step
+        ignored the path, so `<did>/k#x` returned the method `#x` (possibly from another
+        relationship, with another key), and `<did>/other#x` returned it too. This predates the
+        PR for absolute ids; relative path ids made it reachable from more documents.
+      - **An id that is no URI reference never matches a valid one.** A network-path query such
+        as `//evil#k` was compared as written, so `DefaultVerificationRelationshipResolver`
+        authorized it against the controller's own `<did>//evil#k`.
+      - **did:peer:2 follows the DIF spec's abbreviation rules.** Member names are abbreviated at
+        every depth (`type`, `serviceEndpoint`, `routingKeys`, `accept` become `t`, `s`, `r`,
+        `a`, also inside `serviceEndpoint`), and only the type value `DIDCommMessaging` becomes
+        `dm`. NetDid used one table for names and values and did not recurse. It therefore could
+        not produce the spec's own example DID, resolved it with `a`/`r` endpoint keys instead of
+        `accept`/`routingKeys`, read a type `t` back as `type`, and read a member `dm` as
+        `DIDCommMessaging`. Create now produces the spec's example DID byte for byte.
+        **Behavior change:** Create refuses a name that would resolve as another (`t`, `s`, `r`,
+        `a`) and the type `dm` (`ArgumentException`), since neither can be published as written.
+      - **did:peer:2 service ids.** The DIF spec says "service id attributes MUST be relative" and
+        generates an id only when none is set. Create used to drop an explicit id without a
+        leading `#` (`svc`, `/svc`) and replace it with `#service`; it now keeps it.
+        **Behavior change:** an absolute service id throws `ArgumentException` on Create (it was
+        silently replaced) and makes Resolve return `invalidDid`.
+      - **did:peer:2 key strings.** A `MultibasePublicKey` containing `.` (the segment separator)
+        added keys or services the caller never declared. It now throws `ArgumentException`, as
+        does a null key entry.
 
 - **did:webvh resolution now rejects log entries dated more than 5 minutes in the future**
   (issue #131). did:webvh v1.0 Read step 4 says an entry's `versionTime` "MUST NOT be more than

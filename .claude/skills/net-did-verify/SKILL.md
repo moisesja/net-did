@@ -52,7 +52,7 @@ dotnet run --project samples/NetDid.Samples.DependencyInjection
 (`NetDid.Samples.DidEthr -- --live` is the opt-in real-RPC path; never part of the gate.)
 
 ## 5. Diff hygiene
-- `git diff --check` — no whitespace errors / conflict markers.
+- `git diff origin/main...HEAD --check` (run `git fetch origin main` first) **and** `git diff --check` — no whitespace errors / conflict markers on the whole branch and in the working tree. The working-tree check alone misses anything already committed (PR #149: two blank lines at EOF reached review).
 - Leave unrelated untracked task files and other subsystems untouched. Only the timestamp line of `w3c-conformance-report.md` should be incidental.
 
 ## Report format

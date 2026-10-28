@@ -998,6 +998,10 @@ Services in numalgo 2 are encoded per the spec's abbreviation rules:
 | `accept`           | `a`         |
 | `DIDCommMessaging` | `dm`        |
 
+As the DIF spec says ("Recursively replace common strings in key names and type value"), the first four rows apply to **member names at every depth**, including inside `serviceEndpoint` (`{"t":"dm","s":{"uri":…,"a":[…],"r":[…]}}`), and `DIDCommMessaging` → `dm` applies **only to the type value**. Resolution expands exactly the same way. Create refuses a name that is itself an abbreviation (`t`, `s`, `r`, `a`) and the type `dm`, which would resolve as something other than the caller wrote. The spec's example DID is reproduced byte for byte and resolved with `accept`/`routingKeys` (issue #145).
+
+Service ids: "service id attributes MUST be relative". An explicit relative id is encoded and kept as written; only a service without an id gets `#service`, `#service-1`, …. An absolute id throws `ArgumentException` on Create and makes Resolve return `invalidDid`. A key's `MultibasePublicKey` must not contain `.` (the segment separator). Create returns the document its DID resolves to.
+
 The service JSON is serialized, base64url-encoded (no padding), and appended with an `S` purpose prefix.
 
 ---
@@ -2128,13 +2132,14 @@ The service endpoint model enforces W3C DID Core §5.4 itself: `ServiceEndpointV
 
 **Data model requirements** (enforced at construction, independent of representation):
 
-- `id` MUST be a valid DID. The `Did` value object (a `readonly record struct`) validates W3C DID syntax at construction — if a `Did` exists, it is syntactically valid. This makes invalid DIDs unrepresentable in the type system. The syntax regexes anchor with `\z` (not `$`, which in .NET also matches before a trailing newline). DID URL path, params, query and fragment, and relative `#fragment` references, follow the RFC 3986 character sets that DID Core §3.2 references (issue #145).
+- `id` MUST be a valid DID. The `Did` value object (a `readonly record struct`) validates W3C DID syntax at construction — if a `Did` exists, it is syntactically valid. This makes invalid DIDs unrepresentable in the type system. The syntax regexes anchor with `\z` (not `$`, which in .NET also matches before a trailing newline). DID URL path, params, query and fragment, and relative DID URLs, follow the RFC 3986 character sets that DID Core §3.2 references (issue #145).
 - Consumption and production both enforce DID Core id and URI syntax (issue #145):
-  - verification method ids and relationship references are DID URLs (§5.2);
-  - service ids are URIs and unique, with `x`, `#x` and `<did>#x` counting as one id (§5.4). Ids are compared without building `<did>#x`, so the cost follows the ids, not the DID: a did:peer DID embeds its whole document and can be megabytes long;
+  - verification method ids and relationship references are absolute or relative DID URLs (§5.2, §3.2.2). A relative DID URL "MAY contain relative path components, query parameters, and fragment identifiers" (`#key-1`, `/keys/1`, `keys/1#k`, `?versionId=1#key-1`); a network-path reference (`//host/x`) is rejected because it replaces the DID and so never names a resource of this document;
+  - service ids are URIs (absolute, or relative DID URLs) and unique (§5.4);
+  - ids are compared after RFC 3986 §5 reference resolution against the DID, as §3.2.2 requires (scheme `did`, authority `<method>:<method-specific-id>`, empty path: a relative path merges to `/path`, dot segments are removed). `keys/1#k`, `/keys/1#k` and `<did>/keys/1#k` are one id. One documented compatibility exception: the bare shorthand, one plain segment `x` (issue #136), means `#x`, where RFC 3986 alone gives `<did>/x`. Duplicate detection, fragment and `?service=` dereferencing, and `DefaultVerificationRelationshipResolver` share this one comparison (`DidParser.ComparableId`). It never builds `<did>…`, so the cost follows the ids, not the DID: a did:peer DID embeds its whole document and can be megabytes long;
   - serviceEndpoint strings and `alsoKnownAs` entries are URIs (§5.4, §5.1.3). An absolute URI follows RFC 3986 `scheme ":" hier-part`, with `[` and `]` only around an IP-literal host (an IPv6 address or IPvFuture) and `//` always starting an authority.
 
-  NetDid's bare-id shorthand (`files` for `#files`) remains valid. It is one segment with no `:`, `/`, `?` or `#`, so a real relative reference (`/files`, `//host/x`, `?service=x`) is never read as the shorthand. A violation throws `JsonException` on read and `ArgumentException` on write. did:peer:2, which builds documents without serializing them, applies the same producer checks on Create (`ArgumentException`) and Resolve (`invalidDid`).
+  The bare shorthand has no `:`, `/`, `?` or `#` and is never `.` or `..`, so every real relative reference keeps its RFC 3986 meaning. A violation throws `JsonException` on read and `ArgumentException` on write. did:peer:2, which builds documents without serializing them, applies the same producer checks on Create (`ArgumentException`) and Resolve (`invalidDid`). did:peer:2 and did:peer:4 Create read the caller's input once and return the document the minted DID resolves to (did:peer:2 resolves the DID it encoded; did:peer:4 parses the JSON it hashed), so a caller collection that reads differently twice can never make Create report a document other than the one its DID encodes.
 - `controller`, when present, MUST be a list of valid `Did` values. Serialized as a string when Count == 1, as an array when Count > 1, omitted when null.
 - `verificationMethod[*].id` MUST be a valid DID URL.
 - `verificationMethod[*].controller` MUST be a valid `Did`.
@@ -2347,7 +2352,10 @@ public sealed record DidUrlDereferencingOptions
 the W3C §7.2 dereferencing algorithm for fragment and service endpoint selection (with path and
 `relativeRef`). Fragment and `?service=` lookups compare ids after the same normalization (`x`,
 `#x` and `<did>#x` are one id), so an id that belongs to another DID never matches by fragment
-alone (issue #145). It also covers conventional `#files` / `#whois` path dispatch and
+alone (issue #145). A DID URL with a path and a fragment selects the resource
+`<did>/path#fragment`, never `#fragment` alone, and the `service` parameter selects by fragment
+(`?service=agent/v1` selects `#agent/v1`); it is never resolved as a path. It also covers
+conventional `#files` / `#whois` path dispatch and
 `versionId`/`versionTime` query parameters. A conventional path result is a `text/uri-list` redirect for the caller to retrieve;
 Core does not fetch or validate the external resource bytes. `/whois` selects `#whois` and uses its
 endpoint directly; every other bare path selects `#files` and appends beneath its endpoint. A
@@ -2513,7 +2521,7 @@ public interface IVerificationRelationshipResolver
 
 **Tri-state result.** The decision is explicitly tri-state so callers can distinguish "the controller's document *says no*" from "the controller's document could not be resolved at all". The latter case surfaces the underlying resolution error (`notFound`, `invalidDid`, `methodNotSupported`) so a verifier can fail closed *and* log the infrastructure cause rather than silently treating a network blip as denial.
 
-**Default implementation.** `DefaultVerificationRelationshipResolver` is stateless, composes with `IDidResolver`, and uses `DidDocument.GetRelationshipEntries` (see §10.4) to read the relationship list. Verification-method ids inside the list — both `VerificationRelationshipEntry.Reference` strings and embedded `VerificationMethod.Id` values — are normalized against the controller document's `Id` using the same rule the dereferencer applies to service ids (`"#k1"` ↦ `"{controllerDid}#k1"`; bare `"k1"` ↦ `"{controllerDid}#k1"`; absolute DID URLs unchanged), then matched ordinally against the normalized query URL.
+**Default implementation.** `DefaultVerificationRelationshipResolver` is stateless, composes with `IDidResolver`, and uses `DidDocument.GetRelationshipEntries` (see §10.4) to read the relationship list. Verification-method ids inside the list — both `VerificationRelationshipEntry.Reference` strings and embedded `VerificationMethod.Id` values — are compared with the query URL through the shared `DidParser.ComparableId` (§9.3): RFC 3986 resolution against the controller document's `Id` (`"#k1"`, `"keys/1#k1"`, `"/keys/1#k1"`), the bare shorthand `"k1"` ↦ `"#k1"`, and absolute DID URLs of another DID unchanged, matched ordinally (issue #145).
 
 **Worked example — cross-DID reference (controller authorizes a foreign key).**
 
