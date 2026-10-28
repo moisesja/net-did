@@ -2,6 +2,7 @@ using System.Text.Json;
 using AwesomeAssertions;
 using Microsoft.IdentityModel.Tokens;
 using NetDid.Core.Model;
+using NetDid.Core.Parsing;
 using NetDid.Core.Serialization;
 
 namespace NetDid.Core.Tests.Serialization;
@@ -937,4 +938,179 @@ public class Issue145UnpairedSurrogateMemberNameTests
     }
 
     #endregion
+
+    #region Issue145_FollowUps (fixed here instead of filed: caller options, JWK members, DID anchors)
+
+    // (a) Caller JsonSerializerOptions bypassed NetDid's internal converters, so Serialize produced
+    // reflection output of the internal wrapper ({"Document":{"Id":{"Value":...) with no production
+    // rules and no #145 UTF-16 checks.
+    private static DidDocument SimpleDocument(string alias = "https://a.example") => new()
+    {
+        Id = new Did(Did),
+        AlsoKnownAs = [alias],
+        VerificationMethod =
+        [
+            new VerificationMethod
+            {
+                Id = $"{Did}#key-1",
+                Type = "Multikey",
+                Controller = new Did(Did),
+                PublicKeyMultibase = "z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK"
+            }
+        ]
+    };
+
+    [Fact]
+    public void Issue145_Serialize_CallerOptions_StillProduceADidDocument()
+    {
+        var options = new JsonSerializerOptions { WriteIndented = true };
+
+        var json = DidDocumentSerializer.Serialize(SimpleDocument(), DidContentTypes.JsonLd, options);
+        var utf8 = DidDocumentSerializer.SerializeToUtf8(SimpleDocument(), DidContentTypes.JsonLd, options);
+        var again = DidDocumentSerializer.Serialize(SimpleDocument(), DidContentTypes.JsonLd, options);
+
+        json.Should().Contain("\"@context\"").And.Contain("\"id\": \"did:example:123\"")
+            .And.Contain("\n", "WriteIndented from the caller's options is honored");
+        json.Should().NotContain("\"Document\"");
+        DidDocumentSerializer.Deserialize(json).VerificationMethod.Should().HaveCount(1);
+        System.Text.Encoding.UTF8.GetString(utf8).Should().Be(json);
+        again.Should().Be(json, "the same options instance can be reused");
+    }
+
+    [Fact]
+    public void Issue145_Serialize_CallerOptions_StillRejectUnpairedSurrogates()
+    {
+        var act = () => DidDocumentSerializer.Serialize(
+            SimpleDocument("https://a.example/\uD800"), DidContentTypes.JsonLd, new JsonSerializerOptions());
+
+        act.Should().Throw<ArgumentException>();
+    }
+
+    // (b) WriteJwk kept only kty/crv/x/y, so an RSA key lost n and e.
+    private static DidDocument DocumentWithJwk(JsonWebKey jwk) => new()
+    {
+        Id = new Did(Did),
+        VerificationMethod =
+        [
+            new VerificationMethod
+            {
+                Id = $"{Did}#jwk",
+                Type = "JsonWebKey2020",
+                Controller = new Did(Did),
+                PublicKeyJwk = jwk
+            }
+        ]
+    };
+
+    [Fact]
+    public void Issue145_Serialize_RsaJwk_KeepsEveryPublicMember()
+    {
+        var jwk = new JsonWebKey
+        {
+            Kty = "RSA",
+            N = "sXchDaQebHnPiGvyDOAT4saGEUetSyo9MKLOoWFsueri23bOdgWp4Dy1WlUzewbgBHod5pcM9H95GQRV3JDXboIRROSBigeC5yjU1hGzHHyXss8UDprecbAYxknTcQkhslANGRUZmdTOQ5qTRsLAt6BTYuyvVRdhS8exSZEy_c4gs_7svlJJQ4H9_NxsiIoLwAEk7-Q3UXERGYw_75IDrGA84-lA_-Ct4eTlXHBIY2EaV7t7LjJaynVJCpkv4LKjTTAumiGUIuQhrNhZLuF_RJLqHpM2kgWFLU7-VTdL1VbC2tejvcI2BlMkEpk1BzBZI0KQB0GaDWFLN-aEAw3vRw",
+            E = "AQAB",
+            Kid = "rsa-1",
+            Alg = "RS256",
+            Use = "sig",
+            X5tS256 = "thumb"
+        };
+        jwk.KeyOps.Add("verify");
+        jwk.X5c.Add("MIIBIjANBg");
+
+        var json = DidDocumentSerializer.Serialize(DocumentWithJwk(jwk));
+        var read = DidDocumentSerializer.Deserialize(json).VerificationMethod![0].PublicKeyJwk!;
+
+        read.N.Should().Be(jwk.N);
+        read.E.Should().Be("AQAB");
+        read.Kid.Should().Be("rsa-1");
+        read.Alg.Should().Be("RS256");
+        read.Use.Should().Be("sig");
+        read.KeyOps.Should().Equal("verify");
+        read.X5c.Should().Equal("MIIBIjANBg");
+        read.X5tS256.Should().Be("thumb");
+    }
+
+    [Theory]
+    [InlineData("RSA")]
+    [InlineData("EC")]
+    [InlineData("OKP")]
+    [InlineData("oct")]
+    public void Issue145_Serialize_Jwk_NeverEmitsPrivateMembers(string kty)
+    {
+        var jwk = new JsonWebKey
+        {
+            Kty = kty, Crv = kty == "EC" ? "P-256" : kty == "OKP" ? "Ed25519" : null,
+            X = kty is "EC" or "OKP" ? "pubx" : null, Y = kty == "EC" ? "puby" : null,
+            N = kty == "RSA" ? "pubn" : null, E = kty == "RSA" ? "AQAB" : null,
+            D = "PRIVATE-D", P = "PRIVATE-P", Q = "PRIVATE-Q", DP = "PRIVATE-DP", DQ = "PRIVATE-DQ",
+            QI = "PRIVATE-QI", K = "PRIVATE-K"
+        };
+
+        var json = DidDocumentSerializer.Serialize(DocumentWithJwk(jwk));
+
+        json.Should().NotContain("PRIVATE");
+    }
+
+    [Fact]
+    public void Issue145_Serialize_JwkWithoutKty_ThrowsArgumentException()
+    {
+        var act = () => DidDocumentSerializer.Serialize(
+            DocumentWithJwk(new JsonWebKey { Crv = "Ed25519", X = "pubx" }));
+
+        act.Should().Throw<ArgumentException>();
+    }
+
+    [Fact]
+    public void Issue145_Deserialize_JwkWithoutKty_ThrowsJsonException()
+    {
+        var json = Doctor(PublicKeyMultibase,
+            "\"publicKeyJwk\": {\"crv\": \"Ed25519\", \"x\": \"11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo\"}");
+
+        var act = () => DidDocumentSerializer.Deserialize(json);
+
+        act.Should().Throw<JsonException>("kty is REQUIRED in a JWK (RFC 7517 §4.1)");
+    }
+
+    // (c) DidParser anchored with $, which also matches before a trailing newline.
+    [Theory]
+    [InlineData("did:example:123\n")]
+    [InlineData("did:example:123\r\n")]
+    public void Issue145_Did_TrailingNewline_IsRejected(string value)
+    {
+        DidParser.IsValid(value).Should().BeFalse();
+        var act = () => new Did(value);
+        act.Should().Throw<NetDid.Core.Exceptions.InvalidDidException>();
+    }
+
+    [Theory]
+    [InlineData("did:example:123#key-1\n")]
+    [InlineData("did:example:123/path\n")]
+    [InlineData("did:example:123?versionId=1\n")]
+    public void Issue145_DidUrl_TrailingNewline_IsRejected(string value)
+    {
+        DidParser.ParseDidUrl(value).Should().BeNull();
+        DidParser.IsValidDidReference(value).Should().BeFalse();
+    }
+
+    [Theory]
+    [InlineData("did:example:123")]
+    [InlineData("did:example:123#key-1")]
+    [InlineData("did:example:123/path/to?versionId=1#frag")]
+    public void Issue145_Control_ValidDidsAndUrls_StillParse(string value)
+    {
+        DidParser.ParseDidUrl(value).Should().NotBeNull();
+        DidParser.IsValidDidReference(value).Should().BeTrue();
+    }
+
+    [Fact]
+    public void Issue145_Deserialize_IdWithTrailingNewline_ThrowsInvalidDidException()
+    {
+        var act = () => DidDocumentSerializer.Deserialize("{\"id\": \"did:example:123\\n\"}");
+
+        act.Should().Throw<NetDid.Core.Exceptions.InvalidDidException>();
+    }
+
+    #endregion
 }
+
