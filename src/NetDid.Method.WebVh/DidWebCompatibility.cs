@@ -44,7 +44,7 @@ internal static class DidWebCompatibility
     {
         var didWeb = ToDidWeb(didWebVh);
         var didWebValue = new Did(didWeb);
-        var projectedDocument = ImplicitWebVhServices.Materialize(didWebVh, document);
+        var projectedDocument = ImplicitWebVhServices.Materialize(didWebVh, document, didWeb);
 
         // Build alsoKnownAs: include the did:webvh DID and any existing alsoKnownAs
         var alsoKnownAs = new List<string> { didWebVh };

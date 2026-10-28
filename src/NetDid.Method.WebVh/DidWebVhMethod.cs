@@ -213,6 +213,13 @@ public sealed class DidWebVhMethod : DidMethodBase
         var entryHash = ScidGenerator.ComputeEntryHash(entryJsonWithScid);
         var finalEntry = genesisEntryForHashing with { VersionId = $"1-{entryHash}" };
 
+        // Build the final DID string and the parallel did:web document BEFORE signing: a document
+        // whose did:web projection is invalid (e.g. two services that collapse to one id there)
+        // must fail before any signature is produced (issue #145).
+        var did = didTemplate.Replace(ScidGenerator.SafePlaceholder, scid);
+        var didValue = new Did(did);
+        var didJsonContent = Encoding.UTF8.GetString(DidWebCompatibility.GenerateDidJson(did, finalEntry.State));
+
         // Step 8: Sign with Data Integrity Proof
         var proofJson = LogEntrySerializer.SerializeWithoutProof(finalEntry);
         var proofValue = await CreateProofValueAsync(
@@ -220,13 +227,8 @@ public sealed class DidWebVhMethod : DidMethodBase
 
         finalEntry = finalEntry with { Proof = [proofValue] };
 
-        // Build the final DID string
-        var did = didTemplate.Replace(ScidGenerator.SafePlaceholder, scid);
-        var didValue = new Did(did);
-
         // Generate artifacts (as UTF-8 strings for consumer convenience)
         var logContent = Encoding.UTF8.GetString(LogEntrySerializer.ToJsonLines([finalEntry]));
-        var didJsonContent = Encoding.UTF8.GetString(DidWebCompatibility.GenerateDidJson(did, finalEntry.State));
 
         var artifacts = new Dictionary<string, object>
         {
@@ -685,6 +687,10 @@ public sealed class DidWebVhMethod : DidMethodBase
         // Re-serialize with correct versionId
         entryJsonWithoutProof = LogEntrySerializer.SerializeWithoutProof(newEntry);
 
+        // The parallel did:web document is built before signing, so an invalid projection fails
+        // before any signature is produced (issue #145).
+        var didJsonContent = Encoding.UTF8.GetString(DidWebCompatibility.GenerateDidJson(did, newDocument));
+
         // Sign with Data Integrity Proof
         var proofValue = await CreateProofValueAsync(
             entryJsonWithoutProof, updateOptions.SigningKey, newEntry.VersionTime, ct);
@@ -698,7 +704,7 @@ public sealed class DidWebVhMethod : DidMethodBase
         var updateArtifacts = new Dictionary<string, object>
         {
             [DidWebVhArtifacts.DidJsonl] = logContent,
-            [DidWebVhArtifacts.DidJson] = Encoding.UTF8.GetString(DidWebCompatibility.GenerateDidJson(did, newDocument))
+            [DidWebVhArtifacts.DidJson] = didJsonContent
         };
 
         if (existingWitness is not null || witnessProofs is { Count: > 0 })
