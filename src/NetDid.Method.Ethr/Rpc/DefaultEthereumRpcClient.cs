@@ -515,10 +515,19 @@ public sealed class DefaultEthereumRpcClient : IEthereumRpcClient, IEthereumFina
 
     private static string GetRpcString(JsonNode node, string context)
     {
-        if (node is JsonValue value
-            && value.TryGetValue<string>(out var result)
-            && result is not null)
-            return result;
+        try
+        {
+            if (node is JsonValue value
+                && value.TryGetValue<string>(out var result)
+                && result is not null)
+                return result;
+        }
+        catch (InvalidOperationException ex)
+        {
+            // The string is decoded on read: an unpaired surrogate escape throws here (issue #145).
+            throw new EthereumInteractionException(
+                $"Malformed {context}: the JSON string is not valid UTF-16.", ex);
+        }
 
         throw new EthereumInteractionException(
             $"Malformed {context}: expected a JSON string.");
@@ -526,11 +535,24 @@ public sealed class DefaultEthereumRpcClient : IEthereumRpcClient, IEthereumFina
 
     private static JsonObject GetRpcObject(JsonNode node, string context)
     {
-        if (node is JsonObject result)
-            return result;
+        if (node is not JsonObject result)
+            throw new EthereumInteractionException(
+                $"Malformed {context}: expected a JSON object.");
 
-        throw new EthereumInteractionException(
-            $"Malformed {context}: expected a JSON object.");
+        try
+        {
+            // JsonObject builds its member dictionary lazily, so a duplicate member
+            // (ArgumentException) or an undecodable member name (InvalidOperationException)
+            // would otherwise escape from whichever indexer runs first. Build it here (issue #145).
+            _ = result.Count;
+        }
+        catch (Exception ex) when (ex is ArgumentException or InvalidOperationException)
+        {
+            throw new EthereumInteractionException(
+                $"Malformed {context}: invalid or duplicate members.", ex);
+        }
+
+        return result;
     }
 
     private static bool IsLowerHex(ReadOnlySpan<char> value)
