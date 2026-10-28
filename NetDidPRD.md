@@ -2061,9 +2061,13 @@ public static class DidDocumentSerializer
     /// Produce the DID Document as a JSON string in the specified representation.
     /// - JsonLd: includes @context (auto-computed from VM types), all JSON-LD keywords
     /// - Json:   omits @context and any JSON-LD-only properties
-    /// Every string written must be well-formed UTF-16. A string holding an unpaired surrogate
-    /// throws ArgumentException; the JSON writer would otherwise publish U+FFFD in its place
-    /// while reporting success (issue #145). DID values are syntax-checked ASCII.
+    /// Every string written must be well-formed UTF-16, and every caller JsonElement written
+    /// (extensions, @context objects, serviceEndpoint maps) must decode cleanly. A string
+    /// holding an unpaired surrogate, or a JsonElement holding ill-formed UTF-8 or an escaped
+    /// lone surrogate, throws ArgumentException; the JSON writer would otherwise publish U+FFFD
+    /// in its place while reporting success (issue #145). DID values are syntax-checked ASCII.
+    /// @context entries must be strings or JsonElements, and a service's AdditionalProperties
+    /// must not use a reserved name (id, type, serviceEndpoint).
     public static string Serialize(DidDocument doc, string contentType = DidContentTypes.JsonLd,
         JsonSerializerOptions? options = null);
 
@@ -2094,7 +2098,9 @@ public static class DidDocumentSerializer
 
 **Default content type**: `application/did+ld+json` (JSON-LD) is the default for production because it carries the richest semantic information and is required by most DID-consuming ecosystems (Verifiable Credentials, ZCAP-LD, Data Integrity Proofs). Callers who need plain JSON explicitly pass `DidContentTypes.Json`.
 
-**Authoring text fidelity (issue #145).** `Utf8JsonWriter`, `JsonSerializer`, and `Encoding.UTF8` all replace an unpaired UTF-16 surrogate with U+FFFD without raising an error. NetDid never publishes text altered that way. Every authoring path checks the caller strings it writes and throws `ArgumentException` instead. This covers the DID document serializer (did:webvh state and `did.json`, did:peer:4 Create), did:webvh log-entry parameters and witness proofs, did:peer:2 service blocks, and did:ethr service endpoints. A check runs where the string is written, so it sees exactly the text that is published.
+**Authoring text fidelity (issue #145).** `Utf8JsonWriter`, `JsonSerializer`, and `Encoding.UTF8` all replace an unpaired UTF-16 surrogate with U+FFFD without raising an error. NetDid never publishes text altered that way. Every authoring path checks the caller text it writes and throws `ArgumentException` instead. That includes both modeled strings and the contents of caller-supplied `JsonElement` values, whose member names and strings are decoded before they are written. This covers the DID document serializer (did:webvh state and `did.json`, did:peer:4 Create), did:webvh log-entry parameters and witness proofs, did:peer:2 service blocks, and did:ethr service endpoints. A check runs where the value is written, so it sees exactly the text that is published.
+
+The service endpoint model enforces W3C DID Core §5.4 itself: `ServiceEndpointValue.FromUri` rejects a blank URI, and `FromSet` copies its entries and rejects an empty set, a null entry, or a nested set. A shape the reader rejects therefore cannot be built and published by any producer. Before this, did:peer:4 Create could return a DID whose own resolution failed. did:peer:2 and did:peer:4 resolution decode the embedded JSON as strict UTF-8, matching Core's span overload. did:peer:2 Create also rejects a service extension key that collides with an encoded member after abbreviation (issue #145).
 
 ### 9.3 W3C DID Core Normative Requirements on the Document
 

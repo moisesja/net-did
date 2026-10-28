@@ -685,3 +685,12 @@
   Rules: check `git ls-remote` for every ref before deciding PR timing; report the push to the
   user with its timestamps; never force-push; and do not attribute the cause without evidence.
   (Issue #145.)
+- A writer guarantee has to cover OPAQUE values too, not only modeled strings. Round 4 checked
+  every string and dictionary key the serializer wrote, but `JsonElement.WriteTo` emits the
+  caller's element as-is, and `Utf8JsonWriter` turns ill-formed UTF-8 inside it into U+FFFD. A
+  maintainer reproduced it with a byte-parsed WTF-8 element. When claiming "never publishes altered
+  text", list every value KIND the writer emits (strings, keys, `JsonElement`s, `ToString()` of
+  arbitrary objects) and test each with byte-level hostile input. Separately, a shape rule added
+  only to the READER (no nested `serviceEndpoint` sets) creates "Create succeeds, Resolve fails".
+  Put the rule in the model's factory so producers cannot build what readers reject, and make
+  the factory snapshot its input so the validated value cannot change. (PR #149 review round 1.)

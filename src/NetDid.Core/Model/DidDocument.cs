@@ -29,7 +29,9 @@ public sealed record DidDocument
 
     /// <summary>
     /// JSON-LD @context. Present only when the document is produced as application/did+ld+json.
-    /// When set, MUST include "https://www.w3.org/ns/did/v1" as the first entry.
+    /// When set, MUST include "https://www.w3.org/ns/did/v1" as the first entry. Each entry is a
+    /// <see cref="string"/> or a <see cref="JsonElement"/> (an object-valued context); the serializer
+    /// rejects any other type with <see cref="ArgumentException"/>.
     /// </summary>
     public IReadOnlyList<object>? Context { get; init; }
 

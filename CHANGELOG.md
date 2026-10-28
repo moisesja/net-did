@@ -192,6 +192,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     - did:ethr receipt errors no longer copy node-supplied `status` or `transactionHash` text
       (unbounded, CR/LF allowed) into exception messages.
 
+  Maintainer review of PR #149 found two remaining gaps, and the final adversarial pass found a
+  few more of the same kind. All are fixed here:
+  - **Nested `serviceEndpoint` sets on the authoring path.** The reader rejected them, but
+    `ServiceEndpointValue.FromSet` still built them. So did:peer:4 Create could return a DID
+    whose own resolution failed with `notFound`.
+    - `FromSet` now enforces W3C DID Core §5.4: it throws `ArgumentException` for a null entry or
+      a nested set, and copies its entries once so the validated set cannot change afterwards.
+    - **Behavior change:** code that built nested sets now gets `ArgumentException`. A hand-built
+      did:peer:2 that encodes a nested set no longer resolves.
+  - **Caller `JsonElement` contents.** `Serialize` checked modeled strings and dictionary keys,
+    but wrote `JsonElement` values as-is. Ill-formed UTF-8 inside one was published as U+FFFD,
+    and an escaped lone surrogate threw `JsonException` instead of the documented
+    `ArgumentException`.
+    - Every `JsonElement` written is now decoded first: document, VM and service extensions,
+      `@context` objects, and `serviceEndpoint` maps, in Core and in did:peer:2 Create. A failure
+      throws `ArgumentException`.
+    - This also closes did:webvh Create/Update, which signed such a value into a resolvable log.
+  - **`@context` entries** must be a string or a `JsonElement`. Any other type now throws
+    `ArgumentException`. Before, it was written with `ToString()`, which writes an object as a
+    string and had already replaced lone surrogates before any check.
+  - **Reserved service extension names.** A `Service.AdditionalProperties` key `id`, `type` or
+    `serviceEndpoint` now throws `ArgumentException` from `Serialize`. Before, it produced a
+    duplicate member that NetDid's own `Deserialize` rejects. In did:peer:2 Create, an extension
+    key that collides with an encoded member after abbreviation (`id`, `t`/`type`,
+    `s`/`serviceEndpoint`, or another extension) is also rejected. Before, it overwrote the
+    member, so the DID encoded a different service than Create returned.
+  - **did:peer:2 and did:peer:4 resolution** now decode the embedded JSON as strict UTF-8. Before,
+    the decode was lossy, so ill-formed bytes resolved as U+FFFD.
+  - **did:ethr Update:** a null service endpoint now throws `ArgumentException` instead of a raw
+    `ArgumentNullException`.
+
 - **did:webvh resolution now rejects log entries dated more than 5 minutes in the future**
   (issue #131). did:webvh v1.0 Read step 4 says an entry's `versionTime` "MUST NOT be more than
   a small, implementation-defined tolerance in the future relative to the resolver's current
