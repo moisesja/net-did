@@ -106,7 +106,8 @@ public static partial class DidParser
     /// the DID itself: "#k", "/keys/1#k", "?versionId=1#k". "keys/1#k", "/keys/1#k" and
     /// "{did}/keys/1#k" are therefore one id. The one exception is the compatibility shorthand:
     /// a plain "x" means "#x" (issue #136). An id of another DID, or any other absolute URI, is
-    /// returned unchanged. The one equivalence used by dereferencing, duplicate-id detection and
+    /// returned unchanged; anything else is no URI reference at all and gets a form that equals
+    /// no valid id. The one equivalence used by dereferencing, duplicate-id detection and
     /// verification-relationship checks. It never builds "{did}…", so its cost follows the id,
     /// not the DID: a did:peer DID embeds its whole document and can be megabytes long.
     /// </summary>
@@ -119,7 +120,12 @@ public static partial class DidParser
             return "#" + id;
         if (IsRelativeDidUrl(id))
             return ResolveAgainstDid(id);
-        return id;
+        if (IsAbsoluteUri(id))
+            return id;
+        // Not a URI reference (a network-path "//host#k" would be "did://host#k"; "k 1" is not
+        // one at all): it names nothing here, so it must never equal the form of a valid id such
+        // as "<did>//host#k", whose form is "//host#k". NUL never occurs in a valid id.
+        return "\0" + id;
     }
 
     // RFC 3986 §5.2.2 for a reference with no scheme or authority, against a base that has an

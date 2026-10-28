@@ -96,10 +96,14 @@ public sealed class DefaultDidUrlDereferencer : IDidUrlDereferencer
         if (parsed.Path is not null && parsed.Did.Method == "webvh")
             return BuildPathServiceResult(doc, parsed);
 
-        // Step 4: Fragment-only → select resource from DID Document
+        // Step 4: Fragment → select the resource "<did><path>#<fragment>" from the DID Document. A
+        // path is part of the resource's id: "<did>/k#x" is not "<did>#x" (issue #145).
         if (parsed.Fragment is not null)
         {
-            var resource = FindByFragment(doc, parsed.Fragment, options?.VerificationRelationship);
+            var target = parsed.Path is null
+                ? "#" + parsed.Fragment
+                : DidParser.ComparableId(parsed.Path + "#" + parsed.Fragment, null);
+            var resource = FindByFragment(doc, target, options?.VerificationRelationship);
             if (resource is null)
                 return DidUrlDereferencingResult.Error("notFound");
             return DidUrlDereferencingResult.Success(resource, accept);
@@ -281,10 +285,14 @@ public sealed class DefaultDidUrlDereferencer : IDidUrlDereferencer
     {
         if (doc.Service is null) return null;
 
-        // Compare in the shared normalized form ("svc", "#svc" and "<did>#svc" are one id)
-        var normalizedQuery = DidParser.ComparableId(serviceId, doc.Id.Value);
+        // The service parameter names a service by its fragment ("agent" selects "#agent"), so a
+        // plain value is never resolved as a path reference; "#agent" and an absolute DID URL are
+        // ids as written. Ids compare in the shared normalized form (issue #145).
+        var target = serviceId.StartsWith('#') || serviceId.Contains(':')
+            ? DidParser.ComparableId(serviceId, doc.Id.Value)
+            : "#" + serviceId;
 
-        return doc.Service.FirstOrDefault(s => DidParser.ComparableId(s.Id, doc.Id.Value) == normalizedQuery);
+        return doc.Service.FirstOrDefault(s => DidParser.ComparableId(s.Id, doc.Id.Value) == target);
     }
 
     private static bool IsDidDocumentContentType(string accept)
@@ -296,12 +304,11 @@ public sealed class DefaultDidUrlDereferencer : IDidUrlDereferencer
         return doc.Service.Where(s => s.Type == serviceType).ToList();
     }
 
-    private static object? FindByFragment(DidDocument doc, string fragment,
+    // target is the requested resource in ComparableId form ("#x", "/k#x"), built once: every id
+    // below is compared against it (issue #145).
+    private static object? FindByFragment(DidDocument doc, string target,
         string? verificationRelationship = null)
     {
-        // Built once: every id below is compared against it (issue #145).
-        var target = "#" + fragment;
-
         // When verificationRelationship is specified, only search that relationship
         if (verificationRelationship is not null)
         {
@@ -348,7 +355,7 @@ public sealed class DefaultDidUrlDereferencer : IDidUrlDereferencer
 
     // "#x", the bare shorthand "x" and "<did>#x" name the same resource; an id that belongs to
     // another DID does not, even when its fragment matches (issue #145). One normalization with
-    // the ?service= lookup and duplicate-id detection. target is "#" + the requested fragment.
+    // the ?service= lookup and duplicate-id detection. target is the requested resource's form.
     private static bool IsSameId(string id, string? documentDid, string target)
         => DidParser.ComparableId(id, documentDid) == target;
 
