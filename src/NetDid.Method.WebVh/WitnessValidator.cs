@@ -730,6 +730,43 @@ internal sealed class WitnessValidator
         return Encoding.UTF8.GetString(canonical);
     }
 
+    /// <summary>
+    /// Authoring-side guard for caller-supplied witness proofs. A proof whose complete JSON is
+    /// outside the JCS data model (an unpaired surrogate, a number beyond IEEE-754 double range)
+    /// can never be checked by any eddsa-jcs-2022 verifier, so publishing it is a caller error,
+    /// and <see cref="MergeWitnessProofs"/> relies on every proof canonicalizing (issue #145).
+    /// Resolution instead treats such a proof as one invalid proof (<see cref="VerificationSession"/>).
+    /// </summary>
+    internal static void RequireCanonicalizableProofs(
+        IEnumerable<WitnessProofEntry> entries, string paramName)
+    {
+        foreach (var entry in entries)
+        {
+            foreach (var proof in entry.Proofs)
+            {
+                try
+                {
+                    _ = GetCanonicalProofJson(proof);
+                }
+                catch (Exception ex) when (ex is JsonException
+                    or FormatException
+                    or InvalidOperationException
+                    or ArgumentException
+                    or OverflowException)
+                {
+                    // Fixed text: the proof content is caller- or remote-supplied.
+                    throw new ArgumentException(
+                        $"{paramName} contains a witness proof that cannot be canonicalized with " +
+                        "JCS (RFC 8785), for example because it holds an unpaired UTF-16 surrogate " +
+                        "or a number outside the IEEE-754 double range. No eddsa-jcs-2022 verifier " +
+                        "can check such a proof.",
+                        paramName,
+                        ex);
+                }
+            }
+        }
+    }
+
     private static IndexedProof CreateIndexedProof(
         string versionId,
         DataIntegrityProofValue proof,
