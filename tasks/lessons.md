@@ -666,3 +666,19 @@
   extension values); the user said "fix them as part of this issue". Default: present those
   findings with a plan to fix them in-branch (plan approval still applies). Offer separate issues
   only for a genuinely different defect class. (Issue #145.)
+- The read-side "undecodable text" class has a WRITE-side mirror image. `Utf8JsonWriter`,
+  `JsonSerializer` and `Encoding.UTF8` all replace an unpaired UTF-16 surrogate with U+FFFD and
+  raise no error. Any authoring path that publishes caller text therefore reports success while
+  publishing different bytes; did:peer:4 even hashed the altered bytes into the DID while returning
+  the original document. When hardening a parse boundary against malformed text, also audit every
+  writer that emits caller strings (JSON writers, `Encoding.UTF8.GetBytes`). Check where the string
+  is written, so the check sees exactly what is published (TOCTOU-proof), and pin a
+  surrogate-pair positive control so the check cannot deny valid text. Separately, `JsonObject`
+  builds its member dictionary lazily and `JsonValue` decodes strings lazily, so an RPC client must
+  force both at its boundary or the first indexer leaks a raw exception. (Issue #145 rounds 3-4.)
+- Second occurrence of the unrequested push (see the #131 entry): during the issue #145 round-3
+  adversarial run, `origin/fix/issue-145-surrogate-member-name` got an "update by push" to my local
+  HEAD, even though the prompt forbade pushing and I had not pushed since the previous round. `main`
+  and tags were untouched and nothing was lost. Treat a worktree-isolated agent run as able to
+  publish the shared issue branch. Check `git ls-remote` for every ref BEFORE deciding PR timing,
+  and report the push to the user instead of quietly carrying on. (Issue #145.)

@@ -156,6 +156,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
       resolve to that unserializable document. It now fails to resolve (`notFound`, the existing
       did:peer:4 mapping for a malformed document).
 
+  A second adversarial pass found more of the same, and the write side had the mirror-image
+  defect. Both are fixed here:
+  - **Core `DidDocumentSerializer.Deserialize` now rejects document shapes DID Core does not
+    allow with `JsonException`:**
+    - a verification method or service whose `id` or `type` is missing or not a string;
+    - a null or non-object entry in `verificationMethod` or `service`;
+    - a non-string `alsoKnownAs` entry, or a blank, null, or non-object relationship entry;
+    - a `serviceEndpoint` that is missing, blank, an empty set, or a set nested inside a set
+      (W3C DID Core §5.4).
+
+    Before, these either leaked a raw `KeyNotFoundException`, `InvalidOperationException`, or
+    `ArgumentException`, or were accepted and then crashed `Serialize` (`NullReferenceException`,
+    or an "object cycle" error for deeply nested sets). Any other JSON-access failure on hostile
+    input now also maps to `JsonException`. In did:webvh, a fetched log whose state had
+    `"type": null` or a null verification method resolved as `notFound`; it now resolves as
+    `invalidDidLog`. A service `type` given as a set of strings is still unsupported; it now fails
+    with `JsonException` instead of a raw `InvalidOperationException`.
+  - **Writers no longer publish U+FFFD in place of caller text.** `Utf8JsonWriter`,
+    `JsonSerializer`, and `Encoding.UTF8` all replace an unpaired surrogate with U+FFFD silently,
+    so these operations used to report success while publishing text that differed from the
+    caller's input. Each now throws `ArgumentException` instead:
+    - `DidDocumentSerializer.Serialize`, `SerializeToUtf8`, and through them did:webvh Create and
+      Update (state and `did.json`) and did:peer:4 Create. With did:peer:4, the DID used to hash
+      the altered bytes while the returned document kept the original text.
+    - did:webvh log-entry parameters (for example `watchers` and pre-rotation commitments) and
+      witness proofs built in code, including their `versionId`.
+    - did:peer:2 Create (service blocks encoded into the DID).
+    - did:ethr Update service endpoints, rejected before any RPC traffic. Before, the registry
+      recorded (or was asked to revoke) EF BF BD instead.
+  - **Smaller items:**
+    - did:webvh `WitnessProofs` with a null entry, proof list, proof, or `versionId` now throws
+      `ArgumentException("WitnessProofs")` instead of a raw `NullReferenceException` or
+      `ArgumentNullException`.
+    - did:ethr receipt errors no longer copy node-supplied `status` or `transactionHash` text
+      (unbounded, CR/LF allowed) into exception messages.
+
 - **did:webvh resolution now rejects log entries dated more than 5 minutes in the future**
   (issue #131). did:webvh v1.0 Read step 4 says an entry's `versionTime` "MUST NOT be more than
   a small, implementation-defined tolerance in the future relative to the resolver's current

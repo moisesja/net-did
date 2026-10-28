@@ -40,7 +40,9 @@ public static class DidDocumentSerializer
     /// </summary>
     /// <exception cref="ArgumentException">
     /// A verification method (top-level or embedded) omits the required <c>controller</c>
-    /// (W3C DID Core §5.2). A resolved DID document must state it explicitly.
+    /// (W3C DID Core §5.2). A resolved DID document must state it explicitly. Also thrown when a
+    /// string to be written holds an unpaired UTF-16 surrogate, which the JSON writer would
+    /// otherwise replace with U+FFFD.
     /// </exception>
     public static string Serialize(DidDocument doc, string contentType = DidContentTypes.JsonLd,
         JsonSerializerOptions? options = null)
@@ -55,7 +57,9 @@ public static class DidDocumentSerializer
     /// </summary>
     /// <exception cref="ArgumentException">
     /// A verification method (top-level or embedded) omits the required <c>controller</c>
-    /// (W3C DID Core §5.2). A resolved DID document must state it explicitly.
+    /// (W3C DID Core §5.2). A resolved DID document must state it explicitly. Also thrown when a
+    /// string to be written holds an unpaired UTF-16 surrogate, which the JSON writer would
+    /// otherwise replace with U+FFFD.
     /// </exception>
     public static byte[] SerializeToUtf8(DidDocument doc, string contentType = DidContentTypes.JsonLd,
         JsonSerializerOptions? options = null)
