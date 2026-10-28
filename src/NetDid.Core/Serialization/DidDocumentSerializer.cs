@@ -150,8 +150,8 @@ public static class DidDocumentSerializer
     /// Consume (deserialize) a DID Document from JSON.
     /// </summary>
     /// <exception cref="JsonException">
-    /// The input is malformed: for example a duplicate member, an unpaired surrogate escape, or a
-    /// missing or non-string verification-method controller.
+    /// The input is malformed: for example a duplicate member, an unpaired surrogate (escaped or
+    /// raw), or a missing or non-string verification-method controller.
     /// </exception>
     /// <exception cref="NetDid.Core.Exceptions.InvalidDidException">A DID-valued member is not a syntactically valid DID.</exception>
     public static DidDocument Deserialize(string json, string? contentType = null)
@@ -169,8 +169,8 @@ public static class DidDocumentSerializer
     /// Consume (deserialize) a DID Document from UTF-8 bytes.
     /// </summary>
     /// <exception cref="JsonException">
-    /// The input is malformed: for example a duplicate member, an unpaired surrogate escape, or a
-    /// missing or non-string verification-method controller.
+    /// The input is malformed: for example ill-formed UTF-8, a duplicate member, an unpaired
+    /// surrogate escape, or a missing or non-string verification-method controller.
     /// </exception>
     /// <exception cref="NetDid.Core.Exceptions.InvalidDidException">A DID-valued member is not a syntactically valid DID.</exception>
     public static DidDocument Deserialize(ReadOnlySpan<byte> utf8Json, string? contentType = null)

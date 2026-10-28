@@ -652,4 +652,10 @@
   `DidDocumentSerializer.Deserialize`. In a VALUE the same escape parses fine and fails only on
   `GetString`, so value-position tests stay green and hide the name-position gap. When adding a
   duplicate-rejecting parse, test a lone surrogate in a member name at the root AND nested, plus a
-  lone LOW surrogate (`\uDC00`), which goes through a different decode path. (Issue #145.)
+  lone LOW surrogate (`\uDC00`), which goes through a different decode path. Two more gaps the
+  adversarial pass found in the same fix: (1) a VALUE that the typed model never reads (an unknown
+  `publicKeyJwk` member) is decoded lazily, so it first failed during hashing, outside the boundary.
+  Decode every string once at the parse boundary instead of relying on downstream readers. (2)
+  Each input FORM has its own failure: an escaped surrogate gives `InvalidOperationException`, a
+  raw one in a .NET string gives `ArgumentException` (UTF-8 transcoding), and WTF-8 bytes in a span
+  are not checked at all for names that are never decoded. Test all three forms. (Issue #145.)

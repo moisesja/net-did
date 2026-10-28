@@ -88,24 +88,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- **An unpaired UTF-16 surrogate in a JSON member name now gets the correct error** (issue #145).
+- **Unpaired UTF-16 surrogates in parsed JSON now get the correct error** (issue #145).
   Resolution already failed closed for this input; only the reported error was wrong. NetDid
   rejects duplicate JSON members, which means `System.Text.Json` decodes every member name while
   parsing. A lone surrogate escape in a name (for example `"\uD800":1`) therefore throws
   `InvalidOperationException` from the parse itself, not `JsonException`, and two parse
-  boundaries let it escape. The same escape in a member value was already handled correctly.
-  - **did:webvh:** a fetched `did.jsonl` line with such a name, at any depth, now resolves as
-    `invalidDidLog` instead of `notFound`. `UpdateAsync` and `DeactivateAsync` now throw their
+  boundaries let it escape. The adversarial review found three more paths of the same kind; they
+  are fixed here too.
+  - **did:webvh:** a fetched `did.jsonl` line now resolves as `invalidDidLog` instead of
+    `notFound` when it contains a lone surrogate in a member name at any depth, or in a value that
+    the typed model never reads (for example an unknown member inside `publicKeyJwk`, which was
+    decoded only later, while the entry was re-serialized for hashing). Every string in an entry
+    is now decoded once at the parse boundary. `UpdateAsync` and `DeactivateAsync` throw their
     documented `FormatException` for such a `CurrentLogContent` instead of a raw
     `InvalidOperationException`.
-  - **Core:** `DidDocumentSerializer.Deserialize(string)` and
-    `Deserialize(ReadOnlySpan<byte>)` now throw `JsonException`, as they do for every other
-    malformed document, instead of `InvalidOperationException`. The message is fixed text and
-    never repeats the name. The original exception is kept as `InnerException`. A caller that
-    caught `InvalidOperationException` for this input must catch `JsonException`.
-  - Unchanged: the did:webvh witness-file parser already mapped this input to an unparseable file
-    (`witnessValidationFailed` on resolve, `ArgumentException` for `CurrentWitnessContent`). New
-    tests now pin that behavior. did:peer and did:ethr already mapped it.
+    - Such a line is now a log-level parse failure, like any other unparseable line. A request
+      for an earlier version of that log therefore also returns `invalidDidLog`. Before, it
+      returned `notFound`, or, when the requested version was itself a deactivation, the
+      deactivated result.
+  - **Core:** `DidDocumentSerializer.Deserialize` now throws `JsonException`, as it does for every
+    other malformed document, in three cases:
+    - a lone surrogate escape in a member name (both overloads; was `InvalidOperationException`);
+    - a raw lone surrogate char anywhere in the `string` overload's input (was
+      `ArgumentException`);
+    - ill-formed UTF-8 in the `ReadOnlySpan<byte>` overload. This used to be accepted silently
+      inside an extension object. The duplicate check compared those names as raw bytes, so two
+      ill-formed names that both decode to U+FFFD passed, and the document could not then be
+      re-serialized and read back. The overload now requires strict UTF-8, as did:webvh already
+      does for fetched logs.
+
+    Messages are fixed text and never repeat the input. The original exception is kept as
+    `InnerException`. A caller that caught `InvalidOperationException` or `ArgumentException`
+    for this input must catch `JsonException`. `ArgumentNullException` for `null` is unchanged.
+  - **did:webvh `DataIntegrityProofValue.Parse(string)`** now throws its documented
+    `JsonException` for a raw lone surrogate char instead of `ArgumentException`.
+  - Unchanged: the did:webvh witness-file parser already mapped a lone-surrogate name to an
+    unparseable file (`witnessValidationFailed` on resolve, `ArgumentException` for
+    `CurrentWitnessContent`). New tests now pin that behavior. did:peer and did:ethr resolution
+    already mapped it.
 
 - **did:webvh resolution now rejects log entries dated more than 5 minutes in the future**
   (issue #131). did:webvh v1.0 Read step 4 says an entry's `versionTime` "MUST NOT be more than
