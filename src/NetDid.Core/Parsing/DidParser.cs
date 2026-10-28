@@ -16,11 +16,15 @@ public static partial class DidParser
     private const string IdCharPattern = @"[A-Za-z0-9._-]|%[0-9A-Fa-f]{2}";
     private const string MethodSpecificIdPattern = $@"(?:(?:{IdCharPattern})*:)*(?:{IdCharPattern})+";
 
-    [GeneratedRegex($@"^did:[a-z0-9]+:{MethodSpecificIdPattern}$", RegexOptions.Compiled)]
+    // Anchored with \z, not $: in .NET $ also matches before a trailing "\n", so
+    // "did:example:123\n" validated (issue #145).
+    [GeneratedRegex($@"^did:[a-z0-9]+:{MethodSpecificIdPattern}\z", RegexOptions.Compiled)]
     private static partial Regex DidRegex();
 
     // DID URL: did-url = did path-abempty [ ";" params ] [ "?" query ] [ "#" fragment ]
-    [GeneratedRegex($@"^(?<did>did:[a-z0-9]+:(?:(?:{IdCharPattern})*:)*(?:{IdCharPattern})+)(?<path>/[^;?#]*)?(?:;(?<params>[^?#]*))?(?:\?(?<query>[^#]*))?(?:#(?<fragment>.*))?$", RegexOptions.Compiled)]
+    // RFC 3986 allows no raw whitespace or control characters in any URI component, so the
+    // component classes exclude them; with \z this rejects a trailing or embedded "\n" (issue #145).
+    [GeneratedRegex($@"^(?<did>did:[a-z0-9]+:(?:(?:{IdCharPattern})*:)*(?:{IdCharPattern})+)(?<path>/[^;?#\s\p{{Cc}}]*)?(?:;(?<params>[^?#\s\p{{Cc}}]*))?(?:\?(?<query>[^#\s\p{{Cc}}]*))?(?:#(?<fragment>[^\s\p{{Cc}}]*))?\z", RegexOptions.Compiled)]
     private static partial Regex DidUrlRegex();
 
     /// <summary>

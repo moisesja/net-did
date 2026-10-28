@@ -1,3 +1,4 @@
+using System.Runtime.CompilerServices;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Text.Unicode;
@@ -149,17 +150,34 @@ public static class DidDocumentSerializer
 
     private static string SerializeCore(DidDocument doc, string contentType, JsonSerializerOptions? options)
     {
-        var effective = options ?? DefaultOptions;
         var wrapper = new SerializationContext(doc, contentType);
-        return JsonSerializer.Serialize(wrapper, effective);
+        return JsonSerializer.Serialize(wrapper, EffectiveOptions(options));
     }
 
     private static byte[] SerializeToUtf8Core(DidDocument doc, string contentType, JsonSerializerOptions? options)
     {
-        var effective = options ?? DefaultOptions;
         var wrapper = new SerializationContext(doc, contentType);
-        return JsonSerializer.SerializeToUtf8Bytes(wrapper, effective);
+        return JsonSerializer.SerializeToUtf8Bytes(wrapper, EffectiveOptions(options));
     }
+
+    // Caller options are honored for formatting (WriteIndented, Encoder, ...), but NetDid's
+    // converters always come first: they are internal, so caller options alone serialized the
+    // internal wrapper by reflection, with no production rules and no UTF-16 checks (issue #145).
+    // One copy per caller instance, so System.Text.Json metadata is not rebuilt on every call.
+    private static readonly ConditionalWeakTable<JsonSerializerOptions, JsonSerializerOptions>
+        CallerOptions = new();
+
+    private static JsonSerializerOptions EffectiveOptions(JsonSerializerOptions? options)
+        => options is null
+            ? DefaultOptions
+            : CallerOptions.GetValue(options, static caller =>
+            {
+                var effective = new JsonSerializerOptions(caller);
+                var converters = DefaultOptions.Converters;
+                for (var i = converters.Count - 1; i >= 0; i--)
+                    effective.Converters.Insert(0, converters[i]);
+                return effective;
+            });
 
     private static readonly JsonDocumentOptions RejectDuplicatesOptions =
         new() { AllowDuplicateProperties = false };
@@ -737,13 +755,43 @@ public static class DidDocumentSerializer
 
         private static void WriteJwk(Utf8JsonWriter writer, JsonWebKey jwk)
         {
-            // Only write public JWK members — never emit private key material (d, p, q, dp, dq, qi, k, oth).
+            // Write every PUBLIC member defined by RFC 7517 §4, RFC 7518 §6.2-6.3 and RFC 8037 §2,
+            // and nothing else. Private key material (d, p, q, dp, dq, qi, oth, k) and unknown
+            // members are never written. Before issue #145 only kty/crv/x/y were kept, so an RSA
+            // key lost n and e. kty is REQUIRED (RFC 7517 §4.1): Text rejects a null one.
             writer.WriteStartObject();
-            if (jwk.Kty is not null) writer.WriteString("kty", Text(jwk.Kty));
-            if (jwk.Crv is not null) writer.WriteString("crv", Text(jwk.Crv));
-            if (jwk.X is not null) writer.WriteString("x", Text(jwk.X));
-            if (jwk.Y is not null) writer.WriteString("y", Text(jwk.Y));
+            writer.WriteString("kty", Text(jwk.Kty));
+            WriteOptional(writer, "crv", jwk.Crv);
+            WriteOptional(writer, "x", jwk.X);
+            WriteOptional(writer, "y", jwk.Y);
+            WriteOptional(writer, "n", jwk.N);
+            WriteOptional(writer, "e", jwk.E);
+            WriteOptional(writer, "kid", jwk.Kid);
+            WriteOptional(writer, "alg", jwk.Alg);
+            WriteOptional(writer, "use", jwk.Use);
+            WriteOptionalList(writer, "key_ops", jwk.KeyOps);
+            WriteOptional(writer, "x5u", jwk.X5u);
+            WriteOptionalList(writer, "x5c", jwk.X5c);
+            WriteOptional(writer, "x5t", jwk.X5t);
+            WriteOptional(writer, "x5t#S256", jwk.X5tS256);
             writer.WriteEndObject();
+        }
+
+        private static void WriteOptional(Utf8JsonWriter writer, string name, string? value)
+        {
+            if (value is not null)
+                writer.WriteString(name, Text(value));
+        }
+
+        private static void WriteOptionalList(Utf8JsonWriter writer, string name, IList<string>? values)
+        {
+            if (values is not { Count: > 0 })
+                return;
+            writer.WritePropertyName(name);
+            writer.WriteStartArray();
+            foreach (var value in values)
+                writer.WriteStringValue(Text(value));
+            writer.WriteEndArray();
         }
     }
 
@@ -911,9 +959,10 @@ public static class DidDocumentSerializer
     {
         public static JsonWebKey FromJson(string json)
         {
+            JsonWebKey jwk;
             try
             {
-                return new JsonWebKey(json);
+                jwk = new JsonWebKey(json);
             }
             catch (ArgumentException ex)
             {
@@ -923,6 +972,12 @@ public static class DidDocumentSerializer
                 throw new JsonException(
                     "The verification method's publicKeyJwk is not a valid JSON Web Key.", ex);
             }
+
+            // kty is REQUIRED (RFC 7517 §4.1); without it no key type, and so no public member
+            // set, is defined (issue #145).
+            if (string.IsNullOrEmpty(jwk.Kty))
+                throw new JsonException("The verification method's publicKeyJwk is missing 'kty'.");
+            return jwk;
         }
     }
 
