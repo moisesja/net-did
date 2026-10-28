@@ -793,15 +793,37 @@ public class LogChainValidatorMultiProofTests
         // ("Verification failed unexpectedly"); 1.4.0 rejects the whole secured document up front
         // as one PROOF_TRANSFORMATION_ERROR. Either way the entry must fail proof validation and
         // resolve as invalidDidLog.
+        //
+        // Since issue #145 the parse boundary decodes every string, so this wire form is rejected
+        // as malformed before proof validation runs. The pipeline check stays as defense in depth:
+        // it is exercised here with an entry whose proof keeps the escape in its raw JSON (an
+        // internal state that only tests can build).
         var (_, signerA) = CreateEd25519();
-        var (did, _, jsonl) = await CreateLogAsync(signerA);
+        var (did, entries, jsonl) = await CreateLogAsync(signerA);
 
         var doctored = jsonl.Split('\n')[0].Replace(
             "\"proofPurpose\":\"assertionMethod\"",
             "\"x-ext\":\"\\uD800\",\"proofPurpose\":\"assertionMethod\"");
-        var entries = LogEntrySerializer.ParseJsonLines(Encoding.UTF8.GetBytes(doctored));
+        var parse = () => LogEntrySerializer.ParseJsonLines(Encoding.UTF8.GetBytes(doctored));
+        parse.Should().Throw<FormatException>();
 
-        var act = () => new LogChainValidator().ValidateChainAsync(entries);
+        var proof = entries[0].Proof![0];
+        var hostile = new DataIntegrityProofValue
+        {
+            Type = proof.Type,
+            Cryptosuite = proof.Cryptosuite,
+            VerificationMethod = proof.VerificationMethod,
+            Created = proof.Created,
+            ProofPurpose = proof.ProofPurpose,
+            ProofValue = proof.ProofValue,
+            RawJson = proof.RawJson!.Replace(
+                "\"proofPurpose\":\"assertionMethod\"",
+                "\"x-ext\":\"\\uD800\",\"proofPurpose\":\"assertionMethod\"")
+        };
+        hostile.RawJson.Should().Contain("\\uD800");
+        var hostileEntries = new[] { entries[0] with { Proof = [hostile] } };
+
+        var act = () => new LogChainValidator().ValidateChainAsync(hostileEntries);
         await act.Should().ThrowAsync<LogChainValidationException>()
             .WithMessage("*Proof validation failed*");
 
