@@ -21,6 +21,8 @@ internal static class Numalgo2ServiceEncoder
         ["DIDCommMessaging"] = "dm"
     };
 
+    private static readonly UTF8Encoding StrictUtf8 = new(false, throwOnInvalidBytes: true);
+
     private static readonly Dictionary<string, string> ExpandMap =
         AbbreviateMap.ToDictionary(kv => kv.Value, kv => kv.Key);
 
@@ -50,7 +52,13 @@ internal static class Numalgo2ServiceEncoder
             foreach (var (key, value) in service.AdditionalProperties)
             {
                 var abbrevKey = AbbreviateMap.TryGetValue(key, out var ak) ? ak : Text(key);
-                abbreviated[abbrevKey] = value;
+                // A colliding key would overwrite an encoded member, so the DID would encode a
+                // different service than the caller's (e.g. "serviceEndpoint" replacing "s"), and
+                // "id" would become the resolved service id (issue #145).
+                if (abbrevKey == "id" || !abbreviated.TryAdd(abbrevKey, Element(value)))
+                    throw new ArgumentException(
+                        "A did:peer:2 service extension member collides with an encoded member " +
+                        "(id, type/t, serviceEndpoint/s, or another extension after abbreviation).");
             }
         }
 
@@ -80,7 +88,8 @@ internal static class Numalgo2ServiceEncoder
             case 3: base64 += "="; break;
         }
 
-        var json = Encoding.UTF8.GetString(Convert.FromBase64String(base64));
+        // Strict: ill-formed UTF-8 must fail, not resolve as U+FFFD (issue #145).
+        var json = StrictUtf8.GetString(Convert.FromBase64String(base64));
         using var doc = JsonDocument.Parse(json);
         var root = doc.RootElement;
 
@@ -133,6 +142,23 @@ internal static class Numalgo2ServiceEncoder
                 "A did:peer:2 service contains a string with an unpaired UTF-16 surrogate, which " +
                 "cannot be encoded as UTF-8 without altering it.");
 
+    // JsonSerializer would rewrite ill-formed UTF-8 inside a caller JsonElement as U+FFFD (issue #145).
+    private static JsonElement Element(JsonElement value)
+    {
+        try
+        {
+            Utf16Text.RequireDecodable(value);
+            return value;
+        }
+        catch (InvalidOperationException ex)
+        {
+            throw new ArgumentException(
+                "A did:peer:2 service contains a JSON value whose text is not well-formed UTF-8 or " +
+                "UTF-16, which cannot be encoded without altering it.",
+                ex);
+        }
+    }
+
     private static object SerializeEndpoint(ServiceEndpointValue endpoint)
     {
         if (endpoint.IsUri) return Text(endpoint.Uri!);
@@ -140,7 +166,7 @@ internal static class Numalgo2ServiceEncoder
         {
             var map = new Dictionary<string, object>();
             foreach (var (key, value) in endpoint.Map!)
-                map[Text(key)] = value;
+                map[Text(key)] = Element(value);
             return map;
         }
         if (endpoint.IsSet)

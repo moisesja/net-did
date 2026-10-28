@@ -110,10 +110,11 @@ internal sealed class Numalgo4Handler
         // Parse the document. did:peer:4's encoded template legitimately omits verification-method
         // controllers (they are contextualized to this DID below), so use the tolerant internal
         // path rather than the public consumption boundary, which requires a controller per §5.2.
-        var json = Encoding.UTF8.GetString(docBytes);
         DidDocument inputDoc;
         try
         {
+            // Strict: ill-formed UTF-8 must fail, not resolve as U+FFFD (issue #145).
+            var json = new UTF8Encoding(false, throwOnInvalidBytes: true).GetString(docBytes);
             inputDoc = DidDocumentSerializer.DeserializeAllowingIncompleteVerificationMethods(json);
         }
         catch
