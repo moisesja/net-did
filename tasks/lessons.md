@@ -694,3 +694,13 @@
   only to the READER (no nested `serviceEndpoint` sets) creates "Create succeeds, Resolve fails".
   Put the rule in the model's factory so producers cannot build what readers reject, and make
   the factory snapshot its input so the validated value cannot change. (PR #149 review round 1.)
+- A validation walk over CALLER-controlled structure must not recurse per nesting level. The
+  writer-side `RequireDecodable` was recursive, so a deeply nested caller `JsonElement`
+  (`JsonDocumentOptions.MaxDepth` lets a caller build any depth) turned a catchable writer-depth
+  `JsonException` into an uncatchable stack overflow that aborted the process. Reader-side inputs
+  were safe only because of the default MaxDepth of 64. Use an explicit stack. Test on a thread with
+  a fixed small `maxStackSize`, and prove the pre-fix crash in an isolated process (exit 134). Also,
+  "copy once" is not a snapshot if the copy is exposed: `ToArray()` stored as an
+  `IReadOnlyList<T>` can be cast back to `T[]` and written, and `ToArray()` hands a hostile
+  `ICollection<T>.CopyTo` the destination array. Fill your own list by enumeration and expose
+  `AsReadOnly()`. (PR #149 final pass on review round 1.)

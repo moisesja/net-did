@@ -198,7 +198,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     `ServiceEndpointValue.FromSet` still built them. So did:peer:4 Create could return a DID
     whose own resolution failed with `notFound`.
     - `FromSet` now enforces W3C DID Core §5.4: it throws `ArgumentException` for a null entry or
-      a nested set, and copies its entries once so the validated set cannot change afterwards.
+      a nested set. It copies its entries into a list it fills itself and exposes read-only, so
+      the validated set cannot change afterwards. Both writers (Core and did:peer:2) also reject a
+      null or nested set entry.
     - **Behavior change:** code that built nested sets now gets `ArgumentException`. A hand-built
       did:peer:2 that encodes a nested set no longer resolves.
   - **Caller `JsonElement` contents.** `Serialize` checked modeled strings and dictionary keys,
@@ -209,6 +211,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
       `@context` objects, and `serviceEndpoint` maps, in Core and in did:peer:2 Create. A failure
       throws `ArgumentException`.
     - This also closes did:webvh Create/Update, which signed such a value into a resolvable log.
+    - A `default(JsonElement)` also throws `ArgumentException`; before, it leaked a raw
+      `InvalidOperationException`. The check walks the element iteratively, so a deeply nested
+      caller element fails with a catchable exception instead of overflowing the stack.
   - **`@context` entries** must be a string or a `JsonElement`. Any other type now throws
     `ArgumentException`. Before, it was written with `ToString()`, which writes an object as a
     string and had already replaced lone surrogates before any check.
