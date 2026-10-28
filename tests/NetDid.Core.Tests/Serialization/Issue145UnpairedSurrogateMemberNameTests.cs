@@ -916,6 +916,25 @@ public class Issue145UnpairedSurrogateMemberNameTests
             "a duplicate member is output NetDid's own Deserialize rejects (issue #121)");
     }
 
+    [Theory]
+    [InlineData("verificationMethod")]
+    [InlineData("service")]
+    [InlineData("authentication")]
+    public void Issue145_Serialize_NullListEntry_ThrowsArgumentException(string member)
+    {
+        // The reader rejects these null entries; the writer crashed on them (NullReferenceException).
+        var doc = new DidDocument
+        {
+            Id = new Did(Did),
+            VerificationMethod = member == "verificationMethod" ? [null!] : null,
+            Service = member == "service" ? [null!] : null,
+            Authentication = member == "authentication" ? [null!] : null
+        };
+
+        var act = () => DidDocumentSerializer.Serialize(doc);
+
+        act.Should().Throw<ArgumentException>();
+    }
+
     #endregion
 }
-
