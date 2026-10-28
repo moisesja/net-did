@@ -2111,7 +2111,13 @@ The service endpoint model enforces W3C DID Core §5.4 itself: `ServiceEndpointV
 
 **Data model requirements** (enforced at construction, independent of representation):
 
-- `id` MUST be a valid DID. The `Did` value object (a `readonly record struct`) validates W3C DID syntax at construction — if a `Did` exists, it is syntactically valid. This makes invalid DIDs unrepresentable in the type system. The syntax regexes anchor with `\z` (not `$`, which in .NET also matches before a trailing newline), and DID URL components exclude raw whitespace and control characters (RFC 3986; issue #145).
+- `id` MUST be a valid DID. The `Did` value object (a `readonly record struct`) validates W3C DID syntax at construction — if a `Did` exists, it is syntactically valid. This makes invalid DIDs unrepresentable in the type system. The syntax regexes anchor with `\z` (not `$`, which in .NET also matches before a trailing newline). DID URL path, params, query and fragment, and relative `#fragment` references, follow the RFC 3986 character sets that DID Core §3.2 references (issue #145).
+- Consumption and production both enforce DID Core id and URI syntax (issue #145):
+  - verification method ids and relationship references are DID URLs (§5.2);
+  - service ids are URIs and unique, with `x`, `#x` and `<did>#x` counting as one id (§5.4);
+  - serviceEndpoint strings and `alsoKnownAs` entries are URIs (§5.4, §5.1.3).
+
+  NetDid's bare-id shorthand (`files` for `#files`) remains valid. A violation throws `JsonException` on read and `ArgumentException` on write.
 - `controller`, when present, MUST be a list of valid `Did` values. Serialized as a string when Count == 1, as an array when Count > 1, omitted when null.
 - `verificationMethod[*].id` MUST be a valid DID URL.
 - `verificationMethod[*].controller` MUST be a valid `Did`.

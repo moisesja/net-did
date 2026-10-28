@@ -279,6 +279,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     - A did:peer:2 service block nested deeper than 62 levels now fails with `invalidDid`. Once
       embedded in the document, a deeper block exceeds the serializer's 64 levels, so the
       resolved document could not have been written again.
+  - **DID Core id and URI syntax, on read and on write.** Before, none of the following was
+    checked:
+    - **DID URLs** follow RFC 3986, which DID Core §3.2 names for path, query and fragment. Raw
+      non-ASCII, invisible Unicode format characters (for example U+202E, U+200B, U+FEFF),
+      characters such as `<` `"` `{` `|` `\`, and malformed `%` escapes are now rejected in DID URLs
+      and in relative `#fragment` references. Percent-encoded text is still accepted.
+    - **Document consumption and production** enforce the DID Core rules for:
+      - verification method ids and relationship references (DID URLs, §5.2);
+      - service ids (URIs, §5.4) and their uniqueness (§5.4: "A conforming producer MUST NOT
+        produce multiple service entries with the same id"; "A conforming consumer MUST produce
+        an error if it detects multiple service entries with the same id");
+      - serviceEndpoint strings (URIs, §5.4);
+      - `alsoKnownAs` entries (URIs, §5.1.3).
+
+      Violations throw `JsonException` on read and `ArgumentException` on write. NetDid's
+      documented bare-id shorthand (`files` for `#files`, issue #136) stays valid. Duplicate
+      detection uses the dereferencer's own normalization, so `x`, `#x` and `<did>#x` count as
+      one id.
+    - **did:peer:2** rejects duplicate service ids on Create (`ArgumentException`) and on Resolve
+      (`invalidDid`), including an explicit `#service` next to an auto-generated one.
+    - **did:ethr service endpoints** are decoded like ethr-did-resolver: strict UTF-8 (the
+      service is skipped otherwise, where NetDid used to decode lossily), then JSON with the raw
+      string as fallback. A JSON object becomes a map, and an array of URI strings and maps
+      becomes a set; NetDid used to keep every value as a URI string. A value DID Core cannot
+      represent drops only that service. `UpdateAsync` rejects a new endpoint the resolver
+      would drop, and revoking any value already on-chain still works.
+    - **Behavior change:** documents, DID URLs and did:ethr service values that break these DID
+      Core rules are now rejected or dropped. The DIF did:webvh vector replay is identical before
+      and after this change.
 
 - **did:webvh resolution now rejects log entries dated more than 5 minutes in the future**
   (issue #131). did:webvh v1.0 Read step 4 says an entry's `versionTime` "MUST NOT be more than

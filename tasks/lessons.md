@@ -709,3 +709,12 @@
   caught and popped at once. The sanctioned sequence is: commit the fix, mutate the committed file
   (sed or python), run, restore with `git checkout <file>`, and confirm `git diff --stat` is empty.
   (Issue #145, final-pass F5.)
+- FIX every defect you find; never park it as "noted", "out of scope", "pre-existing", or "a
+  follow-up issue". On issue #145 / PR #149 I kept moving findings into separate issues or
+  "reported, not fixed" notes: first the three follow-ups, then invisible format characters in
+  DID URLs and duplicate service ids. The user had already said to fix same-class findings in the
+  issue, then said to fix the follow-ups here, and finally: "fix any issues you encounter rather
+  than just filing them for later. don't be an idiot". The rule: every confirmed defect found
+  while working on a branch is fixed on that branch, whatever its class or age, with fail-first
+  tests and the usual gates. A finding is deferred only if the user explicitly says so.
+  (PR #149, 2026-10-28.)
