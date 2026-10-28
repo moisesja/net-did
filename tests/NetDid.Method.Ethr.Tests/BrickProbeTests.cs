@@ -57,20 +57,37 @@ public class BrickProbeTests
     private static async Task<DidEthrMethod> PublishRawAttributeAsync(
         EmulatedEthereumChain chain, KeyPair owner, string address, string name, byte[] value)
     {
-        var op = Erc1056TransactionBuilder.SetAttribute(address, name, value, 86_400);
+        await SendCalldataAsync(chain, owner, address,
+            Erc1056TransactionBuilder.SetAttribute(address, name, value, 86_400).DirectCalldata);
+        return MethodFor(chain);
+    }
+
+    private static async Task SendCalldataAsync(
+        EmulatedEthereumChain chain, KeyPair owner, string address, string calldata)
+    {
         var tx = new EthereumTransaction
         {
             Nonce    = await chain.GetTransactionCountAsync(address),
             GasPrice = 1_000_000_000,
             GasLimit = 100_000,
             To       = Registry,
-            Data     = Convert.FromHexString(op.DirectCalldata[2..]),
+            Data     = Convert.FromHexString(calldata[2..]),
             ChainId  = ChainId,
         };
         var (signature, recoveryId) = Secp256k1Recoverable.Sign(owner.PrivateKey, tx.SigningDigest());
         var hash = await chain.SendRawTransactionAsync(tx.EncodeSigned(signature, recoveryId));
         (await chain.GetTransactionReceiptAsync(hash))!.Succeeded.Should().BeTrue();
-        return MethodFor(chain);
+    }
+
+    // Replaces the bytes32 label in the calldata with the same label whose byte at `index` is
+    // 0xFF, which is never valid UTF-8 (another ERC-1056 tool can write any bytes32).
+    private static string WithInvalidUtf8Label(string calldata, string label, int index)
+    {
+        var bytes = System.Text.Encoding.ASCII.GetBytes(label);
+        var original = Convert.ToHexString(bytes).ToLowerInvariant();
+        bytes[index] = 0xff;
+        calldata.Should().Contain(original);
+        return calldata.Replace(original, Convert.ToHexString(bytes).ToLowerInvariant());
     }
 
     [Theory]
@@ -122,5 +139,37 @@ public class BrickProbeTests
         var resolved = await method.ResolveAsync(did);
         resolved.ResolutionMetadata.Error.Should().BeNull($"'{name}' with a 1-byte value");
         resolved.DidDocument.Should().NotBeNull();
+    }
+
+    // Adversarial pass on the final pass (F3): ethr-did-resolver decodes bytes32 names and
+    // delegate types as strict UTF-8 and filters out an event it cannot decode: the event is
+    // not counted, changes nothing, and does not move versionId (its previousChange still links
+    // the history). NetDid decoded such labels as ASCII ('?') and counted them.
+    [Fact]
+    public async Task Issue145_UndecodableLabels_AreFilteredOutOfTheHistory()
+    {
+        var chain = new EmulatedEthereumChain(Registry);
+        var (owner, address) = NewRawActor();
+        var (_, delegateAddress) = NewRawActor();
+        var did = $"did:ethr:sepolia:{address}";
+        var endpoint = System.Text.Encoding.UTF8.GetBytes("https://hub.example");
+        var addDelegate = Erc1056TransactionBuilder.AddDelegate(address, "veriKey", delegateAddress, 86_400).DirectCalldata;
+        var setService = Erc1056TransactionBuilder.SetAttribute(address, "did/svc/Hub", endpoint, 86_400).DirectCalldata;
+
+        await SendCalldataAsync(chain, owner, address, WithInvalidUtf8Label(addDelegate, "veriKey", 2));
+        await SendCalldataAsync(chain, owner, address, WithInvalidUtf8Label(setService, "did/svc/Hub", 9));
+        await SendCalldataAsync(chain, owner, address, addDelegate);
+        await SendCalldataAsync(chain, owner, address, setService);
+        var method = MethodFor(chain);
+        var before = await method.ResolveAsync(did);
+        await SendCalldataAsync(chain, owner, address, WithInvalidUtf8Label(setService, "did/svc/Hub", 9));
+        var after = await method.ResolveAsync(did);
+
+        after.ResolutionMetadata.Error.Should().BeNull();
+        after.DidDocument!.Service.Should().ContainSingle().Which.Id.Should().Be(did + "#service-1");
+        after.DidDocument.VerificationMethod!.Select(vm => vm.Id).Should().Contain(did + "#delegate-1")
+            .And.NotContain(did + "#delegate-2");
+        after.DocumentMetadata!.VersionId.Should().Be(before.DocumentMetadata!.VersionId);
+        after.DocumentMetadata.Updated.Should().Be(before.DocumentMetadata.Updated);
     }
 }

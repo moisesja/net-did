@@ -258,6 +258,18 @@ public class LogChainValidatorAuthorizationTests
             .Should().Be(kp.MultibasePublicKey);
     }
 
+    // Issue #145: the "did:key:" prefix check was culture-sensitive, and ICU ignores NUL, so a
+    // verificationMethod that is not did:key passed it and yielded a shifted, bogus key.
+    [Theory]
+    [InlineData("d\0id:key:")]
+    [InlineData("did:key\0:")]
+    public void Issue145_ExtractDidKeyMultibase_NotDidKey_ReturnsNull(string prefix)
+    {
+        var (kp, _) = CreateEd25519();
+
+        WebVhProofVerifier.ExtractDidKeyMultibase(prefix + kp.MultibasePublicKey).Should().BeNull();
+    }
+
     [Fact]
     public void ExtractDidKeyMultibase_FragmentMismatch_ReturnsNull()
     {

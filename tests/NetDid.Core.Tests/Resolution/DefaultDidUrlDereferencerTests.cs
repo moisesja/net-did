@@ -94,6 +94,32 @@ public class DefaultDidUrlDereferencerTests
         result.ContentStream.Should().BeOfType<Service>();
     }
 
+    // Issue #145 (adversarial pass on the final pass, F2): every id comparison rebuilt
+    // "{did}#x", so one dereference cost services × DID length. A did:peer DID embeds its whole
+    // document, so a hostile one made that 14 GB. The cost must follow the ids, not the DID.
+    [Theory]
+    [InlineData("#s1999")]
+    [InlineData("?service=s1999")]
+    public async Task Issue145_DereferenceAsync_IdComparison_IsLinearInTheDocument(string suffix)
+    {
+        var did = "did:example:" + new string('a', 200_000);
+        SetupResolverSuccess(new DidDocument
+        {
+            Id = new Did(did),
+            Service = Enumerable.Range(0, 2_000).Select(i => new Service
+            {
+                Id = $"#s{i}", Type = "T", ServiceEndpoint = ServiceEndpointValue.FromUri($"https://a.example/{i}")
+            }).ToList()
+        });
+
+        var before = GC.GetAllocatedBytesForCurrentThread();
+        var result = await _dereferencer.DereferenceAsync(did + suffix);
+        var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
+
+        result.DereferencingMetadata.Error.Should().BeNull();
+        allocated.Should().BeLessThan(64L * 1024 * 1024, "the pre-fix cost was about 1.6 GB");
+    }
+
     // Issue #145 (final pass F4): fragment lookup matched by fragment only, so a service or
     // verification method of ANOTHER DID that shares the fragment could be returned.
     [Fact]

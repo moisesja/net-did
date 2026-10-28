@@ -5,6 +5,7 @@ using AwesomeAssertions;
 using NetCid;
 using NetCrypto;
 using NetDid.Core.Model;
+using NetDid.Core.Resolution;
 using NetDid.Core.Serialization;
 using NetDid.Method.Peer;
 
@@ -566,5 +567,51 @@ public class Issue145UndecodableDocumentTests
         resolved.DidDocument.Should().BeNull();
         resolved.ResolutionMetadata.Error.Should().Be("invalidDid");
     }
-}
 
+    // Adversarial pass on the final pass (F4): a template that names a placeholder DID had its
+    // references rewritten to the did:peer:4 DID but not its ids, so DID-scoped dereferencing
+    // no longer found the key its own authentication entry points to. The rewrite must also
+    // stop at a DID boundary: "did:example:abcd" is another DID, not "did:example:abc" + "d".
+    [Fact]
+    public async Task Issue145_Numalgo4_PlaceholderDidIdsAreRewrittenLikeReferences()
+    {
+        var key = new DefaultKeyGenerator().Generate(KeyType.Ed25519);
+        var created = await _method.CreateAsync(new DidPeerCreateOptions
+        {
+            Numalgo = PeerNumalgo.Four,
+            InputDocument = new DidDocument
+            {
+                Id = new Did("did:example:abc"),
+                VerificationMethod =
+                [
+                    new VerificationMethod
+                    {
+                        Id = "did:example:abc#key-1", Type = "Multikey", PublicKeyMultibase = key.MultibasePublicKey
+                    }
+                ],
+                Authentication =
+                [
+                    VerificationRelationshipEntry.FromReference("did:example:abc#key-1"),
+                    VerificationRelationshipEntry.FromReference("did:example:abcd#key-1")
+                ],
+                Service =
+                [
+                    new Service
+                    {
+                        Id = "did:example:abc#svc", Type = "T", ServiceEndpoint = ServiceEndpointValue.FromUri("https://a.example")
+                    }
+                ]
+            }
+        });
+        var did = created.Did.Value;
+
+        var resolved = (await _method.ResolveAsync(did)).DidDocument!;
+        var key1 = await new DefaultDidUrlDereferencer(_method).DereferenceAsync(did + "#key-1");
+
+        resolved.VerificationMethod!.Single().Id.Should().Be(did + "#key-1");
+        resolved.Service!.Single().Id.Should().Be(did + "#svc");
+        resolved.Authentication!.Select(a => a.Reference)
+            .Should().Equal(did + "#key-1", "did:example:abcd#key-1");
+        key1.ContentStream.Should().BeOfType<VerificationMethod>();
+    }
+}

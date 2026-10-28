@@ -287,6 +287,28 @@ public class EthrDocumentBuilderTests
         doc.Service[0].Id.Should().EndWith("#service-3", "skipped did/svc events still count");
     }
 
+    // Adversarial pass on the final pass (F3): the did/pub and did/svc prefix tests were
+    // culture-sensitive, and ICU ignores NUL, so "d\0id/svc/…" was counted although
+    // ethr-did-resolver's /^did\/svc\// (and /^did\/pub\//) does not match it.
+    [Fact]
+    public void Issue145_Build_NamePrefixesAreOrdinal()
+    {
+        var future = (ulong)(Now.ToUnixTimeSeconds() + 3600);
+        var url = System.Text.Encoding.UTF8.GetBytes("https://agent.example.com/api");
+        var events = new List<Erc1056Event>
+        {
+            new AttributeChangedEvent(Address, "d\0id/svc/Hub", url, future, 0, 20),
+            new AttributeChangedEvent(Address, "d\0id/pub/Secp256k1/veriKey/hex", [1], future, 0, 21),
+            new AttributeChangedEvent(Address, "did/svc/Hub", url, future, 0, 22),
+            new DelegateChangedEvent(Address, "veriKey", "0x" + new string('b', 40), future, 0, 23)
+        };
+
+        var doc = EthrDocumentBuilder.Build(Did, MakeIdentifier(), ChainId, events, Now, false);
+
+        doc.Service.Should().ContainSingle().Which.Id.Should().Be(Did + "#service-1");
+        doc.VerificationMethod!.Select(vm => vm.Id).Should().Contain(Did + "#delegate-1");
+    }
+
     // F8: JSON.parse keeps the LAST value of a duplicate member, at its first position.
     [Fact]
     public void Issue145_Build_JsonServiceValueWithDuplicateMembers_KeepsTheLastValue()

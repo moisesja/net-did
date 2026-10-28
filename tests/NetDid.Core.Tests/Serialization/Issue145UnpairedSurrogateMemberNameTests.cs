@@ -1406,6 +1406,74 @@ public class Issue145UnpairedSurrogateMemberNameTests
         DidParser.IsAbsoluteUri(value).Should().Be(expected);
     }
 
+    // Adversarial pass on the final pass (F5): an IP-literal is an IPv6address or IPvFuture
+    // (RFC 3986 §3.2.2), not any run of host characters inside brackets.
+    [Theory]
+    [InlineData("http://[foo]/", false)]
+    [InlineData("http://[:]/", false)]
+    [InlineData("http://[1:2:3:4:5:6:7:8:9]/", false)]
+    [InlineData("http://[1::2::3]/", false)]
+    [InlineData("http://[::ffff:256.0.2.1]/", false)]
+    [InlineData("http://[12345::1]/", false)]
+    [InlineData("http://[v1.]/", false)]
+    [InlineData("http://[::]/", true)]
+    [InlineData("http://[::1]/", true)]
+    [InlineData("http://[2001:DB8::1]:8080/x", true)]
+    [InlineData("http://[1:2:3:4:5:6:7:8]/", true)]
+    [InlineData("http://[::ffff:192.0.2.1]/", true)]
+    [InlineData("http://[1:2:3:4:5:6:1.2.3.4]/", true)]
+    [InlineData("http://[v1.fe80::a+en1]/", true)]
+    [InlineData("http://[V7.x:y]/", true)]
+    public void Issue145_IsAbsoluteUri_IpLiteralIsIpv6OrIpvFuture(string value, bool expected)
+    {
+        DidParser.IsAbsoluteUri(value).Should().Be(expected);
+    }
+
+    // Adversarial pass on the final pass (F1): duplicate detection built "{did}#x" for every
+    // service. A did:peer DID embeds its whole document, so one hostile did:peer:2 needed
+    // services × DID length (7 GB for a 446 KB DID). The cost must follow the ids, not the DID.
+    [Fact]
+    public void Issue145_ServiceIdComparison_IsLinearInTheDocument()
+    {
+        var doc = new DidDocument
+        {
+            Id = new Did("did:example:" + new string('a', 200_000)),
+            Service = Enumerable.Range(0, 2_000).Select(i => new Service
+            {
+                Id = $"#s{i}", Type = "T", ServiceEndpoint = ServiceEndpointValue.FromUri("https://a.example")
+            }).ToList()
+        };
+
+        var before = GC.GetAllocatedBytesForCurrentThread();
+        DidDocumentSerializer.ValidateForProduction(doc);
+        var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
+
+        allocated.Should().BeLessThan(64L * 1024 * 1024, "the pre-fix cost was about 800 MB");
+    }
+
+    // A culture-sensitive prefix check ignores NUL under ICU, so "Ecdsa\0Secp256k1…" counted as
+    // a secp256k1 type and got that suite's JSON-LD context.
+    [Fact]
+    public void Issue145_Serialize_ContextSelection_ComparesVmTypesOrdinally()
+    {
+        var doc = new DidDocument
+        {
+            Id = new Did("did:example:123"),
+            VerificationMethod =
+            [
+                new VerificationMethod
+                {
+                    Id = "#k", Type = "Ecdsa\0Secp256k1VerificationKey2019", Controller = new Did("did:example:123"),
+                    PublicKeyMultibase = "zQ3shokFTS3brHcDQrn82RUDfCZESWL1ZdCEJwekUDPQiYBme"
+                }
+            ]
+        };
+
+        var json = DidDocumentSerializer.Serialize(doc, DidContentTypes.JsonLd);
+
+        json.Should().NotContain("https://w3id.org/security/suites/secp256k1-2019/v1");
+    }
+
     // F6: the bare shorthand must not swallow real RFC 3986 relative references.
     [Theory]
     [InlineData("//evil.example/x", false)]
