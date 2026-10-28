@@ -22,9 +22,9 @@ tuple label `string` → `string?` (#145, already in the CHANGELOG).
 - [x] Release skill: it lists 5 packages; `NetDid.Method.Ethr` makes 6.
 - [x] Verify (`net-did-verify`): 0-warning Release build, full suite, W3C conformance, samples,
       `dotnet pack` yields 6 `.nupkg` + `.snupkg`.
-- [ ] Commit `chore(release): cut 4.0.0`, push, open the PR. Stop for the user's merge.
-- [ ] After merge: tag `v4.0.0` on the merge commit, push the tag, watch `publish.yml`.
-- [ ] Confirm all 6 packages list 4.0.0 on NuGet; comment on issues this release closes.
+- [x] Commit `chore(release): cut 4.0.0`, push, open the PR. Stop for the user's merge.
+- [x] After merge: tag `v4.0.0` on the merge commit, push the tag, watch `publish.yml`.
+- [x] Confirm all 6 packages list 4.0.0 on NuGet; comment on issues this release closes.
 
 ## Verification (branch `chore/release-4.0.0`, before the PR)
 
@@ -34,3 +34,15 @@ tuple label `string` → `string?` (#145, already in the CHANGELOG).
 - Samples: DidKey, DidPeer, DidWebVh, DidEthr, DependencyInjection all exit 0.
 - `dotnet pack`: 6 `.nupkg` + 6 `.snupkg` at 4.0.0; inter-package dependencies pinned to 4.0.0.
 - `w3c-conformance-report.md`: timestamp-only churn, restored. `git diff origin/main --check` clean.
+
+## Review
+
+- Release PR #150 merged by the user at 2026-10-28T21:45:09Z; merge commit `a17d8c0`. PR CI green.
+- Tag `v4.0.0` (annotated) on `a17d8c0`, pushed.
+- `publish.yml` run https://github.com/moisesja/net-did/actions/runs/40774605900: every step
+  succeeded, including the test step. 12 pushes accepted (6 `.nupkg` + 6 `.snupkg`).
+- NuGet flat container lists 4.0.0 for `NetDid.Core`, `NetDid.Method.Key`, `NetDid.Method.Peer`,
+  `NetDid.Method.WebVh`, `NetDid.Method.Ethr` and `NetDid.Extensions.DependencyInjection`
+  about 6 minutes after the push.
+- Shipped-version comments posted on #131, #134, #135, #136, #144, #145.
+- Not done: no GitHub Release entry. Only v1.2.0 has one; 2.x and 3.x shipped as tags only.
