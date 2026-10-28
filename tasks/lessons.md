@@ -659,3 +659,10 @@
   Each input FORM has its own failure: an escaped surrogate gives `InvalidOperationException`, a
   raw one in a .NET string gives `ArgumentException` (UTF-8 transcoding), and WTF-8 bytes in a span
   are not checked at all for names that are never decoded. Test all three forms. (Issue #145.)
+- When an adversarial pass finds PRE-EXISTING defects of the same class as the issue (same kind
+  of wrong error or escaped exception, even in another subsystem), the user wants them FIXED in
+  the same issue and PR, not filed as follow-ups. On issue #145 I proposed filing the three
+  out-of-scope findings (did:ethr RPC member access, witness-authoring JCS failure, Core JWK and
+  extension values); the user said "fix them as part of this issue". Default: present those
+  findings with a plan to fix them in-branch (plan approval still applies). Offer separate issues
+  only for a genuinely different defect class. (Issue #145.)

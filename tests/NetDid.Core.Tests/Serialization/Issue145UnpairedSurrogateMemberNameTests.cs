@@ -211,4 +211,83 @@ public class Issue145UnpairedSurrogateMemberNameTests
     }
 
     #endregion
+
+    #region Issue145_UndecodedValuesAndJwk (adversarial review, pre-existing)
+
+    private const string PublicKeyMultibase =
+        "\"publicKeyMultibase\": \"z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK\"";
+
+    // Extension values are kept as raw JsonElements and were never decoded on the way in, so a
+    // lone surrogate there deserialized fine and only failed later, in Serialize. {0} is the
+    // string value placed at each position.
+    public static TheoryData<string, string> ExtensionValuePositions => new()
+    {
+        // Document-level extension member.
+        { "\"id\": \"did:example:123\",", "\"x-ext\": \"{0}\", \"id\": \"did:example:123\"," },
+        // Verification-method extension member.
+        { "\"type\": \"Multikey\",", "\"x-ext\": \"{0}\", \"type\": \"Multikey\"," },
+        // Service extension member, nested in an array.
+        { "\"type\": \"Example\",", "\"x-ext\": [\"{0}\"], \"type\": \"Example\"," },
+        // A serviceEndpoint map value.
+        { "\"serviceEndpoint\": \"https://example.com\"", "\"serviceEndpoint\": {\"uri\": \"{0}\"}" },
+        // An unknown publicKeyJwk member (the JWK model never surfaces it).
+        { PublicKeyMultibase, "\"publicKeyJwk\": {\"kty\": \"OKP\", \"crv\": \"Ed25519\", \"x\": \"11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo\", \"x-ext\": \"{0}\"}" },
+    };
+
+    [Theory]
+    [MemberData(nameof(ExtensionValuePositions))]
+    public void Issue145_LoneSurrogateExtensionValue_ThrowsJsonException(string find, string replace)
+    {
+        var json = Doctor(find, replace.Replace("{0}", "\\uD800"));
+        var utf8 = System.Text.Encoding.UTF8.GetBytes(json);
+
+        var fromString = () => DidDocumentSerializer.Deserialize(json);
+        var fromUtf8 = () => DidDocumentSerializer.Deserialize(utf8.AsSpan());
+
+        fromString.Should().Throw<JsonException>();
+        fromUtf8.Should().Throw<JsonException>();
+    }
+
+    [Theory]
+    [MemberData(nameof(ExtensionValuePositions))]
+    public void Issue145_Control_EscapedSurrogatePairExtensionValue_RoundTrips(string find, string replace)
+    {
+        // Positive control: a well-formed pair still deserializes and survives a round-trip.
+        var json = Doctor(find, replace.Replace("{0}", "\\uD83D\\uDE00"));
+
+        var doc = DidDocumentSerializer.Deserialize(json);
+        var again = DidDocumentSerializer.Deserialize(DidDocumentSerializer.Serialize(doc));
+
+        again.Id.Should().Be(doc.Id);
+    }
+
+    [Theory]
+    [InlineData("\"x\": 5")]
+    [InlineData("\"x\": \"11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo\", \"alg\": \"\\uD800\"")]
+    [InlineData("\"x\": \"11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo\", \"kid\": \"\\uD800\"")]
+    public void Issue145_MalformedPublicKeyJwk_ThrowsJsonException(string members)
+    {
+        // IdentityModel's JsonWebKey reports a malformed key as ArgumentException (IDX10805);
+        // the consumption boundary's documented error is JsonException.
+        var json = Doctor(PublicKeyMultibase,
+            "\"publicKeyJwk\": {\"kty\": \"OKP\", \"crv\": \"Ed25519\", " + members + "}");
+
+        var act = () => DidDocumentSerializer.Deserialize(json);
+
+        act.Should().Throw<JsonException>();
+    }
+
+    [Fact]
+    public void Issue145_Control_WellFormedPublicKeyJwk_StillDeserializes()
+    {
+        var json = Doctor(PublicKeyMultibase,
+            "\"publicKeyJwk\": {\"kty\": \"OKP\", \"crv\": \"Ed25519\", " +
+            "\"x\": \"11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo\"}");
+
+        var doc = DidDocumentSerializer.Deserialize(json);
+
+        doc.VerificationMethod![0].PublicKeyJwk!.X.Should().Be("11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo");
+    }
+
+    #endregion
 }

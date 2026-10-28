@@ -306,6 +306,138 @@ public class Issue145UnpairedSurrogateMemberNameTests
 
     #endregion
 
+    #region Issue145_WitnessAuthoring_NonCanonicalizableProof
+
+    // A structurally valid proof whose complete JSON is outside the JCS data model. No
+    // eddsa-jcs-2022 verifier can check it. Resolution treats it as one invalid proof; on the
+    // authoring path it used to escape Create/Update/Deactivate as NetCid.JcsFormatException.
+    private static string NonCanonicalizableProof(string extension) =>
+        "{\"type\":\"DataIntegrityProof\",\"cryptosuite\":\"eddsa-jcs-2022\"," +
+        "\"verificationMethod\":\"did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK" +
+        "#z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK\"," +
+        "\"proofPurpose\":\"assertionMethod\",\"proofValue\":\"z3abc\"," + extension + "}";
+
+    public static TheoryData<string> NonCanonicalizableExtensions => new()
+    {
+        "\"x-ext\":\"\\uD800\"",
+        "\"x-ext\":1e400",
+        "\"id\":\"urn:\\uD800\"",
+    };
+
+    private static WitnessProofEntry[] WitnessProofsWith(string extension) =>
+    [
+        new WitnessProofEntry
+        {
+            VersionId = "1-QmA",
+            Proofs = [DataIntegrityProofValue.Parse(NonCanonicalizableProof(extension))]
+        }
+    ];
+
+    private static byte[] WitnessFileWith(string extension) => Encoding.UTF8.GetBytes(
+        "[{\"versionId\":\"1-QmA\",\"proof\":[" + NonCanonicalizableProof(extension) + "]}]");
+
+    [Theory]
+    [MemberData(nameof(NonCanonicalizableExtensions))]
+    public async Task Issue145_Update_NonCanonicalizableWitnessProof_ThrowsArgumentException(string extension)
+    {
+        var (did, jsonl, signer) = await CreateLogAsync();
+        var (method, _) = CreateMethod();
+
+        var act = () => method.UpdateAsync(did, new DidWebVhUpdateOptions
+        {
+            CurrentLogContent = Encoding.UTF8.GetBytes(jsonl),
+            SigningKey = signer,
+            WitnessProofs = WitnessProofsWith(extension)
+        });
+
+        (await act.Should().ThrowAsync<ArgumentException>())
+            .Which.ParamName.Should().Be(nameof(DidWebVhUpdateOptions.WitnessProofs));
+    }
+
+    [Fact]
+    public async Task Issue145_Create_NonCanonicalizableWitnessProof_ThrowsArgumentException()
+    {
+        var signer = new KeyPairSigner(_keyGen.Generate(KeyType.Ed25519), _crypto);
+        var (method, _) = CreateMethod();
+
+        var act = () => method.CreateAsync(new DidWebVhCreateOptions
+        {
+            Domain = "example.com",
+            UpdateKey = signer,
+            WitnessProofs = WitnessProofsWith("\"x-ext\":1e400")
+        });
+
+        (await act.Should().ThrowAsync<ArgumentException>())
+            .Which.ParamName.Should().Be(nameof(DidWebVhCreateOptions.WitnessProofs));
+    }
+
+    [Fact]
+    public async Task Issue145_Deactivate_NonCanonicalizableWitnessProof_ThrowsArgumentException()
+    {
+        var (did, jsonl, signer) = await CreateLogAsync();
+        var (method, _) = CreateMethod();
+
+        var act = () => method.DeactivateAsync(did, new DidWebVhDeactivateOptions
+        {
+            CurrentLogContent = Encoding.UTF8.GetBytes(jsonl),
+            SigningKey = signer,
+            WitnessProofs = WitnessProofsWith("\"x-ext\":\"\\uD800\"")
+        });
+
+        (await act.Should().ThrowAsync<ArgumentException>())
+            .Which.ParamName.Should().Be(nameof(DidWebVhDeactivateOptions.WitnessProofs));
+    }
+
+    [Theory]
+    [MemberData(nameof(NonCanonicalizableExtensions))]
+    public async Task Issue145_Update_NonCanonicalizableProofInWitnessContent_ThrowsArgumentException(
+        string extension)
+    {
+        var (did, jsonl, signer) = await CreateLogAsync();
+        var (method, _) = CreateMethod();
+
+        var act = () => method.UpdateAsync(did, new DidWebVhUpdateOptions
+        {
+            CurrentLogContent = Encoding.UTF8.GetBytes(jsonl),
+            SigningKey = signer,
+            CurrentWitnessContent = WitnessFileWith(extension)
+        });
+
+        (await act.Should().ThrowAsync<ArgumentException>())
+            .Which.ParamName.Should().Be(nameof(DidWebVhUpdateOptions.CurrentWitnessContent));
+    }
+
+    [Fact]
+    public async Task Issue145_Deactivate_NonCanonicalizableProofInWitnessContent_ThrowsArgumentException()
+    {
+        var (did, jsonl, signer) = await CreateLogAsync();
+        var (method, _) = CreateMethod();
+
+        var act = () => method.DeactivateAsync(did, new DidWebVhDeactivateOptions
+        {
+            CurrentLogContent = Encoding.UTF8.GetBytes(jsonl),
+            SigningKey = signer,
+            CurrentWitnessContent = WitnessFileWith("\"x-ext\":1e400")
+        });
+
+        (await act.Should().ThrowAsync<ArgumentException>())
+            .Which.ParamName.Should().Be(nameof(DidWebVhDeactivateOptions.CurrentWitnessContent));
+    }
+
+    [Theory]
+    [MemberData(nameof(NonCanonicalizableExtensions))]
+    public void Issue145_Guard_ResolutionParserStillAcceptsNonCanonicalizableProof(string extension)
+    {
+        // Resolution must keep treating such a proof as one invalid proof inside an otherwise
+        // usable witness file (PR #143), so the file parser must not start rejecting it.
+        var parsed = WitnessValidator.ParseWitnessFile(WitnessFileWith(extension), out var parseError);
+
+        parsed.Should().NotBeNull();
+        parseError.Should().BeNull();
+    }
+
+    #endregion
+
     #region Issue145_WitnessFile_SurrogateMemberName (pins: this boundary already mapped it)
 
     [Theory]
