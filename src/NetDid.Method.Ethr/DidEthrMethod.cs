@@ -1059,7 +1059,7 @@ public sealed class DidEthrMethod : DidMethodBase
         foreach (var service in removeServices)
             operations.Add(Erc1056TransactionBuilder.RevokeAttribute(
                 identity, "did/svc/" + Required(service, nameof(DidEthrUpdateOptions.RemoveServices)).ServiceType,
-                ServiceEndpointBytes(service, nameof(DidEthrUpdateOptions.RemoveServices))));
+                ServiceEndpointBytes(service, nameof(DidEthrUpdateOptions.RemoveServices), requireRepresentable: false)));
         foreach (var del in revokeDelegates)
             operations.Add(Erc1056TransactionBuilder.RevokeDelegate(
                 identity, Required(del, nameof(DidEthrUpdateOptions.RevokeDelegates)).DelegateType,
@@ -1071,7 +1071,7 @@ public sealed class DidEthrMethod : DidMethodBase
         foreach (var service in addServices)
             operations.Add(Erc1056TransactionBuilder.SetAttribute(
                 identity, "did/svc/" + Required(service, nameof(DidEthrUpdateOptions.AddServices)).ServiceType,
-                ServiceEndpointBytes(service, nameof(DidEthrUpdateOptions.AddServices)),
+                ServiceEndpointBytes(service, nameof(DidEthrUpdateOptions.AddServices), requireRepresentable: true),
                 ValiditySeconds(service.Validity)));
         foreach (var del in addDelegates)
             operations.Add(Erc1056TransactionBuilder.AddDelegate(
@@ -1649,16 +1649,24 @@ public sealed class DidEthrMethod : DidMethodBase
     /// would record (or be asked to revoke) a different endpoint than the caller supplied
     /// (issue #145). Service types need no check: they are ASCII-only bytes32 labels.
     /// </summary>
-    private static byte[] ServiceEndpointBytes(DidEthrServiceAttribute service, string collectionName)
+    private static byte[] ServiceEndpointBytes(
+        DidEthrServiceAttribute service, string collectionName, bool requireRepresentable)
     {
         if (service.ServiceEndpoint is null)
             throw new ArgumentException($"{collectionName} contains a null service endpoint.", "options");
-        return Utf16Text.IsWellFormed(service.ServiceEndpoint)
-            ? Encoding.UTF8.GetBytes(service.ServiceEndpoint)
-            : throw new ArgumentException(
+        if (!Utf16Text.IsWellFormed(service.ServiceEndpoint))
+            throw new ArgumentException(
                 $"{collectionName} contains a service endpoint with an unpaired UTF-16 surrogate, " +
                 "which cannot be encoded as UTF-8 without altering it.",
                 "options");
+        // A new service must be one the resolver keeps: an RFC 3986 URI, or a JSON map or set of
+        // them (W3C DID Core §5.4). Revoking stays possible for any value already on-chain.
+        if (requireRepresentable && !EthrServiceEndpoint.TryParse(service.ServiceEndpoint, out _))
+            throw new ArgumentException(
+                $"{collectionName} contains a service endpoint that is neither an RFC 3986 URI nor a " +
+                "JSON map or set of them (W3C DID Core §5.4); the resolver would drop it.",
+                "options");
+        return Encoding.UTF8.GetBytes(service.ServiceEndpoint);
     }
 
     private static ulong ValiditySeconds(TimeSpan validity)
