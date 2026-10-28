@@ -507,9 +507,13 @@ public class Issue145UndecodableDocumentTests
         resolved.ResolutionMetadata.Error.Should().Be("invalidDid");
     }
 
+    // An explicit "#service" beside a service without id (generated "#service"), two equal ids,
+    // and the bare shorthand beside its "#" form. (Explicit relative ids are kept as written
+    // since review round 2, so "svc" no longer turns into a generated "#service".)
     [Theory]
-    [InlineData("#service", "svc")]
+    [InlineData("#service", "")]
     [InlineData("#x", "#x")]
+    [InlineData("svc", "#svc")]
     public async Task Issue145_Numalgo2Create_DuplicateServiceIds_ThrowsArgumentException(string firstId, string secondId)
     {
         var act = () => _method.CreateAsync(new DidPeerCreateOptions
