@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [4.0.0] - 2026-10-28
+
+**Upgrading from 3.1.0.** The major version is for one wire-format break: witnessed did:webvh DIDs.
+Public API changes are additive, apart from the `AbiDecoder` nullability change noted under
+*Fixed*. Check these before upgrading:
+
+- **Witnessed did:webvh DIDs** (issue #135). A `did-witness.json` written by NetDid 3.1.0 or
+  earlier fails validation under the spec format. Collect new witness proofs for each affected DID.
+  `Update` and `Deactivate` throw `ArgumentException` when `CurrentWitnessContent` uses the old
+  format.
+- **DataProofsDotnet** (issue #144). If your application references a DataProofsDotnet package
+  directly, move it to 1.4.0 with this release. Mixing versions fails at run time with
+  `MissingMethodException`.
+- **Stricter input validation** (issues #131, #145). Documents, DID URLs, JWKs and did:peer:2
+  inputs that break DID Core or method rules are now rejected. did:webvh logs dated more than
+  5 minutes in the future resolve as `invalidDidLog`. Several malformed-input paths throw a
+  different exception type than before. The entries below marked **Behavior change** list each
+  one.
+
 ### Security
 
 - **Vulnerable build- and test-time transitive packages removed** (issue #144). A fresh restore of

@@ -1,6 +1,6 @@
 ---
 name: net-did-release
-description: Cut a net-did release and publish all 5 NuGet packages — semver decision, chore/release branch, NetDidVersion bump, CHANGELOG stamp, verify, tag vX.Y.Z (triggers publish.yml), confirm on NuGet. Use when asked to release, cut a version, bump the version, publish to NuGet, or ship vX.Y.Z.
+description: Cut a net-did release and publish all 6 NuGet packages — semver decision, chore/release branch, NetDidVersion bump, CHANGELOG stamp, verify, tag vX.Y.Z (triggers publish.yml), confirm on NuGet. Use when asked to release, cut a version, bump the version, publish to NuGet, or ship vX.Y.Z.
 ---
 
 # net-did release / publish lifecycle
@@ -31,7 +31,7 @@ Mirror a prior release commit's shape (e.g. the 2.1.0/2.2.0 release commits) for
 
 ## 5. Verify
 Run the **`net-did-verify`** skill: 0-warning Release build, full test suite green, W3C conformance green, samples exit 0. This regenerates `w3c-conformance-report.md` legitimately for the release — keep any real content change, drop pure timestamp churn.
-Optionally inspect the packages: `dotnet pack netdid.sln -c Release -o ./nupkgs` and confirm 5 `.nupkg` + `.snupkg` files.
+Optionally inspect the packages: `dotnet pack netdid.sln -c Release -o ./nupkgs` and confirm 6 `.nupkg` + `.snupkg` files.
 
 ## 6. Release PR
 - Commit `chore(release): cut X.Y.Z`, push, open the PR.
@@ -44,7 +44,7 @@ git tag vX.Y.Z <merge-commit>
 git push origin vX.Y.Z
 ```
 - The tag push triggers `.github/workflows/publish.yml`, which builds/tests/packs and `dotnet nuget push`es all packages with `-p:Version=X.Y.Z --skip-duplicate`.
-- **Packages shipped (5):** `NetDid.Core`, `NetDid.Method.Key`, `NetDid.Method.Peer`, `NetDid.Method.WebVh`, `NetDid.Extensions.DependencyInjection`.
+- **Packages shipped (6):** `NetDid.Core`, `NetDid.Method.Key`, `NetDid.Method.Peer`, `NetDid.Method.WebVh`, `NetDid.Method.Ethr`, `NetDid.Extensions.DependencyInjection`.
 - Watch the workflow to completion (`gh run watch`).
 
 ## 8. Confirm
