@@ -353,7 +353,11 @@ public sealed class DidEthrMethod : DidMethodBase
         // appended in ascending log order during the walk, so this reorders blocks
         // oldest-first WITHOUT reversing events within a block — a flat List.Reverse()
         // would invert a same-block add→revoke into revoke→add and leave a revoked key live.
-        collectedEvents = collectedEvents.OrderBy(e => e.BlockNumber).ToList();
+        // An event ethr-did-resolver filters out (a bytes32 label that is not UTF-8) linked the
+        // walk above but is not part of the history: it is not counted and sets no versionId,
+        // updated or nextVersionId (issue #145).
+        collectedEvents = collectedEvents.Where(e => e is not FilteredEvent)
+            .OrderBy(e => e.BlockNumber).ToList();
 
         // Reference time & optional block-timestamp fetching for VersionTime.
         // Every timestamp fetched anywhere in this resolution is cached so the

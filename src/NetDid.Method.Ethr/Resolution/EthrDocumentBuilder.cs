@@ -67,7 +67,9 @@ public static class EthrDocumentBuilder
                     break;
                 }
 
-                case AttributeChangedEvent ac when ac.Name.StartsWith("did/pub/"):
+                // Ordinal, like the reference's /^did\/pub\// and /^did\/svc\//: a culture-sensitive
+                // test ignores NUL under ICU and would count "d\0id/svc/…" (issue #145).
+                case AttributeChangedEvent ac when ac.Name.StartsWith("did/pub/", StringComparison.Ordinal):
                 {
                     delegateCount++;
                     var key = $"DIDAttributeChanged-{ac.Name}-{Convert.ToHexString(ac.Value)}";
@@ -78,7 +80,7 @@ public static class EthrDocumentBuilder
                     break;
                 }
 
-                case AttributeChangedEvent ac when ac.Name.StartsWith("did/svc/"):
+                case AttributeChangedEvent ac when ac.Name.StartsWith("did/svc/", StringComparison.Ordinal):
                 {
                     serviceCount++;
                     // Like ethr-did-resolver: every did/svc/ event counts, but only a name in its

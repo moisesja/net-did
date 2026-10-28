@@ -240,10 +240,11 @@ internal static class Erc1056TransactionBuilder
     /// <summary>
     /// ASCII label right-padded into a bytes32 word (delegate types, attribute names).
     ///
-    /// <para>Deliberately ASCII, not UTF-8: the resolver decodes these words with
-    /// <c>AbiDecoder.DecodeBytes32AsString</c>, which is ASCII — so writing UTF-8 would let
-    /// this library publish a name it cannot itself resolve (<c>did/svc/Café</c> read back as
-    /// <c>did/svc/Caf??</c>). Reject at the write boundary instead of round-tripping garbage.</para>
+    /// <para>Deliberately ASCII, not UTF-8: resolvers decode these words as UTF-8 (NetDid like
+    /// ethr-did-resolver), but only act on ASCII labels: the <c>did/pub</c> and <c>did/svc</c>
+    /// grammar is <c>\w</c> and the delegate types are <c>veriKey</c> and <c>sigAuth</c>. A
+    /// non-ASCII label (<c>did/svc/Café</c>) would publish an attribute no resolver turns into a
+    /// service or key. Reject at the write boundary instead.</para>
     ///
     /// <para>A trailing NUL is likewise rejected: bytes32 labels are NUL-padded and the
     /// decoder trims trailing NULs, so <c>"x"</c> and <c>"x\0"</c> would be indistinguishable
@@ -257,8 +258,8 @@ internal static class Erc1056TransactionBuilder
             if (c is '\0' or > (char)127)
                 throw new ArgumentException(
                     $"'{label}' must contain only non-NUL ASCII: ERC-1056 bytes32 labels are " +
-                    "NUL-padded and are decoded as ASCII on resolution, so any other character " +
-                    "would publish a name that cannot be read back.",
+                    "NUL-padded, and resolvers only act on ASCII names, so any other character " +
+                    "would publish a label no resolver turns into a key or service.",
                     paramName);
         }
         var bytes = Encoding.ASCII.GetBytes(label);
