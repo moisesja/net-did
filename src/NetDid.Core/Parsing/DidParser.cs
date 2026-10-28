@@ -42,9 +42,14 @@ public static partial class DidParser
     [GeneratedRegex($@"^#(?:{QueryOrFragmentChar})+\z", RegexOptions.Compiled)]
     private static partial Regex RelativeFragmentRegex();
 
-    // RFC 3986 absolute URI: scheme ":" then URI characters, with "[" "]" (IP literals) only
-    // before the fragment and at most one "#".
-    [GeneratedRegex($@"^[A-Za-z][A-Za-z0-9+.\-]*:(?:[{Unreserved}{SubDelims}:@/?\[\]]|{PctEncoded})*(?:#(?:{QueryOrFragmentChar})*)?\z", RegexOptions.Compiled)]
+    // RFC 3986 absolute URI: scheme ":" hier-part [ "?" query ] [ "#" fragment ]. hier-part is
+    // "//" authority path-abempty, or a path. "[" and "]" appear only around an IP-literal host.
+    private const string PChar = $@"[{Unreserved}{SubDelims}:@]|{PctEncoded}";
+    private const string Authority =
+        $@"//(?:(?:[{Unreserved}{SubDelims}:]|{PctEncoded})*@)?" +
+        $@"(?:\[[{Unreserved}{SubDelims}:]+\]|(?:[{Unreserved}{SubDelims}]|{PctEncoded})*)(?::[0-9]*)?";
+
+    [GeneratedRegex($@"^[A-Za-z][A-Za-z0-9+.\-]*:(?:{Authority}(?:/(?:{PChar})*)*|(?:{PChar}|/)*)(?:\?(?:{QueryOrFragmentChar})*)?(?:#(?:{QueryOrFragmentChar})*)?\z", RegexOptions.Compiled)]
     private static partial Regex AbsoluteUriRegex();
 
     /// <summary>
@@ -59,9 +64,10 @@ public static partial class DidParser
     internal static bool IsRelativeFragment(string? value)
         => !string.IsNullOrEmpty(value) && RelativeFragmentRegex().IsMatch(value);
 
-    // NetDid's documented shorthand (issue #136): a bare id with no ':' and no '#', such as
-    // "files" or "key-1", stands for "#files". It uses the fragment grammar without ':'.
-    [GeneratedRegex($@"^(?:[{Unreserved}{SubDelims}@/?]|{PctEncoded})+\z", RegexOptions.Compiled)]
+    // NetDid's documented shorthand (issue #136): a bare id such as "files" or "key-1" stands for
+    // "#files". It is one segment without ':', '/', '?' or '#', so it can never be confused with a
+    // real RFC 3986 relative reference ("//host/x", "/files", "?service=x", "a/b").
+    [GeneratedRegex($@"^(?:[{Unreserved}{SubDelims}@]|{PctEncoded})+\z", RegexOptions.Compiled)]
     private static partial Regex BareShorthandRegex();
 
     /// <summary>Whether <paramref name="value"/> is the bare-id shorthand for "#value".</summary>

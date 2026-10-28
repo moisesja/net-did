@@ -317,7 +317,7 @@ public sealed class DefaultDidUrlDereferencer : IDidUrlDereferencer
             if (entries is null) return null;
 
             // Check for embedded VM in the specified relationship
-            var embedded = FindEmbeddedVmByFragment(entries, fragment);
+            var embedded = FindEmbeddedVmByFragment(entries, doc.Id.Value, fragment);
             if (embedded is not null) return embedded;
 
             // Check for referenced VM by matching fragment in the relationship
@@ -326,15 +326,10 @@ public sealed class DefaultDidUrlDereferencer : IDidUrlDereferencer
                 foreach (var entry in entries)
                 {
                     if (!entry.IsReference) continue;
-                    var vm = FindVmByFragment(doc.VerificationMethod, fragment);
-                    if (vm is not null)
-                    {
-                        // Verify the reference actually points to this VM
-                        var refFragment = entry.Reference!.Contains('#')
-                            ? entry.Reference[(entry.Reference.IndexOf('#') + 1)..]
-                            : entry.Reference;
-                        if (refFragment == fragment) return vm;
-                    }
+                    var vm = FindVmByFragment(doc.VerificationMethod, doc.Id.Value, fragment);
+                    // Verify the reference actually points to this VM (same DID, same fragment)
+                    if (vm is not null && IsSameId(entry.Reference!, doc.Id.Value, fragment))
+                        return vm;
                 }
             }
 
@@ -344,55 +339,49 @@ public sealed class DefaultDidUrlDereferencer : IDidUrlDereferencer
         // Search top-level verification methods
         if (doc.VerificationMethod is not null)
         {
-            var vm = FindVmByFragment(doc.VerificationMethod, fragment);
+            var vm = FindVmByFragment(doc.VerificationMethod, doc.Id.Value, fragment);
             if (vm is not null) return vm;
         }
 
         // Search embedded verification methods in all relationship arrays
-        var embeddedVm = FindEmbeddedVmByFragment(doc.Authentication, fragment)
-            ?? FindEmbeddedVmByFragment(doc.AssertionMethod, fragment)
-            ?? FindEmbeddedVmByFragment(doc.KeyAgreement, fragment)
-            ?? FindEmbeddedVmByFragment(doc.CapabilityInvocation, fragment)
-            ?? FindEmbeddedVmByFragment(doc.CapabilityDelegation, fragment);
+        var embeddedVm = FindEmbeddedVmByFragment(doc.Authentication, doc.Id.Value, fragment)
+            ?? FindEmbeddedVmByFragment(doc.AssertionMethod, doc.Id.Value, fragment)
+            ?? FindEmbeddedVmByFragment(doc.KeyAgreement, doc.Id.Value, fragment)
+            ?? FindEmbeddedVmByFragment(doc.CapabilityInvocation, doc.Id.Value, fragment)
+            ?? FindEmbeddedVmByFragment(doc.CapabilityDelegation, doc.Id.Value, fragment);
         if (embeddedVm is not null) return embeddedVm;
 
         // Search services
         if (doc.Service is not null)
         {
-            var svc = doc.Service.FirstOrDefault(s =>
-            {
-                var hashIndex = s.Id.IndexOf('#');
-                var svcFragment = hashIndex >= 0 ? s.Id[(hashIndex + 1)..] : s.Id;
-                return svcFragment == fragment;
-            });
+            var svc = doc.Service.FirstOrDefault(s => IsSameId(s.Id, doc.Id.Value, fragment));
             if (svc is not null) return svc;
         }
 
         return null;
     }
 
+    // "#x", the bare shorthand "x" and "<did>#x" name the same resource; an id that belongs to
+    // another DID does not, even when its fragment matches (issue #145). One normalization with
+    // the ?service= lookup and duplicate-id detection.
+    private static bool IsSameId(string id, string? documentDid, string fragment)
+        => DidParser.ResolveRelativeId(id, documentDid) == DidParser.ResolveRelativeId("#" + fragment, documentDid);
+
     private static VerificationMethod? FindVmByFragment(
-        IReadOnlyList<VerificationMethod> methods, string fragment)
+        IReadOnlyList<VerificationMethod> methods, string? documentDid, string fragment)
     {
-        return methods.FirstOrDefault(v =>
-        {
-            var hashIndex = v.Id.IndexOf('#');
-            var vmFragment = hashIndex >= 0 ? v.Id[(hashIndex + 1)..] : v.Id;
-            return vmFragment == fragment;
-        });
+        return methods.FirstOrDefault(v => IsSameId(v.Id, documentDid, fragment));
     }
 
     private static VerificationMethod? FindEmbeddedVmByFragment(
-        IReadOnlyList<VerificationRelationshipEntry>? entries, string fragment)
+        IReadOnlyList<VerificationRelationshipEntry>? entries, string? documentDid, string fragment)
     {
         if (entries is null) return null;
         foreach (var entry in entries)
         {
             if (!entry.IsReference && entry.EmbeddedMethod is not null)
             {
-                var hashIndex = entry.EmbeddedMethod.Id.IndexOf('#');
-                var vmFragment = hashIndex >= 0 ? entry.EmbeddedMethod.Id[(hashIndex + 1)..] : entry.EmbeddedMethod.Id;
-                if (vmFragment == fragment) return entry.EmbeddedMethod;
+                if (IsSameId(entry.EmbeddedMethod.Id, documentDid, fragment)) return entry.EmbeddedMethod;
             }
         }
         return null;

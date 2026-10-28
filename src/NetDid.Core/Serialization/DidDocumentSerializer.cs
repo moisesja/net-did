@@ -72,6 +72,15 @@ public static class DidDocumentSerializer
     }
 
     /// <summary>
+    /// Method-internal producer check (issue #145): the same rules Serialize enforces before
+    /// writing (null entries, DID Core id and URI syntax, unique service ids, verification-method
+    /// controllers), for a method that builds a document without serializing it (did:peer:2),
+    /// so it never creates or resolves a document that NetDid could not serialize.
+    /// </summary>
+    internal static void ValidateForProduction(DidDocument doc)
+        => RequireVerificationMethodControllersForProduction(SnapshotForSerialization(doc));
+
+    /// <summary>
     /// Produce a DID document that MAY contain verification methods without a <c>controller</c>.
     /// Method-internal counterpart to <see cref="DeserializeAllowingIncompleteVerificationMethods"/>,
     /// used only for did:peer:4's pre-contextualization template (its controllers are derived from
