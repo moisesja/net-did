@@ -265,6 +265,43 @@ public class EthrDocumentBuilderTests
         doc.Service.Should().BeNull();
     }
 
+    // F7 (final pass): the reference resolver only adds names matching
+    // ^did/(pub|svc)/(\w+)(/(\w+))?(/(\w+))?$, typed by the first segment, but counts every
+    // did/svc/ event.
+    [Fact]
+    public void Issue145_Build_ServiceNameOutsideReferenceGrammar_IsCountedButNotAdded()
+    {
+        var future = (ulong)(Now.ToUnixTimeSeconds() + 3600);
+        var url = System.Text.Encoding.UTF8.GetBytes("https://agent.example.com/api");
+        var events = new List<Erc1056Event>
+        {
+            new AttributeChangedEvent(Address, "did/svc/Linked-Domains", url, future, 0, 20),
+            new AttributeChangedEvent(Address, "did/svc/", url, future, 0, 21),
+            new AttributeChangedEvent(Address, "did/svc/Agent/x/y", url, future, 0, 22)
+        };
+
+        var doc = EthrDocumentBuilder.Build(Did, MakeIdentifier(), ChainId, events, Now, false);
+
+        doc.Service.Should().ContainSingle();
+        doc.Service![0].Type.Should().Be("Agent");
+        doc.Service[0].Id.Should().EndWith("#service-3", "skipped did/svc events still count");
+    }
+
+    // F8: JSON.parse keeps the LAST value of a duplicate member, at its first position.
+    [Fact]
+    public void Issue145_Build_JsonServiceValueWithDuplicateMembers_KeepsTheLastValue()
+    {
+        var doc = BuildWithServiceValue(System.Text.Encoding.UTF8.GetBytes(
+            """{"uri":"https://x.example","uri":"https://y.example","m":{"b":1,"b":2}}"""));
+
+        var map = doc.Service![0].ServiceEndpoint.Map!;
+        map["uri"].GetString().Should().Be("https://y.example");
+        map["m"].GetProperty("b").GetInt32().Should().Be(2);
+        var json = NetDid.Core.Serialization.DidDocumentSerializer.Serialize(doc);
+        var again = () => NetDid.Core.Serialization.DidDocumentSerializer.Deserialize(json);
+        again.Should().NotThrow("the published map carries no duplicate members");
+    }
+
     // ── Secp256k1 key attribute ───────────────────────────────────────────────
 
     [Fact]

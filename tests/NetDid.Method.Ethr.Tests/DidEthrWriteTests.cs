@@ -561,6 +561,51 @@ public class DidEthrWriteTests
     }
 
     [Fact]
+    public async Task Issue145_Update_ServiceTypeOutsideReferenceGrammar_ThrowsBeforeAnyRpc()
+    {
+        // ethr-did-resolver only adds did/svc/<\w+> names, so this service would never resolve.
+        var chain = new EmulatedEthereumChain(Registry);
+        var owner = NewActor();
+
+        var act = () => MethodFor(chain).UpdateAsync($"did:ethr:sepolia:{owner.Address}",
+            new DidEthrUpdateOptions
+            {
+                ControllerKey = owner.Signer,
+                AddServices   = [new DidEthrServiceAttribute { ServiceType = "Linked-Domains", ServiceEndpoint = "https://x.example" }],
+            });
+
+        await act.Should().ThrowAsync<ArgumentException>();
+        chain.CurrentBlockNumber.Should().Be(0, "nothing may be broadcast");
+    }
+
+    public static TheoryData<string, byte[]> Issue145UnresolvableServiceAttributes => new()
+    {
+        { "did/svc/X", "not a uri"u8.ToArray() },
+        { "did/svc/X", [.. "https://a.example/"u8.ToArray(), 0xED, 0xA0, 0x80] },
+        { "did/svc/Linked-Domains", "https://a.example"u8.ToArray() },
+    };
+
+    [Theory]
+    [MemberData(nameof(Issue145UnresolvableServiceAttributes))]
+    public async Task Issue145_Update_RawServiceAttributeTheResolverWouldDrop_ThrowsBeforeAnyRpc(string name, byte[] value)
+    {
+        // F9: AddAttributes is the raw path, but a did/svc/ name is still a service and must meet
+        // the same rules as AddServices.
+        var chain = new EmulatedEthereumChain(Registry);
+        var owner = NewActor();
+
+        var act = () => MethodFor(chain).UpdateAsync($"did:ethr:sepolia:{owner.Address}",
+            new DidEthrUpdateOptions
+            {
+                ControllerKey = owner.Signer,
+                AddAttributes = [new DidEthrAttribute { Name = name, Value = value }],
+            });
+
+        await act.Should().ThrowAsync<ArgumentException>();
+        chain.CurrentBlockNumber.Should().Be(0, "nothing may be broadcast");
+    }
+
+    [Fact]
     public async Task Issue145_Update_NullServiceEndpoint_ThrowsBeforeAnyRpc()
     {
         // Final adversarial pass: a null endpoint leaked a raw ArgumentNullException (parameter 's')

@@ -2,6 +2,7 @@ using System.Text;
 using AwesomeAssertions;
 using NetCrypto;
 using NetDid.Core.Model;
+using NetDid.Core.Serialization;
 using NetDid.Method.WebVh.Model;
 
 namespace NetDid.Method.WebVh.Tests;
@@ -565,6 +566,56 @@ public class Issue145UnpairedSurrogateMemberNameTests
                         ["note"] = document.RootElement.Clone()
                     }
                 }
+            ]
+        });
+
+        await act.Should().ThrowAsync<ArgumentException>();
+    }
+
+    // F3 (final pass): did.json projects the document onto did:web. A service already in the
+    // did:web form must count as the #whois override there, not get a second, implicit #whois.
+    [Fact]
+    public async Task Issue145_Create_DidWebFormWhoisOverride_ProjectsOneWhois()
+    {
+        var signer = new KeyPairSigner(_keyGen.Generate(KeyType.Ed25519), _crypto);
+        var (method, _) = CreateMethod();
+
+        var created = await method.CreateAsync(new DidWebVhCreateOptions
+        {
+            Domain = "example.com",
+            UpdateKey = signer,
+            Services =
+            [
+                new Service
+                {
+                    Id = "did:web:example.com#whois",
+                    Type = "LinkedVerifiablePresentation",
+                    ServiceEndpoint = ServiceEndpointValue.FromUri("https://example.com/custom-whois.vp")
+                }
+            ]
+        });
+
+        var didJson = DidDocumentSerializer.Deserialize((string)created.Artifacts![DidWebVhArtifacts.DidJson]);
+        didJson.Service!.Count(service => service.Id.EndsWith("#whois", StringComparison.Ordinal))
+            .Should().Be(1);
+    }
+
+    [Fact]
+    public async Task Issue145_Create_ServicesCollidingInDidJson_ThrowsArgumentException()
+    {
+        // "did:web:example.com#x" and "#x" are distinct in the did:webvh document but name the
+        // same service in the parallel did.json, which must never carry duplicate ids.
+        var signer = new KeyPairSigner(_keyGen.Generate(KeyType.Ed25519), _crypto);
+        var (method, _) = CreateMethod();
+
+        var act = () => method.CreateAsync(new DidWebVhCreateOptions
+        {
+            Domain = "example.com",
+            UpdateKey = signer,
+            Services =
+            [
+                new Service { Id = "did:web:example.com#x", Type = "A", ServiceEndpoint = ServiceEndpointValue.FromUri("https://a.example") },
+                new Service { Id = "#x", Type = "B", ServiceEndpoint = ServiceEndpointValue.FromUri("https://b.example") }
             ]
         });
 

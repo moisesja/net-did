@@ -1384,5 +1384,46 @@ public class Issue145UnpairedSurrogateMemberNameTests
     }
 
     #endregion
+
+    #region Issue145_IdAndUriSyntax_FinalPass
+
+    // F5: "[" and "]" are only allowed around an IP-literal host (RFC 3986 §3.2.2).
+    [Theory]
+    [InlineData("https://ex[ample.com", false)]
+    [InlineData("https://example.com/a[b]", false)]
+    [InlineData("http://[::1", false)]
+    [InlineData("http://[::1]:8080/x", true)]
+    [InlineData("https://user:pw@host.example:443/p?q=1#f", true)]
+    [InlineData("didcomm:transport/queue", true)]
+    [InlineData("urn:uuid:6e8bc430-9c3a-11d9-9669-0800200c9a66", true)]
+    [InlineData("mailto:a@b.example", true)]
+    public void Issue145_IsAbsoluteUri_BracketsOnlyAroundAnIpLiteralHost(string value, bool expected)
+    {
+        DidParser.IsAbsoluteUri(value).Should().Be(expected);
+    }
+
+    // F6: the bare shorthand must not swallow real RFC 3986 relative references.
+    [Theory]
+    [InlineData("//evil.example/x", false)]
+    [InlineData("/files", false)]
+    [InlineData("?service=x", false)]
+    [InlineData("a/b", false)]
+    [InlineData("files", true)]
+    [InlineData("key-1", true)]
+    public void Issue145_IsBareShorthand_RejectsRelativeReferences(string value, bool expected)
+    {
+        DidParser.IsBareShorthand(value).Should().Be(expected);
+    }
+
+    [Fact]
+    public void Issue145_Deserialize_NetworkPathServiceId_ThrowsJsonException()
+    {
+        var act = () => DidDocumentSerializer.Deserialize(
+            Doctor("\"id\": \"did:example:123#svc\",", "\"id\": \"//evil.example/x\","));
+
+        act.Should().Throw<JsonException>();
+    }
+
+    #endregion
 }
 

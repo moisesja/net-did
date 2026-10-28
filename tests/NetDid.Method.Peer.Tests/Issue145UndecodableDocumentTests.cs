@@ -524,5 +524,47 @@ public class Issue145UndecodableDocumentTests
 
         await act.Should().ThrowAsync<ArgumentException>();
     }
+
+    // ── Final pass on the id/URI round ──────────────────────────────────────────────
+
+    // F1: "service" (bare) and the auto-generated "#service" name the same service.
+    [Fact]
+    public async Task Issue145_Numalgo2Resolve_BareAndAutoServiceIdCollide_FailsClosed()
+    {
+        var resolved = await _method.ResolveAsync(await Peer2WithServiceBlocks(
+            """{"id":"service","t":"dm","s":"https://evil.example"}""",
+            """{"t":"dm","s":"https://good.example"}"""));
+
+        resolved.DidDocument.Should().BeNull();
+        resolved.ResolutionMetadata.Error.Should().Be("invalidDid");
+    }
+
+    // F2: did:peer:2 Create and Resolve did not apply the DID Core id/URI rules, so NetDid could
+    // mint (or resolve) a DID whose document it cannot serialize.
+    [Theory]
+    [InlineData("#a b", "https://a.example")]
+    [InlineData("#svc", "not a uri")]
+    public async Task Issue145_Numalgo2Create_InvalidServiceIdOrEndpoint_ThrowsArgumentException(string id, string endpoint)
+    {
+        var act = () => _method.CreateAsync(new DidPeerCreateOptions
+        {
+            Numalgo = PeerNumalgo.Two,
+            Keys = [AuthenticationKey()],
+            Services = [new Service { Id = id, Type = "A", ServiceEndpoint = ServiceEndpointValue.FromUri(endpoint) }]
+        });
+
+        await act.Should().ThrowAsync<ArgumentException>();
+    }
+
+    [Theory]
+    [InlineData("""{"t":"dm","s":"not a uri"}""")]
+    [InlineData("""{"id":"","t":"dm","s":"https://a.example"}""")]
+    public async Task Issue145_Numalgo2Resolve_InvalidServiceIdOrEndpoint_FailsClosed(string block)
+    {
+        var resolved = await _method.ResolveAsync(await Peer2WithServiceBlocks(block));
+
+        resolved.DidDocument.Should().BeNull();
+        resolved.ResolutionMetadata.Error.Should().Be("invalidDid");
+    }
 }
 

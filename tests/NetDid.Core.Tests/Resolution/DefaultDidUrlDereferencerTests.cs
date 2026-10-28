@@ -94,6 +94,42 @@ public class DefaultDidUrlDereferencerTests
         result.ContentStream.Should().BeOfType<Service>();
     }
 
+    // Issue #145 (final pass F4): fragment lookup matched by fragment only, so a service or
+    // verification method of ANOTHER DID that shares the fragment could be returned.
+    [Fact]
+    public async Task Issue145_DereferenceAsync_Fragment_IgnoresIdsOfOtherDids()
+    {
+        var doc = new DidDocument
+        {
+            Id = new Did("did:example:123"),
+            VerificationMethod =
+            [
+                new VerificationMethod
+                {
+                    Id = "did:example:other#k", Type = "Multikey", Controller = new Did("did:example:other"),
+                    PublicKeyMultibase = "z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK"
+                },
+                new VerificationMethod
+                {
+                    Id = "#k", Type = "Multikey", Controller = new Did("did:example:123"),
+                    PublicKeyMultibase = "z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK"
+                }
+            ],
+            Service =
+            [
+                new Service { Id = "did:example:other#x", Type = "Evil", ServiceEndpoint = ServiceEndpointValue.FromUri("https://evil.example") },
+                new Service { Id = "#x", Type = "Good", ServiceEndpoint = ServiceEndpointValue.FromUri("https://good.example") }
+            ]
+        };
+        SetupResolverSuccess(doc);
+
+        var service = await _dereferencer.DereferenceAsync("did:example:123#x");
+        var method = await _dereferencer.DereferenceAsync("did:example:123#k");
+
+        ((Service)service.ContentStream!).Type.Should().Be("Good");
+        ((VerificationMethod)method.ContentStream!).Id.Should().Be("#k");
+    }
+
     [Fact]
     public async Task DereferenceAsync_Fragment_NotFound_ReturnsError()
     {
