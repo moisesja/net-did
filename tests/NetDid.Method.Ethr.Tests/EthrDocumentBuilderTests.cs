@@ -172,6 +172,76 @@ public class EthrDocumentBuilderTests
         doc.Service[0].ServiceEndpoint.Uri.Should().Be(url);
     }
 
+    // ── Issue #145: service endpoint decoding matches the reference resolver ─────
+    //
+    // ethr-did-resolver decodes the value as strict UTF-8 (skipping the service otherwise),
+    // then tries JSON.parse, falling back to the raw string. NetDid decoded lossily and kept every
+    // value as a URI string. DID Core §5.4 requires URI strings, maps, or sets of them, so a value
+    // that fits none of these drops THAT service only (the existing degrade policy).
+
+    private static NetDid.Core.Model.DidDocument BuildWithServiceValue(byte[] value)
+    {
+        var future = (ulong)(Now.ToUnixTimeSeconds() + 3600);
+        var events = new List<Erc1056Event>
+        {
+            new AttributeChangedEvent(Address, "did/svc/AgentService", value, future, 0, 20)
+        };
+        return EthrDocumentBuilder.Build(Did, MakeIdentifier(), ChainId, events, Now, false);
+    }
+
+    [Fact]
+    public void Issue145_Build_ServiceValueIllFormedUtf8_DropsTheService()
+    {
+        byte[] value = [.. "https://a.example/"u8.ToArray(), 0xED, 0xA0, 0x80];
+
+        BuildWithServiceValue(value).Service.Should().BeNull("ill-formed UTF-8 must not become U+FFFD");
+    }
+
+    [Theory]
+    [InlineData("not a uri")]
+    [InlineData("123")]
+    [InlineData("true")]
+    [InlineData("[]")]
+    [InlineData("[[\"https://a.example\"]]")]
+    public void Issue145_Build_ServiceValueNotRepresentable_DropsTheService(string value)
+    {
+        var doc = BuildWithServiceValue(System.Text.Encoding.UTF8.GetBytes(value));
+
+        doc.Service.Should().BeNull();
+    }
+
+    [Fact]
+    public void Issue145_Build_JsonObjectServiceValue_BecomesAMap()
+    {
+        var doc = BuildWithServiceValue(System.Text.Encoding.UTF8.GetBytes(
+            """{"uri":"https://a.example","accept":["didcomm/v2"]}"""));
+
+        doc.Service![0].ServiceEndpoint.IsMap.Should().BeTrue();
+        doc.Service[0].ServiceEndpoint.Map!["uri"].GetString().Should().Be("https://a.example");
+        var serialize = () => NetDid.Core.Serialization.DidDocumentSerializer.Serialize(doc);
+        serialize.Should().NotThrow();
+    }
+
+    [Fact]
+    public void Issue145_Build_JsonArrayServiceValue_BecomesASet()
+    {
+        var doc = BuildWithServiceValue(System.Text.Encoding.UTF8.GetBytes(
+            """["https://a.example",{"uri":"https://b.example"}]"""));
+
+        var endpoint = doc.Service![0].ServiceEndpoint;
+        endpoint.Set.Should().HaveCount(2);
+        endpoint.Set![0].Uri.Should().Be("https://a.example");
+        endpoint.Set[1].IsMap.Should().BeTrue();
+    }
+
+    [Fact]
+    public void Issue145_Build_JsonStringServiceValue_IsTheString()
+    {
+        var doc = BuildWithServiceValue(System.Text.Encoding.UTF8.GetBytes("\"https://a.example\""));
+
+        doc.Service![0].ServiceEndpoint.Uri.Should().Be("https://a.example");
+    }
+
     // ── Secp256k1 key attribute ───────────────────────────────────────────────
 
     [Fact]

@@ -478,5 +478,51 @@ public class Issue145UndecodableDocumentTests
         (await act.Should().ThrowAsync<ArgumentException>())
             .Which.Should().NotBeOfType<ArgumentNullException>();
     }
+
+    // ── Duplicate service ids (DID Core §5.4: producers MUST NOT, consumers MUST error) ──
+
+    private async Task<string> Peer2WithServiceBlocks(params string[] serviceJsons)
+    {
+        var created = await _method.CreateAsync(new DidPeerCreateOptions
+        {
+            Numalgo = PeerNumalgo.Two,
+            Keys = [AuthenticationKey()]
+        });
+        var did = created.Did.Value;
+        foreach (var json in serviceJsons)
+            did += ".S" + Convert.ToBase64String(Encoding.UTF8.GetBytes(json))
+                .TrimEnd('=').Replace('+', '-').Replace('/', '_');
+        return did;
+    }
+
+    [Theory]
+    [InlineData("""{"t":"dm","s":"https://a.example"}""", """{"id":"#service","t":"dm","s":"https://b.example"}""")]
+    [InlineData("""{"id":"#x","t":"dm","s":"https://a.example"}""", """{"id":"#x","t":"dm","s":"https://b.example"}""")]
+    public async Task Issue145_Numalgo2Resolve_DuplicateServiceIds_FailsClosed(string first, string second)
+    {
+        var resolved = await _method.ResolveAsync(await Peer2WithServiceBlocks(first, second));
+
+        resolved.DidDocument.Should().BeNull();
+        resolved.ResolutionMetadata.Error.Should().Be("invalidDid");
+    }
+
+    [Theory]
+    [InlineData("#service", "svc")]
+    [InlineData("#x", "#x")]
+    public async Task Issue145_Numalgo2Create_DuplicateServiceIds_ThrowsArgumentException(string firstId, string secondId)
+    {
+        var act = () => _method.CreateAsync(new DidPeerCreateOptions
+        {
+            Numalgo = PeerNumalgo.Two,
+            Keys = [AuthenticationKey()],
+            Services =
+            [
+                new Service { Id = firstId, Type = "A", ServiceEndpoint = ServiceEndpointValue.FromUri("https://a.example") },
+                new Service { Id = secondId, Type = "B", ServiceEndpoint = ServiceEndpointValue.FromUri("https://b.example") }
+            ]
+        });
+
+        await act.Should().ThrowAsync<ArgumentException>();
+    }
 }
 

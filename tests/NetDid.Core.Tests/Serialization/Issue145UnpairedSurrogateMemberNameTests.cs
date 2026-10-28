@@ -446,8 +446,17 @@ public class Issue145UnpairedSurrogateMemberNameTests
         incomplete.Should().Throw<ArgumentException>();
     }
 
+    // Free-text positions only: an id, reference, endpoint or alsoKnownAs value must be an
+    // RFC 3986 URI (DID Core §3.2, §5.1.3, §5.2, §5.4), where raw non-ASCII is not allowed at all;
+    // Issue145_Serialize_RawNonAsciiInUriPosition_ThrowsArgumentException pins those.
+    public static TheoryData<string> FreeTextPositions => new()
+    {
+        "vm-type", "vm-multibase", "vm-jwk-x", "vm-blockchain", "vm-extension-key",
+        "service-type", "endpoint-map-key", "service-extension-key", "context", "document-extension-key",
+    };
+
     [Theory]
-    [MemberData(nameof(WritePositions))]
+    [MemberData(nameof(FreeTextPositions))]
     public void Issue145_Control_SurrogatePair_SerializesFaithfully(string position)
     {
         const string text = "x\uD83D\uDE00y";
@@ -1227,6 +1236,146 @@ public class Issue145UnpairedSurrogateMemberNameTests
     public void Issue145_Control_RelativeReference_StillValid()
     {
         DidParser.IsValidDidReference("#key-1").Should().BeTrue();
+    }
+
+    #endregion
+
+    #region Issue145_IdAndUriSyntax (DID Core §3.2 / §5.1.3 / §5.2 / §5.4)
+
+    // DID URL path, query and fragment are RFC 3986 components: no raw non-ASCII, no invisible
+    // format characters, no characters outside the RFC 3986 set, and only well-formed %HH.
+    [Theory]
+    [InlineData("did:example:123/a‮b")]
+    [InlineData("did:example:123?q=​")]
+    [InlineData("did:example:123#f﻿")]
+    [InlineData("did:example:123/café")]
+    [InlineData("did:example:123#<script>")]
+    [InlineData("did:example:123/a\"b")]
+    [InlineData("did:example:123/a%zz")]
+    [InlineData("did:example:123/a%4")]
+    [InlineData("did:example:123?q={x}")]
+    [InlineData("did:example:123#a|b")]
+    [InlineData("did:example:123/a\\b")]
+    [InlineData("did:example:123#a`b")]
+    public void Issue145_DidUrl_OutsideRfc3986_IsRejected(string value)
+    {
+        DidParser.ParseDidUrl(value).Should().BeNull();
+        DidParser.IsValidDidReference(value).Should().BeFalse();
+    }
+
+    [Theory]
+    [InlineData("#a‮")]
+    [InlineData("#<x>")]
+    [InlineData("#%zz")]
+    [InlineData("#café")]
+    public void Issue145_RelativeReference_OutsideRfc3986_IsRejected(string reference)
+    {
+        DidParser.IsValidDidReference(reference).Should().BeFalse();
+    }
+
+    [Theory]
+    [InlineData("did:example:123/caf%C3%A9")]
+    [InlineData("did:example:123/a!$&'()*+,=:@~")]
+    [InlineData("did:example:123?versionTime=2024-01-01T00:00:00Z")]
+    [InlineData("did:example:123?service=files&relativeRef=/a%20b")]
+    [InlineData("did:example:123#frag/with?query:and@")]
+    [InlineData("did:example:123;service=files")]
+    [InlineData("did:web:example.com:user:alice/path/to/doc.json")]
+    [InlineData("#key-1")]
+    [InlineData("#z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK")]
+    public void Issue145_Control_Rfc3986DidUrls_StillValid(string value)
+    {
+        DidParser.IsValidDidReference(value).Should().BeTrue();
+    }
+
+    // Consumption: DID Core requires these to be URIs / DID URLs, and §5.4 says a consumer MUST
+    // produce an error for duplicate service ids.
+    public static TheoryData<string, string> InvalidIdentifierShapes => new()
+    {
+        { "\"service\": [{", "\"service\": [{\"id\": \"did:example:123#svc\", \"type\": \"Dup\", \"serviceEndpoint\": \"https://d.example\"}, {" },
+        { "\"service\": [{", "\"service\": [{\"id\": \"#svc\", \"type\": \"Dup\", \"serviceEndpoint\": \"https://d.example\"}, {" },
+        { "\"id\": \"did:example:123#key-1\",", "\"id\": \"key 1\"," },
+        { RootAnchor, "\"authentication\": [\"did:example:123#key 1\"], " + RootAnchor },
+        { RootAnchor, "\"authentication\": [\"did:example:123#k‮\"], " + RootAnchor },
+        { "\"id\": \"did:example:123#svc\",", "\"id\": \"svc with space\"," },
+        { "\"id\": \"did:example:123#svc\",", "\"id\": \"svc\"," },
+        { "\"serviceEndpoint\": \"https://example.com\"", "\"serviceEndpoint\": \"not a uri\"" },
+        { "\"serviceEndpoint\": \"https://example.com\"", "\"serviceEndpoint\": \"/relative/path\"" },
+        { "\"serviceEndpoint\": \"https://example.com\"", "\"serviceEndpoint\": [\"https://a.example\", \"not a uri\"]" },
+        { RootAnchor, "\"alsoKnownAs\": [\"not a uri\"], " + RootAnchor },
+    };
+
+    [Theory]
+    [MemberData(nameof(InvalidIdentifierShapes))]
+    public void Issue145_Deserialize_InvalidIdentifierOrUri_ThrowsJsonException(string find, string replace)
+    {
+        var json = Doctor(find, replace);
+        var utf8 = System.Text.Encoding.UTF8.GetBytes(json);
+
+        var fromString = () => DidDocumentSerializer.Deserialize(json);
+        var fromUtf8 = () => DidDocumentSerializer.Deserialize(utf8.AsSpan());
+
+        fromString.Should().Throw<JsonException>();
+        fromUtf8.Should().Throw<JsonException>();
+    }
+
+    [Theory]
+    [InlineData("\"id\": \"did:example:123#svc\",", "\"id\": \"#svc\",")]
+    [InlineData("\"serviceEndpoint\": \"https://example.com\"", "\"serviceEndpoint\": \"didcomm:transport/queue\"")]
+    [InlineData("\"id\": \"did:example:123\",", "\"alsoKnownAs\": [\"did:web:example.com\", \"https://a.example/b?c=d#e\"], \"id\": \"did:example:123\",")]
+    public void Issue145_Control_ConformantIdentifiers_StillDeserialize(string find, string replace)
+    {
+        var act = () => DidDocumentSerializer.Deserialize(Doctor(find, replace));
+
+        act.Should().NotThrow();
+    }
+
+    // Production: a conforming producer MUST NOT emit these either (§5.4 for duplicates).
+    [Theory]
+    [InlineData("vm-id")]
+    [InlineData("service-id")]
+    [InlineData("endpoint-uri")]
+    [InlineData("endpoint-set-uri")]
+    [InlineData("also-known-as")]
+    [InlineData("relationship-reference")]
+    public void Issue145_Serialize_InvalidIdentifierOrUri_ThrowsArgumentException(string position)
+    {
+        var act = () => DidDocumentSerializer.Serialize(DocumentWith(position, "a b"));
+
+        act.Should().Throw<ArgumentException>();
+    }
+
+    [Theory]
+    [InlineData("vm-id")]
+    [InlineData("service-id")]
+    [InlineData("endpoint-uri")]
+    [InlineData("also-known-as")]
+    [InlineData("relationship-reference")]
+    public void Issue145_Serialize_RawNonAsciiInUriPosition_ThrowsArgumentException(string position)
+    {
+        var act = () => DidDocumentSerializer.Serialize(DocumentWith(position, "x😀y"));
+
+        act.Should().Throw<ArgumentException>("RFC 3986 URIs carry non-ASCII only percent-encoded");
+    }
+
+    [Theory]
+    [InlineData("did:example:123#svc", "did:example:123#svc")]
+    [InlineData("#svc", "did:example:123#svc")]
+    public void Issue145_Serialize_DuplicateServiceIds_ThrowsArgumentException(string first, string second)
+    {
+        var doc = new DidDocument
+        {
+            Id = new Did(Did),
+            Service =
+            [
+                new Service { Id = first, Type = "A", ServiceEndpoint = ServiceEndpointValue.FromUri("https://a.example") },
+                new Service { Id = second, Type = "B", ServiceEndpoint = ServiceEndpointValue.FromUri("https://b.example") }
+            ]
+        };
+
+        var act = () => DidDocumentSerializer.Serialize(doc);
+
+        act.Should().Throw<ArgumentException>();
     }
 
     #endregion

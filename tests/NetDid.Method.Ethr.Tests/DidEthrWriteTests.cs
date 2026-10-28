@@ -516,6 +516,50 @@ public class DidEthrWriteTests
         chain.CurrentBlockNumber.Should().Be(0);
     }
 
+    [Theory]
+    [InlineData("not a uri")]
+    [InlineData("123")]
+    public async Task Issue145_Update_UnrepresentableServiceEndpoint_ThrowsBeforeAnyRpc(string endpoint)
+    {
+        // The resolver drops a service whose value is neither a URI nor a JSON map or set of
+        // them (DID Core §5.4), so writing one would publish a service nobody can resolve.
+        var chain = new EmulatedEthereumChain(Registry);
+        var owner = NewActor();
+
+        var act = () => MethodFor(chain).UpdateAsync($"did:ethr:sepolia:{owner.Address}",
+            new DidEthrUpdateOptions
+            {
+                ControllerKey = owner.Signer,
+                AddServices   = [new DidEthrServiceAttribute { ServiceType = "X", ServiceEndpoint = endpoint }],
+            });
+
+        await act.Should().ThrowAsync<ArgumentException>();
+        chain.CurrentBlockNumber.Should().Be(0, "nothing may be broadcast");
+    }
+
+    [Fact]
+    public async Task Issue145_Control_UpdateWithJsonMapServiceEndpoint_ResolvesAsAMap()
+    {
+        var chain = new EmulatedEthereumChain(Registry);
+        var owner = NewActor();
+
+        var result = await MethodFor(chain).UpdateAsync($"did:ethr:sepolia:{owner.Address}",
+            new DidEthrUpdateOptions
+            {
+                ControllerKey = owner.Signer,
+                AddServices   =
+                [
+                    new DidEthrServiceAttribute
+                    {
+                        ServiceType = "Messaging", ServiceEndpoint = """{"uri":"https://hub.example"}""",
+                    },
+                ],
+            });
+
+        result.DidDocument.Service.Should().ContainSingle()
+            .Which.ServiceEndpoint.IsMap.Should().BeTrue();
+    }
+
     [Fact]
     public async Task Issue145_Update_NullServiceEndpoint_ThrowsBeforeAnyRpc()
     {
