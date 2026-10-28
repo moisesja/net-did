@@ -369,8 +369,10 @@ public static class LogEntrySerializer
             doc = JsonDocument.Parse(
                 json, new JsonDocumentOptions { AllowDuplicateProperties = false });
         }
-        catch (JsonException ex)
+        catch (Exception ex) when (ex is JsonException or InvalidOperationException)
         {
+            // Duplicate rejection decodes every member name during Parse, so an unpaired
+            // surrogate escape in a NAME throws InvalidOperationException here (issue #145).
             throw new FormatException("did:webvh log entry is not valid JSON.", ex);
         }
 
