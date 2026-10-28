@@ -516,6 +516,26 @@ public class DidEthrWriteTests
         chain.CurrentBlockNumber.Should().Be(0);
     }
 
+    [Fact]
+    public async Task Issue145_Update_NullServiceEndpoint_ThrowsBeforeAnyRpc()
+    {
+        // Final adversarial pass: a null endpoint leaked a raw ArgumentNullException (parameter 's')
+        // from Encoding.UTF8.GetBytes.
+        var chain = new EmulatedEthereumChain(Registry);
+        var owner = NewActor();
+
+        var act = () => MethodFor(chain).UpdateAsync($"did:ethr:sepolia:{owner.Address}",
+            new DidEthrUpdateOptions
+            {
+                ControllerKey = owner.Signer,
+                AddServices   = [new DidEthrServiceAttribute { ServiceType = "X", ServiceEndpoint = null! }],
+            });
+
+        (await act.Should().ThrowAsync<ArgumentException>())
+            .Which.Should().NotBeOfType<ArgumentNullException>();
+        chain.CurrentBlockNumber.Should().Be(0, "nothing may be broadcast");
+    }
+
     [Theory]
     [InlineData(true)]
     [InlineData(false)]

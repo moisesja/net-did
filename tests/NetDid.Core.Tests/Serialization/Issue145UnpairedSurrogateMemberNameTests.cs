@@ -459,4 +459,226 @@ public class Issue145UnpairedSurrogateMemberNameTests
     }
 
     #endregion
+
+    #region Issue145_PrReview1 (PR #149 review 5684631583 + final adversarial pass)
+
+    // ── Nested serviceEndpoint sets: the model now rejects the shape DID Core §5.4 forbids ──
+
+    [Fact]
+    public void Issue145_FromSet_NestedSet_ThrowsArgumentException()
+    {
+        var act = () => ServiceEndpointValue.FromSet(
+            [ServiceEndpointValue.FromSet([ServiceEndpointValue.FromUri("https://example.com")])]);
+
+        act.Should().Throw<ArgumentException>(
+            "a set may hold only strings and maps (W3C DID Core §5.4); the reader rejects a nested set, " +
+            "so a producer must never be able to build one");
+    }
+
+    [Fact]
+    public void Issue145_FromSet_NullEntry_ThrowsArgumentException()
+    {
+        var act = () => ServiceEndpointValue.FromSet([ServiceEndpointValue.FromUri("https://a.example"), null!]);
+
+        act.Should().Throw<ArgumentException>();
+    }
+
+    [Fact]
+    public void Issue145_FromSet_SnapshotsItsInput()
+    {
+        var source = new List<ServiceEndpointValue> { ServiceEndpointValue.FromUri("https://a.example") };
+        var value = ServiceEndpointValue.FromSet(source);
+
+        source.Add(ServiceEndpointValue.FromUri("https://b.example"));
+
+        value.Set.Should().HaveCount(1, "a validated set must not change after construction");
+    }
+
+    [Fact]
+    public void Issue145_Control_FlatMixedSet_RoundTrips()
+    {
+        var doc = new DidDocument
+        {
+            Id = new Did(Did),
+            Service =
+            [
+                new Service
+                {
+                    Id = $"{Did}#svc",
+                    Type = "Example",
+                    ServiceEndpoint = ServiceEndpointValue.FromSet(
+                    [
+                        ServiceEndpointValue.FromUri("https://a.example"),
+                        ServiceEndpointValue.FromMap(new Dictionary<string, JsonElement>
+                        {
+                            ["uri"] = JsonSerializer.SerializeToElement("https://b.example")
+                        })
+                    ])
+                }
+            ]
+        };
+
+        var again = DidDocumentSerializer.Deserialize(DidDocumentSerializer.Serialize(doc));
+
+        again.Service![0].ServiceEndpoint.Set.Should().HaveCount(2);
+        again.Service[0].ServiceEndpoint.Set![1].IsMap.Should().BeTrue();
+    }
+
+    // ── Caller JsonElement contents: Utf8JsonWriter replaced ill-formed text with U+FFFD ──
+
+    private static JsonElement ElementFromBytes(byte[] utf8)
+    {
+        using var document = JsonDocument.Parse(utf8);
+        return document.RootElement.Clone();
+    }
+
+    private static byte[] Bytes(string before, byte[] raw, string after) =>
+        [.. System.Text.Encoding.ASCII.GetBytes(before), .. raw, .. System.Text.Encoding.ASCII.GetBytes(after)];
+
+    private static JsonElement HostileElement(string kind) => kind switch
+    {
+        // A WTF-8 lone surrogate inside a string value (System.Text.Json does not validate it on parse).
+        "wtf8-value" => ElementFromBytes(Bytes("\"a", [0xED, 0xA0, 0x80], "b\"")),
+        // An ill-formed byte inside a nested member name.
+        "wtf8-name" => ElementFromBytes(Bytes("{\"ok\":{\"", [0xFF], "\":1}}")),
+        // An escaped lone surrogate.
+        "escaped-surrogate" => ElementFromBytes(System.Text.Encoding.ASCII.GetBytes("[\"a\\uD800b\"]")),
+        // A well-formed escaped surrogate pair (positive control).
+        "surrogate-pair" => ElementFromBytes(System.Text.Encoding.ASCII.GetBytes("{\"k\\uD83D\\uDE00\":\"v\\uD83D\\uDE00\"}")),
+        _ => throw new ArgumentOutOfRangeException(nameof(kind)),
+    };
+
+    public static TheoryData<string, string> ElementPositions
+    {
+        get
+        {
+            var data = new TheoryData<string, string>();
+            foreach (var position in new[] { "document-extension", "vm-extension", "service-extension", "context", "endpoint-map" })
+                foreach (var kind in new[] { "wtf8-value", "wtf8-name", "escaped-surrogate" })
+                    data.Add(position, kind);
+            return data;
+        }
+    }
+
+    private static DidDocument DocumentWithElement(string position, JsonElement element)
+    {
+        var vm = new VerificationMethod
+        {
+            Id = $"{Did}#key-1",
+            Type = "Multikey",
+            Controller = new Did(Did),
+            PublicKeyMultibase = "z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK",
+            AdditionalProperties = position == "vm-extension"
+                ? new Dictionary<string, JsonElement> { ["x-ext"] = element }
+                : null,
+        };
+        var service = new Service
+        {
+            Id = $"{Did}#svc",
+            Type = "Example",
+            ServiceEndpoint = position == "endpoint-map"
+                ? ServiceEndpointValue.FromMap(new Dictionary<string, JsonElement> { ["uri"] = element })
+                : ServiceEndpointValue.FromUri("https://example.com"),
+            AdditionalProperties = position == "service-extension"
+                ? new Dictionary<string, JsonElement> { ["x-ext"] = element }
+                : null,
+        };
+        return new DidDocument
+        {
+            Id = new Did(Did),
+            Context = position == "context" ? ["https://www.w3.org/ns/did/v1", element] : null,
+            VerificationMethod = [vm],
+            Service = [service],
+            AdditionalProperties = position == "document-extension"
+                ? new Dictionary<string, JsonElement> { ["x-ext"] = element }
+                : null,
+        };
+    }
+
+    [Theory]
+    [MemberData(nameof(ElementPositions))]
+    public void Issue145_Serialize_UndecodableJsonElement_ThrowsArgumentException(string position, string kind)
+    {
+        var doc = DocumentWithElement(position, HostileElement(kind));
+
+        var jsonLd = () => DidDocumentSerializer.Serialize(doc);
+        var utf8 = () => DidDocumentSerializer.SerializeToUtf8(doc);
+        var incomplete = () => DidDocumentSerializer.SerializeAllowingIncompleteVerificationMethods(
+            doc, DidContentTypes.JsonLd);
+        var json = () => DidDocumentSerializer.Serialize(doc, DidContentTypes.Json);
+
+        jsonLd.Should().Throw<ArgumentException>();
+        utf8.Should().Throw<ArgumentException>();
+        incomplete.Should().Throw<ArgumentException>();
+        if (position == "context")
+            json.Should().NotThrow("plain JSON omits @context, so nothing is written or altered");
+        else
+            json.Should().Throw<ArgumentException>();
+    }
+
+    [Theory]
+    [InlineData("document-extension")]
+    [InlineData("vm-extension")]
+    [InlineData("service-extension")]
+    [InlineData("context")]
+    [InlineData("endpoint-map")]
+    public void Issue145_Control_SurrogatePairJsonElement_SerializesFaithfully(string position)
+    {
+        var serialized = DidDocumentSerializer.Serialize(
+            DocumentWithElement(position, HostileElement("surrogate-pair")));
+
+        serialized.Should().NotContain("\\uFFFD").And.NotContain("\uFFFD");
+    }
+
+    // ── @context entries of other types were written via ToString() ──
+
+    [Fact]
+    public void Issue145_Serialize_ContextEntryOfOtherType_ThrowsArgumentException()
+    {
+        // ToString() on a JsonObject both replaces lone surrogates before any check and writes the
+        // object as a string. Only strings and JsonElement values are representable.
+        var doc = new DidDocument
+        {
+            Id = new Did(Did),
+            Context = ["https://www.w3.org/ns/did/v1", new System.Text.Json.Nodes.JsonObject { ["@vocab"] = "https://e.example/" }]
+        };
+
+        var act = () => DidDocumentSerializer.Serialize(doc);
+
+        act.Should().Throw<ArgumentException>();
+    }
+
+    // ── Reserved names in Service.AdditionalProperties produced a duplicate member ──
+
+    [Theory]
+    [InlineData("id")]
+    [InlineData("type")]
+    [InlineData("serviceEndpoint")]
+    public void Issue145_Serialize_ServiceExtensionWithReservedName_ThrowsArgumentException(string key)
+    {
+        var doc = new DidDocument
+        {
+            Id = new Did(Did),
+            Service =
+            [
+                new Service
+                {
+                    Id = $"{Did}#svc",
+                    Type = "Example",
+                    ServiceEndpoint = ServiceEndpointValue.FromUri("https://example.com"),
+                    AdditionalProperties = new Dictionary<string, JsonElement>
+                    {
+                        [key] = JsonSerializer.SerializeToElement("https://evil.example")
+                    }
+                }
+            ]
+        };
+
+        var act = () => DidDocumentSerializer.Serialize(doc);
+
+        act.Should().Throw<ArgumentException>(
+            "a duplicate member makes output NetDid's own Deserialize rejects (issue #121)");
+    }
+
+    #endregion
 }

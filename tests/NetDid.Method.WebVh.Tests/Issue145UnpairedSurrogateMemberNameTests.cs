@@ -539,6 +539,38 @@ public class Issue145UnpairedSurrogateMemberNameTests
         await act.Should().ThrowAsync<ArgumentException>();
     }
 
+    [Fact]
+    public async Task Issue145_Create_ServiceExtensionWithIllFormedUtf8_ThrowsArgumentException()
+    {
+        // PR #149 review/final pass: a caller JsonElement holding ill-formed UTF-8 was written as
+        // U+FFFD into a signed, resolvable did.jsonl and into did.json.
+        byte[] utf8 = [.. "\"a"u8.ToArray(), 0xED, 0xA0, 0x80, .. "b\""u8.ToArray()];
+        using var document = System.Text.Json.JsonDocument.Parse(utf8);
+        var signer = new KeyPairSigner(_keyGen.Generate(KeyType.Ed25519), _crypto);
+        var (method, _) = CreateMethod();
+
+        var act = () => method.CreateAsync(new DidWebVhCreateOptions
+        {
+            Domain = "example.com",
+            UpdateKey = signer,
+            Services =
+            [
+                new Service
+                {
+                    Id = "#svc",
+                    Type = "Example",
+                    ServiceEndpoint = ServiceEndpointValue.FromUri("https://example.com"),
+                    AdditionalProperties = new Dictionary<string, System.Text.Json.JsonElement>
+                    {
+                        ["note"] = document.RootElement.Clone()
+                    }
+                }
+            ]
+        });
+
+        await act.Should().ThrowAsync<ArgumentException>();
+    }
+
     private static DataIntegrityProofValue ProgrammaticProof(string proofValue) => new()
     {
         Type = "DataIntegrityProof",
