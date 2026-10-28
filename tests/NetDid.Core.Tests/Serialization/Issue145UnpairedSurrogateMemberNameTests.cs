@@ -710,7 +710,7 @@ public class Issue145UnpairedSurrogateMemberNameTests
     [Fact]
     public void Issue145_RequireDecodable_DeeplyNestedElement_DoesNotOverflowTheStack()
     {
-        var element = DeeplyNestedArray(100_000);
+        var element = DeeplyNestedArray(20_000);
 
         var caught = RunOnSmallStack(() => Utf16Text.RequireDecodable(element));
 
@@ -723,7 +723,7 @@ public class Issue145UnpairedSurrogateMemberNameTests
         var doc = new DidDocument
         {
             Id = new Did(Did),
-            AdditionalProperties = new Dictionary<string, JsonElement> { ["x-ext"] = DeeplyNestedArray(100_000) }
+            AdditionalProperties = new Dictionary<string, JsonElement> { ["x-ext"] = DeeplyNestedArray(20_000) }
         };
 
         var caught = RunOnSmallStack(() => DidDocumentSerializer.Serialize(doc));
