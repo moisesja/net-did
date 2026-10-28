@@ -318,4 +318,45 @@ public class DefaultVerificationRelationshipResolverTests
         var act = () => new DefaultVerificationRelationshipResolver(null!);
         act.Should().Throw<ArgumentNullException>();
     }
+
+    // Review round 2 (P2): a relative DID URL resolves against the controller DID by RFC 3986 §5
+    // (DID Core §3.2.2), so "keys/1#k" in the document is "<did>/keys/1#k". The resolver had its
+    // own normalization, which read it as "<did>#keys/1#k".
+    [Theory]
+    [InlineData("keys/1#k", ControllerDid + "/keys/1#k")]
+    [InlineData("/keys/1#k", ControllerDid + "/keys/1#k")]
+    [InlineData("?versionId=1#k", ControllerDid + "?versionId=1#k")]
+    public async Task Issue145_IsAuthorizedForRelationshipAsync_RelativeDidUrl_ResolvesPerRfc3986(
+        string entry, string query)
+    {
+        SetupResolver(DocWith(VerificationRelationship.Authentication,
+            VerificationRelationshipEntry.FromReference(entry)));
+
+        var result = await _sut.IsAuthorizedForRelationshipAsync(
+            ControllerDid, query, VerificationRelationship.Authentication);
+
+        result.Decision.Should().Be(AuthorizationDecision.Authorized);
+    }
+
+    // The same normalization as the dereferencer and duplicate detection, at the same cost: it
+    // used to build "<did>#x" for every entry, so a long did:peer DID cost entries × DID length.
+    [Fact]
+    public async Task Issue145_IsAuthorizedForRelationshipAsync_IdComparison_IsLinearInTheDocument()
+    {
+        var did = "did:example:" + new string('a', 200_000);
+        SetupResolver(new DidDocument
+        {
+            Id = new Did(did),
+            Authentication = Enumerable.Range(0, 2_000)
+                .Select(i => VerificationRelationshipEntry.FromReference($"#k{i}")).ToList()
+        });
+
+        var before = GC.GetAllocatedBytesForCurrentThread();
+        var result = await _sut.IsAuthorizedForRelationshipAsync(
+            did, did + "#k1999", VerificationRelationship.Authentication);
+        var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
+
+        result.Decision.Should().Be(AuthorizationDecision.Authorized);
+        allocated.Should().BeLessThan(64L * 1024 * 1024, "the pre-fix cost was about 1.6 GB");
+    }
 }

@@ -1497,5 +1497,115 @@ public class Issue145UnpairedSurrogateMemberNameTests
     }
 
     #endregion
-}
 
+    #region Issue145_ReviewRound2_RelativeDidUrls (DID Core §3.2.2)
+
+    // Review round 2 (P2): DID Core §3.2.2: "Relative DID URLs MAY contain relative path
+    // components, query parameters, and fragment identifiers", resolved by RFC 3986 §5 with the
+    // DID as base (scheme "did", authority "<method-name>:<method-specific-id>"). They are
+    // conforming ids and references, not malformed input.
+    private static string WithRelativeIds(string id) => $$"""
+    {
+      "id": "did:example:123",
+      "verificationMethod": [{
+        "id": "{{id}}",
+        "type": "Multikey",
+        "controller": "did:example:123",
+        "publicKeyMultibase": "z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK"
+      }],
+      "authentication": ["{{id}}"],
+      "service": [{
+        "id": "{{id}}",
+        "type": "Example",
+        "serviceEndpoint": "https://example.com"
+      }]
+    }
+    """;
+
+    private static string WithServiceIds(string first, string second) => $$"""
+    {
+      "id": "did:example:123",
+      "service": [
+        { "id": "{{first}}", "type": "A", "serviceEndpoint": "https://a.example" },
+        { "id": "{{second}}", "type": "B", "serviceEndpoint": "https://b.example" }
+      ]
+    }
+    """;
+
+    [Theory]
+    [InlineData("/keys/1")]
+    [InlineData("keys/1#k")]
+    [InlineData("?versionId=1#key-1")]
+    [InlineData("./keys/1#k")]
+    [InlineData("/a/../keys/1?q=1#k")]
+    [InlineData("/keys/caf%C3%A9;x=y")]
+    public void Issue145_RelativeDidUrl_IsAValidReference(string value)
+    {
+        DidParser.IsValidDidReference(value).Should().BeTrue();
+    }
+
+    [Theory]
+    [InlineData("/keys/1")]
+    [InlineData("keys/1#k")]
+    [InlineData("?versionId=1#key-1")]
+    [InlineData("./keys/1#k")]
+    [InlineData("/a/../keys/1?q=1#k")]
+    public void Issue145_RelativeDidUrlIds_AreReadAndWritten(string value)
+    {
+        var doc = DidDocumentSerializer.Deserialize(WithRelativeIds(value));
+        var json = DidDocumentSerializer.Serialize(doc);
+        var again = DidDocumentSerializer.Deserialize(json);
+
+        again.VerificationMethod!.Single().Id.Should().Be(value);
+        again.Authentication!.Single().Reference.Should().Be(value);
+        again.Service!.Single().Id.Should().Be(value);
+    }
+
+    // RFC 3986 §5.2.2 against the DID: a relative path merges under the authority ("keys/1" is
+    // "<did>/keys/1"), dot segments are removed, and an absolute DID URL of the same DID names the
+    // same resource. Those are one id, so two services spelled that way are duplicates (§5.4).
+    [Theory]
+    [InlineData("keys/1#k", "/keys/1#k")]
+    [InlineData("did:example:123/keys/1#k", "keys/1#k")]
+    [InlineData("/a/../keys/1", "/keys/1")]
+    [InlineData("./keys/1", "keys/1")]
+    [InlineData("?versionId=1#k", "did:example:123?versionId=1#k")]
+    public void Issue145_Deserialize_ServiceIdsResolvingToOneId_AreDuplicates(string first, string second)
+    {
+        var act = () => DidDocumentSerializer.Deserialize(WithServiceIds(first, second));
+
+        act.Should().Throw<JsonException>().WithMessage("*same id*");
+    }
+
+    // NetDid's compatibility shorthand (issue #136) reads one plain segment "files" as "#files",
+    // where RFC 3986 alone would give "<did>/files"; a real relative path stays a path.
+    [Theory]
+    [InlineData("files", "/files")]
+    [InlineData("keys/1#k", "keys/1#j")]
+    [InlineData("?versionId=1#k", "#k")]
+    public void Issue145_Deserialize_DistinctRelativeServiceIds_AreAccepted(string first, string second)
+    {
+        var act = () => DidDocumentSerializer.Deserialize(WithServiceIds(first, second));
+
+        act.Should().NotThrow();
+    }
+
+    // Still not DID URLs: a network-path reference replaces the DID itself, so it never names a
+    // resource of this document, and the RFC 3986 character rules apply to every component.
+    [Theory]
+    [InlineData("//evil.example/keys/1")]
+    [InlineData("#")]
+    [InlineData("1x:y")]
+    [InlineData("keys/1 #k")]
+    [InlineData("/keys/%zz")]
+    [InlineData("/keys/caf\u00e9")]
+    [InlineData("?q=\u202e")]
+    public void Issue145_RelativeDidUrl_OutsideTheGrammar_IsRejected(string value)
+    {
+        DidParser.IsValidDidReference(value).Should().BeFalse();
+        var act = () => DidDocumentSerializer.Deserialize(WithRelativeIds(value));
+        act.Should().Throw<JsonException>();
+    }
+
+    #endregion
+}

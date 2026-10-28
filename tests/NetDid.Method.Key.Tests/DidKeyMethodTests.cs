@@ -550,4 +550,3 @@ public class DidKeyMethodTests
         resolved.ResolutionMetadata.Error.Should().Be("invalidDid");
     }
 }
-

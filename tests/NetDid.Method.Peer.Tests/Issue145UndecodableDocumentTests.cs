@@ -614,4 +614,117 @@ public class Issue145UndecodableDocumentTests
             .Should().Equal(did + "#key-1", "did:example:abcd#key-1");
         key1.ContentStream.Should().BeOfType<VerificationMethod>();
     }
+
+    // ── Review round 2: one representation for encoding, validation and the returned document ──
+
+    // A caller IReadOnlyList<T> whose indexer and enumerator disagree; nothing forbids it.
+    private sealed class SplitList<T>(T indexed, T enumerated) : IReadOnlyList<T>
+    {
+        public int Count => 1;
+        public T this[int index] => index == 0 ? indexed : throw new ArgumentOutOfRangeException(nameof(index));
+        public IEnumerator<T> GetEnumerator() { yield return enumerated; }
+        System.Collections.IEnumerator System.Collections.IEnumerable.GetEnumerator() => GetEnumerator();
+    }
+
+    // A caller IReadOnlyList<T> that yields `first` on its first enumeration and `later` after.
+    private sealed class ShiftingList<T>(T first, T later) : IReadOnlyList<T>
+    {
+        private int _enumerations;
+        public int Count => 1;
+        public T this[int index] => index == 0 ? later : throw new ArgumentOutOfRangeException(nameof(index));
+        public IEnumerator<T> GetEnumerator() { yield return _enumerations++ == 0 ? first : later; }
+        System.Collections.IEnumerator System.Collections.IEnumerable.GetEnumerator() => GetEnumerator();
+    }
+
+    private static Service DmService(string endpoint) => new()
+    {
+        Id = "#svc", Type = "DIDCommMessaging", ServiceEndpoint = ServiceEndpointValue.FromUri(endpoint)
+    };
+
+    // The reviewer's repro: Create encoded the services by enumeration, then built and validated
+    // its document through the indexer. It reported the valid endpoint and minted a DID that
+    // resolves to invalidDid.
+    [Fact]
+    public async Task Issue145_Numalgo2Create_ServicesReadTwoWays_ValidatesWhatItEncodes()
+    {
+        var act = () => _method.CreateAsync(new DidPeerCreateOptions
+        {
+            Numalgo = PeerNumalgo.Two,
+            Keys = [AuthenticationKey()],
+            Services = new SplitList<Service>(indexed: DmService("https://example.com"), enumerated: DmService("not a URI"))
+        });
+
+        await act.Should().ThrowAsync<ArgumentException>();
+    }
+
+    [Fact]
+    public async Task Issue145_Numalgo2Create_KeysReadTwice_ReturnsTheDocumentItsDidEncodes()
+    {
+        var created = await _method.CreateAsync(new DidPeerCreateOptions
+        {
+            Numalgo = PeerNumalgo.Two,
+            Keys = new ShiftingList<PeerKeyPurpose>(AuthenticationKey(), AuthenticationKey())
+        });
+        var resolved = await _method.ResolveAsync(created.Did.Value);
+
+        DidDocumentSerializer.Serialize(created.DidDocument)
+            .Should().Be(DidDocumentSerializer.Serialize(resolved.DidDocument!));
+    }
+
+    // Positive control: ordinary lists, every service shape, Create's document is the resolved one.
+    [Fact]
+    public async Task Issue145_Numalgo2Create_NormalLists_ReturnsTheDocumentItsDidEncodes()
+    {
+        var created = await _method.CreateAsync(new DidPeerCreateOptions
+        {
+            Numalgo = PeerNumalgo.Two,
+            Keys = [AuthenticationKey(), new PeerKeyPurpose(AuthenticationKey().Key, PeerPurpose.Assertion)],
+            Services =
+            [
+                DmService("https://example.com"),
+                new Service { Id = "#set", Type = "Example", ServiceEndpoint = FlatMixedSet() },
+                new Service
+                {
+                    Id = "#map",
+                    Type = "DIDCommMessaging",
+                    ServiceEndpoint = ServiceEndpointValue.FromMap(new Dictionary<string, JsonElement>
+                    {
+                        ["uri"] = JsonSerializer.SerializeToElement("https://m.example"),
+                        ["routingKeys"] = JsonSerializer.SerializeToElement(new[] { "did:example:r#k" }),
+                        ["accept"] = JsonSerializer.SerializeToElement(new[] { "didcomm/v2" })
+                    })
+                }
+            ]
+        });
+        var resolved = await _method.ResolveAsync(created.Did.Value);
+
+        resolved.ResolutionMetadata.Error.Should().BeNull();
+        DidDocumentSerializer.Serialize(created.DidDocument)
+            .Should().Be(DidDocumentSerializer.Serialize(resolved.DidDocument!));
+    }
+
+    // Same class in did:peer:4: Create hashed the serialized InputDocument, then rebuilt the
+    // returned document from the caller's lists, which may differ on a second read.
+    [Fact]
+    public async Task Issue145_Numalgo4Create_InputListsReadTwice_ReturnsTheDocumentItsDidEncodes()
+    {
+        VerificationMethod Vm() => new()
+        {
+            Id = "#key-1", Type = "Multikey",
+            PublicKeyMultibase = new DefaultKeyGenerator().Generate(KeyType.Ed25519).MultibasePublicKey
+        };
+        var created = await _method.CreateAsync(new DidPeerCreateOptions
+        {
+            Numalgo = PeerNumalgo.Four,
+            InputDocument = new DidDocument
+            {
+                VerificationMethod = new ShiftingList<VerificationMethod>(Vm(), Vm()),
+                Authentication = [VerificationRelationshipEntry.FromReference("#key-1")]
+            }
+        });
+        var resolved = await _method.ResolveAsync(created.Did.Value);
+
+        DidDocumentSerializer.Serialize(created.DidDocument)
+            .Should().Be(DidDocumentSerializer.Serialize(resolved.DidDocument!));
+    }
 }
