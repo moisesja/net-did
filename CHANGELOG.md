@@ -7,6 +7,69 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- **Vulnerable build- and test-time transitive packages removed** (issue #144). A fresh restore of
+  3.1.0 resolved two packages with published advisories, and their NuGet audit warnings
+  (NU1902/NU1903) broke the zero-warning Release build:
+  - `Microsoft.SourceLink.GitHub` 10.0.300 → 10.0.403 brings `Microsoft.Build.Tasks.Git` 10.0.403
+    ([GHSA-23fw-v26w-5fgq](https://github.com/advisories/GHSA-23fw-v26w-5fgq), moderate,
+    information disclosure). It is build-time only (`PrivateAssets="All"`), but it runs whenever
+    `publish.yml` packs a release.
+  - `Testcontainers` 4.13.0 → 4.16.0 brings `SSH.NET` 2026.0.0
+    ([GHSA-q939-rpr3-3284](https://github.com/advisories/GHSA-q939-rpr3-3284) and
+    [GHSA-mggc-4xg6-vcxf](https://github.com/advisories/GHSA-mggc-4xg6-vcxf), both high). Only
+    `NetDid.Method.Ethr.IntegrationTests` uses it; nothing ships to consumers.
+
+  `dotnet list package --vulnerable --include-transitive` now reports nothing.
+
+### Changed
+
+- **Runtime dependency refresh** (issue #144). These raise the minimum versions NetDid's packages
+  declare:
+  - **`NetCrypto` 1.4.0 → 1.7.1.** Since 1.5.0, `DefaultCryptoProvider.Verify` accepts a high-S
+    secp256k1 signature by normalizing it to low-S. NetDid never relies on `Verify` to reject one:
+    did:ethr enforces EIP-2 low-S itself before a transaction is encoded, recovery goes through
+    `Secp256k1Recoverable` (unchanged), and did:webvh verifies only `eddsa-jcs-2022`. The
+    high-S rejection tests for the encoder and the chain emulator still pass. 1.6.0
+    (`ICapableKeyStore`) and 1.7.x (`TransferableKeyMaterial`) are additive and unused here.
+  - **`DataProofsDotnet.Core` 1.1.1 → 1.4.0** (1.4.0 requires NetCrypto 1.7.1). 1.2.x and 1.3.0
+    change nothing in `DataProofsDotnet.Core`. 1.4.0 checks the JSON it is given before reading
+    it, and reports an unreadable secured document as one document-level
+    `PROOF_TRANSFORMATION_ERROR` instead of throwing. NetDid's own parse boundary already rejects
+    duplicate members, invalid UTF-8, unpaired surrogates in the members it reads, and excess
+    depth. The only input that now reaches the new check is an unpaired surrogate escape in a
+    proof extension member NetDid does not read. It still resolves `invalidDidLog` (pinned by
+    `Issue144_ProofExtensionWithUnpairedSurrogate_ResolvesInvalidDidLog`); only the logged reason
+    text changes. Create, Update, Deactivate and witness validation are unchanged. The DIF
+    did:webvh compliance-vector replay produces a byte-identical report, and the issue #110
+    pre-upgrade `did.jsonl` fixture still verifies.
+  - `Microsoft.Extensions.Caching.Memory`, `.Logging.Abstractions`, `.DependencyInjection`,
+    `.DependencyInjection.Abstractions` and `.Http` 10.0.8 → 10.0.14 (servicing releases);
+    `Microsoft.IdentityModel.Tokens` 8.19.1 → 8.23.0.
+- **Test stack moved off FluentAssertions and xUnit v2** (issue #144). No NetDid package ships any
+  of these.
+  - `FluentAssertions` 7.0.0 → **`AwesomeAssertions` 9.6.0**, the Apache-2.0 community fork
+    (FluentAssertions 8 and later are commercially licensed). A source diff of every assertion the
+    suite uses found one that got looser: since FluentAssertions 8, `OnlyContain` passes on an
+    empty collection, so the issue #119 credential-leak check would have passed if nothing was
+    logged. It now asserts the log is non-empty first, pinned by
+    `Issue144_AssertNoSentinel_RejectsAnEmptyLog`.
+  - `xunit` 2.9.3 (deprecated) → **xUnit v3** via `xunit.v3.mtp-off` 4.0.2 and
+    `xunit.runner.visualstudio` 4.0.1. The `mtp-off` package keeps tests on VSTest under the
+    .NET 10 SDK, so `dotnet test`, its `--filter` syntax and `coverlet.collector` work as before.
+    Test projects now build as executables. The v3 analyzer rule xUnit1051 is suppressed in test
+    projects; CONTRIBUTING.md explains why.
+  - `NSubstitute` 5.3.0 → 6.2.0, `Microsoft.NET.Test.Sdk` 18.6.0 → 18.11.0,
+    `Microsoft.CodeAnalysis.CSharp` 5.6.0 → 5.9.0, `coverlet.collector` 10.0.1 → 10.1.0.
+  - DataProofsDotnet 1.4.0 no longer lets a proof extension reuse the name of a modeled proof
+    member. The issue #101 array-valued `domain` characterization therefore builds its proof with a
+    hand-computed `eddsa-jcs-2022` signature, and `Issue144_HandSigner_MatchesStockSuiteByteForByte`
+    proves that signer byte-identical to the stock suite. 1.4.0 still models `domain` as a single
+    string, so an array-valued `domain` still resolves `invalidDidLog`.
+
+  `dotnet list package --outdated` and `--deprecated` now report nothing.
+
 ### Fixed
 
 - **did:webvh implicit `#files` / `#whois` services and path dereferencing** (issue #136).
@@ -126,6 +189,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `witnessValidationFailed` with no diagnostic. The reason is bounded by construction (type
   name plus numeric position, or fixed library text) — exception messages are never echoed,
   since System.Text.Json embeds hostile member names in them.
+- **W3C conformance report: one statement id named two statements** (surfaced by the xUnit v3
+  migration, issue #144). "ContentType is set on successful dereference" and "Unsupported Accept
+  returns representationNotSupported" both recorded `7.2-10`. The report shows one description
+  and one result per method for each id, so which statement appeared depended on test
+  execution order. The merged row also showed did:key PASS for the `representationNotSupported`
+  statement, which is never tested for did:key. That statement is now `7.2-13`, and generating the
+  report fails the run if one id carries two descriptions.
 
 ### Added
 
