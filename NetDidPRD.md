@@ -1146,6 +1146,21 @@ after genesis must have a `versionTime` later than its predecessor. Equal or dec
 invalidate the chain even when their hashes and proofs are otherwise authentic. The comparison
 does not normalize, replace, or reserialize the authenticated wire token.
 
+Every validated entry's `versionTime`, genesis included, MUST also be no more than 5 minutes
+ahead of the resolver's current time (issue #131; did:webvh v1.0 Read step 4: "Entries that
+exceed this tolerance MUST cause resolution to fail", with a SHOULD of "no more than 5 minutes").
+The bound is inclusive (exactly 5 minutes ahead is accepted) and fixed: raising it would exceed
+the spec's SHOULD, and lowering it would only reject logs that other conforming resolvers
+accept. `LogChainValidator` enforces it at the same per-entry choke point as the `state.id` SCID
+rule, before hash and proof work, comparing `versionTime - now` so that no pair of instants can
+overflow. The resolver's current time comes from `DidWebVhMethod.Clock` and is observed **once
+per operation**: one resolution passes the same observation to its requested-prefix pass and its
+deactivation-tail pass, so the two cannot disagree at the boundary. The rule makes validity
+clock-dependent: a log rejected now becomes acceptable once the resolver's clock is within 5
+minutes of its entries. Only successful resolutions are cached (`CachingDidResolver`), so a
+temporary rejection is not cached, as the spec's "SHOULD NOT cache a DID that fails
+verification" asks.
+
 NetDid *authors* whole-second `versionTime`s (issue #127) and never authors a `versionTime`
 later than the authoring clock. This conservative writer policy guarantees the did:webvh update
 rule that the entry timestamp be "the time the DID will be retrieved by a witness or resolver,
@@ -1165,9 +1180,13 @@ retry-after-the-clock-advances contract:
 under strict monotonicity and the no-future-authoring rule, appending — including an immediate
 deactivation — past such a head is impossible, and an honest failure is the only truthful
 result (a "successful" future-dated entry would be rejected by resolvers that enforce the
-spec's read-side skew rule; NetDid's own read-side enforcement of that rule is tracked as a
-separate defect). A log whose head is at the maximum representable timestamp is permanently
-un-appendable for the same reason.
+spec's read-side skew rule, NetDid included). Update and Deactivate validate the supplied log
+with the same read-side rule first, so the two failures split by how far the head is ahead of
+the clock: more than 5 minutes ahead, the log itself is invalid and the operation throws
+`LogChainValidationException`; within 5 minutes but beyond the 2-second authoring wait, the log
+is valid but not yet appendable and the operation throws `ArgumentException`. A log whose head
+is at the maximum representable timestamp is therefore rejected as invalid (the
+`ArgumentException` "cannot be advanced" path remains only for a clock within 5 minutes of it).
 
 For *imported* logs authored with fractional `versionTime`s, reading is unchanged: fractional
 precision is preserved, selected, and re-serialized exactly. For such logs the whole-second
@@ -1215,7 +1234,7 @@ well-known placeholder string (`{SCID}`) that stands in for the real SCID during
 4. Validate the genesis entry by independently reconstructing both hashes: restore the SCID as the
    preliminary `versionId` and verify the published genesis entry hash, then restore `{SCID}` in all
    SCID-bearing values and verify the SCID. The SCID and genesis entry hash MUST NOT be conflated.
-5. For each subsequent entry: require `versionTime` to be strictly later than the previous entry, validate **every** supplied controller proof (required type/cryptosuite/purpose, valid signature, signer verbatim in the active `updateKeys` — one authorized signer authorizes the entry, but any invalid or unauthorized extra proof invalidates it; see §7.4), verify the hash chain links to the previous entry, and verify parameter constraints (pre-rotation key commitments and witness policy shape). The same universal proof rule applies to the genesis entry against its own declared `updateKeys`.
+5. For every validated entry, genesis included, require `versionTime` to be no more than 5 minutes ahead of the resolver's current time, observed once per resolution (issue #131; see the timestamp rules above). For each subsequent entry: require `versionTime` to be strictly later than the previous entry, validate **every** supplied controller proof (required type/cryptosuite/purpose, valid signature, signer verbatim in the active `updateKeys` — one authorized signer authorizes the entry, but any invalid or unauthorized extra proof invalidates it; see §7.4), verify the hash chain links to the previous entry, and verify parameter constraints (pre-rotation key commitments and witness policy shape). The same universal proof rule applies to the genesis entry against its own declared `updateKeys`.
 6. **Bind the DID's self-certifying SCID to the genesis (issue #82).** The SCID segment of the requested DID string MUST equal the genesis entry's SCID (`entries[0].Parameters.Scid`, already proven equal to the recomputed genesis hash by step 4). The target entry's `state.id` (an author-controlled field) matching `did` is necessary but **not** sufficient: without the SCID check, a host/CDN/MITM adversary can serve a self-consistent genesis signed by their own key with `state.id` set to the victim's DID and impersonate it, collapsing did:webvh's security to plain did:web. Reject with `invalidDidLog` on mismatch.
    - **Per-entry SCID identity (issue #101).** did:webvh v1.0 additionally requires the SCID segment of `state.id` to be byte-for-byte identical to `parameters.scid` **for every entry, not just the first**, "independently of whether portability is enabled" — only the host/path portion may change under portability. `LogChainValidator` enforces this for the genesis and every subsequent validated entry (an entry whose `state.id` carries a foreign SCID, is not a `did:webvh` DID, or omits `state.id` fails chain validation → `invalidDidLog`). Because historical resolution validates only the prefix through the selected version (step 9), a corrupt later tail does not revoke an already-established version; latest resolution validates the whole chain.
 7. Validate every explicitly declared witness policy before it can take effect, at genesis and on every later transition. The disabling form is the empty object `{}`. A configured policy MUST contain both `threshold` and a non-empty `witnesses` list; `threshold` MUST be in the inclusive range `1..count(distinct witness ids)`; every id MUST already be Unicode NFC-normalized, MUST be unique under ordinal comparison in that canonical form, MUST be a bare `did:key` DID, and MUST encode an Ed25519 key compatible with `eddsa-jcs-2022`. Missing fields, duplicate or non-canonical ids, zero/negative/out-of-range thresholds, malformed keys, and unsupported key types invalidate the log rather than being coerced to “no witnesses.”
