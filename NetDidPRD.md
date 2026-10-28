@@ -1157,9 +1157,16 @@ overflow. The resolver's current time comes from `DidWebVhMethod.Clock` and is o
 per operation**: one resolution passes the same observation to its requested-prefix pass and its
 deactivation-tail pass, so the two cannot disagree at the boundary. The rule makes validity
 clock-dependent: a log rejected now becomes acceptable once the resolver's clock is within 5
-minutes of its entries. Only successful resolutions are cached (`CachingDidResolver`), so a
-temporary rejection is not cached, as the spec's "SHOULD NOT cache a DID that fails
-verification" asks.
+minutes of its entries. `CachingDidResolver` caches only results that carry a document, so a
+rejected log is not cached, as the spec's "SHOULD NOT cache a DID that fails verification" asks.
+A cached success reflects the clock at the moment it was resolved: a historical resolution whose
+deactivation tail was still beyond the tolerance is cached without `deactivated` until its TTL
+expires — the same staleness as a deactivation published after the cache entry was filled.
+NetDid's writer never authors past its *own* clock, so the rule also requires synchronized writer
+clocks: a writer whose clock runs fast publishes entries that resolvers with correct clocks reject
+(and that Update/Deactivate on a correct clock refuse) until real time reaches them. Because every
+later entry must be strictly later, appending cannot repair this; the controller waits, or
+republishes the log without the rejected entries.
 
 NetDid *authors* whole-second `versionTime`s (issue #127) and never authors a `versionTime`
 later than the authoring clock. This conservative writer policy guarantees the did:webvh update
@@ -1183,8 +1190,9 @@ result (a "successful" future-dated entry would be rejected by resolvers that en
 spec's read-side skew rule, NetDid included). Update and Deactivate validate the supplied log
 with the same read-side rule first, so the two failures split by how far the head is ahead of
 the clock: more than 5 minutes ahead, the log itself is invalid and the operation throws
-`LogChainValidationException`; within 5 minutes but beyond the 2-second authoring wait, the log
-is valid but not yet appendable and the operation throws `ArgumentException`. A log whose head
+`LogChainValidationException`; at most 5 minutes ahead but with its next whole second beyond the
+2-second authoring wait, the log is valid but not yet appendable and the operation throws
+`ArgumentException`. A log whose head
 is at the maximum representable timestamp is therefore rejected as invalid (the
 `ArgumentException` "cannot be advanced" path remains only for a clock within 5 minutes of it).
 

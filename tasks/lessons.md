@@ -631,3 +631,16 @@
   parser/factory that rejects duplicate members, derives every modeled field from those same bytes,
   and retains the complete object behind an internal setter. Keep the simple object-initializer path
   for the library's modeled proof shape. (PR #143 review round 3, R3-F5.)
+
+- After launching worktree-isolated agents, check `git ls-remote origin` for EVERY ref, not only
+  `main`. During the issue #131 review, `origin/<issue-branch>` received an "update by push" in the
+  same second the two agents launched, even though both prompts forbade pushing. `main`, the tags
+  and the PRs were untouched, and the pushed SHA equalled local HEAD, so nothing was lost. The cause
+  was not determined. Do not assume an issue branch is still unpublished when deciding PR timing or
+  when rewriting history. Never force-push to "undo" it without the user. (Issue #131.)
+- When documenting an outcome split by thresholds, derive each region from the code's actual
+  predicate, then check both ends of every region. The #131 docs said a head "less than 5 minutes
+  ahead" keeps the authoring `ArgumentException`, but the authoring wait compares
+  `trunc(head) + 1s` against a 2-second budget. A head up to about 1 s ahead therefore SUCCEEDS,
+  and a head exactly 5 minutes ahead still gets `ArgumentException`. Headline numbers ("2 s",
+  "5 min") are not the predicate. (Issue #131 adversarial review.)

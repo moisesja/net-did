@@ -102,12 +102,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Each resolution reads the clock once and uses that reading for both of its validation passes.
   - **Behavior change for Update and Deactivate:** a supplied log whose latest entry is more than
     5 minutes ahead of the clock now throws `LogChainValidationException` (the log is invalid)
-    instead of `ArgumentException`. A latest entry less than 5 minutes ahead is still a valid
-    log that cannot be appended to yet, and keeps the issue #127 `ArgumentException`.
+    instead of `ArgumentException`. A latest entry at most 5 minutes ahead is still a valid
+    log. If the next whole second after it can't be reached within the 2-second authoring wait,
+    the log can't be appended to yet and keeps the issue #127 `ArgumentException`.
   - **Validity now depends on the clock.** A log rejected now is accepted once the resolver's
-    clock is within 5 minutes of its entries. A resolver host whose clock runs more than
-    5 minutes slow rejects freshly updated DIDs until it catches up, so keep resolver clocks
-    synchronized. Failed resolutions are not cached.
+    clock is within 5 minutes of its entries. Keep writer and resolver clocks synchronized:
+    - A resolver whose clock runs more than 5 minutes slow rejects freshly updated DIDs until it
+      catches up.
+    - A writer whose clock runs fast publishes entries that resolvers with correct clocks reject
+      until real time reaches them. NetDid never writes past its *own* clock, so it cannot detect
+      this. Appending a new entry cannot repair such a log, because every later entry must be
+      later still. Wait, or republish the log without the rejected entries.
+    - Failed resolutions are not cached. A successful historical resolution is cached as it was
+      computed, so a deactivation that became valid after the resolution appears once the TTL
+      expires, as with any deactivation published after the cache was filled.
   - The DIF compliance-vector replay is unchanged except that `negative-versiontime-future` is
     now rejected by this rule. Before, it was rejected only because the vector's entries are also
     out of order. Regression tests: `Issue131VersionTimeFutureSkewTests` (22 cases).
