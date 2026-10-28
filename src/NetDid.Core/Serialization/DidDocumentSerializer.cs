@@ -156,7 +156,7 @@ public static class DidDocumentSerializer
     /// <exception cref="NetDid.Core.Exceptions.InvalidDidException">A DID-valued member is not a syntactically valid DID.</exception>
     public static DidDocument Deserialize(string json, string? contentType = null)
     {
-        RejectDuplicateMembers(json);
+        RejectMalformedJson(json);
         var doc = JsonSerializer.Deserialize<DidDocument>(json, DefaultOptions)
             ?? throw new JsonException("Failed to deserialize DID Document.");
 
@@ -175,7 +175,7 @@ public static class DidDocumentSerializer
     /// <exception cref="NetDid.Core.Exceptions.InvalidDidException">A DID-valued member is not a syntactically valid DID.</exception>
     public static DidDocument Deserialize(ReadOnlySpan<byte> utf8Json, string? contentType = null)
     {
-        RejectDuplicateMembers(utf8Json);
+        RejectMalformedJson(utf8Json);
         var doc = JsonSerializer.Deserialize<DidDocument>(utf8Json, DefaultOptions)
             ?? throw new JsonException("Failed to deserialize DID Document.");
 
@@ -196,7 +196,7 @@ public static class DidDocumentSerializer
     /// </summary>
     internal static DidDocument DeserializeAllowingIncompleteVerificationMethods(string json)
     {
-        RejectDuplicateMembers(json);
+        RejectMalformedJson(json);
         var doc = JsonSerializer.Deserialize<DidDocument>(json, DefaultOptions)
             ?? throw new JsonException("Failed to deserialize DID Document.");
 
@@ -212,11 +212,14 @@ public static class DidDocumentSerializer
     // Unpaired surrogates map to this boundary's JsonException (issue #145). Comparing names means
     // decoding them, so an escaped one in a member NAME throws InvalidOperationException from
     // Parse, and a raw one anywhere in a string fails UTF-8 transcoding with ArgumentException.
-    private static void RejectDuplicateMembers(string json)
+    // String VALUES are decoded only when read, and extension values are kept as raw JsonElements
+    // that nothing reads until Serialize, so every value is decoded once here as well.
+    private static void RejectMalformedJson(string json)
     {
         try
         {
-            using (JsonDocument.Parse(json, RejectDuplicatesOptions)) { }
+            using var document = JsonDocument.Parse(json, RejectDuplicatesOptions);
+            RequireDecodableStrings(document.RootElement);
         }
         catch (Exception ex) when (ex is InvalidOperationException
             or (ArgumentException and not ArgumentNullException))
@@ -225,7 +228,7 @@ public static class DidDocumentSerializer
         }
     }
 
-    private static void RejectDuplicateMembers(ReadOnlySpan<byte> utf8Json)
+    private static void RejectMalformedJson(ReadOnlySpan<byte> utf8Json)
     {
         // The parser checks UTF-8 only in strings it decodes, and compares undecoded names by raw
         // bytes. An ill-formed name inside an extension object (a WTF-8 surrogate, or 0xFF beside
@@ -237,11 +240,30 @@ public static class DidDocumentSerializer
         try
         {
             // JsonDocument.Parse has no ReadOnlySpan<byte> overload; copy to honor the same guard.
-            using (JsonDocument.Parse(utf8Json.ToArray(), RejectDuplicatesOptions)) { }
+            using var document = JsonDocument.Parse(utf8Json.ToArray(), RejectDuplicatesOptions);
+            RequireDecodableStrings(document.RootElement);
         }
         catch (InvalidOperationException ex)
         {
             throw InvalidText(ex);
+        }
+    }
+
+    private static void RequireDecodableStrings(JsonElement element)
+    {
+        switch (element.ValueKind)
+        {
+            case JsonValueKind.Object:
+                foreach (var property in element.EnumerateObject())
+                    RequireDecodableStrings(property.Value);
+                break;
+            case JsonValueKind.Array:
+                foreach (var item in element.EnumerateArray())
+                    RequireDecodableStrings(item);
+                break;
+            case JsonValueKind.String:
+                _ = element.GetString();
+                break;
         }
     }
 
@@ -737,7 +759,18 @@ public static class DidDocumentSerializer
     {
         public static JsonWebKey FromJson(string json)
         {
-            return new JsonWebKey(json);
+            try
+            {
+                return new JsonWebKey(json);
+            }
+            catch (ArgumentException ex)
+            {
+                // IdentityModel reports a malformed key (e.g. "x": 5) as ArgumentException
+                // (IDX10805); this consumption boundary reports malformed input as JsonException
+                // (issue #145).
+                throw new JsonException(
+                    "The verification method's publicKeyJwk is not a valid JSON Web Key.", ex);
+            }
         }
     }
 
