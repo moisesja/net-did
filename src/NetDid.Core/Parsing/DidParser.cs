@@ -44,11 +44,25 @@ public static partial class DidParser
 
     // RFC 3986 absolute URI: scheme ":" hier-part [ "?" query ] [ "#" fragment ]. hier-part is
     // "//" authority path-abempty, or a path that does not begin with "//". "[" and "]" appear
-    // only around an IP-literal host.
+    // only around an IP-literal host, which is an IPv6address or an IPvFuture (§3.2.2).
     private const string PChar = $@"[{Unreserved}{SubDelims}:@]|{PctEncoded}";
+    private const string H16 = "[0-9A-Fa-f]{1,4}";
+    private const string DecOctet = "(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])";
+    private const string Ls32 = $@"(?:{H16}:{H16}|{DecOctet}(?:\.{DecOctet}){{3}})";
+    private const string Ipv6Address =
+        $@"(?:(?:{H16}:){{6}}{Ls32}" +
+        $@"|::(?:{H16}:){{5}}{Ls32}" +
+        $@"|(?:{H16})?::(?:{H16}:){{4}}{Ls32}" +
+        $@"|(?:(?:{H16}:){{0,1}}{H16})?::(?:{H16}:){{3}}{Ls32}" +
+        $@"|(?:(?:{H16}:){{0,2}}{H16})?::(?:{H16}:){{2}}{Ls32}" +
+        $@"|(?:(?:{H16}:){{0,3}}{H16})?::{H16}:{Ls32}" +
+        $@"|(?:(?:{H16}:){{0,4}}{H16})?::{Ls32}" +
+        $@"|(?:(?:{H16}:){{0,5}}{H16})?::{H16}" +
+        $@"|(?:(?:{H16}:){{0,6}}{H16})?::)";
+    private const string IpvFuture = $@"[vV][0-9A-Fa-f]+\.[{Unreserved}{SubDelims}:]+";
     private const string Authority =
         $@"//(?:(?:[{Unreserved}{SubDelims}:]|{PctEncoded})*@)?" +
-        $@"(?:\[[{Unreserved}{SubDelims}:]+\]|(?:[{Unreserved}{SubDelims}]|{PctEncoded})*)(?::[0-9]*)?";
+        $@"(?:\[(?:{Ipv6Address}|{IpvFuture})\]|(?:[{Unreserved}{SubDelims}]|{PctEncoded})*)(?::[0-9]*)?";
 
     [GeneratedRegex($@"^[A-Za-z][A-Za-z0-9+.\-]*:(?:{Authority}(?:/(?:{PChar})*)*|(?!//)(?:{PChar}|/)*)(?:\?(?:{QueryOrFragmentChar})*)?(?:#(?:{QueryOrFragmentChar})*)?\z", RegexOptions.Compiled)]
     private static partial Regex AbsoluteUriRegex();
@@ -76,16 +90,21 @@ public static partial class DidParser
         => !string.IsNullOrEmpty(value) && BareShorthandRegex().IsMatch(value);
 
     /// <summary>
-    /// Resolves a service or verification-method id against the document's DID: "#x" and the
-    /// bare shorthand "x" both become "{did}#x"; anything containing ':' is returned unchanged.
-    /// The one equivalence used by dereferencing and by duplicate-id detection (issue #145).
+    /// The form in which service and verification-method ids are compared: an id of the
+    /// document's own DID ("#x", the bare shorthand "x", or "{did}#x") becomes "#x"; any other
+    /// id is returned unchanged. The one equivalence used by dereferencing and by duplicate-id
+    /// detection (issue #145). It never builds "{did}#x", so its cost follows the id, not the
+    /// DID: a did:peer DID embeds its whole document and can be megabytes long.
     /// </summary>
-    internal static string ResolveRelativeId(string id, string? did)
+    internal static string ComparableId(string id, string? did)
     {
         if (id.StartsWith('#'))
-            return did + id;
+            return id;
         if (!id.Contains(':'))
-            return did + "#" + id;
+            return "#" + id;
+        if (did is not null && id.Length > did.Length && id[did.Length] == '#'
+            && id.StartsWith(did, StringComparison.Ordinal))
+            return id[did.Length..];
         return id;
     }
 

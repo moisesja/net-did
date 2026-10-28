@@ -219,7 +219,8 @@ public static class DidDocumentSerializer
 
             // "x", "#x" and "<did>#x" name the same service: compare with the dereferencer's
             // own normalization, so the two can never disagree about which spellings collide.
-            if (!serviceIds.Add(DidParser.ResolveRelativeId(service.Id, doc.Id.Value)))
+            // It costs what the id costs, never the DID's length per service.
+            if (!serviceIds.Add(DidParser.ComparableId(service.Id, doc.Id.Value)))
                 throw error("Two services have the same id (W3C DID Core §5.4).");
 
             RequireEndpointUris(service.ServiceEndpoint, error);
@@ -590,7 +591,7 @@ public static class DidDocumentSerializer
         // (did:ethr uses security/v2 per the reference JS resolver; did:key/did:peer use secp256k1-2019/v1)
         var docHasSecurityV2 = doc.Context?.Any(c => c is string s && s == "https://w3id.org/security/v2") == true;
         // A null type is rejected where the method is written (Text), not here.
-        if (!docHasSecurityV2 && vmTypes.Any(t => t?.StartsWith("EcdsaSecp256k1") == true))
+        if (!docHasSecurityV2 && vmTypes.Any(t => t?.StartsWith("EcdsaSecp256k1", StringComparison.Ordinal) == true))
             contexts.Add("https://w3id.org/security/suites/secp256k1-2019/v1");
 
         // Append any additional context entries (strings or JSON objects) from the document
