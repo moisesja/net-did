@@ -172,7 +172,7 @@ public class DereferenceTests
             new DidUrlDereferencingOptions { Accept = "text/plain" });
 
         var passed = result.DereferencingMetadata.Error == "representationNotSupported";
-        ConformanceReportSink.Record(method, "did-url-dereferencing", "7.2", "7.2-10",
+        ConformanceReportSink.Record(method, "did-url-dereferencing", "7.2", "7.2-13",
             "Unsupported Accept returns representationNotSupported", passed);
         result.DereferencingMetadata.Error.Should().Be("representationNotSupported");
     }
