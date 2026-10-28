@@ -2,6 +2,7 @@ using NetCid;
 using NetDid.Core;
 using NetCrypto;
 using NetDid.Core.Model;
+using NetDid.Core.Serialization;
 
 namespace NetDid.Method.Peer;
 
@@ -45,6 +46,9 @@ internal sealed class Numalgo2Handler
 
         var did = "did:peer:2." + string.Join(".", segments);
         var doc = BuildDocument(did, options.Keys, options.Services);
+        // Never mint a DID whose document NetDid could not serialize (W3C DID Core id and URI
+        // syntax, unique service ids; issue #145).
+        DidDocumentSerializer.ValidateForProduction(doc);
 
         return new DidCreateResult
         {
@@ -125,7 +129,7 @@ internal sealed class Numalgo2Handler
             }
         }
 
-        return new DidDocument
+        var document = new DidDocument
         {
             Id = didValue,
             VerificationMethod = verificationMethods.Count > 0 ? verificationMethods : null,
@@ -134,8 +138,12 @@ internal sealed class Numalgo2Handler
             KeyAgreement = keyAgreement.Count > 0 ? keyAgreement : null,
             CapabilityInvocation = capabilityInvocation.Count > 0 ? capabilityInvocation : null,
             CapabilityDelegation = capabilityDelegation.Count > 0 ? capabilityDelegation : null,
-            Service = services.Count > 0 ? RequireUniqueServiceIds(services) : null
+            Service = services.Count > 0 ? services : null
         };
+        // A resolved document obeys the same rules (W3C DID Core §5.4 requires a consumer to reject
+        // duplicate service ids); a violation maps to invalidDid (issue #145).
+        DidDocumentSerializer.ValidateForProduction(document);
+        return document;
     }
 
     private static VerificationMethod DecodeKeySegment(string multibaseKey, Did controller, ref int keyIndex)
@@ -165,21 +173,6 @@ internal sealed class Numalgo2Handler
         };
         keyIndex++;
         return vm;
-    }
-
-    // W3C DID Core §5.4: "A conforming producer MUST NOT produce multiple service entries with the
-    // same id" and "A conforming consumer MUST produce an error if it detects" them. An explicit
-    // "#service" beside an auto-generated one, or two equal explicit ids, used to pass both ways.
-    // Create and Resolve assign ids the same way, so this one check covers both (issue #145).
-    private static List<Service> RequireUniqueServiceIds(List<Service> services)
-    {
-        var seen = new HashSet<string>(StringComparer.Ordinal);
-        foreach (var service in services)
-        {
-            if (!seen.Add(service.Id))
-                throw new ArgumentException("did:peer:2 services must have unique ids (W3C DID Core §5.4).");
-        }
-        return services;
     }
 
     private static DidDocument BuildDocument(
@@ -243,7 +236,6 @@ internal sealed class Numalgo2Handler
                     AdditionalProperties = inputServices[i].AdditionalProperties
                 });
             }
-            RequireUniqueServiceIds(services);
         }
 
         return new DidDocument
