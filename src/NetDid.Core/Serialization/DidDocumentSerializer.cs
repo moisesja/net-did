@@ -157,12 +157,19 @@ public static class DidDocumentSerializer
     public static DidDocument Deserialize(string json, string? contentType = null)
     {
         RejectMalformedJson(json);
-        var doc = JsonSerializer.Deserialize<DidDocument>(json, DefaultOptions)
-            ?? throw new JsonException("Failed to deserialize DID Document.");
+        try
+        {
+            var doc = JsonSerializer.Deserialize<DidDocument>(json, DefaultOptions)
+                ?? throw new JsonException("Failed to deserialize DID Document.");
 
-        ValidateConsumption(doc, contentType);
-        ValidateVerificationMethodControllers(doc);
-        return doc;
+            ValidateConsumption(doc, contentType);
+            ValidateVerificationMethodControllers(doc);
+            return doc;
+        }
+        catch (Exception ex) when (IsMalformedShape(ex))
+        {
+            throw MalformedDocument(ex);
+        }
     }
 
     /// <summary>
@@ -176,12 +183,19 @@ public static class DidDocumentSerializer
     public static DidDocument Deserialize(ReadOnlySpan<byte> utf8Json, string? contentType = null)
     {
         RejectMalformedJson(utf8Json);
-        var doc = JsonSerializer.Deserialize<DidDocument>(utf8Json, DefaultOptions)
-            ?? throw new JsonException("Failed to deserialize DID Document.");
+        try
+        {
+            var doc = JsonSerializer.Deserialize<DidDocument>(utf8Json, DefaultOptions)
+                ?? throw new JsonException("Failed to deserialize DID Document.");
 
-        ValidateConsumption(doc, contentType);
-        ValidateVerificationMethodControllers(doc);
-        return doc;
+            ValidateConsumption(doc, contentType);
+            ValidateVerificationMethodControllers(doc);
+            return doc;
+        }
+        catch (Exception ex) when (IsMalformedShape(ex))
+        {
+            throw MalformedDocument(ex);
+        }
     }
 
     /// <summary>
@@ -197,12 +211,33 @@ public static class DidDocumentSerializer
     internal static DidDocument DeserializeAllowingIncompleteVerificationMethods(string json)
     {
         RejectMalformedJson(json);
-        var doc = JsonSerializer.Deserialize<DidDocument>(json, DefaultOptions)
-            ?? throw new JsonException("Failed to deserialize DID Document.");
+        try
+        {
+            var doc = JsonSerializer.Deserialize<DidDocument>(json, DefaultOptions)
+                ?? throw new JsonException("Failed to deserialize DID Document.");
 
-        ValidateConsumption(doc, contentType: null);
-        return doc;
+            ValidateConsumption(doc, contentType: null);
+            return doc;
+        }
+        catch (Exception ex) when (IsMalformedShape(ex))
+        {
+            throw MalformedDocument(ex);
+        }
     }
+
+    // Class-closing net for the consumption boundary (issue #145): the converters guard the shapes
+    // they know about, but any other JSON-access or model-construction failure on hostile input is
+    // still malformed input, never a raw BCL exception. JsonException and InvalidDidException (a
+    // NetDidException) pass through unchanged; a null json argument is rejected before the try.
+    private static bool IsMalformedShape(Exception ex)
+        => ex is KeyNotFoundException
+            or InvalidOperationException
+            or ArgumentException
+            or FormatException
+            or OverflowException;
+
+    private static JsonException MalformedDocument(Exception inner)
+        => new("The DID document is malformed.", inner);
 
     // Reject duplicate JSON members recursively at the consumption trust boundary. JsonDocument
     // with default options keeps the LAST of a duplicated member, so a decoy
@@ -266,6 +301,36 @@ public static class DidDocumentSerializer
                 break;
         }
     }
+
+    // Every caller string the converters write goes through Text (issue #145). Utf8JsonWriter
+    // silently replaces an unpaired surrogate with U+FFFD, so the published bytes would differ from
+    // the caller's model while Serialize reported success. Checking at the write site means the
+    // check sees exactly what is written. DID values are syntax-checked ASCII and need no check.
+    private static string Text(string value)
+        => Utf16Text.IsWellFormed(value)
+            ? value
+            : throw new ArgumentException(
+                "The DID document contains a string with an unpaired UTF-16 surrogate, which cannot " +
+                "be written as UTF-8 without altering it.",
+                "doc");
+
+    // Shape guards for the consumption converters (issue #145). Without them a missing member threw
+    // KeyNotFoundException, a wrong kind threw InvalidOperationException, and a null required string
+    // or null array entry was accepted and crashed Serialize later. Messages name only the member.
+    private static JsonElement RequireObject(JsonElement element, string what)
+        => element.ValueKind == JsonValueKind.Object
+            ? element
+            : throw new JsonException($"{what} must be a JSON object; found {element.ValueKind}.");
+
+    private static JsonElement.ArrayEnumerator RequireArray(JsonElement element, string member)
+        => element.ValueKind == JsonValueKind.Array
+            ? element.EnumerateArray()
+            : throw new JsonException($"'{member}' must be a JSON array; found {element.ValueKind}.");
+
+    private static string RequireString(JsonElement obj, string member, string owner)
+        => obj.TryGetProperty(member, out var value) && value.ValueKind == JsonValueKind.String
+            ? value.GetString()!
+            : throw new JsonException($"{owner}'s '{member}' must be a string.");
 
     // Fixed text: the offending content is attacker-controlled and is never echoed.
     private static JsonException InvalidText(Exception inner)
@@ -431,7 +496,10 @@ public static class DidDocumentSerializer
             if (doc.AlsoKnownAs is { Count: > 0 })
             {
                 writer.WritePropertyName("alsoKnownAs");
-                JsonSerializer.Serialize(writer, doc.AlsoKnownAs, options);
+                writer.WriteStartArray();
+                foreach (var alias in doc.AlsoKnownAs)
+                    writer.WriteStringValue(Text(alias));
+                writer.WriteEndArray();
             }
 
             // controller (string when 1, array when >1)
@@ -481,7 +549,7 @@ public static class DidDocumentSerializer
             {
                 foreach (var (key, val) in doc.AdditionalProperties)
                 {
-                    writer.WritePropertyName(key);
+                    writer.WritePropertyName(Text(key));
                     val.WriteTo(writer);
                 }
             }
@@ -493,7 +561,7 @@ public static class DidDocumentSerializer
         {
             if (contexts.Count == 1 && contexts[0] is string singleStr)
             {
-                writer.WriteStringValue(singleStr);
+                writer.WriteStringValue(Text(singleStr));
                 return;
             }
 
@@ -501,11 +569,11 @@ public static class DidDocumentSerializer
             foreach (var ctx in contexts)
             {
                 if (ctx is string str)
-                    writer.WriteStringValue(str);
+                    writer.WriteStringValue(Text(str));
                 else if (ctx is JsonElement element)
                     element.WriteTo(writer);
                 else
-                    writer.WriteStringValue(ctx.ToString());
+                    writer.WriteStringValue(Text(ctx.ToString() ?? string.Empty));
             }
             writer.WriteEndArray();
         }
@@ -528,7 +596,7 @@ public static class DidDocumentSerializer
         public override VerificationMethod Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options)
         {
             using var jsonDoc = JsonDocument.ParseValue(ref reader);
-            var root = jsonDoc.RootElement;
+            var root = RequireObject(jsonDoc.RootElement, "A verification method");
 
             string? publicKeyMultibase = null;
             JsonWebKey? publicKeyJwk = null;
@@ -572,8 +640,8 @@ public static class DidDocumentSerializer
 
             return new VerificationMethod
             {
-                Id = root.GetProperty("id").GetString()!,
-                Type = root.GetProperty("type").GetString()!,
+                Id = RequireString(root, "id", "A verification method"),
+                Type = RequireString(root, "type", "A verification method"),
                 Controller = controller,
                 PublicKeyMultibase = publicKeyMultibase,
                 PublicKeyJwk = publicKeyJwk,
@@ -585,8 +653,8 @@ public static class DidDocumentSerializer
         public override void Write(Utf8JsonWriter writer, VerificationMethod value, JsonSerializerOptions options)
         {
             writer.WriteStartObject();
-            writer.WriteString("id", value.Id);
-            writer.WriteString("type", value.Type);
+            writer.WriteString("id", Text(value.Id));
+            writer.WriteString("type", Text(value.Type));
             // Omit a transient default(Did) rather than emitting "controller": null (which the
             // consumer would then reject). A resolved document must carry a controller; that
             // completeness rule is enforced on the read side (ValidateVerificationMethodControllers).
@@ -594,7 +662,7 @@ public static class DidDocumentSerializer
                 writer.WriteString("controller", value.Controller.Value);
 
             if (value.PublicKeyMultibase is not null)
-                writer.WriteString("publicKeyMultibase", value.PublicKeyMultibase);
+                writer.WriteString("publicKeyMultibase", Text(value.PublicKeyMultibase));
 
             if (value.PublicKeyJwk is not null)
             {
@@ -603,7 +671,7 @@ public static class DidDocumentSerializer
             }
 
             if (value.BlockchainAccountId is not null)
-                writer.WriteString("blockchainAccountId", value.BlockchainAccountId);
+                writer.WriteString("blockchainAccountId", Text(value.BlockchainAccountId));
 
             if (value.AdditionalProperties is not null)
                 foreach (var (key, val) in value.AdditionalProperties)
@@ -614,7 +682,7 @@ public static class DidDocumentSerializer
                     if (key is "id" or "type" or "controller"
                         or "publicKeyMultibase" or "publicKeyJwk" or "blockchainAccountId")
                         continue;
-                    writer.WritePropertyName(key);
+                    writer.WritePropertyName(Text(key));
                     val.WriteTo(writer);
                 }
 
@@ -625,10 +693,10 @@ public static class DidDocumentSerializer
         {
             // Only write public JWK members — never emit private key material (d, p, q, dp, dq, qi, k, oth).
             writer.WriteStartObject();
-            if (jwk.Kty is not null) writer.WriteString("kty", jwk.Kty);
-            if (jwk.Crv is not null) writer.WriteString("crv", jwk.Crv);
-            if (jwk.X is not null) writer.WriteString("x", jwk.X);
-            if (jwk.Y is not null) writer.WriteString("y", jwk.Y);
+            if (jwk.Kty is not null) writer.WriteString("kty", Text(jwk.Kty));
+            if (jwk.Crv is not null) writer.WriteString("crv", Text(jwk.Crv));
+            if (jwk.X is not null) writer.WriteString("x", Text(jwk.X));
+            if (jwk.Y is not null) writer.WriteString("y", Text(jwk.Y));
             writer.WriteEndObject();
         }
     }
@@ -638,10 +706,11 @@ public static class DidDocumentSerializer
         public override Service Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options)
         {
             using var jsonDoc = JsonDocument.ParseValue(ref reader);
-            var root = jsonDoc.RootElement;
+            var root = RequireObject(jsonDoc.RootElement, "A service");
 
-            var endpointConverter = new ServiceEndpointValueJsonConverter();
-            var endpointElement = root.GetProperty("serviceEndpoint");
+            if (!root.TryGetProperty("serviceEndpoint", out var endpointElement))
+                throw new JsonException(
+                    "A service is missing the required 'serviceEndpoint' member (W3C DID Core §5.4).");
             var endpoint = DeserializeServiceEndpoint(endpointElement);
 
             Dictionary<string, JsonElement>? additional = null;
@@ -654,8 +723,10 @@ public static class DidDocumentSerializer
 
             return new Service
             {
-                Id = root.GetProperty("id").GetString()!,
-                Type = root.GetProperty("type").GetString()!,
+                Id = RequireString(root, "id", "A service"),
+                // DID Core also allows a set of strings here; the Service model holds one string,
+                // so a set is rejected as before, now as JsonException.
+                Type = RequireString(root, "type", "A service"),
                 ServiceEndpoint = endpoint,
                 AdditionalProperties = additional
             };
@@ -664,8 +735,8 @@ public static class DidDocumentSerializer
         public override void Write(Utf8JsonWriter writer, Service value, JsonSerializerOptions options)
         {
             writer.WriteStartObject();
-            writer.WriteString("id", value.Id);
-            writer.WriteString("type", value.Type);
+            writer.WriteString("id", Text(value.Id));
+            writer.WriteString("type", Text(value.Type));
             writer.WritePropertyName("serviceEndpoint");
             JsonSerializer.Serialize(writer, value.ServiceEndpoint, options);
 
@@ -673,7 +744,7 @@ public static class DidDocumentSerializer
             {
                 foreach (var (key, val) in value.AdditionalProperties)
                 {
-                    writer.WritePropertyName(key);
+                    writer.WritePropertyName(Text(key));
                     val.WriteTo(writer);
                 }
             }
@@ -681,17 +752,36 @@ public static class DidDocumentSerializer
             writer.WriteEndObject();
         }
 
+        // W3C DID Core §5.4: a serviceEndpoint is a string, a map, or a set of one or more strings
+        // and/or maps. A blank string, an empty set, or a set nested in a set is malformed; a nested
+        // set also could not be serialized again at depth (issue #145).
         internal static ServiceEndpointValue DeserializeServiceEndpoint(JsonElement element)
+            => DeserializeServiceEndpoint(element, allowSet: true);
+
+        private static ServiceEndpointValue DeserializeServiceEndpoint(JsonElement element, bool allowSet)
         {
-            return element.ValueKind switch
+            switch (element.ValueKind)
             {
-                JsonValueKind.String => ServiceEndpointValue.FromUri(element.GetString()!),
-                JsonValueKind.Object => ServiceEndpointValue.FromMap(
-                    element.EnumerateObject().ToDictionary(p => p.Name, p => p.Value.Clone())),
-                JsonValueKind.Array => ServiceEndpointValue.FromSet(
-                    element.EnumerateArray().Select(DeserializeServiceEndpoint).ToList()),
-                _ => throw new JsonException($"Unexpected serviceEndpoint value kind: {element.ValueKind}")
-            };
+                case JsonValueKind.String:
+                    var uri = element.GetString()!;
+                    if (string.IsNullOrWhiteSpace(uri))
+                        throw new JsonException("A serviceEndpoint string must not be blank.");
+                    return ServiceEndpointValue.FromUri(uri);
+                case JsonValueKind.Object:
+                    return ServiceEndpointValue.FromMap(
+                        element.EnumerateObject().ToDictionary(p => p.Name, p => p.Value.Clone()));
+                case JsonValueKind.Array when allowSet:
+                    var set = element.EnumerateArray()
+                        .Select(e => DeserializeServiceEndpoint(e, allowSet: false))
+                        .ToList();
+                    if (set.Count == 0)
+                        throw new JsonException("A serviceEndpoint set must contain at least one entry.");
+                    return ServiceEndpointValue.FromSet(set);
+                default:
+                    throw new JsonException(
+                        "A serviceEndpoint must be a string, a map, or a set of strings and maps " +
+                        $"(W3C DID Core §5.4); found {element.ValueKind}.");
+            }
         }
     }
 
@@ -707,14 +797,14 @@ public static class DidDocumentSerializer
         {
             if (value.IsUri)
             {
-                writer.WriteStringValue(value.Uri);
+                writer.WriteStringValue(Text(value.Uri!));
             }
             else if (value.IsMap)
             {
                 writer.WriteStartObject();
                 foreach (var (key, val) in value.Map!)
                 {
-                    writer.WritePropertyName(key);
+                    writer.WritePropertyName(Text(key));
                     val.WriteTo(writer);
                 }
                 writer.WriteEndObject();
@@ -748,7 +838,7 @@ public static class DidDocumentSerializer
         public override void Write(Utf8JsonWriter writer, VerificationRelationshipEntry value, JsonSerializerOptions options)
         {
             if (value.IsReference)
-                writer.WriteStringValue(value.Reference);
+                writer.WriteStringValue(Text(value.Reference!));
             else
                 JsonSerializer.Serialize(writer, value.EmbeddedMethod, options);
         }
@@ -803,7 +893,12 @@ public static class DidDocumentSerializer
 
             List<string>? alsoKnownAs = null;
             if (root.TryGetProperty("alsoKnownAs", out var akaProp))
-                alsoKnownAs = akaProp.EnumerateArray().Select(e => e.GetString()!).ToList();
+                alsoKnownAs = RequireArray(akaProp, "alsoKnownAs")
+                    .Select(e => e.ValueKind == JsonValueKind.String
+                        ? e.GetString()!
+                        : throw new JsonException(
+                            "Every 'alsoKnownAs' entry must be a string (W3C DID Core §5.1.3)."))
+                    .ToList();
 
             // Issue #121 (same class as the VM-level fix): any shape other than a string or
             // an array of strings previously collapsed to an EMPTY list — present-but-malformed
@@ -837,8 +932,9 @@ public static class DidDocumentSerializer
 
             List<VerificationMethod>? vms = null;
             if (root.TryGetProperty("verificationMethod", out var vmProp))
-                vms = vmProp.EnumerateArray()
-                    .Select(e => JsonSerializer.Deserialize<VerificationMethod>(e.GetRawText(), options)!)
+                vms = RequireArray(vmProp, "verificationMethod")
+                    .Select(e => JsonSerializer.Deserialize<VerificationMethod>(
+                        RequireObject(e, "A verification method").GetRawText(), options)!)
                     .ToList();
 
             var auth = ReadRelationship(root, "authentication", options);
@@ -849,8 +945,9 @@ public static class DidDocumentSerializer
 
             List<Service>? services = null;
             if (root.TryGetProperty("service", out var svcProp))
-                services = svcProp.EnumerateArray()
-                    .Select(e => JsonSerializer.Deserialize<Service>(e.GetRawText(), options)!)
+                services = RequireArray(svcProp, "service")
+                    .Select(e => JsonSerializer.Deserialize<Service>(
+                        RequireObject(e, "A service").GetRawText(), options)!)
                     .ToList();
 
             // Collect additional properties
@@ -898,12 +995,18 @@ public static class DidDocumentSerializer
         {
             if (!root.TryGetProperty(propertyName, out var prop)) return null;
 
-            return prop.EnumerateArray().Select(e =>
+            return RequireArray(prop, propertyName).Select(e =>
             {
                 if (e.ValueKind == JsonValueKind.String)
-                    return VerificationRelationshipEntry.FromReference(e.GetString()!);
+                {
+                    var reference = e.GetString()!;
+                    if (string.IsNullOrWhiteSpace(reference))
+                        throw new JsonException($"A '{propertyName}' reference must not be blank.");
+                    return VerificationRelationshipEntry.FromReference(reference);
+                }
 
-                var vm = JsonSerializer.Deserialize<VerificationMethod>(e.GetRawText(), options)!;
+                var vm = JsonSerializer.Deserialize<VerificationMethod>(
+                    RequireObject(e, $"A '{propertyName}' entry").GetRawText(), options)!;
                 return VerificationRelationshipEntry.FromEmbedded(vm);
             }).ToList();
         }

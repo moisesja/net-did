@@ -12,6 +12,10 @@
          deserialize path (verification-method controllers are derived from the DID at
          resolution time); the public consumption boundary requires a controller per §5.2. -->
     <InternalsVisibleTo Include="NetDid.Method.Peer" />
+    <!-- did:webvh and did:ethr share Core's UTF-16 well-formedness check (Utf16Text) for the
+         caller text they publish outside DidDocumentSerializer (issue #145). -->
+    <InternalsVisibleTo Include="NetDid.Method.WebVh" />
+    <InternalsVisibleTo Include="NetDid.Method.Ethr" />
   </ItemGroup>
 
   <ItemGroup>

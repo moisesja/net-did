@@ -437,7 +437,10 @@ public class Issue145UnpairedSurrogateMemberNameTests
 
         jsonLd.Should().Throw<ArgumentException>()
             .Which.Message.Should().NotContain("\uD800", "the offending text is never echoed");
-        json.Should().Throw<ArgumentException>();
+        if (position == "context")
+            json.Should().NotThrow("plain JSON omits @context, so nothing is altered");
+        else
+            json.Should().Throw<ArgumentException>();
         utf8.Should().Throw<ArgumentException>();
         incomplete.Should().Throw<ArgumentException>();
     }
