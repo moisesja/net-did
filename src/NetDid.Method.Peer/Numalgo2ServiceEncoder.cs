@@ -90,23 +90,28 @@ internal static class Numalgo2ServiceEncoder
 
         // Strict: ill-formed UTF-8 must fail, not resolve as U+FFFD (issue #145).
         var json = StrictUtf8.GetString(Convert.FromBase64String(base64));
-        using var doc = JsonDocument.Parse(json);
+        // The same consumption rules as Core (issues #121, #145): duplicate members fail closed
+        // and every member name and string must decode, so a resolved service is always one the
+        // writer can publish again.
+        using var doc = JsonDocument.Parse(json, new JsonDocumentOptions { AllowDuplicateProperties = false });
         var root = doc.RootElement;
+        Utf16Text.RequireDecodable(root);
 
         // Expand type
-        var type = root.GetProperty("t").GetString()!;
+        var type = RequireString(root, "t");
         if (ExpandMap.TryGetValue(type, out var expandedType))
             type = expandedType;
 
         // Expand service endpoint
-        var endpointElement = root.GetProperty("s");
+        if (!root.TryGetProperty("s", out var endpointElement))
+            throw new JsonException("A did:peer:2 service block is missing 's'.");
         var endpoint = DeserializeEndpoint(endpointElement);
 
         // Check for explicit service ID
         string serviceId;
-        if (root.TryGetProperty("id", out var idElement))
+        if (root.TryGetProperty("id", out _))
         {
-            serviceId = idElement.GetString()!;
+            serviceId = RequireString(root, "id");
         }
         else
         {
@@ -120,8 +125,13 @@ internal static class Numalgo2ServiceEncoder
         {
             if (prop.Name is "t" or "s" or "id") continue;
             var expandedKey = ExpandMap.TryGetValue(prop.Name, out var ek) ? ek : prop.Name;
+            // A reserved or colliding key (e.g. "serviceEndpoint" beside "s", or "r" beside
+            // "routingKeys") must not silently shadow or replace a member (issue #145).
+            if (expandedKey is "id" or "type" or "serviceEndpoint")
+                throw new JsonException("A did:peer:2 service block uses a reserved member name.");
             additional ??= new Dictionary<string, JsonElement>();
-            additional[expandedKey] = prop.Value.Clone();
+            if (!additional.TryAdd(expandedKey, prop.Value.Clone()))
+                throw new JsonException("A did:peer:2 service block has colliding member names.");
         }
 
         return new Service
@@ -169,7 +179,10 @@ internal static class Numalgo2ServiceEncoder
         {
             var map = new Dictionary<string, object>();
             foreach (var (key, value) in endpoint.Map!)
-                map[Text(key)] = Element(value);
+            {
+                if (!map.TryAdd(Text(key), Element(value)))
+                    throw new ArgumentException("A did:peer:2 serviceEndpoint map has a duplicate key.");
+            }
             return map;
         }
         if (endpoint.IsSet)
@@ -184,6 +197,11 @@ internal static class Numalgo2ServiceEncoder
         }
         throw new InvalidOperationException("Invalid ServiceEndpointValue");
     }
+
+    private static string RequireString(JsonElement root, string member)
+        => root.TryGetProperty(member, out var value) && value.ValueKind == JsonValueKind.String
+            ? value.GetString()!
+            : throw new JsonException($"A did:peer:2 service block's '{member}' must be a string.");
 
     private static ServiceEndpointValue DeserializeEndpoint(JsonElement element)
     {
