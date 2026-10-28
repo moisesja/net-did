@@ -1,6 +1,7 @@
 using System.Text;
 using System.Text.Json;
 using NetDid.Core.Model;
+using NetDid.Core.Serialization;
 
 namespace NetDid.Method.Peer;
 
@@ -32,12 +33,12 @@ internal static class Numalgo2ServiceEncoder
 
         // Preserve explicit service ID in the encoded block
         if (!string.IsNullOrEmpty(service.Id) && service.Id.StartsWith('#'))
-            abbreviated["id"] = service.Id;
+            abbreviated["id"] = Text(service.Id);
 
         // Type
         var type = AbbreviateMap.TryGetValue(service.Type, out var abbrevType)
             ? abbrevType
-            : service.Type;
+            : Text(service.Type);
         abbreviated["t"] = type;
 
         // ServiceEndpoint
@@ -48,7 +49,7 @@ internal static class Numalgo2ServiceEncoder
         {
             foreach (var (key, value) in service.AdditionalProperties)
             {
-                var abbrevKey = AbbreviateMap.TryGetValue(key, out var ak) ? ak : key;
+                var abbrevKey = AbbreviateMap.TryGetValue(key, out var ak) ? ak : Text(key);
                 abbreviated[abbrevKey] = value;
             }
         }
@@ -123,14 +124,23 @@ internal static class Numalgo2ServiceEncoder
         };
     }
 
+    // JsonSerializer silently replaces an unpaired surrogate with U+FFFD, so the DID would encode
+    // a service that differs from the caller's while Create reported success (issue #145).
+    private static string Text(string value)
+        => Utf16Text.IsWellFormed(value)
+            ? value
+            : throw new ArgumentException(
+                "A did:peer:2 service contains a string with an unpaired UTF-16 surrogate, which " +
+                "cannot be encoded as UTF-8 without altering it.");
+
     private static object SerializeEndpoint(ServiceEndpointValue endpoint)
     {
-        if (endpoint.IsUri) return endpoint.Uri!;
+        if (endpoint.IsUri) return Text(endpoint.Uri!);
         if (endpoint.IsMap)
         {
             var map = new Dictionary<string, object>();
             foreach (var (key, value) in endpoint.Map!)
-                map[key] = value;
+                map[Text(key)] = value;
             return map;
         }
         if (endpoint.IsSet)
