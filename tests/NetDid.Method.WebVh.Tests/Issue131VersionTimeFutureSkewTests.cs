@@ -180,7 +180,8 @@ public sealed class Issue131VersionTimeFutureSkewTests
     public async Task Issue131_AllOperations_JudgeTheFutureByTheInjectedClock()
     {
         // A log dated 2030 is "the future" for the system clock but not for an injected clock
-        // set to 2030; resolution, Update and Deactivate must all use the injected one.
+        // set to 2030; latest resolution, Update, Deactivate, and the historical deactivation-
+        // tail pass must all use the injected one.
         var start = new DateTimeOffset(2030, 1, 1, 0, 0, 0, TimeSpan.Zero);
         var fixture = await AuthorAsync(start, [start.AddMinutes(1)]);
         var clock = new ManualTimeProvider(start.AddMinutes(2));
@@ -199,7 +200,15 @@ public sealed class Issue131VersionTimeFutureSkewTests
                 (string)updated.Artifacts![DidWebVhArtifacts.DidJsonl]),
             SigningKey = fixture.Signer
         });
-        deactivated.Artifacts.Should().ContainKey(DidWebVhArtifacts.DidJsonl);
+        var deactivatedLog = ToFixture(
+            fixture.Did, fixture.Signer, (string)deactivated.Artifacts![DidWebVhArtifacts.DidJsonl]);
+
+        var historical = await ResolveAsync(deactivatedLog, clock, new DidResolutionOptions
+        {
+            VersionId = deactivatedLog.Entries[0].VersionId
+        });
+        historical.DocumentMetadata!.Deactivated.Should().BeTrue(
+            "the deactivation-tail pass must judge the 2030 tail by the injected clock");
     }
 
     [Theory]
