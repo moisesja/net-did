@@ -227,6 +227,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     the decode was lossy, so ill-formed bytes resolved as U+FFFD.
   - **did:ethr Update:** a null service endpoint now throws `ArgumentException` instead of a raw
     `ArgumentNullException`.
+  - **did:peer:2 service blocks are now read with the same consumption rules as Core.** Each of
+    these makes resolution fail with `invalidDid`:
+    - a duplicate member (it was silently last-wins, against the #121 rule);
+    - an escaped lone surrogate (the resolved document could not be serialized);
+    - a reserved or colliding key after abbreviation expansion, such as `serviceEndpoint` next
+      to `s`, or `r` next to `routingKeys`;
+    - a null or non-string `t` or `id`;
+    - a missing `s`.
+  - **Writers reject null required members, null list entries, and duplicate names.** In each
+    case `Serialize` used to emit JSON null, crash with `NullReferenceException`, or emit a
+    member twice, all of which NetDid's own `Deserialize` rejects. Each now throws
+    `ArgumentException`:
+    - a null verification-method or service `id`/`type`, or a null `alsoKnownAs` entry. With
+      did:peer:4, Create could return a DID that then resolved as `notFound`.
+    - a null entry in `verificationMethod`, `service`, or a relationship list;
+    - two keys with the same text in a caller dictionary that uses a non-ordinal comparer. This
+      applies to document, verification-method, and service extensions, and to endpoint maps.
+      Before, the document-level copy silently kept only one of the two values.
 
 - **did:webvh resolution now rejects log entries dated more than 5 minutes in the future**
   (issue #131). did:webvh v1.0 Read step 4 says an entry's `versionTime` "MUST NOT be more than

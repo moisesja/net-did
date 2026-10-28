@@ -704,3 +704,8 @@
   `IReadOnlyList<T>` can be cast back to `T[]` and written, and `ToArray()` hands a hostile
   `ICollection<T>.CopyTo` the destination array. Fill your own list by enumeration and expose
   `AsReadOnly()`. (PR #149 final pass on review round 1.)
+- Never reach for `git stash` to set up a fail-first proof, even for one file. On issue #145 I ran
+  `git stash push <file>` by reflex and moved my uncommitted fix out of the working tree; it was
+  caught and popped at once. The sanctioned sequence is: commit the fix, mutate the committed file
+  (sed or python), run, restore with `git checkout <file>`, and confirm `git diff --stat` is empty.
+  (Issue #145, final-pass F5.)
